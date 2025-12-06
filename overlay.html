@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <style>
+        html {
+            height: 100%;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: #fff;
+            color: #333;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            width: 100%;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        .header {
+            padding: 10px 15px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .title {
+            font-weight: 600;
+            font-size: 14px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 200px;
+        }
+
+        .close-btn {
+            background: none;
+            border: none;
+            font-size: 18px;
+            cursor: pointer;
+            color: #999;
+            padding: 0;
+            line-height: 1;
+        }
+
+        .close-btn:hover {
+            color: #333;
+        }
+
+        .content {
+            flex: 1;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            /* Ensure children don't overflow the flex item */
+            min-height: 0;
+            /* Critical for nested flex scrolling */
+        }
+
+        #status {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 10px;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-top: 5px;
+        }
+
+        button.control-btn {
+            background: #f0f0f0;
+            border: none;
+            border-radius: 4px;
+            padding: 5px 10px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        button.control-btn:hover {
+            background: #e0e0e0;
+        }
+
+        audio {
+            width: 100%;
+            height: 30px;
+        }
+
+        .highlight {
+            background-color: #e3f2fd;
+            color: #1565c0;
+            border-radius: 2px;
+        }
+
+        .sentence {
+            cursor: pointer;
+        }
+
+        .sentence:hover {
+            background-color: #f5f5f5;
+        }
+
+        .footnote-ref {
+            position: relative;
+            margin: 0 2px;
+        }
+
+        /* Visual Reference (Silent to TTS) */
+        .footnote-ref::before {
+            content: attr(data-ref);
+            color: #777;
+            text-decoration: underline dotted;
+            cursor: help;
+            font-size: 0.8em;
+            vertical-align: super;
+        }
+
+        /* Tooltip */
+        .footnote-ref:hover::after {
+            content: attr(data-content);
+            position: absolute;
+            bottom: 140%;
+            /* Position above */
+            left: 50%;
+            transform: translateX(-50%);
+            background: #333;
+            color: #fff;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 13px;
+            white-space: normal;
+            width: max-content;
+            max-width: 250px;
+            /* Constrain width */
+            text-align: left;
+            z-index: 10000;
+            line-height: 1.4;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            pointer-events: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header" style="flex-direction: column; align-items: stretch; gap: 8px;">
+        <div class="header-top" style="display: flex; justify-content: space-between; align-items: center;">
+            <div class="title" id="pageTitle">Kokoro TTS</div>
+            <button class="close-btn" id="close">&times;</button>
+        </div>
+        <div class="progress-container" style="height: 4px; background: #eee; border-radius: 2px; overflow: hidden;">
+            <div class="progress-bar" id="progressBar"
+                style="height: 100%; background: #4caf50; width: 0%; transition: width 0.3s;"></div>
+        </div>
+        <div id="timeEstimate" style="font-size: 11px; color: #888; text-align: right;"></div>
+    </div>
+    <div class="content">
+        <div id="status">Ready</div>
+        <div id="text-display"
+            style="flex: 1; overflow-y: auto; width: 100%; margin-bottom: 20px; border: 1px solid #eee; padding: 15px; border-radius: 8px; font-size: 18px; line-height: 1.6; background: #fafafa; overscroll-behavior: contain; min-height: 0; box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);">
+        </div>
+        <audio id="audio" style="display: none;"></audio>
+        <div class="controls">
+            <button class="control-btn" id="playPause">Pause</button>
+            <button class="control-btn" id="seekBack">Prev</button>
+            <button class="control-btn" id="seekFwd">Next</button>
+
+            <!-- Volume Control -->
+            <div style="display: flex; align-items: center; gap: 5px;">
+                <span style="font-size: 12px; color: #666;">Vol</span>
+                <input type="range" id="volumeControl" min="0" max="1" step="0.1" value="1" style="width: 60px;">
+            </div>
+
+            <button class="control-btn" id="retry"
+                style="display: none; background: #ffebee; color: #c62828;">Retry</button>
+            <select id="speed" style="padding: 4px; border-radius: 4px; border: 1px solid #ccc;">
+                <option value="0.5">0.5x</option>
+                <option value="0.75">0.75x</option>
+                <option value="1.0" selected>1.0x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2.0">2.0x</option>
+                <option value="2.5">2.5x</option>
+                <option value="2.7">2.7x</option>
+                <option value="3.0">3.0x</option>
+            </select>
+        </div>
+    </div>
+    <script src="browser-polyfill.min.js"></script>
+    <script src="compromise.js"></script>
+    <script src="compromise-dates.min.js"></script>
+    <script src="compromise-numbers.min.js"></script>
+    <script src="transliteration.min.js"></script>
+    <script src="overlay.js"></script>
+</body>
+
+</html>
