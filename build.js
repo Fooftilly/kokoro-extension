@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const AdmZip = require('adm-zip');
 
 const EXTENSION_NAME = 'Kokoro TTS Sender';
 const EXTENSION_VERSION = '1.0';
@@ -164,6 +165,56 @@ function build() {
 
         console.log(`Built ${browser} extension in dist/${browser}`);
     });
+    // Check for --package flag
+    if (process.argv.includes('--package')) {
+        console.log('Packaging extensions...');
+        const packageDir = path.join(distDir, 'package');
+        if (!fs.existsSync(packageDir)) {
+            fs.mkdirSync(packageDir);
+        }
+        packageChrome(path.join(distDir, 'chrome'), packageDir);
+        packageFirefox(path.join(distDir, 'firefox'), packageDir);
+    }
+}
+
+function packageChrome(sourceDir, outputDir) {
+    try {
+        const zipName = `kokoro-extension-chrome-${EXTENSION_VERSION}.zip`;
+        const outputPath = path.join(outputDir, zipName);
+
+        // Remove existing zip if any
+        if (fs.existsSync(outputPath)) {
+            fs.unlinkSync(outputPath);
+        }
+
+        console.log(`Creating Chrome package: ${zipName}`);
+
+        const zip = new AdmZip();
+        // Add local folder to the zip
+        zip.addLocalFolder(sourceDir);
+        // Write the zip to disk
+        zip.writeZip(outputPath);
+
+        console.log(`Chrome package created at ${outputPath}`);
+    } catch (error) {
+        console.error('Error packaging for Chrome:', error.message);
+    }
+}
+
+function packageFirefox(sourceDir, outputDir) {
+    try {
+        console.log('Creating Firefox package using web-ext...');
+        const zipName = `kokoro-extension-firefox-${EXTENSION_VERSION}.zip`;
+        // web-ext build --source-dir ... --artifacts-dir ...
+        // We use npx to run it without adding it as a permanent dependency if not wanted,
+        // though adding it to devDependencies is good practice. Use npx -y to auto-confirm.
+
+        // --filename is relative to artifacts-dir
+        execSync(`npx -y web-ext build --source-dir "${sourceDir}" --artifacts-dir "${outputDir}" --filename "${zipName}" --overwrite-dest`);
+        console.log(`Firefox package created: ${path.join(outputDir, zipName)}`);
+    } catch (error) {
+        console.error('Error packaging for Firefox:', error.message);
+    }
 }
 
 build();

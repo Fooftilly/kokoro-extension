@@ -4,7 +4,9 @@
   "description": "",
   "main": "background.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "node build.js",
+    "package": "node build.js --package"
   },
   "keywords": [],
   "author": "",
@@ -17,5 +19,8 @@
     "compromise-numbers": "^1.4.0",
     "transliteration": "^2.3.5",
     "webextension-polyfill": "^0.12.0"
+  },
+  "devDependencies": {
+    "adm-zip": "^0.5.16"
   }
 }
