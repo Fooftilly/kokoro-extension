@@ -35,6 +35,9 @@ const COMPROMISE_NUMBERS_DEST = 'compromise-numbers.min.js';
 const TRANSLITERATION_SRC = 'node_modules/transliteration/dist/browser/bundle.umd.min.js';
 const TRANSLITERATION_DEST = 'transliteration.min.js';
 
+const DOMPURIFY_SRC = 'node_modules/dompurify/dist/purify.min.js';
+const DOMPURIFY_DEST = 'purify.min.js';
+
 function copyFile(src, dest) {
     fs.copyFileSync(src, dest);
 }
@@ -75,11 +78,13 @@ function createManifest(browser) {
         action: {
             default_popup: "popup.html",
             default_icon: {
-                "48": "icons/icon48.png"
+                "48": "icons/icon48.png",
+                "128": "icons/icon128.png"
             }
         },
         icons: {
-            "48": "icons/icon48.png"
+            "48": "icons/icon48.png",
+            "128": "icons/icon128.png"
         },
         content_scripts: [
             {
@@ -95,7 +100,9 @@ function createManifest(browser) {
         ],
         web_accessible_resources: [
             {
-                resources: ["overlay.html", "overlay.js", "browser-polyfill.min.js", "compromise.js", "compromise-dates.min.js", "compromise-numbers.min.js", "transliteration.min.js"], // Added polyfill here too just in case
+                resources: ["overlay.html", "overlay.js", "browser-polyfill.min.js",
+                    "compromise.js", "compromise-dates.min.js", "compromise-numbers.min.js",
+                    "transliteration.min.js", "purify.min.js"],
                 matches: ["<all_urls>"]
             }
         ]
@@ -116,8 +123,15 @@ function createManifest(browser) {
         commonManifest.browser_specific_settings = {
             gecko: {
                 id: "{e4a64387-5c02-4809-a10c-982329d47225}",
-                strict_min_version: "109.0"
+                strict_min_version: "142.0" // Bumped to 142 for data_collection_permissions support (Android too)
             }
+        };
+        // Add data_collection_permissions as required by Firefox
+        // Error "must NOT have fewer than 1 items".
+        // Docs: "Must contain the value none, or one or more of..."
+        // So we use ["none"].
+        commonManifest.browser_specific_settings.gecko.data_collection_permissions = {
+            required: ["none"]
         };
     }
 
@@ -158,6 +172,9 @@ function build() {
 
         // Copy transliteration
         copyFile(path.join(__dirname, TRANSLITERATION_SRC), path.join(browserDist, TRANSLITERATION_DEST));
+
+        // Copy dompurify
+        copyFile(path.join(__dirname, DOMPURIFY_SRC), path.join(browserDist, DOMPURIFY_DEST));
 
         // Generate Manifest
         const manifest = createManifest(browser);

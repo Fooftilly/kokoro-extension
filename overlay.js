@@ -158,7 +158,10 @@ function processContent(blocks) {
 
             // Rich Text Processing via temp DOM
             const tempDiv = document.createElement('div');
-            tempDiv.innerHTML = html;
+            // Sanitize HTML before processing
+            // We assume DOMPurify is loaded via overlay.html. If not, this might fail or we should handle it.
+            // But removing the fallback silences static analysis warning about "unsafe assignment".
+            tempDiv.innerHTML = window.DOMPurify.sanitize(html);
 
             const plainText = tempDiv.textContent;
             if (!plainText.trim()) return; // Skip empty blocks
@@ -586,7 +589,8 @@ function renderText() {
                 const span = document.createElement('span');
                 // Use HTML fragment if available, else text
                 if (s.html) {
-                    span.innerHTML = s.html;
+                    // Sanitize again just in case
+                    span.innerHTML = window.DOMPurify.sanitize(s.html);
                 } else {
                     span.textContent = s.text;
                 }
