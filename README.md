@@ -1,6 +1,6 @@
 # Kokoro TTS Extension
 
-A browser extension (Chrome & Firefox) that integrates **Kokoro TTS** to provide high-quality text-to-speech functionality for web content. It supports two modes: reading highlighted text or reading whole article.
+A browser extension (Chrome & Firefox) that integrates **Kokoro TTS** to provide high-quality text-to-speech functionality for web content. It supports two modes: reading highlighted text or reading whole article. Also supports both streaming audio to web browser or downloading generated audio file.
 
 ## Features
 
