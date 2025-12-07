@@ -110,7 +110,17 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
                 const blob = await response.blob();
                 const filename = sanitizeFilename(tab.title || "audio") + ".mp3";
 
-                const url = URL.createObjectURL(blob);
+                // Function to convert Blob to Data URL (base64)
+                const blobToDataURL = (blob) => {
+                    return new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onloadend = () => resolve(reader.result);
+                        reader.onerror = reject;
+                        reader.readAsDataURL(blob);
+                    });
+                };
+
+                const url = await blobToDataURL(blob);
 
                 // browser.downloads might need permissions, but polyfill maps it correctly.
                 // Note: browser.downloads is not available in all contexts in Firefox without permission,
