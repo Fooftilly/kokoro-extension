@@ -16,7 +16,7 @@ A browser extension (Chrome & Firefox) that integrates **Kokoro TTS** to provide
 ## Prerequisites
 
 - **Node.js** and **npm** installed for building the extension.
-- **Kokoro-FastAPI Server**: You need a running instance of the Kokoro TTS server (e.g., running locally via Docker) for the extension to generate audio. See more at [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI).
+- **Kokoro-FastAPI**: You need a running instance of the Kokoro TTS server (e.g., running locally via Docker) for the extension to generate audio. See more at [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI).
 
 ## Installation & Build
 

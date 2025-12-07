@@ -192,6 +192,10 @@ function build() {
         packageChrome(path.join(distDir, 'chrome'), packageDir);
         packageFirefox(path.join(distDir, 'firefox'), packageDir);
     }
+    if (process.argv.includes('--source')) {
+        console.log('Creating source package...');
+        packageSource(__dirname);
+    }
 }
 
 function packageChrome(sourceDir, outputDir) {
@@ -231,6 +235,53 @@ function packageFirefox(sourceDir, outputDir) {
         console.log(`Firefox package created: ${path.join(outputDir, zipName)}`);
     } catch (error) {
         console.error('Error packaging for Firefox:', error.message);
+    }
+}
+
+function packageSource(rootDir) {
+    try {
+        const zipName = 'kokoro-extension-source.zip';
+        // Change output directory to dist/source-zip
+        const distDir = path.join(rootDir, 'dist');
+        const outputDir = path.join(distDir, 'source-zip');
+
+        if (!fs.existsSync(outputDir)) {
+            fs.mkdirSync(outputDir, { recursive: true });
+        }
+
+        const outputPath = path.join(outputDir, zipName);
+
+        // Remove existing zip if any
+        if (fs.existsSync(outputPath)) {
+            fs.unlinkSync(outputPath);
+        }
+
+        console.log(`Creating source package: ${zipName}`);
+
+        const zip = new AdmZip();
+
+        const entries = fs.readdirSync(rootDir, { withFileTypes: true });
+        for (const entry of entries) {
+            const entryName = entry.name;
+            const fullPath = path.join(rootDir, entryName);
+
+            // Exclude ignored folders and files
+            // Also exclude the zip itself if it was in root (though we moved it now)
+            if (['node_modules', 'dist', '.git', '.gitignore', zipName].includes(entryName)) {
+                continue;
+            }
+
+            if (entry.isDirectory()) {
+                zip.addLocalFolder(fullPath, entryName);
+            } else {
+                zip.addLocalFile(fullPath);
+            }
+        }
+
+        zip.writeZip(outputPath);
+        console.log(`Source package created at ${outputPath}`);
+    } catch (error) {
+        console.error('Error packaging source:', error.message);
     }
 }
 
