@@ -114,7 +114,7 @@ function createManifest(browser) {
         };
         commonManifest.browser_specific_settings = {
             gecko: {
-                id: "https://www.peroniko.xyz/kokoro-tts-extension",
+                id: "{e4a64387-5c02-4809-a10c-982329d47225}",
                 strict_min_version: "109.0"
             }
         };
