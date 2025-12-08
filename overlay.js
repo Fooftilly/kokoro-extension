@@ -170,7 +170,7 @@ function processContent(blocks) {
             const mergedSegments = [];
 
             // Regex for common abbreviations that shouldn't end a sentence
-            const abbrevRegex = /\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc|e\.g|i\.e|approx)\.$/i;
+            const abbrevRegex = /\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc|e\.g|i\.e|approx|Vol|Ch|Fig|Ref|Eq)\.$/i;
 
             for (const seg of rawSegments) {
                 const segText = seg.segment;
@@ -183,6 +183,9 @@ function processContent(blocks) {
                 // So "Dr. " might be the segment.
 
                 if (!segText.trim()) continue;
+
+                // Skip segments that have no alphanumeric characters (e.g. ". . ." or "- - -") to prevent TTS freeze/errors
+                if (!/[a-zA-Z0-9]/.test(segText)) continue;
 
                 // Check if we should merge with previous
                 if (mergedSegments.length > 0) {
@@ -205,9 +208,14 @@ function processContent(blocks) {
                     const currWordCount = segText.trim().split(/\s+/).length;
                     const isShort = lastWordCount < 4 || currWordCount < 4;
 
+                    // FIX: Don't merge "Short" segments if the previous segment effectively ended a sentence (punctuation).
+                    // "Dr." is handled by isAbbrev, so we don't need to worry about dot there.
+                    const endsWithPunctuation = /[.!?]['"\u201D\u2019]?\s*$/.test(lastText);
+                    const shouldMergeShort = isShort && !endsWithPunctuation;
+
                     // Handle case where Segmenter splits before the closing quote (e.g. "Run?" -> "Run?" + "” asked")
-                    // This catches segments that start with a closing quote (Unicode \u201D = ”).
-                    const startsWithClosingQuote = /^['"\u201D\u2019]/.test(segText.trim());
+                    // This catches segments that start with various quotes (including opening quotes if split incorrectly)
+                    const startsWithQuote = /^['"\u201D\u2019\u2018\u201C\u02BC]/.test(segText.trim());
 
                     // Broad merge: if starts with lowercase, it's likely a continuation (attribution "said", "asked", or typo)
                     const startsWithLower = /^[a-z]/.test(segText.trim());
@@ -225,7 +233,11 @@ function processContent(blocks) {
                     const closeParens = (lastText.match(/\)/g) || []).length;
                     const isUnbalanced = openParens > closeParens;
 
-                    if (isAbbrev || endsWithStrictDot || isInitial || isShort || startsWithClosingQuote || startsWithLower || isIntroQuote || isUnbalanced) {
+                    // Parenthesis/Bracket start (e.g. Citations "(1990)", or "[1]")
+                    // Merges if next segment starts with ( or [
+                    const startsWithParen = /^[\(\[]/.test(segText.trim());
+
+                    if (isAbbrev || endsWithStrictDot || isInitial || shouldMergeShort || startsWithQuote || startsWithLower || isIntroQuote || isUnbalanced || startsWithParen) {
                         // Merge current segment into previous
                         last.text += segText;
                         continue;
@@ -338,6 +350,10 @@ function processContent(blocks) {
                     { regex: /\bvs\.?/gi, replacement: "versus" },
                     { regex: /\betc\./gi, replacement: "et cetera" },
                     { regex: /\bapprox\./gi, replacement: "approximately" },
+                    { regex: /\bvol\./gi, replacement: "Volume" },
+                    { regex: /\bch\./gi, replacement: "Chapter" },
+                    { regex: /\bfig\./gi, replacement: "Figure" },
+                    { regex: /\beq\./gi, replacement: "Equation" },
                     // Academic / Classics additions
                     { regex: /\bc\./g, replacement: "circa" }, // Lowercase strict to avoid 'C.'
                     { regex: /\bca\./gi, replacement: "circa" },
@@ -456,6 +472,8 @@ function processContent(blocks) {
                 spokenText = spokenText.replace(/\b(\d+)\s*″/g, '$1 inches');
                 // U+2032 (Prime) -> feet
                 spokenText = spokenText.replace(/\b(\d+)\s*′/g, '$1 feet');
+                // Inches (in) - context aware (not followed by another number e.g. "2 in 5")
+                spokenText = spokenText.replace(/\b(\d+)\s*in\b(?!\s+\d)/gi, '$1 inches');
 
                 // Common Units
                 const unitMap = {
