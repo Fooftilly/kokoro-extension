@@ -119,8 +119,14 @@ export function processContent(blocks, segmenter) {
                 spokenText = spokenText.replace(/\b(\d+):(\d)\b/g, '$1 to $2');
 
                 // 3. Fix Cubic Meters
-                spokenText = spokenText.replace(/kg\/m³/gi, 'kilograms per cubic meter');
+                spokenText = spokenText.replace(/kg\/m[3³]/gi, 'kilograms per cubic meter');
                 spokenText = spokenText.replace(/\bm³/g, 'cubic meters');
+                spokenText = spokenText.replace(/\b(\d+)\s*m3\b/gi, '$1 cubic meters');
+
+                // 4. Fix Square Meters
+                spokenText = spokenText.replace(/kg\/m[2²]/gi, 'kilograms per square meter');
+                spokenText = spokenText.replace(/\bm²/g, 'square meters');
+                spokenText = spokenText.replace(/\b(\d+)\s*m2\b/gi, '$1 square meters');
 
                 const dateRangeRegex = /\b((?:c\.|ca\.)?\s*\d{1,4}(?:\s*(?:AD|BC|BCE|CE))?)\s*[-–—]\s*((?:c\.|ca\.)?\s*\d{1,4}(?:\s*(?:AD|BC|BCE|CE))?)\b/gi;
 
