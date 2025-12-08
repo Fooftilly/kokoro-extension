@@ -10,6 +10,13 @@ export function processContent(blocks, segmenter) {
             renderData.push(block);
         } else if (block.type === 'caption' || block.type === 'silent') {
             renderData.push(block);
+        } else if (block.type === 'html') {
+            const safeHtml = window.DOMPurify.sanitize(block.html, {
+                // Allow some table/figure tags and attributes if they were stripped by default settings
+                ADD_TAGS: ['table', 'tbody', 'thead', 'tfoot', 'tr', 'td', 'th', 'figure', 'figcaption'],
+                ADD_ATTR: ['src', 'alt', 'colspan', 'rowspan']
+            });
+            renderData.push({ type: 'html', html: safeHtml, content: block.content });
         } else if (block.type === 'text') {
             const html = block.html || block.content;
 

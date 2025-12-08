@@ -187,6 +187,56 @@ function renderText() {
             div.style.borderRadius = '4px';
             div.style.textAlign = 'center';
             div.style.userSelect = 'none'; // Hint it's not content
+            div.style.userSelect = 'none'; // Hint it's not content
+            textDisplay.appendChild(div);
+        } else if (block.type === 'html') {
+            const div = document.createElement('div');
+            div.innerHTML = block.html; // Already sanitized in processor
+            div.style.margin = '20px 0';
+            div.style.overflowX = 'auto'; // Horizontal scroll for wide tables
+            div.style.padding = '10px';
+            div.style.border = '1px solid #eee';
+            div.style.borderRadius = '8px';
+
+            // Basic table styling injection
+            const tables = div.querySelectorAll('table');
+            tables.forEach(table => {
+                // Ensure table fits container width at least visually
+                table.style.minWidth = '100%';
+                table.style.borderCollapse = 'collapse';
+                table.style.fontFamily = 'sans-serif';
+                table.style.fontSize = '0.9em';
+
+                table.querySelectorAll('th, td').forEach(cell => {
+                    cell.style.border = '1px solid #ddd';
+                    cell.style.padding = '8px 12px';
+                });
+                table.querySelectorAll('th').forEach(header => {
+                    header.style.backgroundColor = '#f4f4f4';
+                    header.style.fontWeight = 'bold';
+                });
+            });
+
+            // Figure styling
+            const figures = div.querySelectorAll('figure');
+            figures.forEach(fig => {
+                fig.style.margin = '0';
+                fig.style.textAlign = 'center';
+                const img = fig.querySelector('img');
+                if (img) {
+                    img.style.maxWidth = '100%';
+                    img.style.height = 'auto';
+                    img.style.borderRadius = '4px';
+                }
+                const caption = fig.querySelector('figcaption');
+                if (caption) {
+                    caption.style.fontSize = '0.9em';
+                    caption.style.color = '#666';
+                    caption.style.marginTop = '8px';
+                    caption.style.fontStyle = 'italic';
+                }
+            });
+
             textDisplay.appendChild(div);
         } else if (block.type === 'paragraph') {
             const p = document.createElement('p');

@@ -65,10 +65,11 @@ browser.runtime.onMessage.addListener((request, sender) => {
                     const captionSelector = 'figcaption, .caption, .wp-caption-text, .image-caption, .figure-caption, .figcaption-text, .credit';
                     const promoSelector = '.newsletter, .promo, .subscribe, .subscription, .cta, .advertisement';
                     const promoRegex = /(?:subscribe|sign up|join).{0,60}(?:newsletter|mailing list|community|updates?)|(?:support|donate).{0,60}(?:us|our work|patreon)|(?:follow|connect with).{0,60}(?:us|on social)/i;
-                    const nodes = articleDoc.body.querySelectorAll(`p, h1, h2, h3, h4, h5, h6, li, img, ${captionSelector}, ${promoSelector}`);
+                    const nodes = articleDoc.body.querySelectorAll(`p, h1, h2, h3, h4, h5, h6, li, img, table, figure, ${captionSelector}, ${promoSelector}`);
 
                     function getSanitizedHtml(node) {
                         const clone = node.cloneNode(true);
+                        // Clean up links in the clone
                         const links = clone.querySelectorAll('a');
                         links.forEach(a => {
                             try {
@@ -84,6 +85,13 @@ browser.runtime.onMessage.addListener((request, sender) => {
                     }
 
                     nodes.forEach(node => {
+                        // Avoid duplicating content inside tables or figures if we are processing the container
+                        const closestTable = node.closest('table');
+                        if (closestTable && closestTable !== node) return;
+
+                        const closestFigure = node.closest('figure');
+                        if (closestFigure && closestFigure !== node) return;
+
                         const closestCaption = node.closest(captionSelector);
                         if (closestCaption && closestCaption !== node) return;
 
@@ -95,6 +103,43 @@ browser.runtime.onMessage.addListener((request, sender) => {
                                     blocks.push({ type: 'image', src: absSrc });
                                 } catch (e) { }
                             }
+                        } else if (node.tagName === 'TABLE') {
+                            const html = getSanitizedHtml(node); // Full outer HTML would be better? getSanitizedHtml uses innerHTML.
+                            // We want the whole table tag.
+                            const tempDiv = document.createElement('div');
+                            tempDiv.innerHTML = node.outerHTML; // Use outerHTML to keep <table>
+                            // Sanitize inside? getSanitizedHtml logic is: clone -> fix links -> return innerHTML.
+                            // If we pass `node` (the table) to getSanitizedHtml, it returns content INSIDE table.
+                            // We want the table itself.
+                            // Let's adjust getSanitizedHtml to support returning outer if needed, or just do it here.
+                            const clone = node.cloneNode(true);
+                            const links = clone.querySelectorAll('a');
+                            links.forEach(a => {
+                                try {
+                                    const href = a.getAttribute('href');
+                                    if (href) {
+                                        a.href = new URL(href, window.location.href).href;
+                                        a.target = '_blank';
+                                        a.rel = 'noopener noreferrer';
+                                    }
+                                } catch (e) { }
+                            });
+                            blocks.push({ type: 'html', content: "Table", html: clone.outerHTML });
+                        } else if (node.tagName === 'FIGURE') {
+                            const clone = node.cloneNode(true);
+                            const links = clone.querySelectorAll('a');
+                            links.forEach(a => {
+                                try {
+                                    const href = a.getAttribute('href');
+                                    if (href) {
+                                        a.href = new URL(href, window.location.href).href;
+                                        a.target = '_blank';
+                                        a.rel = 'noopener noreferrer';
+                                    }
+                                } catch (e) { }
+                            });
+                            // Figures often contain images. We can render the whole figure as an HTML block.
+                            blocks.push({ type: 'html', content: "Figure", html: clone.outerHTML });
                         } else if (node.matches(captionSelector)) {
                             const text = node.textContent.replace(/\s+/g, ' ').trim();
                             if (text.length > 0) blocks.push({ type: 'caption', content: text });
