@@ -17,7 +17,7 @@ export function processContent(blocks, segmenter) {
                 ADD_ATTR: ['src', 'alt', 'colspan', 'rowspan']
             });
             renderData.push({ type: 'html', html: safeHtml, content: block.content });
-        } else if (block.type === 'text') {
+        } else if (block.type === 'text' || block.type === 'list-item') {
             const html = block.html || block.content;
 
             const tempDiv = document.createElement('div');
@@ -287,7 +287,15 @@ export function processContent(blocks, segmenter) {
             }
 
             if (paraSentences.length > 0) {
-                renderData.push({ type: 'paragraph', sentences: paraSentences });
+                const renderBlock = {
+                    type: block.type === 'list-item' ? 'list-item' : 'paragraph',
+                    sentences: paraSentences
+                };
+                if (block.type === 'list-item') {
+                    renderBlock.depth = block.depth || 0;
+                    renderBlock.listType = block.listType || 'ul';
+                }
+                renderData.push(renderBlock);
             }
         }
     });

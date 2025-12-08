@@ -153,7 +153,15 @@ function renderText() {
 
     if (!window.renderData) return;
 
+    let currentList = null; // To manage sequential list items
+
     window.renderData.forEach(block => {
+        // If we switch away from list items, or change depth/type, we might break the list chain.
+        // Simple logic: If not list item, currentList becomes null.
+        if (block.type !== 'list-item') {
+            currentList = null;
+        }
+
         if (block.type === 'image') {
             const img = document.createElement('img');
             img.src = block.src;
@@ -186,7 +194,6 @@ function renderText() {
             div.style.border = '1px dashed #eee';
             div.style.borderRadius = '4px';
             div.style.textAlign = 'center';
-            div.style.userSelect = 'none'; // Hint it's not content
             div.style.userSelect = 'none'; // Hint it's not content
             textDisplay.appendChild(div);
         } else if (block.type === 'html') {
@@ -238,9 +245,28 @@ function renderText() {
             });
 
             textDisplay.appendChild(div);
-        } else if (block.type === 'paragraph') {
-            const p = document.createElement('p');
-            p.style.margin = '0 0 16px 0'; // Add spacing
+        } else if (block.type === 'paragraph' || block.type === 'list-item') {
+            let container;
+            if (block.type === 'list-item') {
+                // List logic: Check if we need a new list container (ul/ol)
+                if (!currentList || currentList.dataset.listType !== block.listType || parseInt(currentList.dataset.depth) !== block.depth) {
+                    currentList = document.createElement(block.listType === 'ol' ? 'ol' : 'ul');
+                    currentList.dataset.listType = block.listType || 'ul';
+                    currentList.dataset.depth = block.depth || 0;
+                    // Indentation based on depth
+                    currentList.style.paddingLeft = (20 + (block.depth * 20)) + 'px';
+                    currentList.style.margin = '0 0 16px 0'; // Add spacing below the list
+                    textDisplay.appendChild(currentList);
+                }
+                container = document.createElement('li');
+                container.style.marginBottom = '8px'; // Spacing between list items
+                currentList.appendChild(container);
+            } else {
+                // Paragraph logic
+                container = document.createElement('p');
+                container.style.margin = '0 0 16px 0'; // Add spacing below paragraph
+                textDisplay.appendChild(container);
+            }
 
             block.sentences.forEach(s => {
                 const span = document.createElement('span');
@@ -266,13 +292,11 @@ function renderText() {
                     navigate(s.index);
                     resume(); // Force play on click
                 };
-                p.appendChild(span);
+                container.appendChild(span);
 
                 // Link element back to sentence object for highlighting/scrolling
                 sentences[s.index].element = span;
             });
-
-            textDisplay.appendChild(p);
         }
     });
 }

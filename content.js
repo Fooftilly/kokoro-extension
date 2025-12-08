@@ -125,6 +125,34 @@ browser.runtime.onMessage.addListener((request, sender) => {
                                 } catch (e) { }
                             });
                             blocks.push({ type: 'html', content: "Table", html: clone.outerHTML });
+                        } else if (node.tagName === 'LI') {
+                            const html = getSanitizedHtml(node);
+                            // Calculate depth
+                            let depth = 0;
+                            let parent = node.parentElement;
+                            let listType = 'ul';
+                            while (parent) {
+                                if (parent.tagName === 'UL' || parent.tagName === 'OL') {
+                                    if (depth === 0) listType = parent.tagName.toLowerCase();
+                                    depth++;
+                                }
+                                parent = parent.parentElement;
+                                // Safety break
+                                if (depth > 10) break;
+                            }
+                            // Adjust depth to be 0-indexed relative to top-level list
+                            const safeDepth = Math.max(0, depth - 1);
+
+                            const text = node.textContent.replace(/\s+/g, ' ').trim();
+                            if (text.length > 0) {
+                                blocks.push({
+                                    type: 'list-item',
+                                    content: text,
+                                    html: html,
+                                    depth: safeDepth,
+                                    listType: listType
+                                });
+                            }
                         } else if (node.tagName === 'FIGURE') {
                             const clone = node.cloneNode(true);
                             const links = clone.querySelectorAll('a');
