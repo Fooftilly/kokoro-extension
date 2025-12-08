@@ -30,6 +30,28 @@ const notify = (title, message) => {
     });
 };
 
+// Helper to ensure content script is injected
+async function ensureContentScript(tabId) {
+    try {
+        // Try a simple ping
+        await browser.tabs.sendMessage(tabId, { action: "PING" });
+    } catch (e) {
+        // If ping fails, inject
+        console.log("Injecting content script into tab " + tabId);
+        try {
+            await browser.scripting.executeScript({
+                target: { tabId: tabId },
+                files: ['browser-polyfill.min.js', 'readability.js', 'content.js']
+            });
+            // Brief wait for script to populate listener
+            await new Promise(r => setTimeout(r, 100));
+        } catch (err) {
+            console.error("Failed to inject content script:", err);
+            throw err;
+        }
+    }
+}
+
 browser.contextMenus.onClicked.addListener(async (info, tab) => {
     if (info.menuItemId === "send-to-kokoro" || info.menuItemId === "read-article-kokoro") {
         let text = "";
@@ -37,16 +59,30 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
         if (info.menuItemId === "read-article-kokoro") {
             // We need to ask the content script to parse the page
             try {
-                const response = await browser.tabs.sendMessage(tab.id, { action: "PARSE_ARTICLE" });
-                if (response && response.text) {
-                    text = response.text;
-                    // Store the structured content temporarily
-                    info._structuredContent = response.content;
-                } else {
-                    notify("Kokoro TTS", "Could not extract article text.");
-                    return;
+                // Robust Send: Try once, if fail, inject and retry
+                try {
+                    const response = await browser.tabs.sendMessage(tab.id, { action: "PARSE_ARTICLE" });
+                    if (response && response.text) {
+                        text = response.text;
+                        info._structuredContent = response.content;
+                    } else {
+                        throw new Error("No text returned");
+                    }
+                } catch (e) {
+                    // Retry logic
+                    console.log("Initial parse failed, trying to inject...", e);
+                    await ensureContentScript(tab.id);
+                    const response = await browser.tabs.sendMessage(tab.id, { action: "PARSE_ARTICLE" });
+                    if (response && response.text) {
+                        text = response.text;
+                        info._structuredContent = response.content;
+                    } else {
+                        notify("Kokoro TTS", "Could not extract article text.");
+                        return;
+                    }
                 }
             } catch (e) {
+                console.error("Parse failed after retry:", e);
                 notify("Kokoro TTS Error", "Reload the page to use this feature.");
                 return;
             }
@@ -159,8 +195,18 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
                         mode: isArticleMode ? 'full' : 'popup'
                     });
                 } catch (err) {
-                    notify("Kokoro TTS Error", "Could not open player. Try refreshing the page.");
-                    console.error(err);
+                    // Retry injection
+                    console.log("Show player failed, trying to inject...", err);
+                    try {
+                        await ensureContentScript(tab.id);
+                        await browser.tabs.sendMessage(tab.id, {
+                            action: "SHOW_PLAYER",
+                            mode: isArticleMode ? 'full' : 'popup'
+                        });
+                    } catch (finalErr) {
+                        notify("Kokoro TTS Error", "Could not open player. Try refreshing the page.");
+                        console.error(finalErr);
+                    }
                 }
             }
 

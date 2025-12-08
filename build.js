@@ -14,7 +14,10 @@ const SRC_FILES = [
     'overlay.html',
     'overlay.js',
     'popup.html',
-    'popup.js'
+    'popup.js',
+    'text-processor.js',
+    'audio-manager.js',
+    'dom-utils.js'
 ];
 
 const ICONS_DIR = 'icons';
@@ -68,7 +71,8 @@ function createManifest(browser) {
             "contextMenus",
             "storage",
             "activeTab",
-            "notifications"
+            "notifications",
+            "scripting"
             // "downloads" is added conditionally below if needed, or kept common
         ],
         host_permissions: [
@@ -100,7 +104,7 @@ function createManifest(browser) {
         ],
         web_accessible_resources: [
             {
-                resources: ["overlay.html", "overlay.js", "browser-polyfill.min.js",
+                resources: ["overlay.html", "overlay.js", "text-processor.js", "audio-manager.js", "dom-utils.js", "browser-polyfill.min.js",
                     "compromise.js", "compromise-dates.min.js", "compromise-numbers.min.js",
                     "transliteration.min.js", "purify.min.js"],
                 matches: ["<all_urls>"]
