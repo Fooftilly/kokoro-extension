@@ -67,10 +67,34 @@
             /* Critical for nested flex scrolling */
         }
 
+        #status-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
         #status {
             font-size: 12px;
             color: #666;
-            margin-bottom: 10px;
+            margin-bottom: 0;
+        }
+
+        .spinner {
+            width: 12px;
+            height: 12px;
+            border: 2px solid #ccc;
+            border-top-color: #333;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            display: none;
+            /* Hidden by default */
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
         }
 
         .controls {
@@ -166,7 +190,10 @@
         <div id="timeEstimate" style="font-size: 11px; color: #888; text-align: right;"></div>
     </div>
     <div class="content">
-        <div id="status">Ready</div>
+        <div id="status-container">
+            <div class="spinner" id="loadingSpinner"></div>
+            <div id="status">Ready</div>
+        </div>
         <div id="text-display"
             style="flex: 1; overflow-y: auto; width: 100%; margin-bottom: 20px; border: 1px solid #eee; padding: 15px; border-radius: 8px; font-size: 18px; line-height: 1.6; background: #fafafa; overscroll-behavior: contain; min-height: 0; box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);">
         </div>

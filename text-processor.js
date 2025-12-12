@@ -17,7 +17,7 @@ export function processContent(blocks, segmenter) {
                 ADD_ATTR: ['src', 'alt', 'colspan', 'rowspan']
             });
             renderData.push({ type: 'html', html: safeHtml, content: block.content });
-        } else if (block.type === 'text' || block.type === 'list-item') {
+        } else if (block.type === 'text' || block.type === 'list-item' || /^h[1-6]$/.test(block.type)) {
             const html = block.html || block.content;
 
             const tempDiv = document.createElement('div');
@@ -320,8 +320,13 @@ export function processContent(blocks, segmenter) {
             }
 
             if (paraSentences.length > 0) {
+                const isHeader = /^h[1-6]$/.test(block.type);
+                let renderType = 'paragraph';
+                if (block.type === 'list-item') renderType = 'list-item';
+                else if (isHeader) renderType = block.type;
+
                 const renderBlock = {
-                    type: block.type === 'list-item' ? 'list-item' : 'paragraph',
+                    type: renderType,
                     sentences: paraSentences
                 };
                 if (block.isQuote) renderBlock.isQuote = true;

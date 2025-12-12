@@ -10,6 +10,7 @@ const seekFwdBtn = document.getElementById('seekFwd');
 const speedSelect = document.getElementById('speed');
 const retryBtn = document.getElementById('retry');
 const closeBtn = document.getElementById('close');
+const spinnerEl = document.getElementById('loadingSpinner');
 
 let sentences = [];
 let currentIndex = 0;
@@ -252,7 +253,7 @@ function renderText() {
             });
 
             textDisplay.appendChild(div);
-        } else if (block.type === 'paragraph' || block.type === 'list-item') {
+        } else if (block.type === 'paragraph' || block.type === 'list-item' || /^h[1-6]$/.test(block.type)) {
             let container;
             if (block.type === 'list-item') {
                 // List logic: Check if we need a new list container (ul/ol)
@@ -268,6 +269,19 @@ function renderText() {
                 container = document.createElement('li');
                 container.style.marginBottom = '8px'; // Spacing between list items
                 currentList.appendChild(container);
+            } else if (/^h[1-6]$/.test(block.type)) {
+                container = document.createElement(block.type);
+                container.style.margin = '24px 0 16px 0';
+                container.style.fontWeight = '700';
+                container.style.lineHeight = '1.3';
+                container.style.color = '#222';
+
+                // Scale font size based on level
+                const level = parseInt(block.type.substring(1));
+                const sizes = ['2em', '1.5em', '1.3em', '1.1em', '1em', '0.9em'];
+                container.style.fontSize = sizes[level - 1] || '1em';
+
+                textDisplay.appendChild(container);
             } else {
                 // Paragraph logic
                 container = document.createElement('p');
@@ -387,7 +401,9 @@ async function navigate(index, forcePlay = null) {
     statusEl.textContent = `Playing sentence ${currentIndex + 1}/${sentences.length}`;
 
     try {
+        spinnerEl.style.display = 'block'; // Show spinner
         const blobUrl = await audioManager.getAudio(currentIndex);
+        spinnerEl.style.display = 'none'; // Hide spinner
         if (currentIndex !== index) return; // Stale request
 
         audioEl.src = blobUrl;
@@ -410,10 +426,10 @@ async function navigate(index, forcePlay = null) {
         audioManager.prefetch(currentIndex + 2);
 
     } catch (e) {
+        spinnerEl.style.display = 'none'; // Ensure spinner hidden on error
         console.error("Playback error", e);
         statusEl.textContent = "Error playing audio.";
     }
 }
 
 initialize();
-

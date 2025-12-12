@@ -182,8 +182,12 @@ function parseArticle(doc, win = window) {
                                 blocks.push({ type: 'silent', content: text });
                             } else {
                                 const html = getSanitizedHtml(node);
+                                let type = 'text';
+                                if (/^H[1-6]$/.test(node.tagName)) {
+                                    type = node.tagName.toLowerCase();
+                                }
                                 blocks.push({
-                                    type: 'text',
+                                    type: type,
                                     content: text,
                                     html: html,
                                     isQuote: !!node.closest('blockquote')
