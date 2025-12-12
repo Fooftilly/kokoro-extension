@@ -187,4 +187,25 @@ describe('processContent Regressions', () => {
         const output = runProcessor('Speed is 30 m/s.');
         expect(output).toMatch(/30 meters per second/i);
     });
+
+    test('Feature: Dimensions (20 cm × 8 cm)', () => {
+        const output = runProcessor('size being 20 cm × 8 cm (8 in × 3 in)');
+        // 20 cm x 8 cm -> 20 centimeters by 8 centimeters
+        // 8 in x 3 in -> 8 inches by 3 inches
+        expect(output).toMatch(/20 centimeters by 8 centimeters/i);
+        expect(output).toMatch(/8 inches by 3 inches/i);
+    });
+
+    test('Feature: Dimensions with "x" (20x20)', () => {
+        const output = runProcessor('Resolution 1920x1080 and 4 x 4.');
+        expect(output).toMatch(/1920 by 1080/);
+        expect(output).toMatch(/4 by 4/);
+    });
+
+    test('Feature: Dimensions hex safeguard', () => {
+        const output = runProcessor('Address 0x10 is invalid.');
+        // Should NOT be "0 by 10"
+        expect(output).toMatch(/0x10/);
+        expect(output).not.toMatch(/0 by 10/);
+    });
 });

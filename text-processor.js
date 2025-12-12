@@ -127,6 +127,19 @@ export function processContent(blocks, segmenter) {
                 // Chemical formulas
                 spokenText = spokenText.replace(/\bCO2\b/g, 'carbon dioxide');
 
+                // Dimensions: 20x20, 20 x 20, 20 cm x 8 cm
+                spokenText = spokenText.replace(/\b(\d+(?:\.\d+)?)\s*([a-zA-Zµ°]+)?\s*[x×]\s*(\d+(?:\.\d+)?)\s*([a-zA-Zµ°]+)?\b/gi, (match, n1, u1, n2, u2) => {
+                    // Avoid formatting hex numbers like 0x10
+                    if (/^0x[0-9a-f]+/i.test(match)) return match;
+
+                    let s = `${n1}`;
+                    if (u1) s += ` ${u1}`;
+                    s += ' by ';
+                    s += `${n2}`;
+                    if (u2) s += ` ${u2}`;
+                    return s;
+                });
+
                 // 1. Fix AD/BC Spacing
                 spokenText = spokenText.replace(/\b(\d+)(AD|BC|BCE|CE)\b/gi, '$1 $2');
 
