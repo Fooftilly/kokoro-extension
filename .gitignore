@@ -5,3 +5,4 @@ dist/
 npm-debug.log
 *.log
 package-lock.json
+/tests/__snapshots__

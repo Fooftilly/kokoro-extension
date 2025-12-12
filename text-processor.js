@@ -106,12 +106,27 @@ export function processContent(blocks, segmenter) {
                     }
                 }
 
-                // --- Transliteration ---
-                if (window.transliterate) {
-                    spokenText = window.transliterate(spokenText);
-                }
-
                 // --- Specialized Normalization ---
+
+                // -1. Remove Footnote Artifacts
+                spokenText = spokenText.replace(/#[\w-]{2,}/g, '');
+
+                // 0. Fix Symbols
+                // Em-dash to comma for pause
+                spokenText = spokenText.replace(/—/g, ', ');
+
+                spokenText = spokenText.replace(/>\s*(\d)/g, 'greater than $1');
+                spokenText = spokenText.replace(/<\s*(\d)/g, 'less than $1');
+
+                // Temperature: Handle °C, deg C, degrees C
+                spokenText = spokenText.replace(/(\d)\s*(?:°|deg|degrees)\.?\s*C\b/gi, '$1 degrees Celsius');
+
+                // Handle negative numbers: hyphen or unicode minus
+                spokenText = spokenText.replace(/(?:-|−)(\d+)\s*degrees Celsius/g, 'minus $1 degrees Celsius');
+
+                // Chemical formulas
+                spokenText = spokenText.replace(/\bCO2\b/g, 'carbon dioxide');
+
                 // 1. Fix AD/BC Spacing
                 spokenText = spokenText.replace(/\b(\d+)(AD|BC|BCE|CE)\b/gi, '$1 $2');
 
@@ -122,11 +137,17 @@ export function processContent(blocks, segmenter) {
                 spokenText = spokenText.replace(/kg\/m[3³]/gi, 'kilograms per cubic meter');
                 spokenText = spokenText.replace(/\bm³/g, 'cubic meters');
                 spokenText = spokenText.replace(/\b(\d+)\s*m3\b/gi, '$1 cubic meters');
+                spokenText = spokenText.replace(/\bcfm\b/gi, 'cubic feet per minute');
 
-                // 4. Fix Square Meters
+                // 4. Fix Square Meters and Power
+                spokenText = spokenText.replace(/mW\/m[2²]/gi, 'milliwatts per square meter');
+                spokenText = spokenText.replace(/W\/m[2²]/gi, 'watts per square meter');
                 spokenText = spokenText.replace(/kg\/m[2²]/gi, 'kilograms per square meter');
                 spokenText = spokenText.replace(/\bm²/g, 'square meters');
                 spokenText = spokenText.replace(/\b(\d+)\s*m2\b/gi, '$1 square meters');
+
+                // 5. Velocity
+                spokenText = spokenText.replace(/m\/s\b/g, 'meters per second');
 
                 const dateRangeRegex = /\b((?:c\.|ca\.)?\s*\d{1,4}(?:\s*(?:AD|BC|BCE|CE))?)\s*[-–—]\s*((?:c\.|ca\.)?\s*\d{1,4}(?:\s*(?:AD|BC|BCE|CE))?)\b/gi;
 
@@ -265,9 +286,10 @@ export function processContent(blocks, segmenter) {
                     "cm": "centimeters", "mm": "millimeters", "km": "kilometers",
                     "kg": "kilograms", "lb": "pounds", "oz": "ounces",
                     "mj": "megajoules", "kj": "kilojoules",
-                    "m": "meters", "g": "grams"
+                    "m": "meters", "g": "grams", "μm": "micrometers",
+                    "mW": "milliwatts", "kW": "kilowatts", "W": "watts"
                 };
-                spokenText = spokenText.replace(/\b(\d+)\s*(cm|mm|km|kg|lb|oz|mj|kj|m|g)\b/gi, (match, num, unit) => {
+                spokenText = spokenText.replace(/\b(\d+)\s*(cm|mm|km|kg|lb|oz|mj|kj|m|g|μm|mW|kW|W)\b/gi, (match, num, unit) => {
                     const key = unit.toLowerCase();
                     const fullUnit = unitMap[key] || unit;
                     let outUnit = fullUnit;
@@ -276,6 +298,14 @@ export function processContent(blocks, segmenter) {
                     }
                     return `${num} ${outUnit}`;
                 });
+
+
+
+
+                // --- Transliteration (Last to preserve symbols like μ, °, etc during specialized normalization) ---
+                if (window.transliterate) {
+                    spokenText = window.transliterate(spokenText);
+                }
 
                 const sentenceObj = {
                     index: globalIndex++,

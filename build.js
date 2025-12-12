@@ -143,6 +143,14 @@ function createManifest(browser) {
 }
 
 function build() {
+    console.log('Running tests...');
+    try {
+        execSync('npm test', { stdio: 'inherit' });
+    } catch (e) {
+        console.error('Tests failed. Build aborted.');
+        process.exit(1);
+    }
+
     const distDir = path.resolve(__dirname, 'dist');
     if (fs.existsSync(distDir)) {
         fs.rmSync(distDir, { recursive: true, force: true });
