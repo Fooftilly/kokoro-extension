@@ -16,10 +16,20 @@ const saveOptions = async () => {
     const defaultSpeed = document.getElementById('defaultSpeed').value;
     const defaultVolume = document.getElementById('defaultVolume').value;
 
+    const normalizationOptions = {
+        normalize: document.getElementById('norm_normalize').checked,
+        unit_normalization: document.getElementById('norm_unit').checked,
+        url_normalization: document.getElementById('norm_url').checked,
+        email_normalization: document.getElementById('norm_email').checked,
+        optional_pluralization_normalization: document.getElementById('norm_plural').checked,
+        phone_normalization: document.getElementById('norm_phone').checked,
+        replace_remaining_symbols: document.getElementById('norm_symbol').checked
+    };
+
     try {
-        await browser.storage.sync.set({ apiUrl, voice, mode, defaultSpeed, defaultVolume });
+        await browser.storage.sync.set({ apiUrl, voice, mode, defaultSpeed, defaultVolume, normalizationOptions });
         // Also update local storage for the overlay to pick up immediately if needed
-        await browser.storage.local.set({ defaultSpeed, defaultVolume });
+        await browser.storage.local.set({ defaultSpeed, defaultVolume, normalizationOptions });
 
         const status = document.getElementById('status');
         status.style.display = 'block';
@@ -36,7 +46,16 @@ const restoreOptions = async () => {
             voice: 'af_heart(10)+af_bella(7.5)+af_jessica(2.5)',
             mode: 'download',
             defaultSpeed: '1.0',
-            defaultVolume: '1.0'
+            defaultVolume: '1.0',
+            normalizationOptions: {
+                normalize: true,
+                unit_normalization: false,
+                url_normalization: true,
+                email_normalization: true,
+                optional_pluralization_normalization: true,
+                phone_normalization: true,
+                replace_remaining_symbols: true
+            }
         });
 
         document.getElementById('apiUrl').value = items.apiUrl;
@@ -48,6 +67,16 @@ const restoreOptions = async () => {
         }
         document.getElementById('defaultSpeed').value = items.defaultSpeed;
         document.getElementById('defaultVolume').value = items.defaultVolume;
+
+        const norm = items.normalizationOptions;
+        document.getElementById('norm_normalize').checked = norm.normalize;
+        document.getElementById('norm_unit').checked = norm.unit_normalization;
+        document.getElementById('norm_url').checked = norm.url_normalization;
+        document.getElementById('norm_email').checked = norm.email_normalization;
+        document.getElementById('norm_plural').checked = norm.optional_pluralization_normalization;
+        document.getElementById('norm_phone').checked = norm.phone_normalization;
+        document.getElementById('norm_symbol').checked = norm.replace_remaining_symbols;
+
     } catch (e) {
         console.error("Error restoring options", e);
     }

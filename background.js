@@ -96,7 +96,16 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
         const settings = await browser.storage.sync.get({
             apiUrl: 'http://127.0.0.1:8880/v1/',
             voice: 'af_heart(10)+af_bella(7.5)+af_jessica(2.5)',
-            mode: 'download'
+            mode: 'download',
+            normalizationOptions: {
+                normalize: true,
+                unit_normalization: false,
+                url_normalization: true,
+                email_normalization: true,
+                optional_pluralization_normalization: true,
+                phone_normalization: true,
+                replace_remaining_symbols: true
+            }
         });
 
         let apiUrl = settings.apiUrl;
@@ -120,7 +129,8 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
             model: 'kokoro',
             input: text,
             voice: settings.voice,
-            response_format: 'mp3'
+            response_format: 'mp3',
+            normalization_options: settings.normalizationOptions
         };
 
         try {
@@ -185,7 +195,8 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
                     pendingContent: info._structuredContent || [{ type: 'text', content: text }],
                     pendingVoice: settings.voice,
                     pendingApiUrl: apiUrl,
-                    pendingTitle: tab.title
+                    pendingTitle: tab.title,
+                    pendingNormalizationOptions: settings.normalizationOptions
                 });
 
                 // Send message to the active tab to show the overlay

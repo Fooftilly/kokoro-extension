@@ -35,7 +35,7 @@ export class AudioManager {
     }
 
     async fetchAudio(text) {
-        const data = await browser.storage.local.get(['pendingVoice', 'pendingApiUrl']);
+        const data = await browser.storage.local.get(['pendingVoice', 'pendingApiUrl', 'pendingNormalizationOptions']);
         try {
             if (!data.pendingApiUrl) {
                 throw new Error("Missing API URL");
@@ -50,7 +50,8 @@ export class AudioManager {
                     input: text,
                     voice: data.pendingVoice,
                     response_format: 'mp3',
-                    speed: 1.0 // Generate at 1x, client handles speed
+                    speed: 1.0, // Generate at 1x, client handles speed
+                    normalization_options: data.pendingNormalizationOptions
                 }),
                 signal: this.abortController.signal
             });

@@ -88,6 +88,7 @@
     <div class="tabs">
         <div class="tab active" data-tab="general">General</div>
         <div class="tab" data-tab="defaults">Player Defaults</div>
+        <div class="tab" data-tab="normalization">Normalization</div>
     </div>
 
     <div id="general" class="content active">
@@ -124,6 +125,42 @@
 
         <label for="defaultVolume">Default Volume</label>
         <input type="range" id="defaultVolume" min="0" max="1" step="0.1" value="1">
+    </div>
+
+    <div id="normalization" class="content">
+        <label>Text Normalization Options</label>
+        <div style="margin-top: 10px;">
+            <div style="margin-bottom: 5px;">
+                <input type="checkbox" id="norm_normalize">
+                <label for="norm_normalize" style="display:inline; font-weight:normal;">Enable Normalization</label>
+            </div>
+            <div style="margin-bottom: 5px;">
+                <input type="checkbox" id="norm_unit">
+                <label for="norm_unit" style="display:inline; font-weight:normal;">Unit Normalization (e.g. 10kg &rarr;
+                    ten kilograms)</label>
+            </div>
+            <div style="margin-bottom: 5px;">
+                <input type="checkbox" id="norm_url">
+                <label for="norm_url" style="display:inline; font-weight:normal;">URL Normalization</label>
+            </div>
+            <div style="margin-bottom: 5px;">
+                <input type="checkbox" id="norm_email">
+                <label for="norm_email" style="display:inline; font-weight:normal;">Email Normalization</label>
+            </div>
+            <div style="margin-bottom: 5px;">
+                <input type="checkbox" id="norm_phone">
+                <label for="norm_phone" style="display:inline; font-weight:normal;">Phone Normalization</label>
+            </div>
+            <div style="margin-bottom: 5px;">
+                <input type="checkbox" id="norm_plural">
+                <label for="norm_plural" style="display:inline; font-weight:normal;">Optional Pluralization (e.g. (s)
+                    &rarr; s)</label>
+            </div>
+            <div style="margin-bottom: 5px;">
+                <input type="checkbox" id="norm_symbol">
+                <label for="norm_symbol" style="display:inline; font-weight:normal;">Replace Remaining Symbols</label>
+            </div>
+        </div>
     </div>
 
     <button id="save">Save Settings</button>
