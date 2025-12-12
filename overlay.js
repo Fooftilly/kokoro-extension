@@ -14,6 +14,7 @@ const closeBtn = document.getElementById('close');
 let sentences = [];
 let currentIndex = 0;
 let isPaused = false;
+let ignoreNextPause = false;
 
 const audioManager = new AudioManager();
 const playPauseBtn = document.getElementById('playPause');
@@ -87,6 +88,12 @@ audioEl.addEventListener('pause', () => {
     if (audioEl.ended || Math.abs(audioEl.currentTime - audioEl.duration) < 0.1) {
         return;
     }
+
+    if (ignoreNextPause) {
+        ignoreNextPause = false;
+        return;
+    }
+
     isPaused = true;
     playPauseBtn.textContent = "Play";
 });
@@ -298,8 +305,7 @@ function renderText() {
                         e.stopPropagation();
                         return;
                     }
-                    navigate(s.index);
-                    resume(); // Force play on click
+                    navigate(s.index, true);
                 };
                 container.appendChild(span);
 
@@ -322,12 +328,29 @@ function resume() {
     playPauseBtn.textContent = "Pause";
 }
 
-async function navigate(index) {
+async function navigate(index, forcePlay = null) {
     if (index < 0) index = 0;
     if (index >= sentences.length) {
         statusEl.textContent = "Done";
         return;
     }
+
+    // Capture current intention before we pause (which clobbers isPaused)
+    const intendedPausedState = forcePlay !== null ? !forcePlay : isPaused;
+
+    // Stop current playback immediately to prevent 'ended' event (and auto-skip)
+    // while we are waiting for the new audio to generate.
+    if (!audioEl.paused) {
+        ignoreNextPause = true;
+        audioEl.pause();
+    } else {
+        // Ensure flag is reset if we were already paused
+        ignoreNextPause = false;
+    }
+
+    // Restore our intended state (since pause() listener sets isPaused = true)
+    isPaused = intendedPausedState;
+    playPauseBtn.textContent = isPaused ? "Play" : "Pause";
 
     // Update highlight
     if (sentences[currentIndex] && sentences[currentIndex].element) {
