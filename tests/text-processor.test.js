@@ -78,7 +78,14 @@ describe('processContent Regressions', () => {
 
     test('Regression: Units (μm)', () => {
         const output = runProcessor('The size is 5 μm.');
+        // Must be normalized client-side because transliteration converts μm -> mm (error)
         expect(output).toMatch(/5 micrometers/i);
+    });
+
+    test('Regression: Units with Micro Sign (U+00B5)', () => {
+        // \u00B5 is the Micro Sign, distinct from \u03BC (Greek Small Letter Mu)
+        const output = runProcessor('The size is 10\u00B5m.');
+        expect(output).toMatch(/10 micrometers/i);
     });
 
     test('Regression: Temperature (degrees C)', () => {

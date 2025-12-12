@@ -296,19 +296,34 @@ export function processContent(blocks, segmenter) {
 
                 spokenText = spokenText.replace(/\b(\d+)\s*″/g, '$1 inches');
                 spokenText = spokenText.replace(/\b(\d+)\s*′/g, '$1 feet');
+                // (Manual protections merged into unitMap below)
                 spokenText = spokenText.replace(/\b(\d+)\s*in\b(?!\s+\d)/gi, '$1 inches');
 
                 const unitMap = {
                     "cm": "centimeters", "mm": "millimeters", "km": "kilometers",
                     "kg": "kilograms", "lb": "pounds", "oz": "ounces",
                     "mj": "megajoules", "kj": "kilojoules",
-                    "m": "meters", "g": "grams", "μm": "micrometers",
-                    "mW": "milliwatts", "kW": "kilowatts", "W": "watts"
+                    "m": "meters", "g": "grams",
+                    "μm": "micrometers", "\u00B5m": "micrometers", // Support both Greek Mu and Micro Sign
+                    "mW": "milliwatts", "kW": "kilowatts", "W": "watts",
+                    "Ω": "ohms"
                 };
-                spokenText = spokenText.replace(/\b(\d+)\s*(cm|mm|km|kg|lb|oz|mj|kj|m|g|μm|mW|kW|W)\b/gi, (match, num, unit) => {
-                    const key = unit.toLowerCase();
-                    const fullUnit = unitMap[key] || unit;
-                    let outUnit = fullUnit;
+
+                // Construct regex dynamically from keys to ensure all variations are caught
+                const units = Object.keys(unitMap).sort((a, b) => b.length - a.length).join('|');
+                const unitRegex = new RegExp(`\\b(\\d+)\\s*(${units})\\b`, 'gi');
+
+                spokenText = spokenText.replace(unitRegex, (match, num, unit) => {
+                    let fullUnit = unitMap[unit] || unitMap[unit.toLowerCase()];
+
+                    // Fallback for case variation logic if needed
+                    if (!fullUnit) {
+                        const lowerKey = unit.toLowerCase();
+                        const key = Object.keys(unitMap).find(k => k.toLowerCase() === lowerKey);
+                        if (key) fullUnit = unitMap[key];
+                    }
+
+                    let outUnit = fullUnit || unit;
                     if (parseInt(num) === 1 && outUnit.endsWith('s')) {
                         outUnit = outUnit.slice(0, -1);
                     }
