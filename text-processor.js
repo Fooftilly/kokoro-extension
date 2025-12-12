@@ -31,7 +31,7 @@ export function processContent(blocks, segmenter) {
             const rawSegments = Array.from(segmenter.segment(plainText));
             const mergedSegments = [];
 
-            const abbrevRegex = /\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc|e\.g|i\.e|approx|Vol|Ch|Fig|Ref|Eq)\.$/i;
+            const abbrevRegex = /\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc|e\.g|i\.e|approx|Vol|Ch|Fig|Ref|Eq|No|pp|p)\.$/i;
 
             for (const seg of rawSegments) {
                 const segText = seg.segment;
@@ -192,7 +192,10 @@ export function processContent(blocks, segmenter) {
                     { regex: /\btrans\./gi, replacement: "translated by" },
                     { regex: /\brec\./gi, replacement: "recensuit" },
                     { regex: /\bsc\./gi, replacement: "namely" },
-                    { regex: /\bn\./g, replacement: "note" }
+                    { regex: /\bn\./g, replacement: "note" },
+                    { regex: /\bno\.\s*(?=\d)/gi, replacement: "Number " },
+                    { regex: /\bpp\./gi, replacement: "pages" },
+                    { regex: /\bp\.\s*(?=\d)/gi, replacement: "page " }
                 ];
 
                 for (const item of abbrevMap) {
@@ -321,6 +324,7 @@ export function processContent(blocks, segmenter) {
                     type: block.type === 'list-item' ? 'list-item' : 'paragraph',
                     sentences: paraSentences
                 };
+                if (block.isQuote) renderBlock.isQuote = true;
                 if (block.type === 'list-item') {
                     renderBlock.depth = block.depth || 0;
                     renderBlock.listType = block.listType || 'ul';

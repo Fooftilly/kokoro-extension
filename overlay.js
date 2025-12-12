@@ -264,7 +264,16 @@ function renderText() {
             } else {
                 // Paragraph logic
                 container = document.createElement('p');
-                container.style.margin = '0 0 16px 0'; // Add spacing below paragraph
+                if (block.isQuote) {
+                    container.style.borderLeft = '4px solid #ccc';
+                    container.style.paddingLeft = '16px';
+                    container.style.marginLeft = '20px';
+                    container.style.fontStyle = 'italic';
+                    container.style.color = '#444';
+                    container.style.marginBottom = '16px';
+                } else {
+                    container.style.margin = '0 0 16px 0'; // Add spacing below paragraph
+                }
                 textDisplay.appendChild(container);
             }
 

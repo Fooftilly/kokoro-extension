@@ -97,6 +97,27 @@ describe('processContent Regressions', () => {
         expect(output).toMatch(/Wait, there is more/);
     });
 
+    test('Regression: Abbreviation no. (Number)', () => {
+        const output = runProcessor('issue no. 253');
+        expect(output).toMatch(/issue Number 253/i);
+    });
+
+    test('Regression: Abbreviation pp. (pages)', () => {
+        const output = runProcessor('See pp. 45–77.'); // en-dash
+        expect(output).toMatch(/See pages 45 to 77/i);
+    });
+
+    test('Regression: Abbreviation p. (page)', () => {
+        const output = runProcessor('See p. 45.');
+        expect(output).toMatch(/See page 45/i);
+    });
+
+    test('Feature: Blockquote Property Propagation', () => {
+        const blocks = [{ type: 'text', content: 'Quoted text', isQuote: true }];
+        const result = processContent(blocks, segmenter);
+        expect(result.renderData[0].isQuote).toBe(true);
+    });
+
     test('Feature: Sentence Merging - Abbreviations', () => {
         // "Dr. Smith" might be split by tokenizer as "Dr." and "Smith". Processor should merge.
         // We force a split case by passing segments if we were mocking segments directly, 
@@ -116,6 +137,13 @@ describe('processContent Regressions', () => {
         expect(result.sentences.length).toBe(1);
     });
 
+    test('Regression: No split on possessive (Dedekind’s)', () => {
+        const blocks = [{ type: 'text', content: 'This is unrelated to Dedekind’s work.' }];
+        const result = processContent(blocks, segmenter);
+        expect(result.sentences.length).toBe(1);
+        expect(result.sentences[0].text).toContain("Dedekind’s work");
+    });
+
     // Snapshot of a complex paragraph to catch any unintended changes in normalization
     test('Snapshot: Complex Scientific Text', () => {
         const text = `
@@ -127,5 +155,36 @@ describe('processContent Regressions', () => {
 
         const output = runProcessor(text);
         expect(output).toMatchSnapshot();
+    });
+
+    test('Feature: Roman Numerals with Suffix', () => {
+        const output = runProcessor('Plate XXVIIIa shows the details.');
+        expect(output).toMatch(/twenty-eight a/i);
+    });
+
+    test('Feature: Date Ranges Expansion', () => {
+        const output = runProcessor('The period 1990–91 was critical.');
+        expect(output).toMatch(/1990 to 1991/i);
+    });
+
+    test('Feature: Scientific Units (mW/m2)', () => {
+        const output = runProcessor('Intensity is 5 mW/m2.');
+        expect(output).toMatch(/5 milliwatts per square meter/i);
+    });
+
+    test('Feature: Negative Numbers', () => {
+        const output = runProcessor('The temperature drops to -5 degrees Celsius.');
+        // The processor replaces "-" with "minus " for degrees Celsius specifically in line 125
+        expect(output).toMatch(/minus 5 degrees Celsius/i);
+    });
+
+    test('Feature: Cubic Meters', () => {
+        const output = runProcessor('Volume is 10 m3.');
+        expect(output).toMatch(/10 cubic meters/i);
+    });
+
+    test('Feature: Velocity', () => {
+        const output = runProcessor('Speed is 30 m/s.');
+        expect(output).toMatch(/30 meters per second/i);
     });
 });

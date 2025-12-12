@@ -2,7 +2,7 @@ export class AudioManager {
     constructor() {
         this.audioCache = new Map(); // index -> Promise<BlobUrl>
         this.sentences = [];
-        this.abortController = null;
+        this.abortController = new AbortController();
     }
 
     clear() {
@@ -36,9 +36,12 @@ export class AudioManager {
 
     async fetchAudio(text) {
         const data = await browser.storage.local.get(['pendingVoice', 'pendingApiUrl']);
-        const endpoint = new URL('audio/speech', data.pendingApiUrl).href;
-
         try {
+            if (!data.pendingApiUrl) {
+                throw new Error("Missing API URL");
+            }
+            const endpoint = new URL('audio/speech', data.pendingApiUrl).href;
+
             const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
