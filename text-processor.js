@@ -118,13 +118,23 @@ export function processContent(blocks, segmenter) {
                 spokenText = spokenText.replace(/>\s*(\d)/g, 'greater than $1');
                 spokenText = spokenText.replace(/<\s*(\d)/g, 'less than $1');
 
-                // Temperature: Handle °C, deg C, degrees C
+                // Temperature: Handle °C, deg C, degrees C, and Fahrenheit variants
                 spokenText = spokenText.replace(/(\d)\s*(?:°|deg|degrees)\.?\s*C\b/gi, '$1 degrees Celsius');
+                spokenText = spokenText.replace(/(\d)\s*(?:°|deg|degrees)\.?\s*F\b/gi, '$1 degrees Fahrenheit');
 
                 // Handle negative numbers: hyphen or unicode minus
-                spokenText = spokenText.replace(/(?:-|−)(\d+)\s*degrees Celsius/g, 'minus $1 degrees Celsius');
+                spokenText = spokenText.replace(/(?:-|−)(\d+)\s*degrees (Celsius|Fahrenheit)/g, 'minus $1 degrees $2');
+
+                // General math symbols (if they look like math context, e.g. surrounded by variables or numbers)
+                // Equals sign
+                spokenText = spokenText.replace(/(\s+=\s+)/g, ' equals ');
+                // Plus sign in math
+                spokenText = spokenText.replace(/(\w|\d)\s*\+\s*(\w|\d)/g, '$1 plus $2');
+                // General minus sign (unicode)
+                spokenText = spokenText.replace(/(\w|\d)\s*−\s*(\w|\d)/g, '$1 minus $2');
 
                 // Chemical formulas
+                spokenText = spokenText.replace(/\bCO2\b/g, 'carbon dioxide');
                 spokenText = spokenText.replace(/\bCO2\b/g, 'carbon dioxide');
 
                 // Dimensions: 20x20, 20 x 20, 20 cm x 8 cm
@@ -139,6 +149,20 @@ export function processContent(blocks, segmenter) {
                     if (u2) s += ` ${u2}`;
                     return s;
                 });
+
+                // Math spacing: handle 3xy, xy etc in math-like context (simple heuristic)
+                // If we see a sequence of letter-letter or digit-letter that isn't a known unit
+                spokenText = spokenText.replace(/\b(\d+)([a-z]{1,2})\b/gi, (match, n, v) => {
+                    // Avoid units like 10cm, 5m, 10in, 10ft
+                    const units = new Set(['cm', 'mm', 'km', 'kg', 'lb', 'oz', 'mj', 'kj', 'm', 'g', 'in', 'ft']);
+                    if (units.has(v.toLowerCase())) return match;
+                    return `${n} ${v.split('').join(' ')}`;
+                });
+
+                // (Model names rule moved after power rule)
+
+                // Power: squared and cubed (x2, y3, or with unicode)
+                // (Moved after specialized units like m3, m2)
 
                 // 1. Fix AD/BC Spacing
                 spokenText = spokenText.replace(/\b(\d+)(AD|BC|BCE|CE)\b/gi, '$1 $2');
@@ -162,6 +186,15 @@ export function processContent(blocks, segmenter) {
                 // 5. Velocity
                 spokenText = spokenText.replace(/m\/s\b/g, 'meters per second');
 
+                // Math Power (Refined): handle x2, y3 etc AFTER specialized units
+                spokenText = spokenText.replace(/\b([xyzabc])2\b/gi, '$1 squared');
+                spokenText = spokenText.replace(/\b([xyzabc])3\b/gi, '$1 cubed');
+                spokenText = spokenText.replace(/([xyzabc])\s*²\b/gi, '$1 squared');
+                spokenText = spokenText.replace(/([xyzabc])\s*³\b/gi, '$1 cubed');
+
+                // Model names / Variables: handle o1, r1 etc
+                spokenText = spokenText.replace(/\b([a-z])(\d+)\b/gi, '$1 $2');
+
                 const dateRangeRegex = /\b((?:c\.|ca\.)?\s*\d{1,4}(?:\s*(?:AD|BC|BCE|CE))?)\s*[-–—]\s*((?:c\.|ca\.)?\s*\d{1,4}(?:\s*(?:AD|BC|BCE|CE))?)\b/gi;
 
                 spokenText = spokenText.replace(dateRangeRegex, (match, p1, p2) => {
@@ -177,6 +210,17 @@ export function processContent(blocks, segmenter) {
                         }
                     }
                     return `${p1} to ${p2}`;
+                });
+
+                // Acronyms with plural or possessive 's' (LMs, LLMs, MIT’s)
+                // We target 2+ uppercase letters followed by 's or s at the end of a word or followed by non-alpha
+                // We use a more restrictive regex to avoid matching short words like "As", "Is", "In" if they were somehow uppercase
+                spokenText = spokenText.replace(/\b([A-Z]{2,})(['\u2019\u02BC]s|s)\b/g, (match, acronym, suffix) => {
+                    // Skip if it's all uppercase and 2 letters, maybe too risky? e.g. "US", "UK"
+                    // But plural acronyms are usually 2+ letters anyway.
+                    const spaced = acronym.split('').join(' ');
+                    const cleanSuffix = suffix.replace(/['\u2019\u02BC]/, "'");
+                    return `${spaced} ${cleanSuffix}`;
                 });
 
                 spokenText = spokenText.replace(/([a-zA-Z0-9\.]+)\-([a-zA-Z0-9\.]+)/g, '$1 $2');
@@ -297,7 +341,15 @@ export function processContent(blocks, segmenter) {
                 spokenText = spokenText.replace(/\b(\d+)\s*″/g, '$1 inches');
                 spokenText = spokenText.replace(/\b(\d+)\s*′/g, '$1 feet');
                 // (Manual protections merged into unitMap below)
-                spokenText = spokenText.replace(/\b(\d+)\s*in\b(?!\s+\d)/gi, '$1 inches');
+                // Improved inches disambiguation: only if preceded by number and optionally followed by period or x/by
+                spokenText = spokenText.replace(/\b(\d+)\s*in\.?\b(?!\s+(?:the|a|an|my|your|his|her|its|our|their|this|that|these|those|some|any|each|every|both|either|neither|no|which|what|whose))\b/gi, (match, num) => {
+                    // If it's "in" followed by common prepositions/determiners, it's likely the word "in"
+                    // But if it's "in." with a dot, it's almost certainly inches
+                    if (match.toLowerCase().endsWith('.') || !/\s+(?:the|a|an|my|your|his|her|its|our|their|this|that|these|those|some|any|each|every|both|either|neither|no|which|what|whose)/i.test(match)) {
+                        return `${num} inches`;
+                    }
+                    return match;
+                });
 
                 const unitMap = {
                     "cm": "centimeters", "mm": "millimeters", "km": "kilometers",
