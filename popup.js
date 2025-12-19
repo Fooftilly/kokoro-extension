@@ -44,7 +44,7 @@ const restoreOptions = async () => {
         const items = await browser.storage.sync.get({
             apiUrl: 'http://127.0.0.1:8880/v1/',
             voice: 'af_heart(10)+af_bella(7.5)+af_jessica(2.5)',
-            mode: 'download',
+            mode: 'stream',
             defaultSpeed: '1.0',
             defaultVolume: '1.0',
             normalizationOptions: {

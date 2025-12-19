@@ -109,7 +109,27 @@ function createManifest(browser) {
                     "transliteration.min.js", "purify.min.js"],
                 matches: ["<all_urls>"]
             }
-        ]
+        ],
+        commands: {
+            "read-article": {
+                "suggested_key": {
+                    "default": "Alt+A"
+                },
+                "description": "Read Article with Kokoro TTS"
+            },
+            "nav-next": {
+                "suggested_key": {
+                    "default": "Alt+Right"
+                },
+                "description": "Next Sentence"
+            },
+            "nav-prev": {
+                "suggested_key": {
+                    "default": "Alt+Left"
+                },
+                "description": "Previous Sentence"
+            }
+        }
     };
 
     // Browser specific overrides

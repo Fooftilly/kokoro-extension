@@ -279,6 +279,14 @@ browser.runtime.onMessage.addListener((request, sender) => {
             container.remove();
             document.body.style.overflow = '';
         }
+    } else if (request.action === "NAV_NEXT" || request.action === "NAV_PREV") {
+        const container = document.getElementById('kokoro-overlay-container');
+        if (container) {
+            const iframe = container.querySelector('iframe');
+            if (iframe && iframe.contentWindow) {
+                iframe.contentWindow.postMessage(request.action, '*');
+            }
+        }
     }
 });
 

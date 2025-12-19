@@ -52,177 +52,194 @@ async function ensureContentScript(tabId) {
     }
 }
 
-browser.contextMenus.onClicked.addListener(async (info, tab) => {
-    if (info.menuItemId === "send-to-kokoro" || info.menuItemId === "read-article-kokoro") {
-        let text = "";
+async function handleTtsAction(tab, actionType, selectionText = "") {
+    let text = "";
+    let structuredContent = null;
+    const isArticleMode = actionType === "read-article-kokoro" || actionType === "read-article";
 
-        if (info.menuItemId === "read-article-kokoro") {
-            // We need to ask the content script to parse the page
+    if (isArticleMode) {
+        // We need to ask the content script to parse the page
+        try {
+            // Robust Send: Try once, if fail, inject and retry
             try {
-                // Robust Send: Try once, if fail, inject and retry
-                try {
-                    const response = await browser.tabs.sendMessage(tab.id, { action: "PARSE_ARTICLE" });
-                    if (response && response.text) {
-                        text = response.text;
-                        info._structuredContent = response.content;
-                    } else {
-                        throw new Error("No text returned");
-                    }
-                } catch (e) {
-                    // Retry logic
-                    console.log("Initial parse failed, trying to inject...", e);
-                    await ensureContentScript(tab.id);
-                    const response = await browser.tabs.sendMessage(tab.id, { action: "PARSE_ARTICLE" });
-                    if (response && response.text) {
-                        text = response.text;
-                        info._structuredContent = response.content;
-                    } else {
-                        notify("Kokoro TTS", "Could not extract article text.");
-                        return;
-                    }
+                const response = await browser.tabs.sendMessage(tab.id, { action: "PARSE_ARTICLE" });
+                if (response && response.text) {
+                    text = response.text;
+                    structuredContent = response.content;
+                } else {
+                    throw new Error("No text returned");
                 }
             } catch (e) {
-                console.error("Parse failed after retry:", e);
-                notify("Kokoro TTS Error", "Reload the page to use this feature.");
-                return;
-            }
-        } else {
-            text = info.selectionText;
-        }
-
-        if (!text) return;
-
-        // Get settings
-        const settings = await browser.storage.sync.get({
-            apiUrl: 'http://127.0.0.1:8880/v1/',
-            voice: 'af_heart(10)+af_bella(7.5)+af_jessica(2.5)',
-            mode: 'download',
-            normalizationOptions: {
-                normalize: true,
-                unit_normalization: false,
-                url_normalization: true,
-                email_normalization: true,
-                optional_pluralization_normalization: true,
-                phone_normalization: true,
-                replace_remaining_symbols: true
-            }
-        });
-
-        let apiUrl = settings.apiUrl;
-        if (!apiUrl.endsWith('/')) apiUrl += '/';
-
-        // Check status
-        try {
-            const statusUrl = new URL('models', apiUrl).href;
-            const statusResp = await fetch(statusUrl);
-            if (!statusResp.ok) {
-                console.warn("Status check returned " + statusResp.status);
-            }
-        } catch (e) {
-            notify("Kokoro TTS Error", "Could not connect to Kokoro API. Is it running?");
-            return;
-        }
-
-        // Prepare request
-        const endpoint = new URL('audio/speech', apiUrl).href;
-        const body = {
-            model: 'kokoro',
-            input: text,
-            voice: settings.voice,
-            response_format: 'mp3',
-            normalization_options: settings.normalizationOptions
-        };
-
-        try {
-            // Force stream/overlay mode if it's the "Read Article" action
-            const isArticleMode = info.menuItemId === "read-article-kokoro";
-
-            if (settings.mode === 'download' && !isArticleMode) {
-                notify("Kokoro TTS", "Generating audio...");
-                const response = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(body)
-                });
-
-                if (!response.ok) {
-                    const errText = await response.text();
-                    notify("Kokoro TTS Error", "API Error: " + response.status + " " + errText);
+                // Retry logic
+                console.log("Initial parse failed, trying to inject...", e);
+                await ensureContentScript(tab.id);
+                const response = await browser.tabs.sendMessage(tab.id, { action: "PARSE_ARTICLE" });
+                if (response && response.text) {
+                    text = response.text;
+                    structuredContent = response.content;
+                } else {
+                    notify("Kokoro TTS", "Could not extract article text.");
                     return;
                 }
+            }
+        } catch (e) {
+            console.error("Parse failed after retry:", e);
+            notify("Kokoro TTS Error", "Reload the page to use this feature.");
+            return;
+        }
+    } else {
+        text = selectionText;
+    }
 
-                const blob = await response.blob();
-                const filename = sanitizeFilename(tab.title || "audio") + ".mp3";
+    if (!text) return;
 
-                let url;
-                // Check if URL.createObjectURL is available (Firefox / Background Pages)
-                if (typeof URL.createObjectURL === 'function') {
-                    url = URL.createObjectURL(blob);
-                } else {
-                    // Fallback for Chrome Service Workers (Data URL)
-                    const blobToDataURL = (blob) => {
-                        return new Promise((resolve, reject) => {
-                            const reader = new FileReader();
-                            reader.onloadend = () => resolve(reader.result);
-                            reader.onerror = reject;
-                            reader.readAsDataURL(blob);
-                        });
-                    };
-                    url = await blobToDataURL(blob);
-                }
+    // Get settings
+    const settings = await browser.storage.sync.get({
+        apiUrl: 'http://127.0.0.1:8880/v1/',
+        voice: 'af_heart(10)+af_bella(7.5)+af_jessica(2.5)',
+        mode: 'stream',
+        normalizationOptions: {
+            normalize: true,
+            unit_normalization: false,
+            url_normalization: true,
+            email_normalization: true,
+            optional_pluralization_normalization: true,
+            phone_normalization: true,
+            replace_remaining_symbols: true
+        }
+    });
 
-                // browser.downloads might need permissions, but polyfill maps it correctly.
-                // Note: browser.downloads is not available in all contexts in Firefox without permission,
-                // but we added "downloads" permission.
-                if (typeof browser.downloads !== 'undefined') {
-                    browser.downloads.download({
-                        url: url,
-                        filename: filename,
-                        saveAs: false
-                    });
-                } else {
-                    // Fallback?? Or just notify error.
-                    // downloads API is standard for extensions.
-                    console.error("Downloads API not available");
-                }
+    let apiUrl = settings.apiUrl;
+    if (!apiUrl.endsWith('/')) apiUrl += '/';
 
+    // Check status
+    try {
+        const statusUrl = new URL('models', apiUrl).href;
+        const statusResp = await fetch(statusUrl);
+        if (!statusResp.ok) {
+            console.warn("Status check returned " + statusResp.status);
+        }
+    } catch (e) {
+        notify("Kokoro TTS Error", "Could not connect to Kokoro API. Is it running?");
+        return;
+    }
+
+    // Prepare request
+    const endpoint = new URL('audio/speech', apiUrl).href;
+    const body = {
+        model: 'kokoro',
+        input: text,
+        voice: settings.voice,
+        response_format: 'mp3',
+        normalization_options: settings.normalizationOptions
+    };
+
+    try {
+        if (settings.mode === 'download' && !isArticleMode) {
+            notify("Kokoro TTS", "Generating audio...");
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(body)
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                notify("Kokoro TTS Error", "API Error: " + response.status + " " + errText);
+                return;
+            }
+
+            const blob = await response.blob();
+            const filename = sanitizeFilename(tab.title || "audio") + ".mp3";
+
+            let url;
+            // Check if URL.createObjectURL is available (Firefox / Background Pages)
+            if (typeof URL.createObjectURL === 'function') {
+                url = URL.createObjectURL(blob);
             } else {
-                // Stream mode: Trigger overlay in the content script
-                await browser.storage.local.set({
-                    pendingText: text,
-                    pendingContent: info._structuredContent || [{ type: 'text', content: text }],
-                    pendingVoice: settings.voice,
-                    pendingApiUrl: apiUrl,
-                    pendingTitle: tab.title,
-                    pendingNormalizationOptions: settings.normalizationOptions
-                });
+                // Fallback for Chrome Service Workers (Data URL)
+                const blobToDataURL = (blob) => {
+                    return new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onloadend = () => resolve(reader.result);
+                        reader.onerror = reject;
+                        reader.readAsDataURL(blob);
+                    });
+                };
+                url = await blobToDataURL(blob);
+            }
 
-                // Send message to the active tab to show the overlay
+            if (typeof browser.downloads !== 'undefined') {
+                browser.downloads.download({
+                    url: url,
+                    filename: filename,
+                    saveAs: false
+                });
+            } else {
+                console.error("Downloads API not available");
+            }
+
+        } else {
+            // Stream mode: Trigger overlay in the content script
+            await browser.storage.local.set({
+                pendingText: text,
+                pendingContent: structuredContent || [{ type: 'text', content: text }],
+                pendingVoice: settings.voice,
+                pendingApiUrl: apiUrl,
+                pendingTitle: tab.title,
+                pendingNormalizationOptions: settings.normalizationOptions
+            });
+
+            // Send message to the active tab to show the overlay
+            try {
+                await browser.tabs.sendMessage(tab.id, {
+                    action: "SHOW_PLAYER",
+                    mode: isArticleMode ? 'full' : 'popup'
+                });
+            } catch (err) {
+                // Retry injection
+                console.log("Show player failed, trying to inject...", err);
                 try {
+                    await ensureContentScript(tab.id);
                     await browser.tabs.sendMessage(tab.id, {
                         action: "SHOW_PLAYER",
                         mode: isArticleMode ? 'full' : 'popup'
                     });
-                } catch (err) {
-                    // Retry injection
-                    console.log("Show player failed, trying to inject...", err);
-                    try {
-                        await ensureContentScript(tab.id);
-                        await browser.tabs.sendMessage(tab.id, {
-                            action: "SHOW_PLAYER",
-                            mode: isArticleMode ? 'full' : 'popup'
-                        });
-                    } catch (finalErr) {
-                        notify("Kokoro TTS Error", "Could not open player. Try refreshing the page.");
-                        console.error(finalErr);
-                    }
+                } catch (finalErr) {
+                    notify("Kokoro TTS Error", "Could not open player. Try refreshing the page.");
+                    console.error(finalErr);
                 }
             }
+        }
 
-        } catch (e) {
-            notify("Kokoro TTS Error", "Generation failed: " + e.message);
+    } catch (e) {
+        notify("Kokoro TTS Error", "Generation failed: " + e.message);
+    }
+}
+
+browser.contextMenus.onClicked.addListener(async (info, tab) => {
+    if (info.menuItemId === "send-to-kokoro" || info.menuItemId === "read-article-kokoro") {
+        handleTtsAction(tab, info.menuItemId, info.selectionText);
+    }
+});
+
+browser.commands.onCommand.addListener(async (command) => {
+    if (command === "read-article") {
+        const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+        if (tabs && tabs[0]) {
+            handleTtsAction(tabs[0], "read-article");
+        }
+    } else if (command === "nav-next" || command === "nav-prev") {
+        const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+        if (tabs && tabs[0]) {
+            browser.tabs.sendMessage(tabs[0].id, {
+                action: command === "nav-next" ? "NAV_NEXT" : "NAV_PREV"
+            }).catch(err => {
+                // Command might be sent while player is not open
+                console.log("Navigation command failed (player might be closed):", err);
+            });
         }
     }
 });

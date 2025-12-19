@@ -40,6 +40,15 @@ window.addEventListener('keydown', (e) => {
     }
 });
 
+// Handle messages from parent for navigation
+window.addEventListener('message', (event) => {
+    if (event.data === 'NAV_NEXT') {
+        navigate(currentIndex + 1);
+    } else if (event.data === 'NAV_PREV') {
+        navigate(currentIndex - 1);
+    }
+});
+
 playPauseBtn.addEventListener('click', () => {
     if (audioEl.paused) {
         resume();
