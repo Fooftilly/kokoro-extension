@@ -96,8 +96,43 @@ function parseArticle(doc, win = window) {
                     const closestCaption = node.closest(captionSelector);
                     if (closestCaption && closestCaption !== node) return;
 
+                    const closestLI = node.closest('li');
+                    if (closestLI && closestLI !== node) return;
+
                     if (node.tagName === 'IMG') {
-                        const src = node.getAttribute('src');
+                        let src = null;
+
+                        // 1. Try srcset for potentially higher resolution
+                        const srcset = node.getAttribute('srcset');
+                        if (srcset) {
+                            const parts = srcset.split(',').map(p => p.trim().split(/\s+/));
+                            if (parts.length > 0) {
+                                // Take the last one which is usually the highest resolution
+                                src = parts[parts.length - 1][0];
+                            }
+                        }
+
+                        // 2. Try Substack-specific data-attrs
+                        if (!src) {
+                            const dataAttrs = node.getAttribute('data-attrs');
+                            if (dataAttrs) {
+                                try {
+                                    const attrs = JSON.parse(dataAttrs);
+                                    if (attrs.src) src = attrs.src;
+                                } catch (e) { }
+                            }
+                        }
+
+                        // 3. Try data-src / data-actual-src
+                        if (!src || src.startsWith('data:image')) {
+                            src = node.getAttribute('data-src') || node.getAttribute('data-actual-src');
+                        }
+
+                        // 4. Fallback to src
+                        if (!src || src.startsWith('data:image')) {
+                            src = node.getAttribute('src');
+                        }
+
                         if (src) {
                             try {
                                 const absSrc = new URL(src, win.location.href).href;
