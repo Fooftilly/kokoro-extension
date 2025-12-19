@@ -8,7 +8,7 @@ export function processContent(blocks, segmenter) {
     blocks.forEach(block => {
         if (block.type === 'image') {
             renderData.push(block);
-        } else if (block.type === 'caption' || block.type === 'silent') {
+        } else if (block.type === 'caption' || block.type === 'silent' || block.type === 'code') {
             renderData.push(block);
         } else if (block.type === 'html') {
             const safeHtml = window.DOMPurify.sanitize(block.html, {

@@ -66,7 +66,7 @@ function parseArticle(doc, win = window) {
                 const captionSelector = 'figcaption, .caption, .wp-caption-text, .image-caption, .figure-caption, .figcaption-text, .credit, .legacy-caption';
                 const promoSelector = '.newsletter, .promo, .subscribe, .subscription, .cta, .advertisement';
                 const promoRegex = /(?:subscribe|sign up|join).{0,60}(?:newsletter|mailing list|community|updates?)|(?:support|donate).{0,60}(?:us|our work|patreon)|(?:follow|connect with).{0,60}(?:us|on social)/i;
-                const nodes = articleDoc.body.querySelectorAll(`p, h1, h2, h3, h4, h5, h6, li, img, table, figure, ${captionSelector}, ${promoSelector}`);
+                const nodes = articleDoc.body.querySelectorAll(`p, h1, h2, h3, h4, h5, h6, li, img, table, figure, pre, ${captionSelector}, ${promoSelector}`);
 
                 function getSanitizedHtml(node) {
                     const clone = node.cloneNode(true);
@@ -188,6 +188,17 @@ function parseArticle(doc, win = window) {
                                 depth: safeDepth,
                                 listType: listType,
                                 isQuote: !!node.closest('blockquote')
+                            });
+                        }
+                    } else if (node.tagName === 'PRE') {
+                        // Extract code blocks
+                        const codeNode = node.querySelector('code') || node;
+                        const text = codeNode.textContent;
+                        if (text.trim().length > 0) {
+                            blocks.push({
+                                type: 'code',
+                                content: text,
+                                html: getSanitizedHtml(node)
                             });
                         }
                     } else if (node.tagName === 'FIGURE') {

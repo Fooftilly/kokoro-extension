@@ -213,6 +213,30 @@ function renderText() {
             div.style.textAlign = 'center';
             div.style.userSelect = 'none'; // Hint it's not content
             textDisplay.appendChild(div);
+        } else if (block.type === 'code') {
+            const container = document.createElement('div');
+            container.style.margin = '20px 0';
+            container.style.padding = '1px'; // Outer wrapper padding
+            container.style.backgroundColor = '#1e1e1e';
+            container.style.borderRadius = '8px';
+            container.style.overflow = 'hidden';
+            container.style.boxShadow = '0 4px 12px rgba(0,0,0,0.2)';
+
+            const pre = document.createElement('pre');
+            pre.style.margin = '0';
+            pre.style.padding = '16px';
+            pre.style.overflowX = 'auto';
+            pre.style.color = '#d4d4d4';
+            pre.style.fontFamily = "'JetBrains Mono', 'Fira Code', 'Menlo', 'Monaco', 'Consolas', monospace";
+            pre.style.fontSize = '14px';
+            pre.style.lineHeight = '1.5';
+            pre.style.tabSize = '4';
+
+            const code = document.createElement('code');
+            code.textContent = block.content;
+            pre.appendChild(code);
+            container.appendChild(pre);
+            textDisplay.appendChild(container);
         } else if (block.type === 'html') {
             const div = document.createElement('div');
             div.innerHTML = block.html; // Already sanitized in processor
