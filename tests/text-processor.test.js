@@ -19,7 +19,10 @@ describe('processContent Regressions', () => {
             contractions: () => ({
                 expand: () => { }
             }),
-            text: () => text
+            text: () => text,
+            topics: () => ({
+                out: () => []
+            })
         });
 
         // Mock transliterate

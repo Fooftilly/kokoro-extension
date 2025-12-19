@@ -15,12 +15,39 @@ describe('Pronunciation and Math Fixes', () => {
         };
 
         // Mock minimal compromise (nlp)
-        window.nlp = (text) => ({
-            contractions: () => ({
-                expand: () => { }
-            }),
-            text: () => text
-        });
+        window.nlp = (text) => {
+            const doc = {
+                contractions: () => ({
+                    expand: () => { }
+                }),
+                text: () => text,
+                topics: () => ({
+                    out: (format) => {
+                        if (format === 'array') {
+                            // Extract words starting with capital letters as "topics" for testing
+                            // Avoid using \b which fails on non-ASCII characters
+                            const regex = /(?:^|[^a-zA-Z0-9\u00C0-\u017F])([A-Z][a-z\u00C0-\u017F]+(?:\s+[A-Z][a-z\u00C0-\u017F]+)*)(?=[^a-zA-Z0-9\u00C0-\u017F]|$)/g;
+                            const matches = [];
+                            let match;
+                            while ((match = regex.exec(text)) !== null) {
+                                matches.push(match[1]);
+                            }
+                            return matches;
+                        }
+                        return [];
+                    }
+                })
+            };
+            return doc;
+        };
+
+        // Mock custom pronunciations
+        window.kokoroCustomPronunciations = {
+            "Hegel": "[Hegel](/hay-gel/)",
+            "Gramsci": "[Gramsci](/gram-shee/)",
+            "Thomas Aquinas": "[Thomas Aquinas](/tom-as a-kwi-nas/)",
+            "Vuk Karadžić": "[Vuk Karadžić](/vook ka-ra-djetch/)"
+        };
 
         // Mock transliterate
         window.transliterate = (text) => text;
@@ -86,5 +113,13 @@ describe('Pronunciation and Math Fixes', () => {
     test('Model names (o1, GPT-4o)', () => {
         expect(runProcessor('OpenAI’s GPT-4o')).toContain('4 o');
         expect(runProcessor('approach the precision of o1')).toContain('o 1');
+    });
+
+    test('Name pronunciation (Hegel, Gramsci, Vuk Karadžić)', () => {
+        // We expect the text to be wrapped in [Name](/IPA/)
+        expect(runProcessor('Hegel argued that...')).toContain('[Hegel](/hay-gel/)');
+        expect(runProcessor('Gramsci and state theory')).toContain('[Gramsci](/gram-shee/)');
+        expect(runProcessor('Thomas Aquinas wrote')).toContain('[Thomas Aquinas](/tom-as a-kwi-nas/)');
+        expect(runProcessor('Vuk Karadžić is a linguist')).toContain('[Vuk Karadzhitsh](/vook ka-ra-djetch/)');
     });
 });

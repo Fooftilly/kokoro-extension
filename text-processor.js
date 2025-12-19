@@ -385,10 +385,48 @@ export function processContent(blocks, segmenter) {
 
 
 
+                // --- Dynamic Pronunciation Fixes (Post-normalization to protect syntax) ---
+                // We identify Proper Nouns (People, Places, Organizations) using compromise
+                if (window.nlp) {
+                    try {
+                        let doc = nlp(spokenText);
+                        // Identify "Topics" (People, Places, Organizations, etc.)
+                        let topics = doc.topics().out('array');
+                        // Remove duplicates and filter out very short names or common words if necessary
+                        let uniqueTopics = [...new Set(topics)].filter(t => t.length > 2);
+
+                        // Get custom pronunciations from global window object (populated from settings)
+                        const customMap = window.kokoroCustomPronunciations || {};
+
+                        for (const topic of uniqueTopics) {
+                            const phonetic = customMap[topic];
+                            if (phonetic) {
+                                // Escape for regex
+                                const escapedTopic = topic.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                                // Respect boundaries, including non-ASCII
+                                const regex = new RegExp(`(^|[^a-zA-Z0-9\\u00C0-\\u017F])${escapedTopic}([^a-zA-Z0-9\\u00C0-\\u017F]|$)`, 'gi');
+                                spokenText = spokenText.replace(regex, `$1${phonetic}$2`);
+                            }
+                        }
+                    } catch (e) {
+                        console.warn("Dynamic pronunciation identification failed", e);
+                    }
+                }
+
+                // --- Phonetic expansion for Slavic Latin characters ---
+                // Ensures Latin characters like ć, č, đ, š, ž are pronounced correctly (matching Cyrillic quality)
+                spokenText = spokenText
+                    .replace(/ć/g, 'tsh').replace(/Ć/g, 'Tsh')
+                    .replace(/č/g, 'ch').replace(/Č/g, 'Ch')
+                    .replace(/đ/g, 'dj').replace(/Đ/g, 'Dj')
+                    .replace(/š/g, 'sh').replace(/Š/g, 'Sh')
+                    .replace(/ž/g, 'zh').replace(/Ž/g, 'Zh');
+
                 // --- Transliteration (Last to preserve symbols like μ, °, etc during specialized normalization) ---
                 if (window.transliterate) {
                     spokenText = window.transliterate(spokenText);
                 }
+
 
                 const sentenceObj = {
                     index: globalIndex++,

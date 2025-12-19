@@ -120,12 +120,15 @@ async function initialize() {
     audioManager.clear();
     textDisplay.innerHTML = '';
 
-    const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'defaultSpeed', 'defaultVolume']);
+    const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'defaultSpeed', 'defaultVolume', 'pendingCustomPronunciations']);
 
     if (!data.pendingText) {
         statusEl.textContent = "No text found.";
         return;
     }
+
+    // Set custom pronunciations for the text processor
+    window.kokoroCustomPronunciations = data.pendingCustomPronunciations || {};
 
     titleEl.textContent = data.pendingTitle || "Kokoro TTS";
 

@@ -108,7 +108,8 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
             optional_pluralization_normalization: true,
             phone_normalization: true,
             replace_remaining_symbols: true
-        }
+        },
+        customPronunciations: {}
     });
 
     let apiUrl = settings.apiUrl;
@@ -191,7 +192,8 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
                 pendingVoice: settings.voice,
                 pendingApiUrl: apiUrl,
                 pendingTitle: tab.title,
-                pendingNormalizationOptions: settings.normalizationOptions
+                pendingNormalizationOptions: settings.normalizationOptions,
+                pendingCustomPronunciations: settings.customPronunciations
             });
 
             // Send message to the active tab to show the overlay
