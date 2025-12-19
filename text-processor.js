@@ -98,7 +98,7 @@ export function processContent(blocks, segmenter) {
                 // --- Compromise Normalization ---
                 if (window.nlp) {
                     try {
-                        let doc = nlp(spokenText);
+                        let doc = window.nlp(spokenText);
                         doc.contractions().expand();
                         spokenText = doc.text();
                     } catch (e) {
@@ -134,7 +134,6 @@ export function processContent(blocks, segmenter) {
                 spokenText = spokenText.replace(/(\w|\d)\s*−\s*(\w|\d)/g, '$1 minus $2');
 
                 // Chemical formulas
-                spokenText = spokenText.replace(/\bCO2\b/g, 'carbon dioxide');
                 spokenText = spokenText.replace(/\bCO2\b/g, 'carbon dioxide');
 
                 // Dimensions: 20x20, 20 x 20, 20 cm x 8 cm
@@ -389,7 +388,7 @@ export function processContent(blocks, segmenter) {
                 // We identify Proper Nouns (People, Places, Organizations) using compromise
                 if (window.nlp) {
                     try {
-                        let doc = nlp(spokenText);
+                        let doc = window.nlp(spokenText);
                         // Identify "Topics" (People, Places, Organizations, etc.)
                         let topics = doc.topics().out('array');
                         // Remove duplicates and filter out very short names or common words if necessary
@@ -413,14 +412,32 @@ export function processContent(blocks, segmenter) {
                     }
                 }
 
-                // --- Phonetic expansion for Slavic Latin characters ---
-                // Ensures Latin characters like ć, č, đ, š, ž are pronounced correctly (matching Cyrillic quality)
+                // --- Phonetic expansion for Multilingual Latin text ---
+                // Ensures special characters are pronounced closer to their native sounds by the TTS model
                 spokenText = spokenText
+                    // Slavic & Turkish (Common 'sh' and 'ch' sounds)
+                    .replace(/ş|š/g, 'sh').replace(/Ş|Š/g, 'Sh')
                     .replace(/ć/g, 'tsh').replace(/Ć/g, 'Tsh')
                     .replace(/č/g, 'ch').replace(/Č/g, 'Ch')
                     .replace(/đ/g, 'dj').replace(/Đ/g, 'Dj')
-                    .replace(/š/g, 'sh').replace(/Š/g, 'Sh')
-                    .replace(/ž/g, 'zh').replace(/Ž/g, 'Zh');
+                    .replace(/ž/g, 'zh').replace(/Ž/g, 'Zh')
+                    // Case-specific ç: Turkish/Albanian (ch) vs French/Portuguese (s)
+                    // We default to 'ch' as it is often a distinct phonetic marker, but 's' is also common.
+                    // Given the goal of "better than flat", 'ch' is a stronger shift.
+                    .replace(/ç/g, 'ch').replace(/Ç/g, 'Ch')
+                    // Spanish & Portuguese
+                    .replace(/ñ/g, 'ny').replace(/Ñ/g, 'Ny')
+                    // German
+                    .replace(/ä/g, 'ae').replace(/Ä/g, 'Ae')
+                    .replace(/ö/g, 'oe').replace(/Ö/g, 'Oe')
+                    .replace(/ü/g, 'ue').replace(/Ü/g, 'Ue')
+                    .replace(/ß/g, 'ss')
+                    // Turkish Soft G
+                    .replace(/ğ/g, 'h').replace(/Ğ/g, 'H')
+                    // Nordic
+                    .replace(/ø/g, 'oe').replace(/Ø/g, 'Oe')
+                    .replace(/å/g, 'aa').replace(/Å/g, 'Aa')
+                    .replace(/æ/g, 'ae').replace(/Æ/g, 'Ae');
 
                 // --- Transliteration (Last to preserve symbols like μ, °, etc during specialized normalization) ---
                 if (window.transliterate) {

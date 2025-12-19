@@ -122,4 +122,17 @@ describe('Pronunciation and Math Fixes', () => {
         expect(runProcessor('Thomas Aquinas wrote')).toContain('[Thomas Aquinas](/tom-as a-kwi-nas/)');
         expect(runProcessor('Vuk Karadžić is a linguist')).toContain('[Vuk Karadzhitsh](/vook ka-ra-djetch/)');
     });
+
+    test('Multilingual Phonetic Expansion', () => {
+        // German
+        expect(runProcessor('Übermäßig')).toMatch(/Uebermaessig/i); // Ue + ss
+        // Spanish
+        expect(runProcessor('España')).toMatch(/Espanya/i);
+        // French (Using ch as common default for ç)
+        expect(runProcessor('Garçon')).toMatch(/Garchon/i);
+        // Turkish
+        expect(runProcessor('Şeker, Ağaç')).toMatch(/Sheker, Ahach/i);
+        // Nordic
+        expect(runProcessor('Smørrebrød, Blåbær')).toMatch(/Smoerrebroed, Blaabaer/i);
+    });
 });
