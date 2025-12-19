@@ -119,15 +119,21 @@ function createManifest(browser) {
             },
             "nav-next": {
                 "suggested_key": {
-                    "default": "Alt+Right"
+                    "default": "Alt+Period"
                 },
                 "description": "Next Sentence"
             },
             "nav-prev": {
                 "suggested_key": {
-                    "default": "Alt+Left"
+                    "default": "Alt+Comma"
                 },
                 "description": "Previous Sentence"
+            },
+            "close-overlay": {
+                "suggested_key": {
+                    "default": "Alt+W"
+                },
+                "description": "Close Overlay"
             }
         }
     };

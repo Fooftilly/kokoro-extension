@@ -1,7 +1,9 @@
 try {
-    importScripts('browser-polyfill.min.js');
+    if (typeof importScripts === 'function') {
+        importScripts('browser-polyfill.min.js');
+    }
 } catch (e) {
-    console.error(e);
+    console.error("Polyfill load error:", e);
 }
 
 browser.runtime.onInstalled.addListener(() => {
@@ -240,6 +242,11 @@ browser.commands.onCommand.addListener(async (command) => {
                 // Command might be sent while player is not open
                 console.log("Navigation command failed (player might be closed):", err);
             });
+        }
+    } else if (command === "close-overlay") {
+        const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+        if (tabs && tabs[0]) {
+            browser.tabs.sendMessage(tabs[0].id, { action: "REMOVE_PLAYER" }).catch(() => { });
         }
     }
 });
