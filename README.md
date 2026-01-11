@@ -9,8 +9,9 @@ A browser extension (Chrome & Firefox) that integrates **Kokoro TTS** to provide
 - **Smart Text Normalization**:
   - Expands contractions (e.g., "don't" -> "do not").
   - Transliterates non-Latin scripts (e.g., Japanese, Chinese, Greek, Cyrillic...) to Latin characters for better pronunciation.
-  - Handles dates, fractions, measurements, and other some other special cases intelligently.
-- **Playback Controls**: Speed control, play/pause/stop.
+  - Handles dates (e.g., "22 June 1915" -> "the 22nd of June, 1915"), fractions, measurements, and other special cases intelligently.
+- **Auto-Scroll Origin Page**: Optionally follows the reading progress on the original page with a smart "comfort zone" logic to reduce distracting jumps.
+- **Playback Controls**: Speed control, play/pause/stop, and keyboard shortcuts (Spacebar for play/pause).
 - **Streaming Audio**: Low-latency audio streaming.
 
 ## Prerequisites
