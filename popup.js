@@ -15,6 +15,7 @@ const saveOptions = async () => {
     const mode = document.querySelector('input[name="mode"]:checked').value;
     const defaultSpeed = document.getElementById('defaultSpeed').value;
     const defaultVolume = document.getElementById('defaultVolume').value;
+    const autoScroll = document.getElementById('autoScroll').checked;
 
     const normalizationOptions = {
         normalize: document.getElementById('norm_normalize').checked,
@@ -27,9 +28,9 @@ const saveOptions = async () => {
     };
 
     try {
-        await browser.storage.sync.set({ apiUrl, voice, mode, defaultSpeed, defaultVolume, normalizationOptions });
+        await browser.storage.sync.set({ apiUrl, voice, mode, defaultSpeed, defaultVolume, autoScroll, normalizationOptions });
         // Also update local storage for the overlay to pick up immediately if needed
-        await browser.storage.local.set({ defaultSpeed, defaultVolume, normalizationOptions });
+        await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, normalizationOptions });
 
         const status = document.getElementById('status');
         status.style.display = 'block';
@@ -43,10 +44,11 @@ const restoreOptions = async () => {
     try {
         const items = await browser.storage.sync.get({
             apiUrl: 'http://127.0.0.1:8880/v1/',
-            voice: 'af_heart(5)+af_bella(5)+af_nicole(2.5)+af_jessica(2.5)',
+            voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
             mode: 'stream',
             defaultSpeed: '1.0',
             defaultVolume: '1.0',
+            autoScroll: false,
             normalizationOptions: {
                 normalize: true,
                 unit_normalization: false,
@@ -67,6 +69,7 @@ const restoreOptions = async () => {
         }
         document.getElementById('defaultSpeed').value = items.defaultSpeed;
         document.getElementById('defaultVolume').value = items.defaultVolume;
+        document.getElementById('autoScroll').checked = items.autoScroll;
 
         const norm = items.normalizationOptions;
         document.getElementById('norm_normalize').checked = norm.normalize;

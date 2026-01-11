@@ -299,6 +299,11 @@ browser.runtime.onMessage.addListener((request, sender) => {
         iframe.src = browser.runtime.getURL('overlay.html');
         iframe.style.border = 'none';
         iframe.allow = "autoplay";
+        iframe.tabIndex = "-1"; // Make programmatically focusable
+
+        iframe.addEventListener('load', () => {
+            iframe.focus();
+        });
 
         if (request.mode === 'full') {
             iframe.style.width = '80%';
@@ -342,6 +347,46 @@ window.addEventListener('message', (event) => {
         if (container) {
             container.remove();
             document.body.style.overflow = '';
+        }
+    } else if (event.data && event.data.action === 'KOKORO_SCROLL_TO_BLOCK') {
+        const searchText = event.data.text;
+        if (!searchText) return;
+
+        // Try to find the element on the page that contains this text
+        // We look for the smallest element that contains the text
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+        let node;
+        let bestMatch = null;
+
+        while (node = walker.nextNode()) {
+            if (node.textContent.includes(searchText)) {
+                const parent = node.parentElement;
+                // Avoid scrolling to our own overlay
+                if (parent.closest('#kokoro-overlay-container')) continue;
+
+                // We want the most specific element (e.g. the P or LI, not the BODY)
+                if (!bestMatch || bestMatch.contains(parent)) {
+                    bestMatch = parent;
+                }
+            }
+        }
+
+        if (bestMatch) {
+            // Refined scrolling logic: only scroll if the element is not comfortably in view
+            const rect = bestMatch.getBoundingClientRect();
+            const viewportHeight = window.innerHeight;
+
+            // Define a "comfort zone" (middle 40% of the screen)
+            // If the element is within 30% to 70% of the viewport height, we don't scroll
+            const topThreshold = viewportHeight * 0.3;
+            const bottomThreshold = viewportHeight * 0.7;
+
+            const isAboveZone = rect.top < topThreshold;
+            const isBelowZone = rect.bottom > bottomThreshold;
+
+            if (isAboveZone || isBelowZone) {
+                bestMatch.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
         }
     }
 });

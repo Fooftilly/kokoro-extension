@@ -98,8 +98,9 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
     // Get settings
     const settings = await browser.storage.sync.get({
         apiUrl: 'http://127.0.0.1:8880/v1/',
-        voice: 'af_heart(5)+af_bella(5)+af_nicole(2.5)+af_jessica(2.5)',
+        voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
         mode: 'stream',
+        autoScroll: false,
         normalizationOptions: {
             normalize: true,
             unit_normalization: false,

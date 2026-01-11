@@ -152,9 +152,13 @@ export function processContent(blocks, segmenter) {
                 // Math spacing: handle 3xy, xy etc in math-like context (simple heuristic)
                 // If we see a sequence of letter-letter or digit-letter that isn't a known unit
                 spokenText = spokenText.replace(/\b(\d+)([a-z]{1,2})\b/gi, (match, n, v) => {
-                    // Avoid units like 10cm, 5m, 10in, 10ft
-                    const units = new Set(['cm', 'mm', 'km', 'kg', 'lb', 'oz', 'mj', 'kj', 'm', 'g', 'in', 'ft']);
-                    if (units.has(v.toLowerCase())) return match;
+                    // Avoid units like 10cm, 5m, 10in, 10ft, 10s, 5h
+                    const units = new Set(['cm', 'mm', 'km', 'kg', 'lb', 'oz', 'mj', 'kj', 'm', 'g', 'in', 'ft', 's', 'h', 'ms', 'μm']);
+                    const lowerV = v.toLowerCase();
+                    if (units.has(lowerV)) return match;
+                    // Protect decades like 1940s, 80s
+                    if (lowerV === 's' && (n.length === 4 || n.length === 2)) return match;
+
                     return `${n} ${v.split('').join(' ')}`;
                 });
 
@@ -166,6 +170,10 @@ export function processContent(blocks, segmenter) {
                 // 1. Fix AD/BC Spacing
                 spokenText = spokenText.replace(/\b(\d+)(AD|BC|BCE|CE)\b/gi, '$1 $2');
 
+                // 1.1 Fix Decades (1940s -> nineteenfory-s)
+                // We ensure there's a space or boundary before to avoid matching parts of larger numbers
+                spokenText = spokenText.replace(/\b(\d{2})(\d{2})s\b/g, '$1$2s'); // Just ensure it's kept together
+
                 // 2. Fix Ratios
                 spokenText = spokenText.replace(/\b(\d+):(\d)\b/g, '$1 to $2');
 
@@ -176,9 +184,10 @@ export function processContent(blocks, segmenter) {
                 spokenText = spokenText.replace(/\bcfm\b/gi, 'cubic feet per minute');
 
                 // 4. Fix Square Meters and Power
-                spokenText = spokenText.replace(/mW\/m[2²]/gi, 'milliwatts per square meter');
-                spokenText = spokenText.replace(/W\/m[2²]/gi, 'watts per square meter');
-                spokenText = spokenText.replace(/kg\/m[2²]/gi, 'kilograms per square meter');
+                spokenText = spokenText.replace(/MW\/m[2²]/g, 'megawatts per square meter');
+                spokenText = spokenText.replace(/mW\/m[2²]/g, 'milliwatts per square meter');
+                spokenText = spokenText.replace(/W\/m[2²]/g, 'watts per square meter');
+                spokenText = spokenText.replace(/kg\/m[2²]/g, 'kilograms per square meter');
                 spokenText = spokenText.replace(/\bm²/g, 'square meters');
                 spokenText = spokenText.replace(/\b(\d+)\s*m2\b/gi, '$1 square meters');
 
@@ -220,6 +229,30 @@ export function processContent(blocks, segmenter) {
                     const spaced = acronym.split('').join(' ');
                     const cleanSuffix = suffix.replace(/['\u2019\u02BC]/, "'");
                     return `${spaced} ${cleanSuffix}`;
+                });
+
+                const monthMap = {
+                    "Jan": "January", "Feb": "February", "Mar": "March", "Apr": "April",
+                    "Jun": "June", "Jul": "July", "Aug": "August", "Sept": "September", "Sep": "September",
+                    "Oct": "October", "Nov": "November", "Dec": "December",
+                    "January": "January", "February": "February", "March": "March", "April": "April", "May": "May",
+                    "June": "June", "July": "July", "August": "August", "September": "September",
+                    "October": "October", "November": "November", "December": "December"
+                };
+
+                // Date normalization: 22 June 1915 or 22 Jan 1915
+                const fullMonthNames = Object.keys(monthMap).sort((a, b) => b.length - a.length).join('|');
+                const dateDMYRegex = new RegExp(`\\b(\\d{1,2})\\s+(${fullMonthNames})\\.?\\s+(\\d{4})\\b`, 'gi');
+                spokenText = spokenText.replace(dateDMYRegex, (match, day, month, year) => {
+                    const d = parseInt(day, 10);
+                    let ordinal = day;
+                    if (d === 1 || d === 21 || d === 31) ordinal += "st";
+                    else if (d === 2 || d === 22) ordinal += "nd";
+                    else if (d === 3 || d === 23) ordinal += "rd";
+                    else ordinal += "th";
+
+                    const fullMonth = monthMap[month.charAt(0).toUpperCase() + month.slice(1).toLowerCase()] || month;
+                    return `the ${ordinal} of ${fullMonth}, ${year}`;
                 });
 
                 spokenText = spokenText.replace(/([a-zA-Z0-9\.]+)\-([a-zA-Z0-9\.]+)/g, '$1 $2');
@@ -268,11 +301,7 @@ export function processContent(blocks, segmenter) {
                     return dayMap[key] ? dayMap[key] : match;
                 });
 
-                const monthMap = {
-                    "Jan": "January", "Feb": "February", "Mar": "March", "Apr": "April",
-                    "Jun": "June", "Jul": "July", "Aug": "August", "Sept": "September", "Sep": "September",
-                    "Oct": "October", "Nov": "November", "Dec": "December"
-                };
+
                 spokenText = spokenText.replace(/\b(Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)\./gi, (match, m1) => {
                     const key = m1.charAt(0).toUpperCase() + m1.slice(1).toLowerCase();
                     return monthMap[key] ? monthMap[key] : match;
@@ -353,19 +382,20 @@ export function processContent(blocks, segmenter) {
                 const unitMap = {
                     "cm": "centimeters", "mm": "millimeters", "km": "kilometers",
                     "kg": "kilograms", "lb": "pounds", "oz": "ounces",
-                    "mj": "megajoules", "kj": "kilojoules",
+                    "MJ": "megajoules", "mJ": "millijoules", "mj": "millijoules", "kJ": "kilojoules", "kj": "kilojoules",
                     "m": "meters", "g": "grams",
                     "μm": "micrometers", "\u00B5m": "micrometers", // Support both Greek Mu and Micro Sign
-                    "mW": "milliwatts", "kW": "kilowatts", "W": "watts",
+                    "mW": "milliwatts", "MW": "megawatts", "kW": "kilowatts", "kw": "kilowatts", "W": "watts", "w": "watts",
                     "Ω": "ohms"
                 };
 
                 // Construct regex dynamically from keys to ensure all variations are caught
+                // We no longer use 'i' flag to distinguish between MW and mW
                 const units = Object.keys(unitMap).sort((a, b) => b.length - a.length).join('|');
-                const unitRegex = new RegExp(`\\b(\\d+)\\s*(${units})\\b`, 'gi');
+                const unitRegex = new RegExp(`\\b(\\d+)\\s*(${units})\\b`, 'g');
 
                 spokenText = spokenText.replace(unitRegex, (match, num, unit) => {
-                    let fullUnit = unitMap[unit] || unitMap[unit.toLowerCase()];
+                    let fullUnit = unitMap[unit];
 
                     // Fallback for case variation logic if needed
                     if (!fullUnit) {

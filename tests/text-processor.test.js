@@ -128,6 +128,13 @@ describe('processContent Regressions', () => {
         expect(result.renderData[0].isQuote).toBe(true);
     });
 
+    test('Feature: Decade Pronunciation (1940s)', () => {
+        const output = runProcessor('In the 1940s there was...');
+        // Should NOT be "1940 s"
+        expect(output).toMatch(/1940s/);
+        expect(output).not.toMatch(/1940 s/);
+    });
+
     test('Feature: Sentence Merging - Abbreviations', () => {
         // "Dr. Smith" might be split by tokenizer as "Dr." and "Smith". Processor should merge.
         // We force a split case by passing segments if we were mocking segments directly, 
@@ -177,9 +184,25 @@ describe('processContent Regressions', () => {
         expect(output).toMatch(/1990 to 1991/i);
     });
 
-    test('Feature: Scientific Units (mW/m2)', () => {
-        const output = runProcessor('Intensity is 5 mW/m2.');
-        expect(output).toMatch(/5 milliwatts per square meter/i);
+    test('Feature: Date Pronunciation (22 June 1915)', () => {
+        expect(runProcessor('Born on 22 June 1915.')).toMatch(/the 22nd of June, 1915/i);
+        expect(runProcessor('On 1 Jan 2000.')).toMatch(/the 1st of January, 2 thousand/i);
+        expect(runProcessor('The 3rd of May.')).not.toMatch(/the 3rdrd of May/); // Check no double ordinals if it was already ordinal (though rule targets \d+)
+    });
+
+    test('Feature: Scientific Units (mW/m2 vs MW/m2)', () => {
+        const output1 = runProcessor('Intensity is 5 mW/m2.');
+        expect(output1).toMatch(/5 milliwatts per square meter/i);
+        const output2 = runProcessor('Power is 5 MW/m2.');
+        expect(output2).toMatch(/5 megawatts per square meter/i);
+    });
+
+    test('Feature: Case-sensitive unit expansion (MW vs mW, MJ vs mJ)', () => {
+        expect(runProcessor('10 MW')).toMatch(/10 megawatts/i);
+        expect(runProcessor('10 mW')).toMatch(/10 milliwatts/i);
+        expect(runProcessor('10 MJ')).toMatch(/10 megajoules/i);
+        expect(runProcessor('10 mJ')).toMatch(/10 millijoules/i);
+        expect(runProcessor('10 mj')).toMatch(/10 millijoules/i); // Explicitly handled
     });
 
     test('Feature: Negative Numbers', () => {

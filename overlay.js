@@ -111,6 +111,7 @@ audioEl.addEventListener('pause', () => {
 // --- Logic ---
 
 async function initialize() {
+    window.focus();
     retryBtn.style.display = 'none';
     statusEl.textContent = "Initializing...";
 
@@ -120,7 +121,10 @@ async function initialize() {
     audioManager.clear();
     textDisplay.innerHTML = '';
 
-    const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'defaultSpeed', 'defaultVolume', 'pendingCustomPronunciations']);
+    const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'defaultSpeed', 'defaultVolume', 'autoScroll', 'pendingCustomPronunciations']);
+
+    const autoScroll = data.autoScroll || false;
+    window.kokoroAutoScroll = autoScroll;
 
     if (!data.pendingText) {
         statusEl.textContent = "No text found.";
@@ -410,8 +414,16 @@ async function navigate(index, forcePlay = null) {
     const currentSentence = sentences[currentIndex];
     currentSentence.element.classList.add('highlight');
 
-    // Scroll into view logic
+    // Scroll overlay into view
     currentSentence.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    // Scroll origin page if enabled
+    if (window.kokoroAutoScroll && currentSentence.text) {
+        window.parent.postMessage({
+            action: 'KOKORO_SCROLL_TO_BLOCK',
+            text: currentSentence.text
+        }, '*');
+    }
 
     // Update Progress
     const progressPercent = ((currentIndex + 1) / sentences.length) * 100;
