@@ -188,6 +188,23 @@ describe('processContent Regressions', () => {
         expect(runProcessor('Born on 22 June 1915.')).toMatch(/the 22nd of June, 1915/i);
         expect(runProcessor('On 1 Jan 2000.')).toMatch(/the 1st of January, 2 thousand/i);
         expect(runProcessor('The 3rd of May.')).not.toMatch(/the 3rdrd of May/); // Check no double ordinals if it was already ordinal (though rule targets \d+)
+        expect(runProcessor('Since Dec. 16, it happened.')).toMatch(/Since December 16th, it happened/i);
+    });
+
+    test('Feature: Sentence Splitting (Month Abbreviations)', () => {
+        // This tests that "Dec." doesn't split the sentence
+        const result = runProcessor('Since Dec. 16, Shasta has risen.');
+        expect(result).toMatch(/December 16th/);
+    });
+
+    test('Feature: ISO 8601 Dates (2023-12-25)', () => {
+        expect(runProcessor('Date: 2023-12-25')).toMatch(/the 25th of December, 2023/i);
+    });
+
+    test('Feature: Month Day Year Dates (Dec 25 2023)', () => {
+        expect(runProcessor('On Dec 25, 2023')).toMatch(/the 25th of December, 2023/i);
+        expect(runProcessor('On December 25 2023')).toMatch(/the 25th of December, 2023/i);
+        expect(runProcessor('On Jan. 1, 2000')).toMatch(/the 1st of January, 2 thousand/i); // 2000 becomes 2 thousand
     });
 
     test('Feature: Scientific Units (mW/m2 vs MW/m2)', () => {

@@ -31,7 +31,7 @@ export function processContent(blocks, segmenter) {
             const rawSegments = Array.from(segmenter.segment(plainText));
             const mergedSegments = [];
 
-            const abbrevRegex = /\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc|e\.g|i\.e|approx|Vol|Ch|Fig|Ref|Eq|No|pp|p)\.$/i;
+            const abbrevRegex = /\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc|e\.g|i\.e|approx|Vol|Ch|Fig|Ref|Eq|No|pp|p|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.$/i;
 
             for (const seg of rawSegments) {
                 const segText = seg.segment;
@@ -203,6 +203,28 @@ export function processContent(blocks, segmenter) {
                 // Model names / Variables: handle o1, r1 etc
                 spokenText = spokenText.replace(/\b([a-z])(\d+)\b/gi, '$1 $2');
 
+                // Date normalization: 2023-12-25 -> the 25th of December, 2023
+                // Must be BEFORE date range expansion (which catches 2023-12)
+                spokenText = spokenText.replace(/\b(\d{4})-(\d{2})-(\d{2})\b/gi, (match, year, month, day) => {
+                    const m = parseInt(month, 10);
+                    const d = parseInt(day, 10);
+                    if (m < 1 || m > 12) return match;
+
+                    const months = [
+                        "January", "February", "March", "April", "May", "June",
+                        "July", "August", "September", "October", "November", "December"
+                    ];
+                    const fullMonth = months[m - 1];
+
+                    let ordinal = d.toString();
+                    if (d === 1 || d === 21 || d === 31) ordinal += "st";
+                    else if (d === 2 || d === 22) ordinal += "nd";
+                    else if (d === 3 || d === 23) ordinal += "rd";
+                    else ordinal += "th";
+
+                    return `the ${ordinal} of ${fullMonth}, ${year}`;
+                });
+
                 const dateRangeRegex = /\b((?:c\.|ca\.)?\s*\d{1,4}(?:\s*(?:AD|BC|BCE|CE))?)\s*[-–—]\s*((?:c\.|ca\.)?\s*\d{1,4}(?:\s*(?:AD|BC|BCE|CE))?)\b/gi;
 
                 spokenText = spokenText.replace(dateRangeRegex, (match, p1, p2) => {
@@ -242,6 +264,24 @@ export function processContent(blocks, segmenter) {
 
                 // Date normalization: 22 June 1915 or 22 Jan 1915
                 const fullMonthNames = Object.keys(monthMap).sort((a, b) => b.length - a.length).join('|');
+
+                // Date normalization: December 25, 2023 or Dec 25, 2023 -> the 25th of December, 2023
+                // Must be BEFORE "Month. Day" rule
+                const dateMDYRegex = new RegExp(`\\b(${fullMonthNames})\\.?\\s+(\\d{1,2}),?\\s+(\\d{4})\\b`, 'gi');
+                spokenText = spokenText.replace(dateMDYRegex, (match, month, day, year) => {
+                    const d = parseInt(day, 10);
+                    let ordinal = day;
+                    if (d === 1 || d === 21 || d === 31) ordinal += "st";
+                    else if (d === 2 || d === 22) ordinal += "nd";
+                    else if (d === 3 || d === 23) ordinal += "rd";
+                    else ordinal += "th";
+
+                    const key = month.charAt(0).toUpperCase() + month.slice(1).toLowerCase();
+                    const fullMonth = monthMap[key] || key;
+
+                    return `the ${ordinal} of ${fullMonth}, ${year}`;
+                });
+
                 const dateDMYRegex = new RegExp(`\\b(\\d{1,2})\\s+(${fullMonthNames})\\.?\\s+(\\d{4})\\b`, 'gi');
                 spokenText = spokenText.replace(dateDMYRegex, (match, day, month, year) => {
                     const d = parseInt(day, 10);
@@ -253,6 +293,24 @@ export function processContent(blocks, segmenter) {
 
                     const fullMonth = monthMap[month.charAt(0).toUpperCase() + month.slice(1).toLowerCase()] || month;
                     return `the ${ordinal} of ${fullMonth}, ${year}`;
+                });
+
+                // Date normalization: Dec. 16 -> December 16th
+                // We reuse the monthMap from above.
+                // Regex looks for Month Abbrev (with dot) followed by Number (1-2 digits)
+                // e.g. "Dec. 16", "Jan. 1"
+                spokenText = spokenText.replace(/\b(Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)\.\s*(\d{1,2})\b/gi, (match, month, day) => {
+                    const d = parseInt(day, 10);
+                    let ordinal = day;
+                    if (d === 1 || d === 21 || d === 31) ordinal += "st";
+                    else if (d === 2 || d === 22) ordinal += "nd";
+                    else if (d === 3 || d === 23) ordinal += "rd";
+                    else ordinal += "th";
+
+                    const key = month.charAt(0).toUpperCase() + month.slice(1).toLowerCase();
+                    const fullMonth = monthMap[key] || key; // Should exist in our map
+
+                    return `${fullMonth} ${ordinal}`;
                 });
 
                 spokenText = spokenText.replace(/([a-zA-Z0-9\.]+)\-([a-zA-Z0-9\.]+)/g, '$1 $2');
