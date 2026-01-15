@@ -130,9 +130,8 @@ describe('processContent Regressions', () => {
 
     test('Feature: Decade Pronunciation (1940s)', () => {
         const output = runProcessor('In the 1940s there was...');
-        // Should NOT be "1940 s"
-        expect(output).toMatch(/1940s/);
-        expect(output).not.toMatch(/1940 s/);
+        // Should be normalized to words for natural pronunciation
+        expect(output).toMatch(/19 forties/i);
     });
 
     test('Feature: Sentence Merging - Abbreviations', () => {

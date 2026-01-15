@@ -109,6 +109,8 @@ export function processContent(blocks, segmenter) {
 
                 // -1. Remove Footnote Artifacts
                 spokenText = spokenText.replace(/#[\w-]{2,}/g, '');
+                // Remove hidden/invisible characters that often break regexes (BOM, ZWS, etc.)
+                spokenText = spokenText.replace(/[\ufeff\u200b\u200c\u200d\u200e\u200f]/g, '');
 
                 // 0. Fix Symbols
                 // Em-dash to comma for pause
@@ -170,8 +172,23 @@ export function processContent(blocks, segmenter) {
                 spokenText = spokenText.replace(/\b(\d+)(AD|BC|BCE|CE)\b/gi, '$1 $2');
 
                 // 1.1 Fix Decades (1940s -> nineteenfory-s)
-                // We ensure there's a space or boundary before to avoid matching parts of larger numbers
-                spokenText = spokenText.replace(/\b(\d{2})(\d{2})s\b/g, '$1$2s'); // Just ensure it's kept together
+                const decadeMap = {
+                    "20": "twenties", "30": "thirties", "40": "forties", "50": "fifties",
+                    "60": "sixties", "70": "seventies", "80": "eighties", "90": "nineties",
+                    "00": "hundreds"
+                };
+
+                // Handle 2-digit decades optionally preceded by an apostrophe
+                spokenText = spokenText.replace(/\b(?:'|’|‘|02BC)?(\d0)\s*s\b/g, (match, d) => {
+                    return decadeMap[d] ? decadeMap[d] : match;
+                });
+
+                // Handle 4-digit decades
+                spokenText = spokenText.replace(/\b(\d{2})(\d0)\s*s\b/g, (match, prefix, d) => {
+                    const period = decadeMap[d];
+                    if (!period) return match;
+                    return `${prefix} ${period}`;
+                });
 
                 // 2. Fix Ratios
                 spokenText = spokenText.replace(/\b(\d+):(\d)\b/g, '$1 to $2');
