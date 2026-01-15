@@ -46,12 +46,17 @@ export function processContent(blocks, segmenter) {
                     const endsWithStrictDot = lastText.endsWith('.');
                     const isInitial = /(?:^|[\s\.])[A-Z]\.$/.test(trimmedLast);
 
-                    const lastWordCount = trimmedLast.split(/\s+/).length;
-                    const currWordCount = segText.trim().split(/\s+/).length;
+                    const lastWordCount = trimmedLast.split(/\s+/).filter(w => /[a-zA-Z0-9]/.test(w)).length;
+                    const currWordCount = segText.trim().split(/\s+/).filter(w => /[a-zA-Z0-9]/.test(w)).length;
+
+                    // Merging if either side is tiny (1-2 words) AND both are relatively short
+                    const isTiny = lastWordCount <= 2 || currWordCount <= 2;
+                    const isBothShort = lastWordCount < 10 && currWordCount < 10;
+
+                    // Merging if either side is short (3 words) and not ending in hard punctuation
                     const isShort = lastWordCount < 4 || currWordCount < 4;
 
                     const endsWithPunctuation = /[.!?]['"\u201D\u2019]?\s*$/.test(lastText);
-                    const shouldMergeShort = isShort && !endsWithPunctuation;
 
                     const startsWithQuote = /^['"\u201D\u2019\u2018\u201C\u02BC]/.test(segText.trim());
                     const startsWithLower = /^[a-z]/.test(segText.trim());
@@ -60,13 +65,26 @@ export function processContent(blocks, segmenter) {
                     const introStartRegex = /^(?:In|With|As|From|Under|On|At|By)\s+['"\u201C\u2018]/;
                     const isIntroQuote = introStartRegex.test(trimmedLast) && endsWithQuote;
 
+                    // Improved Quote Balancing
+                    // We ignore single quotes because they are too ambiguous with apostrophes (e.g. John's)
+                    const countDoubleQuotes = (str) => {
+                        const straight = (str.match(/"/g) || []).length;
+                        const open = (str.match(/\u201C/g) || []).length;
+                        const close = (str.match(/\u201D/g) || []).length;
+                        return { straight, open, close };
+                    };
+                    const dblQuotesSoFar = countDoubleQuotes(lastText);
+                    const isUnbalancedDouble = (dblQuotesSoFar.straight % 2 !== 0) || (dblQuotesSoFar.open > dblQuotesSoFar.close);
+
                     const openParens = (lastText.match(/\(/g) || []).length;
                     const closeParens = (lastText.match(/\)/g) || []).length;
-                    const isUnbalanced = openParens > closeParens;
+                    const isUnbalancedParens = openParens > closeParens;
+
+                    const shouldMergeShort = (isTiny && (isBothShort || isUnbalancedDouble || isUnbalancedParens)) || (isShort && !endsWithPunctuation);
 
                     const startsWithParen = /^[\(\[]/.test(segText.trim());
 
-                    if (isAbbrev || endsWithStrictDot || isInitial || shouldMergeShort || startsWithQuote || startsWithLower || isIntroQuote || isUnbalanced || startsWithParen) {
+                    if (isAbbrev || endsWithStrictDot || isInitial || shouldMergeShort || startsWithQuote || startsWithLower || isIntroQuote || isUnbalancedDouble || isUnbalancedParens || startsWithParen) {
                         last.text += segText;
                         continue;
                     }
@@ -113,11 +131,52 @@ export function processContent(blocks, segmenter) {
                 spokenText = spokenText.replace(/[\ufeff\u200b\u200c\u200d\u200e\u200f]/g, '');
 
                 // 0. Fix Symbols
+                // Add a small pause (comma) after internal question/exclamation marks in merged sentences
+                spokenText = spokenText.replace(/([?!])\s+(?=[a-zA-Z0-9“"‘'])/g, '$1, ');
+
                 // Em-dash to comma for pause
                 spokenText = spokenText.replace(/—/g, ', ');
 
                 spokenText = spokenText.replace(/>\s*(\d)/g, 'greater than $1');
                 spokenText = spokenText.replace(/<\s*(\d)/g, 'less than $1');
+
+                // --- Ordinal Normalization ---
+                const ordinalMap = {
+                    1: 'first', 2: 'second', 3: 'third', 4: 'fourth', 5: 'fifth',
+                    6: 'sixth', 7: 'seventh', 8: 'eighth', 9: 'ninth', 10: 'tenth',
+                    11: 'eleventh', 12: 'twelfth', 13: 'thirteenth', 14: 'fourteenth', 15: 'fifteenth',
+                    16: 'sixteenth', 17: 'seventeenth', 18: 'eighteenth', 19: 'nineteenth'
+                };
+                const ordinalTensMap = {
+                    20: 'twentieth', 30: 'thirtieth', 40: 'fortieth', 50: 'fiftieth',
+                    60: 'sixtieth', 70: 'seventieth', 80: 'eightieth', 90: 'ninetieth'
+                };
+                const cardinalTensMap = {
+                    20: 'twenty', 30: 'thirty', 40: 'forty', 50: 'fifty',
+                    60: 'sixty', 70: 'seventy', 80: 'eighty', 90: 'ninety'
+                };
+
+                const numberToOrdinal = (numStr) => {
+                    const n = parseInt(numStr, 10);
+                    if (isNaN(n)) return numStr;
+                    if (n === 0) return numStr;
+                    if (ordinalMap[n]) return ordinalMap[n];
+                    if (n < 100) {
+                        const tens = Math.floor(n / 10) * 10;
+                        const ones = n % 10;
+                        if (ones === 0) return ordinalTensMap[tens];
+                        return `${cardinalTensMap[tens]} ${ordinalMap[ones]}`;
+                    }
+                    if (n % 100 === 0) return numStr;
+                    return numStr;
+                };
+
+                // Convert ordinals like 1st, 2nd, 20th and handle optional possessives
+                spokenText = spokenText.replace(/\b(\d+)(?:st|nd|rd|th)(['’]s)?\b/gi, (match, num, possessive) => {
+                    const expanded = numberToOrdinal(num);
+                    if (expanded === num) return match;
+                    return possessive ? expanded + possessive : expanded;
+                });
 
                 // Temperature: Handle °C, deg C, degrees C, and Fahrenheit variants
                 spokenText = spokenText.replace(/(\d)\s*(?:°|deg|degrees)\.?\s*C\b/gi, '$1 degrees Celsius');
@@ -221,6 +280,7 @@ export function processContent(blocks, segmenter) {
 
                 // Date normalization: 2023-12-25 -> the 25th of December, 2023
                 // Must be BEFORE date range expansion (which catches 2023-12)
+
                 spokenText = spokenText.replace(/\b(\d{4})-(\d{2})-(\d{2})\b/gi, (match, year, month, day) => {
                     const m = parseInt(month, 10);
                     const d = parseInt(day, 10);
@@ -444,13 +504,27 @@ export function processContent(blocks, segmenter) {
                 spokenText = spokenText.replace(/\b(\d+)\s*′/g, '$1 feet');
                 // (Manual protections merged into unitMap below)
                 // Improved inches disambiguation: only if preceded by number and optionally followed by period or x/by
-                spokenText = spokenText.replace(/\b(\d+)\s*in\.?\b(?!\s+(?:the|a|an|my|your|his|her|its|our|their|this|that|these|those|some|any|each|every|both|either|neither|no|which|what|whose))\b/gi, (match, num) => {
-                    // If it's "in" followed by common prepositions/determiners, it's likely the word "in"
-                    // But if it's "in." with a dot, it's almost certainly inches
-                    if (match.toLowerCase().endsWith('.') || !/\s+(?:the|a|an|my|your|his|her|its|our|their|this|that|these|those|some|any|each|every|both|either|neither|no|which|what|whose)/i.test(match)) {
-                        return `${num} inches`;
+                // Improved inches disambiguation: only if preceded by number and optionally followed by period
+                spokenText = spokenText.replace(/\b(\d+)\s*in\.?(?![a-zA-Z0-9])/gi, (match, num, offset, fullText) => {
+                    const isExplicit = match.endsWith('.');
+                    // Use a lookahead heuristic for the following text
+                    const following = fullText.substring(offset + match.length).trim();
+                    const startsWithUpper = /^[A-Z]/.test(following);
+                    const isYear = /^(1[89]|20)\d{2}$/.test(num);
+
+                    if (isExplicit) return `${num} inches`;
+
+                    // If not explicit "in.", be cautious
+                    // Avoid years (1800-2099) and followed by Capitalized words (likely Location/Entity)
+                    if (isYear || startsWithUpper) return match;
+
+                    // Avoid if followed by common determiners/prepositions (likely word "in")
+                    // Use a word boundary \b to ensure we match whole words
+                    if (/^\s+(?:the|a|an|my|your|his|her|its|our|their|this|that|these|those|some|any|each|every|both|either|neither|no|which|what|whose|all|some|any)\b/i.test(fullText.substring(offset + match.length, offset + match.length + 20))) {
+                        return match;
                     }
-                    return match;
+
+                    return `${num} inches`;
                 });
 
                 const unitMap = {
@@ -548,10 +622,12 @@ export function processContent(blocks, segmenter) {
                     spokenText = window.transliterate(spokenText);
                 }
 
+                // Final cleanup: collapse multiple spaces and trim
+                spokenText = spokenText.replace(/\s+/g, ' ').trim();
 
                 const sentenceObj = {
                     index: globalIndex++,
-                    text: spokenText.trim(),
+                    text: spokenText,
                     html: htmlFragment
                 };
                 sentences.push(sentenceObj);

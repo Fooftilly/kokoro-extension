@@ -97,4 +97,82 @@ describe('content.js parseArticle', () => {
         expect(img).toBeDefined();
         expect(img.src).toBe('http://example.com/image.jpg');
     });
+
+    test('should handle nested lists', async () => {
+        document.body.innerHTML = `
+            <article>
+                <ul>
+                    <li>Outer 1
+                        <ul>
+                            <li>Inner 1.1</li>
+                        </ul>
+                    </li>
+                </ul>
+            </article>
+        `;
+
+        const result = await parseArticle(document);
+        // We should skip checking depth if Readability flattens it,
+        // but let's check if we at least found the items.
+        const listItems = result.content.filter(b => b.type === 'list-item');
+        expect(listItems.length).toBeGreaterThanOrEqual(1);
+    });
+
+    test('should handle tables and figures', async () => {
+        document.body.innerHTML = `
+            <article>
+                <h1>Article with Table</h1>
+                <p>This is a substantial paragraph of text to ensure Readability considers this a valid article and doesn't strip the following content as boilerplate or noise.</p>
+                <table>
+                    <tr><th>Header 1</th><th>Header 2</th></tr>
+                    <tr><td>Cell 1</td><td>Cell 2</td></tr>
+                    <tr><td>Cell 3</td><td>Cell 4</td></tr>
+                </table>
+                <p>Another paragraph to provide context and length to the article content.</p>
+                <figure>
+                    <img src="fig.jpg">
+                    <figcaption>Caption Text</figcaption>
+                </figure>
+            </article>
+        `;
+
+        const result = await parseArticle(document);
+        const table = result.content.find(b => b.type === 'html' && b.html.includes('table'));
+        expect(table).toBeDefined();
+    });
+
+    test('should handle auto-scroll message', async () => {
+        document.body.innerHTML = `
+            <div id="kokoro-main-content">
+                <p>Paragraph 1</p>
+                <p id="target">Target Text</p>
+                <p>Paragraph 3</p>
+            </div>
+        `;
+
+        const targetEl = document.getElementById('target');
+        targetEl.scrollIntoView = jest.fn();
+
+        // Simulate message from overlay
+        const messageEvent = new MessageEvent('message', {
+            data: {
+                action: 'KOKORO_SCROLL_TO_BLOCK',
+                text: 'Target Text'
+            }
+        });
+        window.dispatchEvent(messageEvent);
+
+        // We need to wait for the message handler to run
+        // and we might need to mock getBoundingClientRect for the visibility check
+        targetEl.getBoundingClientRect = jest.fn(() => ({
+            top: -100, // Force scroll by being above zone
+            bottom: -50,
+            height: 50
+        }));
+
+        // Dispatch again with mocks ready
+        window.dispatchEvent(messageEvent);
+
+        expect(targetEl.scrollIntoView).toHaveBeenCalled();
+    });
 });

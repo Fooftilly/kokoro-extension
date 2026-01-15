@@ -226,7 +226,7 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
 
 browser.contextMenus.onClicked.addListener(async (info, tab) => {
     if (info.menuItemId === "send-to-kokoro" || info.menuItemId === "read-article-kokoro") {
-        handleTtsAction(tab, info.menuItemId, info.selectionText);
+        await handleTtsAction(tab, info.menuItemId, info.selectionText);
     }
 });
 
@@ -234,7 +234,7 @@ browser.commands.onCommand.addListener(async (command) => {
     if (command === "read-article") {
         const tabs = await browser.tabs.query({ active: true, currentWindow: true });
         if (tabs && tabs[0]) {
-            handleTtsAction(tabs[0], "read-article");
+            await handleTtsAction(tabs[0], "read-article");
         }
     } else if (command === "nav-next" || command === "nav-prev") {
         const tabs = await browser.tabs.query({ active: true, currentWindow: true });

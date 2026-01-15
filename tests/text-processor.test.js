@@ -257,4 +257,57 @@ describe('processContent Regressions', () => {
         expect(output).toMatch(/0x10/);
         expect(output).not.toMatch(/0 by 10/);
     });
+
+    test('Feature: Ratios (1:2)', () => {
+        expect(runProcessor('The ratio is 1:2.')).toMatch(/1 to 2/);
+    });
+
+    test('Feature: Day Names (Mon. - Sat.)', () => {
+        expect(runProcessor('See you on Mon.')).toMatch(/Monday/);
+        expect(runProcessor('Meeting on Thurs.')).toMatch(/Thursday/);
+        expect(runProcessor('Open Sat.')).toMatch(/Saturday/);
+    });
+
+    test('Feature: Acronyms with s/\'s (LLMs, MIT’s)', () => {
+        expect(runProcessor('LMs and LLMs.')).toMatch(/L M s and L L M s/);
+        expect(runProcessor('MIT’s researchers.')).toMatch(/M I T 's researchers/);
+    });
+
+    test('Feature: More Abbreviations (viz., ibid., trans.)', () => {
+        expect(runProcessor('viz. the following.')).toMatch(/namely/);
+        expect(runProcessor('ibid. p. 45.')).toMatch(/ibidem/);
+        expect(runProcessor('trans. by Levi.')).toMatch(/translated by/);
+    });
+
+    test('Feature: Math Rules (3xy, x2)', () => {
+        expect(runProcessor('Given 3xy.')).toMatch(/3 x y/);
+        expect(runProcessor('Solve for x2.')).toMatch(/x squared/);
+        expect(runProcessor('y3 is positive.')).toMatch(/y cubed/);
+    });
+
+    test('Feature: Regnal vs Non-regnal Roman Numerals', () => {
+        // Regnal
+        expect(runProcessor('Henry IV was king.')).toMatch(/Henry the fourth/);
+        expect(runProcessor('Elizabeth II.')).toMatch(/Elizabeth the second/);
+        // Non-regnal (triggers)
+        expect(runProcessor('Chapter IV is long.')).toMatch(/Chapter four/);
+        expect(runProcessor('Vol. III.')).toMatch(/Volume three/);
+        expect(runProcessor('World War II.')).toMatch(/World War two/);
+    });
+
+    test('Feature: Ordinal Possessives (20th’s)', () => {
+        expect(runProcessor('the 20th’s major debates')).toMatch(/twentieth’s/);
+    });
+
+    test('Edge Case: Empty or whitespace input', () => {
+        const blocks = [{ type: 'text', content: '   ' }];
+        const result = processContent(blocks, segmenter);
+        expect(result.sentences.length).toBe(0);
+    });
+
+    test('Edge Case: Multiple spaces and newlines', () => {
+        const input = 'Sentence one. \n \n Sentence two.';
+        const output = runProcessor(input);
+        expect(output).toMatch(/Sentence one\. Sentence two\./);
+    });
 });
