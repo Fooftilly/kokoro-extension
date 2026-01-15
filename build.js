@@ -4,7 +4,7 @@ const { execSync } = require('child_process');
 const AdmZip = require('adm-zip');
 
 const EXTENSION_NAME = 'Kokoro TTS Sender';
-const EXTENSION_VERSION = '1.0.0';
+const EXTENSION_VERSION = '1.1.0';
 const DESCRIPTION = 'Send text from browser to Kokoro-FastAPI for TTS generation';
 
 const SRC_FILES = [
@@ -17,7 +17,8 @@ const SRC_FILES = [
     'popup.js',
     'text-processor.js',
     'audio-manager.js',
-    'dom-utils.js'
+    'dom-utils.js',
+    'transliteration-lite.js'
 ];
 
 const ICONS_DIR = 'icons';
@@ -35,11 +36,11 @@ const COMPROMISE_DATES_DEST = 'compromise-dates.min.js';
 const COMPROMISE_NUMBERS_SRC = 'node_modules/compromise-numbers/builds/compromise-numbers.min.js';
 const COMPROMISE_NUMBERS_DEST = 'compromise-numbers.min.js';
 
-const TRANSLITERATION_SRC = 'node_modules/transliteration/dist/browser/bundle.umd.min.js';
-const TRANSLITERATION_DEST = 'transliteration.min.js';
+const TRANSLITERATION_SRC = 'transliteration-lite.js';
+const TRANSLITERATION_DEST = 'transliteration-lite.js';
 
-const DOMPURIFY_SRC = 'node_modules/dompurify/dist/purify.min.js';
-const DOMPURIFY_DEST = 'purify.min.js';
+const DOMPURIFY_SRC = 'node_modules/dompurify/dist/purify.js';
+const DOMPURIFY_DEST = 'purify.js';
 
 function copyFile(src, dest) {
     fs.copyFileSync(src, dest);
@@ -106,7 +107,7 @@ function createManifest(browser) {
             {
                 resources: ["overlay.html", "overlay.js", "text-processor.js", "audio-manager.js", "dom-utils.js", "browser-polyfill.min.js",
                     "compromise.js", "compromise-dates.min.js", "compromise-numbers.min.js",
-                    "transliteration.min.js", "purify.min.js"],
+                    "transliteration-lite.js", "purify.js"],
                 matches: ["<all_urls>"]
             }
         ],

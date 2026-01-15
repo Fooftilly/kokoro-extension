@@ -20,10 +20,9 @@ export function processContent(blocks, segmenter) {
         } else if (block.type === 'text' || block.type === 'list-item' || /^h[1-6]$/.test(block.type)) {
             const html = block.html || block.content;
 
-            const tempDiv = document.createElement('div');
-            // We assume DOMPurify is available globally or passed in. 
-            // For now, assuming window.DOMPurify is set.
-            tempDiv.innerHTML = window.DOMPurify.sanitize(html);
+            const docParser = new DOMParser();
+            const tempDoc = docParser.parseFromString(window.DOMPurify.sanitize(html), 'text/html');
+            const tempDiv = tempDoc.body;
 
             const plainText = tempDiv.textContent;
             if (!plainText.trim()) return;

@@ -140,14 +140,7 @@ function parseArticle(doc, win = window) {
                             } catch (e) { }
                         }
                     } else if (node.tagName === 'TABLE') {
-                        const html = getSanitizedHtml(node); // Full outer HTML would be better? getSanitizedHtml uses innerHTML.
-                        // We want the whole table tag.
-                        const tempDiv = document.createElement('div');
-                        tempDiv.innerHTML = node.outerHTML; // Use outerHTML to keep <table>
-                        // Sanitize inside? getSanitizedHtml logic is: clone -> fix links -> return innerHTML.
-                        // If we pass `node` (the table) to getSanitizedHtml, it returns content INSIDE table.
-                        // We want the table itself.
-                        // Let's adjust getSanitizedHtml to support returning outer if needed, or just do it here.
+                        // We want the whole table tag, so we clone it and fix links.
                         const clone = node.cloneNode(true);
                         const links = clone.querySelectorAll('a');
                         links.forEach(a => {

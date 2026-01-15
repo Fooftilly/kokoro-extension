@@ -119,7 +119,7 @@ async function initialize() {
     sentences = [];
     currentIndex = 0;
     audioManager.clear();
-    textDisplay.innerHTML = '';
+    textDisplay.textContent = '';
 
     const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'defaultSpeed', 'defaultVolume', 'autoScroll', 'pendingCustomPronunciations']);
 
@@ -173,7 +173,7 @@ async function initialize() {
 }
 
 function renderText() {
-    textDisplay.innerHTML = '';
+    textDisplay.textContent = '';
 
     if (!window.renderData) return;
 
@@ -246,7 +246,11 @@ function renderText() {
             textDisplay.appendChild(container);
         } else if (block.type === 'html') {
             const div = document.createElement('div');
-            div.innerHTML = block.html; // Already sanitized in processor
+            const docParser = new DOMParser();
+            const tempDoc = docParser.parseFromString(block.html, 'text/html');
+            while (tempDoc.body.firstChild) {
+                div.appendChild(tempDoc.body.firstChild);
+            }
             div.style.margin = '20px 0';
             div.style.overflowX = 'auto'; // Horizontal scroll for wide tables
             div.style.padding = '10px';
@@ -343,7 +347,11 @@ function renderText() {
                 // Use HTML fragment if available, else text
                 if (s.html) {
                     // Sanitize again just in case
-                    span.innerHTML = window.DOMPurify.sanitize(s.html);
+                    const docParser = new DOMParser();
+                    const tempDoc = docParser.parseFromString(window.DOMPurify.sanitize(s.html), 'text/html');
+                    while (tempDoc.body.firstChild) {
+                        span.appendChild(tempDoc.body.firstChild);
+                    }
                 } else {
                     span.textContent = s.text;
                 }
@@ -378,7 +386,14 @@ function pause() {
 
 function resume() {
     isPaused = false;
-    audioEl.play().catch(e => console.warn("Resume failed", e));
+    audioEl.play().catch(e => {
+        if (e.name === 'NotAllowedError') {
+            isPaused = true;
+            playPauseBtn.textContent = "Play";
+            return;
+        }
+        console.warn("Resume failed", e);
+    });
     playPauseBtn.textContent = "Pause";
 }
 
@@ -460,7 +475,12 @@ async function navigate(index, forcePlay = null) {
             audioEl.play().catch(e => {
                 // Ignore expected interruptions during rapid navigation
                 if (e.name === 'AbortError' || e.message.includes('interrupted')) return;
-                console.warn("Play failed", e);
+                if (e.name === 'NotAllowedError') {
+                    isPaused = true;
+                    playPauseBtn.textContent = "Play";
+                    return;
+                }
+                console.warn("Play failed", e, e.name);
             });
             playPauseBtn.textContent = "Pause";
         } else {
