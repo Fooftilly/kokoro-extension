@@ -184,26 +184,31 @@ describe('processContent Regressions', () => {
     });
 
     test('Feature: Date Pronunciation (22 June 1915)', () => {
-        expect(runProcessor('Born on 22 June 1915.')).toMatch(/the 22nd of June, 1915/i);
-        expect(runProcessor('On 1 Jan 2000.')).toMatch(/the 1st of January, 2 thousand/i);
+        expect(runProcessor('Born on 22 June 1915.')).toMatch(/the twenty second of June, 1915/i);
+        expect(runProcessor('On 1 Jan 2000.')).toMatch(/the first of January, 2 thousand/i);
         expect(runProcessor('The 3rd of May.')).not.toMatch(/the 3rdrd of May/); // Check no double ordinals if it was already ordinal (though rule targets \d+)
-        expect(runProcessor('Since Dec. 16, it happened.')).toMatch(/Since December 16th, it happened/i);
+        expect(runProcessor('Since Dec. 16, it happened.')).toMatch(/Since December sixteenth, it happened/i);
     });
 
     test('Feature: Sentence Splitting (Month Abbreviations)', () => {
         // This tests that "Dec." doesn't split the sentence
         const result = runProcessor('Since Dec. 16, Shasta has risen.');
-        expect(result).toMatch(/December 16th/);
+        expect(result).toMatch(/December sixteenth/);
     });
 
     test('Feature: ISO 8601 Dates (2023-12-25)', () => {
-        expect(runProcessor('Date: 2023-12-25')).toMatch(/the 25th of December, 2023/i);
+        expect(runProcessor('Date: 2023-12-25')).toMatch(/the twenty fifth of December, 2023/i);
     });
 
     test('Feature: Month Day Year Dates (Dec 25 2023)', () => {
-        expect(runProcessor('On Dec 25, 2023')).toMatch(/the 25th of December, 2023/i);
-        expect(runProcessor('On December 25 2023')).toMatch(/the 25th of December, 2023/i);
-        expect(runProcessor('On Jan. 1, 2000')).toMatch(/the 1st of January, 2 thousand/i); // 2000 becomes 2 thousand
+        expect(runProcessor('On Dec 25, 2023')).toMatch(/the twenty fifth of December, 2023/i);
+        expect(runProcessor('On December 25 2023')).toMatch(/the twenty fifth of December, 2023/i);
+        expect(runProcessor('On Jan. 1, 2000')).toMatch(/the first of January, 2 thousand/i); // 2000 becomes 2 thousand
+    });
+
+    test('Feature: Month Day Dates (February 5)', () => {
+        // User reported: "February 5" -> "February fifth"
+        expect(runProcessor('on February 5 and 25')).toMatch(/February fifth and twenty fifth/i);
     });
 
     test('Feature: Scientific Units (mW/m2 vs MW/m2)', () => {
@@ -309,5 +314,34 @@ describe('processContent Regressions', () => {
         const input = 'Sentence one. \n \n Sentence two.';
         const output = runProcessor(input);
         expect(output).toMatch(/Sentence one\. Sentence two\./);
+    });
+
+    describe('Date Normalization Discovery', () => {
+        const formats = [
+            { name: 'Month Day (Full)', input: 'February 5', expected: /February fifth/i },
+            { name: 'Month Day (Abbrev)', input: 'Feb 5', expected: /February fifth/i },
+            { name: 'Month Day (Abbrev dot)', input: 'Feb. 5', expected: /February fifth/i },
+            { name: 'Day Month (Full)', input: '5 February', expected: /the fifth of February/i }, // Potential gap
+            { name: 'Day Month (Abbrev)', input: '5 Feb', expected: /the fifth of February/i }, // Potential gap
+            { name: 'Month Year', input: 'February 2024', expected: /February 2024/i }, // Should probably stay or expand year
+            { name: 'Numeric Date (US)', input: '02/05/2024', expected: /the fifth of February, 2024/i }, // Potential gap
+            { name: 'Numeric Date (Euro)', input: '05.02.2024', expected: /the fifth of February, 2024/i }, // Potential gap
+            { name: 'Numeric Month Day', input: '02/05', expected: /February fifth/i }, // Potential gap
+            { name: 'Day of Week and Date', input: 'Friday, February 5', expected: /Friday, February fifth/i },
+            { name: 'Multiple Dates', input: 'February 5, 10, and 15', expected: /February fifth, tenth, and fifteenth/i }, // Potential gap (only handles "and")
+            { name: 'Date with Suffix', input: 'February 5th', expected: /February fifth/i },
+            { name: 'The ordinal of Month', input: 'the 5th of February', expected: /the fifth of February/i },
+            { name: 'Year Range (expanded)', input: '2020-2022', expected: /2020 to 2022/i },
+            { name: 'Partial Year Range', input: '2020-22', expected: /2020 to 2022/i }
+        ];
+
+        formats.forEach(f => {
+            test(`Discovery: ${f.name} (${f.input})`, () => {
+                const output = runProcessor(f.input);
+                // We use a softer check or just log it if we want to "discover"
+                // but console.log in tests can be messy. Let's just use toMatch and see failures.
+                expect(output).toMatch(f.expected);
+            });
+        });
     });
 });
