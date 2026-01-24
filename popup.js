@@ -9,6 +9,16 @@ document.querySelectorAll('.tab').forEach(tab => {
 });
 
 // Save/Load Logic
+// Helper to check if URL is localhost
+const isLocalhost = (url) => {
+    try {
+        const u = new URL(url);
+        return u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+    } catch {
+        return false;
+    }
+};
+
 const saveOptions = async () => {
     const apiUrl = document.getElementById('apiUrl').value;
     const voice = document.getElementById('voice').value;
@@ -28,15 +38,44 @@ const saveOptions = async () => {
     };
 
     try {
+        // Check permissions for custom URL
+        if (!isLocalhost(apiUrl)) {
+            const urlObj = new URL(apiUrl);
+            // We request permission for the specific origin
+            const origin = urlObj.origin + "/*";
+            const hasPerm = await browser.permissions.contains({ origins: [origin] });
+            if (!hasPerm) {
+                const granted = await browser.permissions.request({ origins: [origin] });
+                if (!granted) {
+                    const status = document.getElementById('status');
+                    status.textContent = "Permission denied for this URL.";
+                    status.style.color = "red";
+                    status.style.display = 'block';
+                    setTimeout(() => {
+                        status.style.display = 'none';
+                        status.style.color = "green"; // Reset color
+                        status.textContent = "Settings saved."; // Reset text
+                    }, 3000);
+                    return; // Abort save
+                }
+            }
+        }
+
         await browser.storage.sync.set({ apiUrl, voice, mode, defaultSpeed, defaultVolume, autoScroll, normalizationOptions });
         // Also update local storage for the overlay to pick up immediately if needed
         await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, normalizationOptions });
 
         const status = document.getElementById('status');
+        status.textContent = "Settings saved.";
+        status.style.color = "green";
         status.style.display = 'block';
         setTimeout(() => { status.style.display = 'none'; }, 2000);
     } catch (e) {
         console.error("Error saving options", e);
+        const status = document.getElementById('status');
+        status.textContent = "Error: " + e.message;
+        status.style.color = "red";
+        status.style.display = 'block';
     }
 };
 

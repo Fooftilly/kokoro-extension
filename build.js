@@ -80,6 +80,9 @@ function createManifest(browser) {
             "http://127.0.0.1/*",
             "http://localhost/*"
         ],
+        optional_host_permissions: [
+            "*://*/*"
+        ],
         action: {
             default_popup: "popup.html",
             default_icon: {

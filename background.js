@@ -124,7 +124,7 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
             console.warn("Status check returned " + statusResp.status);
         }
     } catch (e) {
-        notify("Kokoro TTS Error", "Could not connect to Kokoro API. Is it running?");
+        notify("Kokoro TTS Error", `Could not connect to Kokoro API at ${apiUrl}. Is it running?`);
         return;
     }
 
@@ -220,7 +220,11 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
         }
 
     } catch (e) {
-        notify("Kokoro TTS Error", "Generation failed: " + e.message);
+        let msg = e.message;
+        if (msg === "Failed to fetch") {
+            msg = `Connection failed. Is Kokoro-FastAPI running on ${apiUrl}?`;
+        }
+        notify("Kokoro TTS Error", "Generation failed: " + msg);
     }
 }
 

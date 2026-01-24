@@ -86,14 +86,14 @@ describe('AudioManager', () => {
             pendingVoice: 'af_heart',
             pendingApiUrl: 'http://localhost:8880'
         });
-        global.fetch.mockRejectedValue(new Error('Network Error'));
+        global.fetch.mockRejectedValue(new Error('Failed to fetch'));
 
         // Suppress console.error for this test
         const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => { });
 
         audioManager.setSentences([{ text: 'Error' }]);
 
-        await expect(audioManager.getAudio(0)).rejects.toThrow('Network Error');
+        await expect(audioManager.getAudio(0)).rejects.toThrow('Connection failed. Is Kokoro-FastAPI running on http://localhost:8880?');
 
         consoleSpy.mockRestore();
     });

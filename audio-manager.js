@@ -65,7 +65,8 @@ export class AudioManager {
 
             let msg = e.message;
             if (msg === "Failed to fetch") {
-                msg = "Connection failed. Is Kokoro-FastAPI running on 127.0.0.1:8880?";
+                const url = data.pendingApiUrl || "unknown URL";
+                msg = `Connection failed. Is Kokoro-FastAPI running on ${url}?`;
             }
             console.error("Kokoro Fetch failed:", e);
             // We'll let the caller handle UI status updates
