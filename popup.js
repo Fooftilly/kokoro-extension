@@ -19,9 +19,118 @@ const isLocalhost = (url) => {
     }
 };
 
+// --- Voice Mixer Logic ---
+let currentVoices = [];
+let availableVoices = [];
+
+/**
+ * Parses a voice string into an array of voice objects.
+ * Format: "voice1(weight1)+voice2(weight2)"
+ */
+function parseVoiceString(str) {
+    if (!str) return [];
+
+    // Check if it's a simple single voice without weight
+    if (!str.includes('+') && !str.includes('(')) {
+        return [{ id: str.trim(), weight: 1.0 }];
+    }
+
+    const parts = str.split('+');
+    return parts.map(part => {
+        const match = part.match(/([^(]+)\(([^)]+)\)/);
+        if (match) {
+            let weight = parseFloat(match[2]);
+            // Legacy conversion: if weight is > 1 (e.g. 5), treat it as 0.5
+            if (weight > 1) {
+                weight = weight / 10;
+            }
+            return {
+                id: match[1].trim(),
+                weight: weight
+            };
+        } else {
+            return { id: part.trim(), weight: 1.0 };
+        }
+    }).filter(v => v.id);
+}
+
+/**
+ * Serializes an array of voice objects into a string.
+ */
+function serializeVoiceString(voices) {
+    if (!voices || voices.length === 0) return '';
+    // Always use the format voice(weight) for consistency based on user request/screenshot
+    return voices.map(v => `${v.id}(${v.weight})`).join('+');
+}
+
+/**
+ * Fetches available voices from the API.
+ */
+async function fetchVoices(apiUrl) {
+    try {
+        const response = await fetch(`${apiUrl}audio/voices`);
+        if (!response.ok) throw new Error('Failed to fetch voices');
+        const data = await response.json();
+        // Filter for specific prefixes as requested
+        const validPrefixes = ['am_', 'af_', 'bm_', 'bf_'];
+        return data.voices.filter(v => validPrefixes.some(prefix => v.startsWith(prefix)));
+    } catch (e) {
+        console.error("Error fetching voices:", e);
+        return [];
+    }
+}
+
+/**
+ * Renders the voice mixer UI.
+ */
+function renderVoiceMixer() {
+    const container = document.getElementById('selectedVoices');
+    container.innerHTML = '';
+
+    currentVoices.forEach((voice, index) => {
+        const row = document.createElement('div');
+        row.className = 'voice-row';
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'voice-name';
+        nameSpan.textContent = voice.id;
+
+        const weightContainer = document.createElement('div');
+        weightContainer.className = 'voice-weight-container';
+
+        const weightInput = document.createElement('input');
+        weightInput.type = 'number';
+        weightInput.className = 'voice-weight';
+        weightInput.value = voice.weight;
+        weightInput.step = '0.1';
+        weightInput.min = '0';
+        weightInput.max = '10'; // Allow values > 1 if user wants, though usually <=1
+        weightInput.addEventListener('change', (e) => {
+            currentVoices[index].weight = parseFloat(e.target.value) || 0;
+        });
+
+        const removeBtn = document.createElement('span');
+        removeBtn.className = 'remove-voice';
+        removeBtn.innerHTML = '&times;';
+        removeBtn.title = 'Remove voice';
+        removeBtn.addEventListener('click', () => {
+            currentVoices.splice(index, 1);
+            renderVoiceMixer();
+        });
+
+        weightContainer.appendChild(weightInput);
+        weightContainer.appendChild(removeBtn);
+
+        row.appendChild(nameSpan);
+        row.appendChild(weightContainer);
+        container.appendChild(row);
+    });
+}
+
+
 const saveOptions = async () => {
     const apiUrl = document.getElementById('apiUrl').value;
-    const voice = document.getElementById('voice').value;
+    const voice = serializeVoiceString(currentVoices);
     const mode = document.querySelector('input[name="mode"]:checked').value;
     const defaultSpeed = document.getElementById('defaultSpeed').value;
     const defaultVolume = document.getElementById('defaultVolume').value;
@@ -84,7 +193,7 @@ const restoreOptions = async () => {
     try {
         const items = await browser.storage.sync.get({
             apiUrl: 'http://127.0.0.1:8880/v1/',
-            voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
+            voice: 'af_sarah(0.5)+af_nicole(0.3)+af_sky(0.2)',
             mode: 'stream',
             defaultSpeed: '1.0',
             defaultVolume: '1.0',
@@ -102,7 +211,15 @@ const restoreOptions = async () => {
         });
 
         document.getElementById('apiUrl').value = items.apiUrl;
-        document.getElementById('voice').value = items.voice;
+
+        currentVoices = parseVoiceString(items.voice);
+        renderVoiceMixer();
+
+        // Fetch available voices for the dropdown
+        fetchVoices(items.apiUrl).then(voices => {
+            availableVoices = voices;
+        });
+
         if (items.mode === 'stream') {
             document.getElementById('modeStream').checked = true;
         } else {
@@ -126,6 +243,41 @@ const restoreOptions = async () => {
         console.error("Error restoring options", e);
     }
 };
+
+// Search Dropdown Logic
+const searchInput = document.getElementById('voiceSearch');
+const dropdown = document.getElementById('voiceDropdown');
+
+searchInput.addEventListener('input', () => {
+    const query = searchInput.value.toLowerCase();
+    const filtered = availableVoices.filter(v => v.toLowerCase().includes(query) && !currentVoices.some(cv => cv.id === v));
+
+    dropdown.innerHTML = '';
+    if (filtered.length > 0 && query.length > 0) {
+        dropdown.style.display = 'block';
+        filtered.forEach(voice => {
+            const div = document.createElement('div');
+            div.className = 'voice-option';
+            div.textContent = voice;
+            div.addEventListener('click', () => {
+                currentVoices.push({ id: voice, weight: 0.5 }); // Default weight
+                renderVoiceMixer();
+                searchInput.value = '';
+                dropdown.style.display = 'none';
+            });
+            dropdown.appendChild(div);
+        });
+    } else {
+        dropdown.style.display = 'none';
+    }
+});
+
+// Hide dropdown when clicking outside
+document.addEventListener('click', (e) => {
+    if (e.target !== searchInput && e.target !== dropdown) {
+        dropdown.style.display = 'none';
+    }
+});
 
 document.addEventListener('DOMContentLoaded', restoreOptions);
 document.getElementById('save').addEventListener('click', saveOptions);

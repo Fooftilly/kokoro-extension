@@ -5,8 +5,29 @@
     <style>
         body {
             width: 350px;
+            height: 520px;
             padding: 15px;
             font-family: sans-serif;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            background-color: #fff;
+            color: #333;
+        }
+
+        .content-wrapper {
+            flex: 1;
+            overflow-y: auto;
+            margin-bottom: 15px;
+            padding-right: 5px;
+        }
+
+        .footer {
+            flex-shrink: 0;
+            border-top: 1px solid #ccc;
+            padding-top: 10px;
+            background: #fff;
         }
 
         .tabs {
@@ -20,6 +41,9 @@
             cursor: pointer;
             border: 1px solid transparent;
             border-bottom: none;
+            background-color: #f8f9fa;
+            color: #666;
+            border-bottom: 1px solid #ccc;
         }
 
         .tab.active {
@@ -29,6 +53,7 @@
             font-weight: bold;
             border-bottom: 1px solid #fff;
             margin-bottom: -1px;
+            color: #333;
         }
 
         .content {
@@ -44,6 +69,7 @@
             margin-top: 10px;
             font-weight: bold;
             font-size: 13px;
+            color: #333;
         }
 
         input[type="text"],
@@ -53,6 +79,9 @@
             box-sizing: border-box;
             margin-top: 5px;
             padding: 5px;
+            background: #fff;
+            border: 1px solid #ccc;
+            color: #333;
         }
 
         .note {
@@ -81,101 +110,198 @@
             display: none;
             font-size: 12px;
         }
+
+        #voiceMixerContainer {
+            background-color: #f9f9f9;
+            border: 1px solid #ddd;
+        }
+
+        .voice-row {
+            display: flex;
+            align-items: center;
+            background: #fff;
+            border: 1px solid #eee;
+            border-radius: 4px;
+            padding: 8px;
+            margin-bottom: 8px;
+            justify-content: space-between;
+        }
+
+        .voice-name {
+            color: #333;
+            font-size: 13px;
+            margin-right: 10px;
+            flex-grow: 1;
+        }
+
+        .voice-weight-container {
+            display: flex;
+            align-items: center;
+        }
+
+        .voice-weight {
+            width: 50px !important;
+            margin: 0 5px 0 0 !important;
+            background: #fff;
+            border: 1px solid #ccc;
+            color: #333;
+            text-align: center;
+            padding: 4px !important;
+        }
+
+        .remove-voice {
+            cursor: pointer;
+            color: #999;
+            font-weight: bold;
+            margin-left: 5px;
+            padding: 0 5px;
+        }
+
+        .remove-voice:hover {
+            color: #dc3545;
+        }
+
+        #voiceSearch {
+            background: #fff;
+            border: 1px solid #ccc;
+            color: #333;
+        }
+
+        #voiceDropdown {
+            border: 1px solid #ccc !important;
+            background: #fff !important;
+        }
+
+        .voice-option {
+            padding: 8px;
+            cursor: pointer;
+            color: #333;
+            border-bottom: 1px solid #eee;
+        }
+
+        .voice-option:hover {
+            background-color: #007bff;
+            color: white;
+        }
     </style>
 </head>
 
 <body>
-    <div class="tabs">
-        <div class="tab active" data-tab="general">General</div>
-        <div class="tab" data-tab="defaults">Player Defaults</div>
-        <div class="tab" data-tab="normalization">Normalization</div>
+    <div class="content-wrapper">
+        <div class="tabs">
+            <div class="tab active" data-tab="general" style="width: 50%; text-align: center;">General</div>
+            <div class="tab" data-tab="normalization" style="width: 50%; text-align: center;">Normalization</div>
+        </div>
+
+        <div id="general" class="content active">
+            <label for="apiUrl">API Base URL</label>
+            <input type="text" id="apiUrl" style="margin-bottom: 5px;">
+
+            <label>VOICE MIXER</label>
+            <div id="voiceMixerContainer"
+                style="border: 1px solid #444; padding: 10px; border-radius: 4px; margin-top: 5px; margin-bottom: 10px;">
+                <div id="selectedVoices"></div>
+                <div style="margin-top: 10px;">
+                    <input type="text" id="voiceSearch" placeholder="Search and select voices..." autocomplete="off">
+                    <div id="voiceDropdown"
+                        style="display: none; border: 1px solid #444; max-height: 150px; overflow-y: auto; position: absolute; width: 300px; z-index: 100;">
+                    </div>
+                </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+                <div>
+                    <label for="defaultSpeed" style="margin-top:0;">Speed</label>
+                    <select id="defaultSpeed" style="margin-top:2px;">
+                        <option value="0.5">0.5x</option>
+                        <option value="0.75">0.75x</option>
+                        <option value="1.0">1.0x</option>
+                        <option value="1.25">1.25x</option>
+                        <option value="1.5">1.5x</option>
+                        <option value="2.0">2.0x</option>
+                        <option value="2.5">2.5x</option>
+                        <option value="2.7">2.7x</option>
+                        <option value="3.0">3.0x</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="defaultVolume" style="margin-top:0;">Volume</label>
+                    <input type="range" id="defaultVolume" min="0" max="1" step="0.1" value="1"
+                        style="margin-top:5px; height: 25px;">
+                </div>
+            </div>
+
+            <label style="margin-top: 0;">Output Mode</label>
+            <div style="display: flex; gap: 15px; margin-bottom: 10px;">
+                <div style="display: flex; align-items: center;">
+                    <input type="radio" id="modeDownload" name="mode" value="download"
+                        style="width: auto; margin: 0 5px 0 0;">
+                    <label for="modeDownload" style="font-weight:normal; margin: 0;">Download</label>
+                </div>
+                <div style="display: flex; align-items: center;">
+                    <input type="radio" id="modeStream" name="mode" value="stream"
+                        style="width: auto; margin: 0 5px 0 0;">
+                    <label for="modeStream" style="font-weight:normal; margin: 0;">Stream</label>
+                </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr; gap: 5px;">
+                <div style="display: flex; align-items: center;">
+                    <input type="checkbox" id="showFloatingButton" style="width: auto; margin: 0 5px 0 0;">
+                    <label for="showFloatingButton" style="font-weight:normal; margin: 0;">Show floating mic
+                        button</label>
+                </div>
+                <div style="display: flex; align-items: center;">
+                    <input type="checkbox" id="autoScroll" style="width: auto; margin: 0 5px 0 0;">
+                    <label for="autoScroll" style="font-weight:normal; margin: 0;">Auto-scroll page</label>
+                </div>
+            </div>
+        </div>
+
+        <div id="normalization" class="content">
+            <label>Text Normalization Options</label>
+            <div style="margin-top: 10px;">
+                <div style="margin-bottom: 5px;">
+                    <input type="checkbox" id="norm_normalize">
+                    <label for="norm_normalize" style="display:inline; font-weight:normal;">Enable Normalization</label>
+                </div>
+                <div style="margin-bottom: 5px;">
+                    <input type="checkbox" id="norm_unit">
+                    <label for="norm_unit" style="display:inline; font-weight:normal;">Unit Normalization (e.g. 10kg
+                        &rarr;
+                        ten kilograms)</label>
+                </div>
+                <div style="margin-bottom: 5px;">
+                    <input type="checkbox" id="norm_url">
+                    <label for="norm_url" style="display:inline; font-weight:normal;">URL Normalization</label>
+                </div>
+                <div style="margin-bottom: 5px;">
+                    <input type="checkbox" id="norm_email">
+                    <label for="norm_email" style="display:inline; font-weight:normal;">Email Normalization</label>
+                </div>
+                <div style="margin-bottom: 5px;">
+                    <input type="checkbox" id="norm_phone">
+                    <label for="norm_phone" style="display:inline; font-weight:normal;">Phone Normalization</label>
+                </div>
+                <div style="margin-bottom: 5px;">
+                    <input type="checkbox" id="norm_plural">
+                    <label for="norm_plural" style="display:inline; font-weight:normal;">Optional Pluralization (e.g.
+                        (s)
+                        &rarr; s)</label>
+                </div>
+                <div style="margin-bottom: 5px;">
+                    <input type="checkbox" id="norm_symbol">
+                    <label for="norm_symbol" style="display:inline; font-weight:normal;">Replace Remaining
+                        Symbols</label>
+                </div>
+            </div>
+        </div>
     </div>
 
-    <div id="general" class="content active">
-        <label for="apiUrl">API Base URL</label>
-        <input type="text" id="apiUrl">
-
-        <label for="voice">Voice Configuration</label>
-        <textarea id="voice" rows="3"></textarea>
-
-        <label>Output Mode</label>
-        <div>
-            <input type="radio" id="modeDownload" name="mode" value="download">
-            <label for="modeDownload" style="display:inline; font-weight:normal;">Download File</label>
-        </div>
-        <div>
-            <input type="radio" id="modeStream" name="mode" value="stream">
-            <label for="modeStream" style="display:inline; font-weight:normal;">Stream (Overlay Player)</label>
-        </div>
-
-        <div style="margin-top: 15px;">
-            <input type="checkbox" id="showFloatingButton">
-            <label for="showFloatingButton" style="display:inline; font-weight:normal;">Show floating button on text
-                selection</label>
-        </div>
+    <div class="footer">
+        <button id="save" style="margin-top: 0; width: 100%;">Save Settings</button>
+        <div id="status">Settings saved.</div>
     </div>
-
-    <div id="defaults" class="content">
-        <label for="defaultSpeed">Default Playback Speed</label>
-        <select id="defaultSpeed">
-            <option value="0.5">0.5x</option>
-            <option value="0.75">0.75x</option>
-            <option value="1.0">1.0x</option>
-            <option value="1.25">1.25x</option>
-            <option value="1.5">1.5x</option>
-            <option value="2.0">2.0x</option>
-            <option value="2.5">2.5x</option>
-            <option value="2.7">2.7x</option>
-            <option value="3.0">3.0x</option>
-        </select>
-
-        <label for="defaultVolume">Default Volume</label>
-        <input type="range" id="defaultVolume" min="0" max="1" step="0.1" value="1">
-
-        <div style="margin-top: 15px;">
-            <input type="checkbox" id="autoScroll">
-            <label for="autoScroll" style="display:inline; font-weight:normal;">Auto-scroll origin page</label>
-        </div>
-    </div>
-
-    <div id="normalization" class="content">
-        <label>Text Normalization Options</label>
-        <div style="margin-top: 10px;">
-            <div style="margin-bottom: 5px;">
-                <input type="checkbox" id="norm_normalize">
-                <label for="norm_normalize" style="display:inline; font-weight:normal;">Enable Normalization</label>
-            </div>
-            <div style="margin-bottom: 5px;">
-                <input type="checkbox" id="norm_unit">
-                <label for="norm_unit" style="display:inline; font-weight:normal;">Unit Normalization (e.g. 10kg &rarr;
-                    ten kilograms)</label>
-            </div>
-            <div style="margin-bottom: 5px;">
-                <input type="checkbox" id="norm_url">
-                <label for="norm_url" style="display:inline; font-weight:normal;">URL Normalization</label>
-            </div>
-            <div style="margin-bottom: 5px;">
-                <input type="checkbox" id="norm_email">
-                <label for="norm_email" style="display:inline; font-weight:normal;">Email Normalization</label>
-            </div>
-            <div style="margin-bottom: 5px;">
-                <input type="checkbox" id="norm_phone">
-                <label for="norm_phone" style="display:inline; font-weight:normal;">Phone Normalization</label>
-            </div>
-            <div style="margin-bottom: 5px;">
-                <input type="checkbox" id="norm_plural">
-                <label for="norm_plural" style="display:inline; font-weight:normal;">Optional Pluralization (e.g. (s)
-                    &rarr; s)</label>
-            </div>
-            <div style="margin-bottom: 5px;">
-                <input type="checkbox" id="norm_symbol">
-                <label for="norm_symbol" style="display:inline; font-weight:normal;">Replace Remaining Symbols</label>
-            </div>
-        </div>
-    </div>
-
-    <button id="save">Save Settings</button>
-    <div id="status">Settings saved.</div>
 
     <script src="browser-polyfill.min.js"></script>
     <script src="popup.js"></script>
