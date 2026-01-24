@@ -26,6 +26,7 @@ const saveOptions = async () => {
     const defaultSpeed = document.getElementById('defaultSpeed').value;
     const defaultVolume = document.getElementById('defaultVolume').value;
     const autoScroll = document.getElementById('autoScroll').checked;
+    const showFloatingButton = document.getElementById('showFloatingButton').checked;
 
     const normalizationOptions = {
         normalize: document.getElementById('norm_normalize').checked,
@@ -61,9 +62,9 @@ const saveOptions = async () => {
             }
         }
 
-        await browser.storage.sync.set({ apiUrl, voice, mode, defaultSpeed, defaultVolume, autoScroll, normalizationOptions });
+        await browser.storage.sync.set({ apiUrl, voice, mode, defaultSpeed, defaultVolume, autoScroll, showFloatingButton, normalizationOptions });
         // Also update local storage for the overlay to pick up immediately if needed
-        await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, normalizationOptions });
+        await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, showFloatingButton, normalizationOptions });
 
         const status = document.getElementById('status');
         status.textContent = "Settings saved.";
@@ -88,6 +89,7 @@ const restoreOptions = async () => {
             defaultSpeed: '1.0',
             defaultVolume: '1.0',
             autoScroll: false,
+            showFloatingButton: true,
             normalizationOptions: {
                 normalize: true,
                 unit_normalization: false,
@@ -109,6 +111,7 @@ const restoreOptions = async () => {
         document.getElementById('defaultSpeed').value = items.defaultSpeed;
         document.getElementById('defaultVolume').value = items.defaultVolume;
         document.getElementById('autoScroll').checked = items.autoScroll;
+        document.getElementById('showFloatingButton').checked = items.showFloatingButton;
 
         const norm = items.normalizationOptions;
         document.getElementById('norm_normalize').checked = norm.normalize;

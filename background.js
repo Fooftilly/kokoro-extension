@@ -234,6 +234,14 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
     }
 });
 
+browser.runtime.onMessage.addListener(async (request, sender) => {
+    if (request.action === "REQUEST_TTS" && request.text) {
+        if (sender.tab) {
+            await handleTtsAction(sender.tab, "send-to-kokoro", request.text);
+        }
+    }
+});
+
 browser.commands.onCommand.addListener(async (command) => {
     if (command === "read-article") {
         const tabs = await browser.tabs.query({ active: true, currentWindow: true });

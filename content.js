@@ -383,3 +383,160 @@ window.addEventListener('message', (event) => {
         }
     }
 });
+
+// --- Floating Microphone Button Logic ---
+
+let floatBtn = null;
+let lastSelection = "";
+
+function createFloatingButton() {
+    const btn = document.createElement('div');
+    btn.id = 'kokoro-float-btn';
+    // Style matches the screenshot: dark circle with white microphone
+    btn.innerHTML = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" width="18px" height="18px">
+        <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+        <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+    </svg>
+    `;
+    btn.style.position = 'absolute';
+    btn.style.zIndex = '2147483646';
+    btn.style.width = '36px';
+    btn.style.height = '36px';
+    btn.style.borderRadius = '50%';
+    btn.style.backgroundColor = '#333';
+    btn.style.display = 'flex';
+    btn.style.justifyContent = 'center';
+    btn.style.alignItems = 'center';
+    btn.style.cursor = 'pointer';
+    btn.style.boxShadow = '0 2px 5px rgba(0,0,0,0.3)';
+    btn.style.transition = 'opacity 0.2s, transform 0.2s';
+    btn.style.opacity = '0'; // Start hidden
+    btn.style.pointerEvents = 'none'; // Prevent interaction while hidden
+
+    btn.addEventListener('mousedown', (e) => {
+        // Prevent clearing selection
+        e.preventDefault();
+        e.stopPropagation();
+    });
+
+    btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (lastSelection) {
+            browser.runtime.sendMessage({ action: "REQUEST_TTS", text: lastSelection });
+            removeFloatingButton();
+            // Clear selection visually to indicate action taken
+            window.getSelection().removeAllRanges();
+        }
+    });
+
+    document.body.appendChild(btn);
+    return btn;
+}
+
+function updateFloatingButton(rect) {
+    if (!floatBtn) {
+        floatBtn = createFloatingButton();
+    }
+    // Position button slightly above and to the right of the selection end
+    // rect is the bounding client rect of the range
+    const btnSize = 36;
+    const margin = 10;
+
+    // Calculate absolute position
+    const absoluteTop = window.scrollY + rect.top;
+    const absoluteLeft = window.scrollX + rect.right;
+
+    // If close to right edge, shift left
+    let leftPos = absoluteLeft - (btnSize / 2);
+    if (leftPos + btnSize > document.body.scrollWidth) {
+        leftPos = document.body.scrollWidth - btnSize - margin;
+    }
+
+    // If close to top edge, shift down
+    let topPos = absoluteTop - btnSize - margin;
+    if (topPos < 0) {
+        topPos = absoluteTop + rect.height + margin;
+    }
+
+    floatBtn.style.top = `${topPos}px`;
+    floatBtn.style.left = `${leftPos}px`;
+
+    // Ensure display is correct before transition
+    floatBtn.style.display = 'flex';
+
+    // Small delay to allow transition
+    requestAnimationFrame(() => {
+        floatBtn.style.opacity = '1';
+        floatBtn.style.pointerEvents = 'auto';
+        floatBtn.style.transform = 'scale(1)';
+    });
+}
+
+function removeFloatingButton() {
+    if (floatBtn) {
+        floatBtn.style.opacity = '0';
+        floatBtn.style.transform = 'scale(0.8)';
+        floatBtn.style.pointerEvents = 'none';
+        // Remove from DOM after transition
+        setTimeout(() => {
+            if (floatBtn) { // Check if still exists/ref valid
+                floatBtn.style.display = 'none';
+            }
+        }, 200);
+    }
+}
+
+async function handleSelection() {
+    const selection = window.getSelection();
+    const text = selection.toString().trim();
+
+    if (text.length > 0) {
+        // Check settings first
+        try {
+            const settings = await browser.storage.sync.get('showFloatingButton');
+            // Default to true if undefined
+            if (settings.showFloatingButton === false) {
+                return;
+            }
+        } catch (e) { /* ignore error, assume true */ }
+
+        lastSelection = text;
+
+        try {
+            const range = selection.getRangeAt(0);
+            const rect = range.getBoundingClientRect();
+
+            // Ensure rect is valid and visible
+            if (rect.width > 0 && rect.height > 0) {
+                updateFloatingButton(rect);
+            }
+        } catch (e) {
+            console.log("Selection range error:", e);
+        }
+    } else {
+        removeFloatingButton();
+        lastSelection = "";
+    }
+}
+
+document.addEventListener('mouseup', (e) => {
+    // If clicking the button itself, don't handle selection (handled by button click)
+    if (floatBtn && floatBtn.contains(e.target)) return;
+
+    // Delay slightly to let selection update
+    setTimeout(handleSelection, 10);
+});
+
+document.addEventListener('keyup', (e) => {
+    if (e.key === 'Shift' || e.key.startsWith('Arrow')) {
+        setTimeout(handleSelection, 10);
+    }
+});
+
+document.addEventListener('scroll', () => {
+    if (floatBtn && floatBtn.style.opacity === '1') {
+        removeFloatingButton();
+    }
+}, { passive: true });
