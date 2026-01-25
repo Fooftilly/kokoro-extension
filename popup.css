@@ -197,6 +197,139 @@ button:hover {
     color: #dc3545;
 }
 
+.voice-row-actions {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+}
+
+.voice-row-weight {
+    width: 35px !important;
+    height: 22px !important;
+    margin: 0 !important;
+    padding: 0 2px !important;
+    text-align: center;
+    font-size: 12px;
+    border: 1px solid var(--border-color);
+    background: var(--input-bg);
+    color: var(--text-color);
+    border-radius: 3px;
+}
+
+/* Chrome, Safari, Edge, Opera: Remove arrows */
+.voice-row-weight::-webkit-outer-spin-button,
+.voice-row-weight::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+    appearance: none;
+}
+
+/* Firefox: Remove arrows */
+.voice-row-weight[type=number] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+}
+
+/* Improved Voice Mixer Bar */
+.voice-mixer-bar {
+    height: 40px;
+    width: 100%;
+    background: #ddd;
+    border-radius: 6px;
+    position: relative;
+    display: flex;
+    overflow: hidden;
+    margin-top: 10px;
+    border: 1px solid var(--border-color);
+    margin-bottom: 25px;
+    /* Space for labels below */
+}
+
+.voice-segment {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-size: 11px;
+    font-weight: bold;
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+    transition: filter 0.2s;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.voice-segment:hover {
+    filter: brightness(1.1);
+}
+
+.voice-segment-label {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 0 4px;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.voice-segment-percent {
+    position: absolute;
+    bottom: -20px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: var(--text-color);
+    font-size: 10px;
+    font-weight: normal;
+}
+
+.voice-handle {
+    width: 12px;
+    height: 24px;
+    background: #fff;
+    border: 1px solid #999;
+    border-radius: 3px;
+    position: absolute;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 10;
+    cursor: col-resize;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.voice-handle::before {
+    content: '';
+    width: 2px;
+    height: 12px;
+    background: #ccc;
+}
+
+.voice-handle:hover {
+    background: #f0f0f0;
+    border-color: #666;
+}
+
+.dark-theme .voice-handle {
+    background: #444;
+    border-color: #666;
+}
+
+.voice-edit-input {
+    width: 40px;
+    height: 20px;
+    font-size: 11px;
+    padding: 0;
+    text-align: center;
+    border: none;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.9);
+    color: #000;
+}
+
 #voiceSearch {
     background: var(--input-bg);
     border: 1px solid var(--border-color);

@@ -87,44 +87,217 @@ function renderVoiceMixer() {
     const container = document.getElementById('selectedVoices');
     container.innerHTML = '';
 
+    if (currentVoices.length === 0) {
+        container.innerHTML = '<div class="note">No voices selected. Search above to add.</div>';
+        return;
+    }
+
+    // Create the main bar
+    const bar = document.createElement('div');
+    bar.className = 'voice-mixer-bar';
+    container.appendChild(bar);
+
+    // Create a voice list for removal (optional, but good for UX)
+    const list = document.createElement('div');
+    list.className = 'voice-list mt-10';
+    container.appendChild(list);
+
+    const colors = ['#007bff', '#28a745', '#fd7e14', '#6f42c1', '#e83e8c', '#20c997', '#ffc107', '#17a2b8'];
+
+    // Normalize weights to sum to 1.0 if they don't
+    const totalWeight = currentVoices.reduce((sum, v) => sum + v.weight, 0);
+    if (totalWeight > 0 && Math.abs(totalWeight - 1.0) > 0.001) {
+        currentVoices.forEach(v => v.weight = v.weight / totalWeight);
+    } else if (totalWeight === 0) {
+        currentVoices.forEach(v => v.weight = 1.0 / currentVoices.length);
+    }
+
+    let cumulativePercent = 0;
+
     currentVoices.forEach((voice, index) => {
+        const percent = voice.weight * 100;
+        const segment = document.createElement('div');
+        segment.className = 'voice-segment';
+        segment.style.width = `${percent}%`;
+        segment.style.backgroundColor = colors[index % colors.length];
+
+        const label = document.createElement('div');
+        label.className = 'voice-segment-label';
+        label.textContent = voice.id;
+        segment.appendChild(label);
+
+        const percentLabel = document.createElement('div');
+        percentLabel.className = 'voice-segment-percent';
+        percentLabel.textContent = `${Math.round(percent)}%`;
+        segment.appendChild(percentLabel);
+
+        // Click to edit
+        segment.addEventListener('click', (e) => {
+            if (e.target.tagName === 'INPUT') return;
+            showEditInput(segment, index);
+        });
+
+        bar.appendChild(segment);
+
+        // Add handle if not the last segment
+        if (index < currentVoices.length - 1) {
+            cumulativePercent += percent;
+            const handle = document.createElement('div');
+            handle.className = 'voice-handle';
+            handle.style.left = `${cumulativePercent}%`;
+
+            handle.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                startDragging(index, handle, bar);
+            });
+
+            bar.appendChild(handle);
+        }
+
+        // Add to list for removal
         const row = document.createElement('div');
         row.className = 'voice-row';
+        row.style.borderLeft = `4px solid ${colors[index % colors.length]}`;
 
-        const nameSpan = document.createElement('span');
-        nameSpan.className = 'voice-name';
-        nameSpan.textContent = voice.id;
+        row.innerHTML = `
+            <span class="voice-name">${voice.id}</span>
+            <div class="voice-row-actions">
+                <input type="number" class="voice-row-weight" value="${Math.round(percent)}" min="1" max="99">%
+                <span class="remove-voice" title="Remove voice">&times;</span>
+            </div>
+        `;
 
-        const weightContainer = document.createElement('div');
-        weightContainer.className = 'voice-weight-container';
-
-        const weightInput = document.createElement('input');
-        weightInput.type = 'number';
-        weightInput.className = 'voice-weight';
-        weightInput.value = voice.weight;
-        weightInput.step = '0.1';
-        weightInput.min = '0';
-        weightInput.max = '10'; // Allow values > 1 if user wants, though usually <=1
-        weightInput.addEventListener('change', (e) => {
-            currentVoices[index].weight = parseFloat(e.target.value) || 0;
+        const rowInput = row.querySelector('.voice-row-weight');
+        rowInput.addEventListener('change', (e) => {
+            const newVal = parseInt(e.target.value);
+            if (!isNaN(newVal) && newVal >= 1 && newVal <= 99) {
+                updateVoiceWeight(index, newVal / 100);
+            } else {
+                renderVoiceMixer();
+            }
         });
 
-        const removeBtn = document.createElement('span');
-        removeBtn.className = 'remove-voice';
-        removeBtn.innerHTML = '&times;';
-        removeBtn.title = 'Remove voice';
-        removeBtn.addEventListener('click', () => {
+        row.querySelector('.remove-voice').addEventListener('click', () => {
             currentVoices.splice(index, 1);
+            if (currentVoices.length > 0) {
+                // Redistribute weight
+                const remaining = 1.0 / currentVoices.length;
+                currentVoices.forEach(v => v.weight = remaining);
+            }
             renderVoiceMixer();
         });
-
-        weightContainer.appendChild(weightInput);
-        weightContainer.appendChild(removeBtn);
-
-        row.appendChild(nameSpan);
-        row.appendChild(weightContainer);
-        container.appendChild(row);
+        list.appendChild(row);
     });
+}
+
+function showEditInput(segment, index) {
+    const label = segment.querySelector('.voice-segment-label');
+    const oldText = label.textContent;
+    const currentVal = Math.round(currentVoices[index].weight * 100);
+
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.className = 'voice-edit-input';
+    input.value = currentVal;
+    input.min = 1;
+    input.max = 99;
+
+    label.innerHTML = '';
+    label.appendChild(input);
+    input.focus();
+    input.select();
+
+    const finishEdit = () => {
+        const newVal = parseInt(input.value);
+        if (!isNaN(newVal) && newVal >= 1 && newVal <= 99) {
+            updateVoiceWeight(index, newVal / 100);
+        } else {
+            renderVoiceMixer();
+        }
+    };
+
+    input.addEventListener('blur', finishEdit);
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') finishEdit();
+        if (e.key === 'Escape') renderVoiceMixer();
+    });
+}
+
+function updateVoiceWeight(index, newWeight) {
+    const oldWeight = currentVoices[index].weight;
+    const delta = newWeight - oldWeight;
+
+    // Constraints
+    const MIN_WEIGHT = 0.05;
+    if (newWeight < MIN_WEIGHT) newWeight = MIN_WEIGHT;
+    if (newWeight > 1.0 - (currentVoices.length - 1) * MIN_WEIGHT) {
+        newWeight = 1.0 - (currentVoices.length - 1) * MIN_WEIGHT;
+    }
+
+    currentVoices[index].weight = newWeight;
+
+    // Redistribute delta to others
+    const others = currentVoices.filter((_, i) => i !== index);
+    if (others.length > 0) {
+        // Try to take from right first, then left (as requested)
+        // For simplicity here, we distribute proportionally to others
+        const actualDelta = newWeight - oldWeight;
+        const othersTotal = others.reduce((sum, v) => sum + v.weight, 0);
+
+        others.forEach(v => {
+            v.weight -= (actualDelta * (v.weight / othersTotal));
+            if (v.weight < MIN_WEIGHT) v.weight = MIN_WEIGHT;
+        });
+
+        // Final normalization to ensure sum is 1.0
+        const finalTotal = currentVoices.reduce((sum, v) => sum + v.weight, 0);
+        currentVoices.forEach(v => v.weight /= finalTotal);
+    }
+
+    renderVoiceMixer();
+}
+
+function startDragging(index, handle, bar) {
+    const barRect = bar.getBoundingClientRect();
+    const MIN_WIDTH_PERCENT = 5;
+
+    const onMouseMove = (e) => {
+        let mouseX = e.clientX - barRect.left;
+        let percent = (mouseX / barRect.width) * 100;
+
+        // Calculate limits based on adjacent segments
+        let prevCumulative = 0;
+        for (let i = 0; i < index; i++) {
+            prevCumulative += currentVoices[i].weight * 100;
+        }
+
+        let nextWeight = currentVoices[index + 1].weight * 100;
+        let currentWeight = currentVoices[index].weight * 100;
+
+        // Handle position must be between (prevCumulative + min) and (prevCumulative + current + next - min)
+        const minPos = prevCumulative + MIN_WIDTH_PERCENT;
+        const maxPos = prevCumulative + currentWeight + nextWeight - MIN_WIDTH_PERCENT;
+
+        if (percent < minPos) percent = minPos;
+        if (percent > maxPos) percent = maxPos;
+
+        // Update weights of index and index + 1
+        const newCurrentWeight = (percent - prevCumulative);
+        const newNextWeight = (currentWeight + nextWeight) - newCurrentWeight;
+
+        currentVoices[index].weight = newCurrentWeight / 100;
+        currentVoices[index + 1].weight = newNextWeight / 100;
+
+        renderVoiceMixer();
+    };
+
+    const onMouseUp = () => {
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
 }
 
 
@@ -271,7 +444,15 @@ searchInput.addEventListener('input', () => {
             div.className = 'voice-option';
             div.textContent = voice;
             div.addEventListener('click', () => {
-                currentVoices.push({ id: voice, weight: 0.5 }); // Default weight
+                if (currentVoices.length === 0) {
+                    currentVoices.push({ id: voice, weight: 1.0 });
+                } else {
+                    // Split the last segment
+                    const lastVoice = currentVoices[currentVoices.length - 1];
+                    const half = lastVoice.weight / 2;
+                    lastVoice.weight = half;
+                    currentVoices.push({ id: voice, weight: half });
+                }
                 renderVoiceMixer();
                 searchInput.value = '';
                 dropdown.style.display = 'none';
