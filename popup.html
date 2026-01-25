@@ -77,27 +77,29 @@
                 </div>
             </div>
 
-            <label class="mt-0">Output Mode</label>
-            <div class="flex-row">
+            <div class="settings-grid mt-5">
                 <div class="flex-item">
-                    <input type="radio" id="modeDownload" name="mode" value="download" class="checkbox-radio">
-                    <label for="modeDownload" class="inline-label">Download</label>
+                    <label class="inline-label mr-10">Mode:</label>
+                    <div class="flex-row gap-5 mb-0">
+                        <div class="flex-item">
+                            <input type="radio" id="modeDownload" name="mode" value="download" class="checkbox-radio">
+                            <label for="modeDownload" class="inline-label">Download</label>
+                        </div>
+                        <div class="flex-item">
+                            <input type="radio" id="modeStream" name="mode" value="stream" class="checkbox-radio">
+                            <label for="modeStream" class="inline-label">Stream</label>
+                        </div>
+                    </div>
                 </div>
-                <div class="flex-item">
-                    <input type="radio" id="modeStream" name="mode" value="stream" class="checkbox-radio">
-                    <label for="modeStream" class="inline-label">Stream</label>
-                </div>
-            </div>
-
-            <div class="settings-grid-single">
-                <div class="flex-item">
-                    <input type="checkbox" id="showFloatingButton" class="checkbox-radio">
-                    <label for="showFloatingButton" class="inline-label">Show floating mic
-                        button</label>
-                </div>
-                <div class="flex-item">
-                    <input type="checkbox" id="autoScroll" class="checkbox-radio">
-                    <label for="autoScroll" class="inline-label">Auto-scroll page</label>
+                <div class="flex-column">
+                    <div class="flex-item">
+                        <input type="checkbox" id="showFloatingButton" class="checkbox-radio">
+                        <label for="showFloatingButton" class="inline-label">Floating mic</label>
+                    </div>
+                    <div class="flex-item mt-2">
+                        <input type="checkbox" id="autoScroll" class="checkbox-radio">
+                        <label for="autoScroll" class="inline-label">Auto-scroll</label>
+                    </div>
                 </div>
             </div>
         </div>

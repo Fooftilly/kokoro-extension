@@ -15,6 +15,7 @@
     --footer-bg: #fff;
     --status-success: green;
     --status-error: red;
+    --header-height: 35px;
 }
 
 .dark-theme {
@@ -36,7 +37,7 @@
 body {
     width: 350px;
     height: 520px;
-    padding: 15px;
+    padding: 10px;
     font-family: sans-serif;
     box-sizing: border-box;
     display: flex;
@@ -49,7 +50,7 @@ body {
 .content-wrapper {
     flex: 1;
     overflow-y: auto;
-    margin-bottom: 15px;
+    margin-bottom: 5px;
     padding-right: 5px;
 }
 
@@ -63,8 +64,9 @@ body {
 .tabs {
     display: flex;
     border-bottom: 1px solid var(--border-color);
-    margin-bottom: 15px;
+    margin-bottom: 10px;
     align-items: center;
+    height: var(--header-height);
 }
 
 .tab {
@@ -99,9 +101,9 @@ body {
 
 label {
     display: block;
-    margin-top: 10px;
+    margin-top: 6px;
     font-weight: bold;
-    font-size: 13px;
+    font-size: 12px;
     color: var(--text-color);
 }
 
@@ -147,10 +149,10 @@ button:hover {
 #voiceMixerContainer {
     background-color: var(--mixer-bg);
     border: 1px solid var(--border-color);
-    padding: 10px;
+    padding: 6px;
     border-radius: 4px;
-    margin-top: 5px;
-    margin-bottom: 10px;
+    margin-top: 3px;
+    margin-bottom: 5px;
 }
 
 .voice-row {
@@ -159,8 +161,8 @@ button:hover {
     background: var(--bg-color);
     border: 1px solid var(--row-border);
     border-radius: 4px;
-    padding: 8px;
-    margin-bottom: 8px;
+    padding: 4px 8px;
+    margin-bottom: 4px;
     justify-content: space-between;
 }
 
@@ -234,16 +236,16 @@ button:hover {
 
 /* Improved Voice Mixer Bar */
 .voice-mixer-bar {
-    height: 40px;
+    height: 32px;
     width: 100%;
     background: #ddd;
     border-radius: 6px;
     position: relative;
     display: flex;
     overflow: hidden;
-    margin-top: 10px;
+    margin-top: 5px;
     border: 1px solid var(--border-color);
-    margin-bottom: 25px;
+    margin-bottom: 20px;
     /* Space for labels below */
 }
 
@@ -396,13 +398,14 @@ button:hover {
     display: none;
 }
 
-body.dark-theme .sun-icon {
+.dark-theme .sun-icon {
     display: none;
 }
 
-body.dark-theme .moon-icon {
+.dark-theme .moon-icon {
     display: block;
 }
+
 
 /* Additional utility classes for layout components */
 .settings-grid {
@@ -423,6 +426,27 @@ body.dark-theme .moon-icon {
     align-items: center;
     gap: 15px;
     margin-bottom: 10px;
+}
+
+.flex-column {
+    display: flex;
+    flex-direction: column;
+}
+
+.mr-10 {
+    margin-right: 10px !important;
+}
+
+.mb-0 {
+    margin-bottom: 0 !important;
+}
+
+.gap-5 {
+    gap: 5px !important;
+}
+
+.shadow-none {
+    box-shadow: none !important;
 }
 
 .flex-item {
