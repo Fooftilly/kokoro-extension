@@ -64,6 +64,7 @@ body {
     display: flex;
     border-bottom: 1px solid var(--border-color);
     margin-bottom: 15px;
+    align-items: center;
 }
 
 .tab {
@@ -74,7 +75,7 @@ body {
     background-color: var(--tab-inactive-bg);
     color: var(--tab-inactive-text);
     border-bottom: 1px solid var(--border-color);
-    width: 50%;
+    flex: 1;
     text-align: center;
 }
 
@@ -359,30 +360,26 @@ button:hover {
     color: var(--hover-text);
 }
 
-/* Theme Toggle Button */
-.footer-actions {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-    margin-top: 0;
-}
 
 #theme-toggle {
-    background: var(--tab-inactive-bg);
-    border: 1px solid var(--border-color);
+    background: none;
+    border: none;
     color: var(--text-color);
-    padding: 8px;
+    padding: 0 10px;
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 4px;
     cursor: pointer;
     margin-top: 0;
     flex-shrink: 0;
+    height: 35px;
+    opacity: 0.7;
+    transition: opacity 0.2s;
 }
 
 #theme-toggle:hover {
-    background: var(--border-color);
+    opacity: 1;
+    background: none;
 }
 
 #theme-toggle svg {
@@ -448,9 +445,8 @@ body.dark-theme .moon-icon {
     margin-bottom: 5px;
 }
 
-#save {
-    margin-top: 0;
-    width: 100%;
+#apiUrl {
+    margin-bottom: 5px;
 }
 
 .mt-0 {

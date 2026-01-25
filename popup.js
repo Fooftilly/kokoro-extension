@@ -185,6 +185,7 @@ function renderVoiceMixer() {
                 currentVoices.forEach(v => v.weight = remaining);
             }
             renderVoiceMixer();
+            saveOptions();
         });
         list.appendChild(row);
     });
@@ -255,6 +256,7 @@ function updateVoiceWeight(index, newWeight) {
     }
 
     renderVoiceMixer();
+    saveOptions();
 }
 
 function startDragging(index, handle, bar) {
@@ -289,6 +291,7 @@ function startDragging(index, handle, bar) {
         currentVoices[index + 1].weight = newNextWeight / 100;
 
         renderVoiceMixer();
+        saveOptions(); // Autosave on drag
     };
 
     const onMouseUp = () => {
@@ -301,7 +304,14 @@ function startDragging(index, handle, bar) {
 }
 
 
-const saveOptions = async () => {
+let saveTimeout;
+const saveOptions = async (isDebounced = false) => {
+    if (isDebounced) {
+        clearTimeout(saveTimeout);
+        saveTimeout = setTimeout(() => saveOptions(false), 500);
+        return;
+    }
+
     const apiUrl = document.getElementById('apiUrl').value;
     const voice = serializeVoiceString(currentVoices);
     const mode = document.querySelector('input[name="mode"]:checked').value;
@@ -325,24 +335,28 @@ const saveOptions = async () => {
     try {
         // Check permissions for custom URL
         if (!isLocalhost(apiUrl)) {
-            const urlObj = new URL(apiUrl);
-            // We request permission for the specific origin
-            const origin = urlObj.origin + "/*";
-            const hasPerm = await browser.permissions.contains({ origins: [origin] });
-            if (!hasPerm) {
-                const granted = await browser.permissions.request({ origins: [origin] });
-                if (!granted) {
-                    const status = document.getElementById('status');
-                    status.textContent = "Permission denied for this URL.";
-                    status.style.color = "var(--status-error)";
-                    status.style.display = 'block';
-                    setTimeout(() => {
-                        status.style.display = 'none';
-                        status.style.color = "var(--status-success)"; // Reset color
-                        status.textContent = "Settings saved."; // Reset text
-                    }, 3000);
-                    return; // Abort save
+            try {
+                const urlObj = new URL(apiUrl);
+                // We request permission for the specific origin
+                const origin = urlObj.origin + "/*";
+                const hasPerm = await browser.permissions.contains({ origins: [origin] });
+                if (!hasPerm) {
+                    const granted = await browser.permissions.request({ origins: [origin] });
+                    if (!granted) {
+                        const status = document.getElementById('status');
+                        status.textContent = "Permission denied for this URL.";
+                        status.style.color = "var(--status-error)";
+                        status.style.display = 'block';
+                        setTimeout(() => {
+                            status.style.display = 'none';
+                            status.style.color = "var(--status-success)"; // Reset color
+                            status.textContent = "Settings saved."; // Reset text
+                        }, 3000);
+                        return; // Abort save
+                    }
                 }
+            } catch (e) {
+                // Invalid URL, ignore for permission check
             }
         }
 
@@ -351,10 +365,10 @@ const saveOptions = async () => {
         await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, showFloatingButton, normalizationOptions, theme });
 
         const status = document.getElementById('status');
-        status.textContent = "Settings saved.";
+        status.textContent = "Saving...";
         status.style.color = "var(--status-success)";
         status.style.display = 'block';
-        setTimeout(() => { status.style.display = 'none'; }, 2000);
+        setTimeout(() => { status.style.display = 'none'; }, 500);
     } catch (e) {
         console.error("Error saving options", e);
         const status = document.getElementById('status');
@@ -454,6 +468,7 @@ searchInput.addEventListener('input', () => {
                     currentVoices.push({ id: voice, weight: half });
                 }
                 renderVoiceMixer();
+                saveOptions();
                 searchInput.value = '';
                 dropdown.style.display = 'none';
             });
@@ -471,8 +486,20 @@ document.addEventListener('click', (e) => {
     }
 });
 
-document.addEventListener('DOMContentLoaded', restoreOptions);
-document.getElementById('save').addEventListener('click', saveOptions);
+document.addEventListener('DOMContentLoaded', () => {
+    restoreOptions();
+
+    // Setup Autosave Listeners
+    const inputs = document.querySelectorAll('input, select');
+    inputs.forEach(input => {
+        if (input.id === 'voiceSearch') return; // Handled separately
+
+        const eventType = (input.type === 'text' || input.type === 'number') ? 'input' : 'change';
+        input.addEventListener(eventType, () => {
+            saveOptions(input.type === 'text');
+        });
+    });
+});
 
 // Theme Toggle
 document.getElementById('theme-toggle').addEventListener('click', () => {
