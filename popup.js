@@ -59,6 +59,8 @@ function parseVoiceString(str) {
  */
 function serializeVoiceString(voices) {
     if (!voices || voices.length === 0) return '';
+    // If only one voice, send it without weight to avoid API errors
+    if (voices.length === 1) return voices[0].id;
     // Always use the format voice(weight) for consistency based on user request/screenshot
     return voices.map(v => `${v.id}(${v.weight})`).join('+');
 }
