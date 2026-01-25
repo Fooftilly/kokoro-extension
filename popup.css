@@ -67,28 +67,35 @@ body {
     margin-bottom: 10px;
     align-items: center;
     height: var(--header-height);
+    background: var(--bg-color);
+    /* Matches body to avoid line breaks */
 }
 
 .tab {
     padding: 8px 15px;
     cursor: pointer;
     border: 1px solid transparent;
-    border-bottom: none;
     background-color: var(--tab-inactive-bg);
     color: var(--tab-inactive-text);
-    border-bottom: 1px solid var(--border-color);
     flex: 1;
     text-align: center;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
 }
 
 .tab.active {
-    border-color: var(--border-color);
+    border: 1px solid var(--border-color);
+    border-bottom: 1px solid var(--bg-color);
+    /* Overlaps .tabs border */
     border-radius: 4px 4px 0 0;
     background: var(--bg-color);
     font-weight: bold;
-    border-bottom: 1px solid var(--bg-color);
-    margin-bottom: -1px;
     color: var(--text-color);
+    margin-bottom: -1px;
+    /* Still needed for overlap, but we ensure it's stable */
 }
 
 .content {
@@ -374,9 +381,13 @@ button:hover {
     cursor: pointer;
     margin-top: 0;
     flex-shrink: 0;
-    height: 35px;
+    height: 100%;
+    /* Match header height */
     opacity: 0.7;
     transition: opacity 0.2s;
+    border-bottom: 1px solid var(--border-color);
+    /* Maintain the line */
+    box-sizing: border-box;
 }
 
 #theme-toggle:hover {
