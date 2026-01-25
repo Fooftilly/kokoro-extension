@@ -46,6 +46,8 @@ window.addEventListener('message', (event) => {
         navigate(currentIndex + 1);
     } else if (event.data === 'NAV_PREV') {
         navigate(currentIndex - 1);
+    } else if (event.data === 'RELOAD_DATA') {
+        initialize();
     }
 });
 
@@ -127,7 +129,7 @@ async function initialize() {
     window.kokoroAutoScroll = autoScroll;
 
     if (!data.pendingText) {
-        statusEl.textContent = "No text found.";
+        statusEl.textContent = "Extracting article...";
         return;
     }
 

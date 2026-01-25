@@ -2,25 +2,7 @@
 <html>
 
 <head>
-    <script>
-        // Early theme detection to prevent flicker
-        (function () {
-            const theme = localStorage.getItem('kokoro-theme') || 'light';
-            if (theme === 'dark') {
-                document.documentElement.classList.add('dark-theme');
-            }
-            // Also check browser storage as the source of truth
-            if (typeof browser !== 'undefined' && browser.storage) {
-                browser.storage.local.get('theme').then(data => {
-                    if (data.theme === 'dark') {
-                        document.documentElement.classList.add('dark-theme');
-                    } else if (data.theme === 'light') {
-                        document.documentElement.classList.remove('dark-theme');
-                    }
-                });
-            }
-        })();
-    </script>
+    <script src="theme-init.js"></script>
     <link rel="stylesheet" href="overlay.css">
 </head>
 

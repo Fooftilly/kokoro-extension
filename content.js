@@ -252,306 +252,324 @@ if (typeof module !== 'undefined' && module.exports) {
     module.exports = { parseArticle };
 }
 
-browser.runtime.onMessage.addListener((request, sender) => {
-    if (request.action === "PARSE_ARTICLE") {
-        return parseArticle(document);
-    }
+if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
+    window.kokoroContentInjected = true;
 
-    if (request.action === "SHOW_PLAYER") {
-        if (document.getElementById('kokoro-overlay-container')) {
+    browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
+        if (request.action === "PING") {
+            sendResponse({ action: "PONG" });
             return;
         }
 
-        // Fetch theme to prevent white flicker
-        browser.storage.local.get('theme').then(data => {
-            const isDark = data.theme === 'dark';
-            const container = document.createElement('div');
-            container.id = 'kokoro-overlay-container';
-            container.style.position = 'fixed';
-            container.style.zIndex = '2147483647';
-            container.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
-            container.style.borderRadius = '12px';
-            container.style.overflow = 'hidden';
-            container.style.border = 'none';
-            container.style.opacity = '0'; // Start hidden
-            container.style.transition = 'opacity 0.2s ease-in-out';
+        if (request.action === "PARSE_ARTICLE") {
+            parseArticle(document).then(sendResponse);
+            return true;
+        }
 
-            if (request.mode === 'full') {
-                container.style.top = '0';
-                container.style.left = '0';
-                container.style.width = '100vw';
-                container.style.height = '100vh';
-                container.style.borderRadius = '0';
-                container.style.background = 'rgba(0, 0, 0, 0.7)'; // Darker overlay
-                container.style.display = 'flex';
-                container.style.justifyContent = 'center';
-                container.style.alignItems = 'center';
-                container.style.backdropFilter = 'blur(4px)';
-            } else {
-                container.style.top = '20px';
-                container.style.right = '20px';
-                container.style.width = '320px';
-                container.style.height = '500px';
+        if (request.action === "SHOW_PLAYER") {
+            // Autoplay nudge: Try to play a silent sound to capture user gesture if still present
+            const nudge = new Audio();
+            nudge.play().catch(() => { });
+
+            const existingContainer = document.getElementById('kokoro-overlay-container');
+            if (existingContainer) {
+                const iframe = existingContainer.querySelector('iframe');
+                if (iframe && iframe.contentWindow) {
+                    iframe.contentWindow.postMessage('RELOAD_DATA', '*');
+                }
+                return;
             }
 
-            const iframe = document.createElement('iframe');
-            iframe.src = browser.runtime.getURL('overlay.html');
-            iframe.style.border = 'none';
-            iframe.allow = "autoplay";
-            iframe.tabIndex = "-1";
-            // Set initial background to match theme
-            iframe.style.background = isDark ? '#1e1e1e' : 'white';
-            iframe.style.colorScheme = isDark ? 'dark' : 'light';
+            // Fetch theme to prevent white flicker
+            browser.storage.local.get('theme').then(data => {
+                const isDark = data.theme === 'dark';
+                const container = document.createElement('div');
+                container.id = 'kokoro-overlay-container';
+                container.style.position = 'fixed';
+                container.style.zIndex = '2147483647';
+                container.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+                container.style.borderRadius = '12px';
+                container.style.overflow = 'hidden';
+                container.style.border = 'none';
+                container.style.opacity = '0'; // Start hidden
+                container.style.transition = 'opacity 0.2s ease-in-out';
 
-            iframe.addEventListener('load', () => {
-                iframe.focus();
-            });
+                if (request.mode === 'full') {
+                    container.style.top = '0';
+                    container.style.left = '0';
+                    container.style.width = '100vw';
+                    container.style.height = '100vh';
+                    container.style.borderRadius = '0';
+                    container.style.background = 'rgba(0, 0, 0, 0.7)'; // Darker overlay
+                    container.style.display = 'flex';
+                    container.style.justifyContent = 'center';
+                    container.style.alignItems = 'center';
+                    container.style.backdropFilter = 'blur(4px)';
+                } else {
+                    container.style.top = '20px';
+                    container.style.right = '20px';
+                    container.style.width = '320px';
+                    container.style.height = '500px';
+                }
 
-            if (request.mode === 'full') {
-                iframe.style.width = '80%';
-                iframe.style.maxWidth = '900px';
-                iframe.style.height = '90%';
-                iframe.style.maxHeight = '90vh';
-                iframe.style.borderRadius = '12px';
-                iframe.style.boxShadow = '0 10px 30px rgba(0,0,0,0.3)';
+                const iframe = document.createElement('iframe');
+                iframe.src = browser.runtime.getURL('overlay.html');
+                iframe.style.border = 'none';
+                iframe.allow = "autoplay";
+                iframe.tabIndex = "-1";
+                // Set initial background to match theme
                 iframe.style.background = isDark ? '#1e1e1e' : 'white';
-            } else {
-                iframe.style.width = '100%';
-                iframe.style.height = '100%';
+                iframe.style.colorScheme = isDark ? 'dark' : 'light';
+
+                iframe.addEventListener('load', () => {
+                    iframe.focus();
+                });
+
+                if (request.mode === 'full') {
+                    iframe.style.width = '80%';
+                    iframe.style.maxWidth = '900px';
+                    iframe.style.height = '90%';
+                    iframe.style.maxHeight = '90vh';
+                    iframe.style.borderRadius = '12px';
+                    iframe.style.boxShadow = '0 10px 30px rgba(0,0,0,0.3)';
+                    iframe.style.background = isDark ? '#1e1e1e' : 'white';
+                } else {
+                    iframe.style.width = '100%';
+                    iframe.style.height = '100%';
+                }
+
+                container.appendChild(iframe);
+                document.body.appendChild(container);
+
+                if (request.mode === 'full') {
+                    document.body.style.overflow = 'hidden';
+                }
+            });
+        } else if (request.action === "REMOVE_PLAYER") {
+            const container = document.getElementById('kokoro-overlay-container');
+            if (container) {
+                container.remove();
+                document.body.style.overflow = '';
             }
-
-            container.appendChild(iframe);
-            document.body.appendChild(container);
-
-            if (request.mode === 'full') {
-                document.body.style.overflow = 'hidden';
-            }
-        });
-    } else if (request.action === "REMOVE_PLAYER") {
-        const container = document.getElementById('kokoro-overlay-container');
-        if (container) {
-            container.remove();
-            document.body.style.overflow = '';
-        }
-    } else if (request.action === "NAV_NEXT" || request.action === "NAV_PREV") {
-        const container = document.getElementById('kokoro-overlay-container');
-        if (container) {
-            const iframe = container.querySelector('iframe');
-            if (iframe && iframe.contentWindow) {
-                iframe.contentWindow.postMessage(request.action, '*');
-            }
-        }
-    }
-});
-
-window.addEventListener('message', (event) => {
-    if (event.data === 'CLOSE_KOKORO_PLAYER') {
-        const container = document.getElementById('kokoro-overlay-container');
-        if (container) {
-            container.remove();
-            document.body.style.overflow = '';
-        }
-    } else if (event.data === 'KOKORO_PLAYER_READY') {
-        const container = document.getElementById('kokoro-overlay-container');
-        if (container) {
-            container.style.opacity = '1';
-        }
-    } else if (event.data && event.data.action === 'KOKORO_SCROLL_TO_BLOCK') {
-        const searchText = event.data.text;
-        if (!searchText) return;
-
-        // Try to find the element on the page that contains this text
-        // We look for the smallest element that contains the text
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-        let node;
-        let bestMatch = null;
-
-        while (node = walker.nextNode()) {
-            if (node.textContent.includes(searchText)) {
-                const parent = node.parentElement;
-                // Avoid scrolling to our own overlay
-                if (parent.closest('#kokoro-overlay-container')) continue;
-
-                // We want the most specific element (e.g. the P or LI, not the BODY)
-                if (!bestMatch || bestMatch.contains(parent)) {
-                    bestMatch = parent;
+        } else if (request.action === "NAV_NEXT" || request.action === "NAV_PREV") {
+            const container = document.getElementById('kokoro-overlay-container');
+            if (container) {
+                const iframe = container.querySelector('iframe');
+                if (iframe && iframe.contentWindow) {
+                    iframe.contentWindow.postMessage(request.action, '*');
                 }
             }
         }
+    });
 
-        if (bestMatch) {
-            // Refined scrolling logic: only scroll if the element is not comfortably in view
-            const rect = bestMatch.getBoundingClientRect();
-            const viewportHeight = window.innerHeight;
+    window.addEventListener('message', (event) => {
+        if (event.data === 'CLOSE_KOKORO_PLAYER') {
+            const container = document.getElementById('kokoro-overlay-container');
+            if (container) {
+                container.remove();
+                document.body.style.overflow = '';
+            }
+        } else if (event.data === 'KOKORO_PLAYER_READY') {
+            const container = document.getElementById('kokoro-overlay-container');
+            if (container) {
+                container.style.opacity = '1';
+            }
+        } else if (event.data && event.data.action === 'KOKORO_SCROLL_TO_BLOCK') {
+            const searchText = event.data.text;
+            if (!searchText) return;
 
-            // Define a "comfort zone" (middle 40% of the screen)
-            // If the element is within 30% to 70% of the viewport height, we don't scroll
-            const topThreshold = viewportHeight * 0.3;
-            const bottomThreshold = viewportHeight * 0.7;
+            // Try to find the element on the page that contains this text
+            // We look for the smallest element that contains the text
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+            let node;
+            let bestMatch = null;
 
-            const isAboveZone = rect.top < topThreshold;
-            const isBelowZone = rect.bottom > bottomThreshold;
+            while (node = walker.nextNode()) {
+                if (node.textContent.includes(searchText)) {
+                    const parent = node.parentElement;
+                    // Avoid scrolling to our own overlay
+                    if (parent.closest('#kokoro-overlay-container')) continue;
 
-            if (isAboveZone || isBelowZone) {
-                bestMatch.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    // We want the most specific element (e.g. the P or LI, not the BODY)
+                    if (!bestMatch || bestMatch.contains(parent)) {
+                        bestMatch = parent;
+                    }
+                }
+            }
+
+            if (bestMatch) {
+                // Refined scrolling logic: only scroll if the element is not comfortably in view
+                const rect = bestMatch.getBoundingClientRect();
+                const viewportHeight = window.innerHeight;
+
+                // Define a "comfort zone" (middle 40% of the screen)
+                // If the element is within 30% to 70% of the viewport height, we don't scroll
+                const topThreshold = viewportHeight * 0.3;
+                const bottomThreshold = viewportHeight * 0.7;
+
+                const isAboveZone = rect.top < topThreshold;
+                const isBelowZone = rect.bottom > bottomThreshold;
+
+                if (isAboveZone || isBelowZone) {
+                    bestMatch.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
             }
         }
-    }
-});
+    });
 
-// --- Floating Microphone Button Logic ---
+    // --- Floating Microphone Button Logic ---
 
-let floatBtn = null;
-let lastSelection = "";
+    let floatBtn = null;
+    let lastSelection = "";
 
-function createFloatingButton() {
-    const btn = document.createElement('div');
-    btn.id = 'kokoro-float-btn';
-    // Style matches the screenshot: dark circle with white microphone
-    btn.innerHTML = `
+    function createFloatingButton() {
+        const btn = document.createElement('div');
+        btn.id = 'kokoro-float-btn';
+        // Style matches the screenshot: dark circle with white microphone
+        btn.innerHTML = `
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" width="18px" height="18px">
         <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
         <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
     </svg>
     `;
-    btn.style.position = 'absolute';
-    btn.style.zIndex = '2147483646';
-    btn.style.width = '36px';
-    btn.style.height = '36px';
-    btn.style.borderRadius = '50%';
-    btn.style.backgroundColor = '#333';
-    btn.style.display = 'flex';
-    btn.style.justifyContent = 'center';
-    btn.style.alignItems = 'center';
-    btn.style.cursor = 'pointer';
-    btn.style.boxShadow = '0 2px 5px rgba(0,0,0,0.3)';
-    btn.style.transition = 'opacity 0.2s, transform 0.2s';
-    btn.style.opacity = '0'; // Start hidden
-    btn.style.pointerEvents = 'none'; // Prevent interaction while hidden
+        btn.style.position = 'absolute';
+        btn.style.zIndex = '2147483646';
+        btn.style.width = '36px';
+        btn.style.height = '36px';
+        btn.style.borderRadius = '50%';
+        btn.style.backgroundColor = '#333';
+        btn.style.display = 'flex';
+        btn.style.justifyContent = 'center';
+        btn.style.alignItems = 'center';
+        btn.style.cursor = 'pointer';
+        btn.style.boxShadow = '0 2px 5px rgba(0,0,0,0.3)';
+        btn.style.transition = 'opacity 0.2s, transform 0.2s';
+        btn.style.opacity = '0'; // Start hidden
+        btn.style.pointerEvents = 'none'; // Prevent interaction while hidden
 
-    btn.addEventListener('mousedown', (e) => {
-        // Prevent clearing selection
-        e.preventDefault();
-        e.stopPropagation();
-    });
+        btn.addEventListener('mousedown', (e) => {
+            // Prevent clearing selection
+            e.preventDefault();
+            e.stopPropagation();
+        });
 
-    btn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (lastSelection) {
-            browser.runtime.sendMessage({ action: "REQUEST_TTS", text: lastSelection });
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (lastSelection) {
+                browser.runtime.sendMessage({ action: "REQUEST_TTS", text: lastSelection });
+                removeFloatingButton();
+                // Clear selection visually to indicate action taken
+                window.getSelection().removeAllRanges();
+            }
+        });
+
+        document.body.appendChild(btn);
+        return btn;
+    }
+
+    function updateFloatingButton(rect) {
+        if (!floatBtn) {
+            floatBtn = createFloatingButton();
+        }
+        // Position button slightly above and to the right of the selection end
+        // rect is the bounding client rect of the range
+        const btnSize = 36;
+        const margin = 10;
+
+        // Calculate absolute position
+        const absoluteTop = window.scrollY + rect.top;
+        const absoluteLeft = window.scrollX + rect.right;
+
+        // If close to right edge, shift left
+        let leftPos = absoluteLeft - (btnSize / 2);
+        if (leftPos + btnSize > document.body.scrollWidth) {
+            leftPos = document.body.scrollWidth - btnSize - margin;
+        }
+
+        // If close to top edge, shift down
+        let topPos = absoluteTop - btnSize - margin;
+        if (topPos < 0) {
+            topPos = absoluteTop + rect.height + margin;
+        }
+
+        floatBtn.style.top = `${topPos}px`;
+        floatBtn.style.left = `${leftPos}px`;
+
+        // Ensure display is correct before transition
+        floatBtn.style.display = 'flex';
+
+        // Small delay to allow transition
+        requestAnimationFrame(() => {
+            floatBtn.style.opacity = '1';
+            floatBtn.style.pointerEvents = 'auto';
+            floatBtn.style.transform = 'scale(1)';
+        });
+    }
+
+    function removeFloatingButton() {
+        if (floatBtn) {
+            floatBtn.style.opacity = '0';
+            floatBtn.style.transform = 'scale(0.8)';
+            floatBtn.style.pointerEvents = 'none';
+            // Remove from DOM after transition
+            setTimeout(() => {
+                if (floatBtn) { // Check if still exists/ref valid
+                    floatBtn.style.display = 'none';
+                }
+            }, 200);
+        }
+    }
+
+    async function handleSelection() {
+        const selection = window.getSelection();
+        const text = selection.toString().trim();
+
+        if (text.length > 0) {
+            // Check settings first
+            try {
+                const settings = await browser.storage.sync.get('showFloatingButton');
+                // Default to true if undefined
+                if (settings.showFloatingButton === false) {
+                    return;
+                }
+            } catch (e) { /* ignore error, assume true */ }
+
+            lastSelection = text;
+
+            try {
+                const range = selection.getRangeAt(0);
+                const rect = range.getBoundingClientRect();
+
+                // Ensure rect is valid and visible
+                if (rect.width > 0 && rect.height > 0) {
+                    updateFloatingButton(rect);
+                }
+            } catch (e) {
+                console.log("Selection range error:", e);
+            }
+        } else {
             removeFloatingButton();
-            // Clear selection visually to indicate action taken
-            window.getSelection().removeAllRanges();
+            lastSelection = "";
         }
-    });
-
-    document.body.appendChild(btn);
-    return btn;
-}
-
-function updateFloatingButton(rect) {
-    if (!floatBtn) {
-        floatBtn = createFloatingButton();
-    }
-    // Position button slightly above and to the right of the selection end
-    // rect is the bounding client rect of the range
-    const btnSize = 36;
-    const margin = 10;
-
-    // Calculate absolute position
-    const absoluteTop = window.scrollY + rect.top;
-    const absoluteLeft = window.scrollX + rect.right;
-
-    // If close to right edge, shift left
-    let leftPos = absoluteLeft - (btnSize / 2);
-    if (leftPos + btnSize > document.body.scrollWidth) {
-        leftPos = document.body.scrollWidth - btnSize - margin;
     }
 
-    // If close to top edge, shift down
-    let topPos = absoluteTop - btnSize - margin;
-    if (topPos < 0) {
-        topPos = absoluteTop + rect.height + margin;
-    }
+    document.addEventListener('mouseup', (e) => {
+        // If clicking the button itself, don't handle selection (handled by button click)
+        if (floatBtn && floatBtn.contains(e.target)) return;
 
-    floatBtn.style.top = `${topPos}px`;
-    floatBtn.style.left = `${leftPos}px`;
-
-    // Ensure display is correct before transition
-    floatBtn.style.display = 'flex';
-
-    // Small delay to allow transition
-    requestAnimationFrame(() => {
-        floatBtn.style.opacity = '1';
-        floatBtn.style.pointerEvents = 'auto';
-        floatBtn.style.transform = 'scale(1)';
-    });
-}
-
-function removeFloatingButton() {
-    if (floatBtn) {
-        floatBtn.style.opacity = '0';
-        floatBtn.style.transform = 'scale(0.8)';
-        floatBtn.style.pointerEvents = 'none';
-        // Remove from DOM after transition
-        setTimeout(() => {
-            if (floatBtn) { // Check if still exists/ref valid
-                floatBtn.style.display = 'none';
-            }
-        }, 200);
-    }
-}
-
-async function handleSelection() {
-    const selection = window.getSelection();
-    const text = selection.toString().trim();
-
-    if (text.length > 0) {
-        // Check settings first
-        try {
-            const settings = await browser.storage.sync.get('showFloatingButton');
-            // Default to true if undefined
-            if (settings.showFloatingButton === false) {
-                return;
-            }
-        } catch (e) { /* ignore error, assume true */ }
-
-        lastSelection = text;
-
-        try {
-            const range = selection.getRangeAt(0);
-            const rect = range.getBoundingClientRect();
-
-            // Ensure rect is valid and visible
-            if (rect.width > 0 && rect.height > 0) {
-                updateFloatingButton(rect);
-            }
-        } catch (e) {
-            console.log("Selection range error:", e);
-        }
-    } else {
-        removeFloatingButton();
-        lastSelection = "";
-    }
-}
-
-document.addEventListener('mouseup', (e) => {
-    // If clicking the button itself, don't handle selection (handled by button click)
-    if (floatBtn && floatBtn.contains(e.target)) return;
-
-    // Delay slightly to let selection update
-    setTimeout(handleSelection, 10);
-});
-
-document.addEventListener('keyup', (e) => {
-    if (e.key === 'Shift' || e.key.startsWith('Arrow')) {
+        // Delay slightly to let selection update
         setTimeout(handleSelection, 10);
-    }
-});
+    });
 
-document.addEventListener('scroll', () => {
-    if (floatBtn && floatBtn.style.opacity === '1') {
-        removeFloatingButton();
-    }
-}, { passive: true });
+    document.addEventListener('keyup', (e) => {
+        if (e.key === 'Shift' || e.key.startsWith('Arrow')) {
+            setTimeout(handleSelection, 10);
+        }
+    });
+    document.addEventListener('scroll', () => {
+        if (floatBtn && floatBtn.style.opacity === '1') {
+            removeFloatingButton();
+        }
+    }, { passive: true });
+}

@@ -19,7 +19,8 @@ const SRC_FILES = [
     'text-processor.js',
     'audio-manager.js',
     'dom-utils.js',
-    'transliteration-lite.js'
+    'transliteration-lite.js',
+    'theme-init.js'
 ];
 
 const ICONS_DIR = 'icons';
@@ -111,7 +112,7 @@ function createManifest(browser) {
             {
                 resources: ["overlay.html", "overlay.css", "overlay.js", "text-processor.js", "audio-manager.js", "dom-utils.js", "browser-polyfill.min.js",
                     "compromise.js", "compromise-dates.min.js", "compromise-numbers.min.js",
-                    "transliteration-lite.js", "purify.js"],
+                    "transliteration-lite.js", "purify.js", "theme-init.js"],
                 matches: ["<all_urls>"]
             }
         ],
