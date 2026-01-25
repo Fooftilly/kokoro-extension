@@ -2,6 +2,35 @@
 
 A browser extension (Chrome & Firefox) that integrates **Kokoro TTS** to provide high-quality text-to-speech functionality for web content. It supports two modes: reading highlighted text or reading whole article. Also supports both streaming audio to web browser or downloading generated audio file.
 
+<p align="center">
+  <a href="https://chromewebstore.google.com/detail/kokoro-tts-sender/befhghjhbjpjnbamdginljoiaafoclmf">
+    <img src="assets/chrome-badge.png" width="206" alt="Chrome Web Store" />
+  </a>
+  <a href="https://addons.mozilla.org/en-US/firefox/addon/kokoro-tts-sender/">
+    <img src="assets/firefox-badge.png" width="172" alt="Firefox Add-ons" />
+  </a>
+</p>
+
+## Showcase
+
+### Settings Toggles & Voice Mixer
+Manage your TTS settings, mix different voices, and control speed/volume directly from the popup.
+
+<p align="center">
+  <img src="assets/screenshots/popup.png" width="350" alt="Popup Settings" />
+</p>
+
+### Overlay Experience
+Read highlighted text or whole article with a clean, non-distracting overlay.
+
+<p align="center">
+  <img src="assets/screenshots/overlay_large.png" width="800" alt="Large Overlay" />
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/overlay_small.png" width="800" alt="Small Overlay" />
+</p>
+
 ## Features
 
 - **High-Quality TTS**: Powered by Kokoro-FastAPI (requires local server).
