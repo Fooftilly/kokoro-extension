@@ -465,12 +465,43 @@ button:hover {
     margin: 0 5px 0 0 !important;
 }
 
-#apiUrl {
-    margin-bottom: 5px;
+.url-input-container {
+    position: relative;
+    display: flex;
+    align-items: center;
 }
 
 #apiUrl {
-    margin-bottom: 5px;
+    padding-right: 50px !important;
+    margin-bottom: 0;
+}
+
+#saveApiUrl {
+    position: absolute;
+    right: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+    margin: 0;
+    padding: 2px 8px;
+    font-size: 11px;
+    height: 22px;
+    background: #28a745;
+    color: white;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+#saveApiUrl:hover {
+    background: #218838;
+}
+
+.api-status-success {
+    color: var(--status-success) !important;
+}
+
+.api-status-error {
+    color: var(--status-error) !important;
 }
 
 .mt-0 {

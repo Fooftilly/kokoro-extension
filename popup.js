@@ -291,10 +291,10 @@ function startDragging(index, handle, bar) {
         currentVoices[index + 1].weight = newNextWeight / 100;
 
         renderVoiceMixer();
-        saveOptions(); // Autosave on drag
     };
 
     const onMouseUp = () => {
+        saveOptions(); // Autosave only on release
         document.removeEventListener('mousemove', onMouseMove);
         document.removeEventListener('mouseup', onMouseUp);
     };
@@ -364,6 +364,8 @@ const saveOptions = async (isDebounced = false) => {
         // Also update local storage for the overlay to pick up immediately if needed
         await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, showFloatingButton, normalizationOptions, theme });
 
+        // Show generic saving toast only if it's not the manual API URL save
+        // (which has its own status element)
         const status = document.getElementById('status');
         status.textContent = "Saving...";
         status.style.color = "var(--status-success)";
@@ -492,14 +494,53 @@ document.addEventListener('DOMContentLoaded', () => {
     // Setup Autosave Listeners
     const inputs = document.querySelectorAll('input, select');
     inputs.forEach(input => {
-        if (input.id === 'voiceSearch') return; // Handled separately
+        if (input.id === 'voiceSearch' || input.id === 'apiUrl') return;
 
         const eventType = (input.type === 'text' || input.type === 'number') ? 'input' : 'change';
         input.addEventListener(eventType, () => {
             saveOptions(input.type === 'text');
         });
     });
+
+    // Manual API URL Save
+    const saveApiBtn = document.getElementById('saveApiUrl');
+    saveApiBtn.addEventListener('click', async () => {
+        const url = document.getElementById('apiUrl').value;
+        await saveOptions(false);
+        checkApiConnection(url);
+    });
 });
+
+async function checkApiConnection(url) {
+    const statusEl = document.getElementById('apiStatus');
+    statusEl.style.display = 'block';
+    statusEl.textContent = 'Checking connection...';
+    statusEl.className = 'note mt-2';
+
+    try {
+        // Ensure url ends with /
+        const baseUrl = url.endsWith('/') ? url : url + '/';
+        const response = await fetch(`${baseUrl}test`, {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' }
+        });
+
+        if (!response.ok) throw new Error('Network response was not ok');
+        const data = await response.json();
+
+        if (data.status === 'ok') {
+            statusEl.textContent = 'Connected successfully!';
+            statusEl.classList.add('api-status-success');
+            setTimeout(() => { statusEl.style.display = 'none'; }, 3000);
+        } else {
+            throw new Error('Invalid status message');
+        }
+    } catch (e) {
+        console.error("API Connectivity Check failed:", e);
+        statusEl.textContent = 'Unable to connect to API. Please check the URL and ensure the server is running.';
+        statusEl.classList.add('api-status-error');
+    }
+}
 
 // Theme Toggle
 document.getElementById('theme-toggle').addEventListener('click', () => {

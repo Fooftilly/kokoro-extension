@@ -44,7 +44,11 @@
 
         <div id="general" class="content active">
             <label for="apiUrl">API Base URL</label>
-            <input type="text" id="apiUrl">
+            <div class="url-input-container">
+                <input type="text" id="apiUrl">
+                <button id="saveApiUrl" title="Save URL">Save</button>
+            </div>
+            <div id="apiStatus" class="note mt-2" style="display: none;"></div>
 
             <label>VOICE MIXER</label>
             <div id="voiceMixerContainer">
