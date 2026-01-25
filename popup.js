@@ -22,6 +22,7 @@ const isLocalhost = (url) => {
 // --- Voice Mixer Logic ---
 let currentVoices = [];
 let availableVoices = [];
+let voiceFetchError = false;
 
 /**
  * Parses a voice string into an array of voice objects.
@@ -73,11 +74,13 @@ async function fetchVoices(apiUrl) {
         const response = await fetch(`${apiUrl}audio/voices`);
         if (!response.ok) throw new Error('Failed to fetch voices');
         const data = await response.json();
+        voiceFetchError = false;
         // Filter for specific prefixes as requested
         const validPrefixes = ['am_', 'af_', 'bm_', 'bf_'];
         return data.voices.filter(v => validPrefixes.some(prefix => v.startsWith(prefix)));
     } catch (e) {
         console.error("Error fetching voices:", e);
+        voiceFetchError = true;
         return [];
     }
 }
@@ -453,29 +456,37 @@ searchInput.addEventListener('input', () => {
     const filtered = availableVoices.filter(v => v.toLowerCase().includes(query) && !currentVoices.some(cv => cv.id === v));
 
     dropdown.innerHTML = '';
-    if (filtered.length > 0 && query.length > 0) {
-        dropdown.style.display = 'block';
-        filtered.forEach(voice => {
-            const div = document.createElement('div');
-            div.className = 'voice-option';
-            div.textContent = voice;
-            div.addEventListener('click', () => {
-                if (currentVoices.length === 0) {
-                    currentVoices.push({ id: voice, weight: 1.0 });
-                } else {
-                    // Split the last segment
-                    const lastVoice = currentVoices[currentVoices.length - 1];
-                    const half = lastVoice.weight / 2;
-                    lastVoice.weight = half;
-                    currentVoices.push({ id: voice, weight: half });
-                }
-                renderVoiceMixer();
-                saveOptions();
-                searchInput.value = '';
-                dropdown.style.display = 'none';
+
+    if (query.length > 0) {
+        if (voiceFetchError) {
+            dropdown.style.display = 'block';
+            dropdown.innerHTML = '<div class="note" style="color: var(--status-error); padding: 8px;">Error: Could not reach API to fetch voices.</div>';
+        } else if (filtered.length > 0) {
+            dropdown.style.display = 'block';
+            filtered.forEach(voice => {
+                const div = document.createElement('div');
+                div.className = 'voice-option';
+                div.textContent = voice;
+                div.addEventListener('click', () => {
+                    if (currentVoices.length === 0) {
+                        currentVoices.push({ id: voice, weight: 1.0 });
+                    } else {
+                        // Split the last segment
+                        const lastVoice = currentVoices[currentVoices.length - 1];
+                        const half = lastVoice.weight / 2;
+                        lastVoice.weight = half;
+                        currentVoices.push({ id: voice, weight: half });
+                    }
+                    renderVoiceMixer();
+                    saveOptions();
+                    searchInput.value = '';
+                    dropdown.style.display = 'none';
+                });
+                dropdown.appendChild(div);
             });
-            dropdown.appendChild(div);
-        });
+        } else {
+            dropdown.style.display = 'none';
+        }
     } else {
         dropdown.style.display = 'none';
     }
