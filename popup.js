@@ -331,13 +331,17 @@ const saveOptions = async (isDebounced = false) => {
     };
 
     const theme = document.documentElement.classList.contains('dark-theme') ? 'dark' : 'light';
+    const settings = { apiUrl, voice, mode, defaultSpeed, defaultVolume, autoScroll, showFloatingButton, normalizationOptions, theme };
 
     try {
-        // Check permissions for custom URL
+        // 1. Save settings immediately so they are persisted even if permission is pending
+        await browser.storage.sync.set(settings);
+        await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, showFloatingButton, normalizationOptions, theme });
+
+        // 2. Check permissions for custom URL
         if (!isLocalhost(apiUrl)) {
             try {
                 const urlObj = new URL(apiUrl);
-                // We request permission for the specific origin
                 const origin = urlObj.origin + "/*";
                 const hasPerm = await browser.permissions.contains({ origins: [origin] });
                 if (!hasPerm) {
@@ -349,28 +353,22 @@ const saveOptions = async (isDebounced = false) => {
                         status.style.display = 'block';
                         setTimeout(() => {
                             status.style.display = 'none';
-                            status.style.color = "var(--status-success)"; // Reset color
-                            status.textContent = "Settings saved."; // Reset text
+                            status.style.color = "var(--status-success)";
                         }, 3000);
-                        return; // Abort save
+                        return;
                     }
                 }
             } catch (e) {
-                // Invalid URL, ignore for permission check
+                // Invalid URL - ignore for now as it's already saved anyway
             }
         }
 
-        await browser.storage.sync.set({ apiUrl, voice, mode, defaultSpeed, defaultVolume, autoScroll, showFloatingButton, normalizationOptions, theme });
-        // Also update local storage for the overlay to pick up immediately if needed
-        await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, showFloatingButton, normalizationOptions, theme });
-
-        // Show generic saving toast only if it's not the manual API URL save
-        // (which has its own status element)
+        // Show generic saving toast
         const status = document.getElementById('status');
-        status.textContent = "Saving...";
+        status.textContent = "Settings saved.";
         status.style.color = "var(--status-success)";
         status.style.display = 'block';
-        setTimeout(() => { status.style.display = 'none'; }, 500);
+        setTimeout(() => { status.style.display = 'none'; }, 1500);
     } catch (e) {
         console.error("Error saving options", e);
         const status = document.getElementById('status');
