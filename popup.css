@@ -1,0 +1,349 @@
+:root {
+    --bg-color: #fff;
+    color-scheme: light dark;
+    --text-color: #333;
+    --border-color: #ccc;
+    --tab-inactive-bg: #f8f9fa;
+    --tab-inactive-text: #666;
+    --input-bg: #fff;
+    --note-color: #666;
+    --mixer-bg: #f9f9f9;
+    --row-border: #eee;
+    --dropdown-bg: #fff;
+    --hover-bg: #007bff;
+    --hover-text: #fff;
+    --footer-bg: #fff;
+    --status-success: green;
+    --status-error: red;
+}
+
+.dark-theme {
+    --bg-color: #1e1e1e;
+    --text-color: #e0e0e0;
+    --border-color: #444;
+    --tab-inactive-bg: #2d2d2d;
+    --tab-inactive-text: #aaa;
+    --input-bg: #2d2d2d;
+    --note-color: #999;
+    --mixer-bg: #252525;
+    --row-border: #333;
+    --dropdown-bg: #2d2d2d;
+    --footer-bg: #1e1e1e;
+    --status-success: #4caf50;
+    --status-error: #f44336;
+}
+
+body {
+    width: 350px;
+    height: 520px;
+    padding: 15px;
+    font-family: sans-serif;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+}
+
+.content-wrapper {
+    flex: 1;
+    overflow-y: auto;
+    margin-bottom: 15px;
+    padding-right: 5px;
+}
+
+.footer {
+    flex-shrink: 0;
+    border-top: 1px solid var(--border-color);
+    padding-top: 10px;
+    background: var(--footer-bg);
+}
+
+.tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border-color);
+    margin-bottom: 15px;
+}
+
+.tab {
+    padding: 8px 15px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    border-bottom: none;
+    background-color: var(--tab-inactive-bg);
+    color: var(--tab-inactive-text);
+    border-bottom: 1px solid var(--border-color);
+    width: 50%;
+    text-align: center;
+}
+
+.tab.active {
+    border-color: var(--border-color);
+    border-radius: 4px 4px 0 0;
+    background: var(--bg-color);
+    font-weight: bold;
+    border-bottom: 1px solid var(--bg-color);
+    margin-bottom: -1px;
+    color: var(--text-color);
+}
+
+.content {
+    display: none;
+}
+
+.content.active {
+    display: block;
+}
+
+label {
+    display: block;
+    margin-top: 10px;
+    font-weight: bold;
+    font-size: 13px;
+    color: var(--text-color);
+}
+
+input[type="text"],
+textarea,
+select {
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 5px;
+    padding: 5px;
+    background: var(--input-bg);
+    border: 1px solid var(--border-color);
+    color: var(--text-color);
+}
+
+.note {
+    font-size: 11px;
+    color: var(--note-color);
+    margin-top: 2px;
+}
+
+button {
+    margin-top: 15px;
+    padding: 8px 16px;
+    cursor: pointer;
+    background: #007bff;
+    color: white;
+    border: none;
+    border-radius: 4px;
+}
+
+button:hover {
+    background: #0056b3;
+}
+
+#status {
+    margin-top: 10px;
+    color: var(--status-success);
+    display: none;
+    font-size: 12px;
+}
+
+#voiceMixerContainer {
+    background-color: var(--mixer-bg);
+    border: 1px solid var(--border-color);
+    padding: 10px;
+    border-radius: 4px;
+    margin-top: 5px;
+    margin-bottom: 10px;
+}
+
+.voice-row {
+    display: flex;
+    align-items: center;
+    background: var(--bg-color);
+    border: 1px solid var(--row-border);
+    border-radius: 4px;
+    padding: 8px;
+    margin-bottom: 8px;
+    justify-content: space-between;
+}
+
+.voice-name {
+    color: var(--text-color);
+    font-size: 13px;
+    margin-right: 10px;
+    flex-grow: 1;
+}
+
+.voice-weight-container {
+    display: flex;
+    align-items: center;
+}
+
+.voice-weight {
+    width: 50px !important;
+    margin: 0 5px 0 0 !important;
+    background: var(--input-bg);
+    border: 1px solid var(--border-color);
+    color: var(--text-color);
+    text-align: center;
+    padding: 4px !important;
+}
+
+.remove-voice {
+    cursor: pointer;
+    color: #999;
+    font-weight: bold;
+    margin-left: 5px;
+    padding: 0 5px;
+}
+
+.remove-voice:hover {
+    color: #dc3545;
+}
+
+#voiceSearch {
+    background: var(--input-bg);
+    border: 1px solid var(--border-color);
+    color: var(--text-color);
+}
+
+#voiceDropdown {
+    display: none;
+    border: 1px solid var(--border-color);
+    max-height: 150px;
+    overflow-y: auto;
+    position: absolute;
+    width: 300px;
+    z-index: 100;
+    background: var(--dropdown-bg) !important;
+}
+
+.voice-option {
+    padding: 8px;
+    cursor: pointer;
+    color: var(--text-color);
+    border-bottom: 1px solid var(--row-border);
+}
+
+.voice-option:hover {
+    background-color: var(--hover-bg);
+    color: var(--hover-text);
+}
+
+/* Theme Toggle Button */
+.footer-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-top: 0;
+}
+
+#theme-toggle {
+    background: var(--tab-inactive-bg);
+    border: 1px solid var(--border-color);
+    color: var(--text-color);
+    padding: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-top: 0;
+    flex-shrink: 0;
+}
+
+#theme-toggle:hover {
+    background: var(--border-color);
+}
+
+#theme-toggle svg {
+    width: 18px;
+    height: 18px;
+    fill: currentColor;
+}
+
+.sun-icon {
+    display: block;
+}
+
+.moon-icon {
+    display: none;
+}
+
+body.dark-theme .sun-icon {
+    display: none;
+}
+
+body.dark-theme .moon-icon {
+    display: block;
+}
+
+/* Additional utility classes for layout components */
+.settings-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.settings-grid-single {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 5px;
+}
+
+.flex-row {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    margin-bottom: 10px;
+}
+
+.flex-item {
+    display: flex;
+    align-items: center;
+}
+
+.inline-label {
+    display: inline-block !important;
+    font-weight: normal !important;
+    margin: 0 !important;
+}
+
+.checkbox-radio {
+    width: auto !important;
+    margin: 0 5px 0 0 !important;
+}
+
+#apiUrl {
+    margin-bottom: 5px;
+}
+
+#save {
+    margin-top: 0;
+    width: 100%;
+}
+
+.mt-0 {
+    margin-top: 0 !important;
+}
+
+.mt-2 {
+    margin-top: 2px !important;
+}
+
+.mt-5 {
+    margin-top: 5px !important;
+}
+
+.flex-1 {
+    flex: 1 !important;
+}
+
+.mt-10 {
+    margin-top: 10px !important;
+}
+
+.mb-5 {
+    margin-bottom: 5px !important;
+}
+
+.h-25 {
+    height: 25px !important;
+}

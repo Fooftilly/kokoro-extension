@@ -2,216 +2,60 @@
 <html>
 
 <head>
-    <style>
-        html {
-            height: 100%;
-        }
-
-        body {
-            margin: 0;
-            padding: 0;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background: #fff;
-            color: #333;
-            overflow: hidden;
-            display: flex;
-            flex-direction: column;
-            height: 100%;
-            width: 100%;
-        }
-
-        * {
-            box-sizing: border-box;
-        }
-
-        .header {
-            padding: 10px 15px;
-            background: #f8f9fa;
-            border-bottom: 1px solid #eee;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .title {
-            font-weight: 600;
-            font-size: 14px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            max-width: 200px;
-        }
-
-        .close-btn {
-            background: none;
-            border: none;
-            font-size: 18px;
-            cursor: pointer;
-            color: #999;
-            padding: 0;
-            line-height: 1;
-        }
-
-        .close-btn:hover {
-            color: #333;
-        }
-
-        .content {
-            flex: 1;
-            padding: 15px;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-            /* Ensure children don't overflow the flex item */
-            min-height: 0;
-            /* Critical for nested flex scrolling */
-        }
-
-        #status-container {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-bottom: 10px;
-        }
-
-        #status {
-            font-size: 12px;
-            color: #666;
-            margin-bottom: 0;
-        }
-
-        .spinner {
-            width: 12px;
-            height: 12px;
-            border: 2px solid #ccc;
-            border-top-color: #333;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            display: none;
-            /* Hidden by default */
-        }
-
-        @keyframes spin {
-            to {
-                transform: rotate(360deg);
+    <script>
+        // Early theme detection to prevent flicker
+        (function () {
+            const theme = localStorage.getItem('kokoro-theme') || 'light';
+            if (theme === 'dark') {
+                document.documentElement.classList.add('dark-theme');
             }
-        }
-
-        .controls {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            margin-top: 5px;
-        }
-
-        button.control-btn {
-            background: #f0f0f0;
-            border: none;
-            border-radius: 4px;
-            padding: 5px 10px;
-            cursor: pointer;
-            font-size: 12px;
-        }
-
-        button.control-btn:hover {
-            background: #e0e0e0;
-        }
-
-        audio {
-            width: 100%;
-            height: 30px;
-        }
-
-        .highlight {
-            background-color: #e3f2fd;
-            color: #1565c0;
-            border-radius: 2px;
-        }
-
-        .sentence {
-            cursor: pointer;
-        }
-
-        .sentence:hover {
-            background-color: #f5f5f5;
-        }
-
-        .footnote-ref {
-            position: relative;
-            margin: 0 2px;
-        }
-
-        /* Visual Reference (Silent to TTS) */
-        .footnote-ref::before {
-            content: attr(data-ref);
-            color: #777;
-            text-decoration: underline dotted;
-            cursor: help;
-            font-size: 0.8em;
-            vertical-align: super;
-        }
-
-        /* Tooltip */
-        .footnote-ref:hover::after {
-            content: attr(data-content);
-            position: absolute;
-            bottom: 140%;
-            /* Position above */
-            left: 50%;
-            transform: translateX(-50%);
-            background: #333;
-            color: #fff;
-            padding: 8px 12px;
-            border-radius: 4px;
-            font-size: 13px;
-            white-space: normal;
-            width: max-content;
-            max-width: 250px;
-            /* Constrain width */
-            text-align: left;
-            z-index: 10000;
-            line-height: 1.4;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            pointer-events: none;
-        }
-    </style>
+            // Also check browser storage as the source of truth
+            if (typeof browser !== 'undefined' && browser.storage) {
+                browser.storage.local.get('theme').then(data => {
+                    if (data.theme === 'dark') {
+                        document.documentElement.classList.add('dark-theme');
+                    } else if (data.theme === 'light') {
+                        document.documentElement.classList.remove('dark-theme');
+                    }
+                });
+            }
+        })();
+    </script>
+    <link rel="stylesheet" href="overlay.css">
 </head>
 
 <body>
-    <div class="header" style="flex-direction: column; align-items: stretch; gap: 8px;">
-        <div class="header-top" style="display: flex; justify-content: space-between; align-items: center;">
+    <div class="header">
+        <div class="header-top">
             <div class="title" id="pageTitle">Kokoro TTS</div>
             <button class="close-btn" id="close">&times;</button>
         </div>
-        <div class="progress-container" style="height: 4px; background: #eee; border-radius: 2px; overflow: hidden;">
-            <div class="progress-bar" id="progressBar"
-                style="height: 100%; background: #4caf50; width: 0%; transition: width 0.3s;"></div>
+        <div class="progress-container">
+            <div class="progress-bar" id="progressBar"></div>
         </div>
-        <div id="timeEstimate" style="font-size: 11px; color: #888; text-align: right;"></div>
+        <div id="timeEstimate"></div>
     </div>
     <div class="content">
         <div id="status-container">
             <div class="spinner" id="loadingSpinner"></div>
             <div id="status">Ready</div>
         </div>
-        <div id="text-display"
-            style="flex: 1; overflow-y: auto; width: 100%; margin-bottom: 20px; border: 1px solid #eee; padding: 15px; border-radius: 8px; font-size: 18px; line-height: 1.6; background: #fafafa; overscroll-behavior: contain; min-height: 0; box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);">
+        <div id="text-display">
         </div>
-        <audio id="audio" style="display: none;"></audio>
+        <audio id="audio"></audio>
         <div class="controls">
             <button class="control-btn" id="playPause">Pause</button>
             <button class="control-btn" id="seekBack">Prev</button>
             <button class="control-btn" id="seekFwd">Next</button>
 
             <!-- Volume Control -->
-            <div style="display: flex; align-items: center; gap: 5px;">
-                <span style="font-size: 12px; color: #666;">Vol</span>
-                <input type="range" id="volumeControl" min="0" max="1" step="0.1" value="1" style="width: 60px;">
+            <div class="volume-container">
+                <span class="volume-label">Vol</span>
+                <input type="range" id="volumeControl" min="0" max="1" step="0.1" value="1" class="volume-slider">
             </div>
 
-            <button class="control-btn" id="retry"
-                style="display: none; background: #ffebee; color: #c62828;">Retry</button>
-            <select id="speed" style="padding: 4px; border-radius: 4px; border: 1px solid #ccc;">
+            <button class="control-btn" id="retry">Retry</button>
+            <select id="speed">
                 <option value="0.5">0.5x</option>
                 <option value="0.75">0.75x</option>
                 <option value="1.0" selected>1.0x</option>

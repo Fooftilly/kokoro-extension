@@ -10,7 +10,7 @@ global.browser = {
                 pendingTitle: 'Test Title'
             })),
             set: jest.fn(() => Promise.resolve()),
-            remove: jest.fn(() => Promise.resolve())
+            remove: jest.fn(() => Promise.resolve()),
         },
         sync: {
             get: jest.fn(() => Promise.resolve({
@@ -19,7 +19,8 @@ global.browser = {
                 mode: 'stream',
                 normalizationOptions: {}
             }))
-        }
+        },
+        onChanged: { addListener: jest.fn() }
     },
     runtime: {
         sendMessage: jest.fn(),

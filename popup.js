@@ -147,6 +147,8 @@ const saveOptions = async () => {
         replace_remaining_symbols: document.getElementById('norm_symbol').checked
     };
 
+    const theme = document.documentElement.classList.contains('dark-theme') ? 'dark' : 'light';
+
     try {
         // Check permissions for custom URL
         if (!isLocalhost(apiUrl)) {
@@ -159,11 +161,11 @@ const saveOptions = async () => {
                 if (!granted) {
                     const status = document.getElementById('status');
                     status.textContent = "Permission denied for this URL.";
-                    status.style.color = "red";
+                    status.style.color = "var(--status-error)";
                     status.style.display = 'block';
                     setTimeout(() => {
                         status.style.display = 'none';
-                        status.style.color = "green"; // Reset color
+                        status.style.color = "var(--status-success)"; // Reset color
                         status.textContent = "Settings saved."; // Reset text
                     }, 3000);
                     return; // Abort save
@@ -171,20 +173,20 @@ const saveOptions = async () => {
             }
         }
 
-        await browser.storage.sync.set({ apiUrl, voice, mode, defaultSpeed, defaultVolume, autoScroll, showFloatingButton, normalizationOptions });
+        await browser.storage.sync.set({ apiUrl, voice, mode, defaultSpeed, defaultVolume, autoScroll, showFloatingButton, normalizationOptions, theme });
         // Also update local storage for the overlay to pick up immediately if needed
-        await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, showFloatingButton, normalizationOptions });
+        await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, showFloatingButton, normalizationOptions, theme });
 
         const status = document.getElementById('status');
         status.textContent = "Settings saved.";
-        status.style.color = "green";
+        status.style.color = "var(--status-success)";
         status.style.display = 'block';
         setTimeout(() => { status.style.display = 'none'; }, 2000);
     } catch (e) {
         console.error("Error saving options", e);
         const status = document.getElementById('status');
         status.textContent = "Error: " + e.message;
-        status.style.color = "red";
+        status.style.color = "var(--status-error)";
         status.style.display = 'block';
     }
 };
@@ -207,8 +209,17 @@ const restoreOptions = async () => {
                 optional_pluralization_normalization: true,
                 phone_normalization: true,
                 replace_remaining_symbols: true
-            }
+            },
+            theme: 'light'
         });
+
+        if (items.theme === 'dark') {
+            document.documentElement.classList.add('dark-theme');
+            localStorage.setItem('kokoro-theme', 'dark');
+        } else {
+            document.documentElement.classList.remove('dark-theme');
+            localStorage.setItem('kokoro-theme', 'light');
+        }
 
         document.getElementById('apiUrl').value = items.apiUrl;
 
@@ -281,4 +292,15 @@ document.addEventListener('click', (e) => {
 
 document.addEventListener('DOMContentLoaded', restoreOptions);
 document.getElementById('save').addEventListener('click', saveOptions);
+
+// Theme Toggle
+document.getElementById('theme-toggle').addEventListener('click', () => {
+    document.documentElement.classList.toggle('dark-theme');
+    // Save theme immediately
+    const isDark = document.documentElement.classList.contains('dark-theme');
+    const theme = isDark ? 'dark' : 'light';
+    localStorage.setItem('kokoro-theme', theme);
+    browser.storage.sync.set({ theme });
+    browser.storage.local.set({ theme });
+});
 

@@ -262,61 +262,71 @@ browser.runtime.onMessage.addListener((request, sender) => {
             return;
         }
 
-        const container = document.createElement('div');
-        container.id = 'kokoro-overlay-container';
-        container.style.position = 'fixed';
-        container.style.zIndex = '2147483647';
-        container.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
-        container.style.borderRadius = '12px';
-        container.style.overflow = 'hidden';
-        container.style.border = 'none';
+        // Fetch theme to prevent white flicker
+        browser.storage.local.get('theme').then(data => {
+            const isDark = data.theme === 'dark';
+            const container = document.createElement('div');
+            container.id = 'kokoro-overlay-container';
+            container.style.position = 'fixed';
+            container.style.zIndex = '2147483647';
+            container.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+            container.style.borderRadius = '12px';
+            container.style.overflow = 'hidden';
+            container.style.border = 'none';
+            container.style.opacity = '0'; // Start hidden
+            container.style.transition = 'opacity 0.2s ease-in-out';
 
-        if (request.mode === 'full') {
-            container.style.top = '0';
-            container.style.left = '0';
-            container.style.width = '100vw';
-            container.style.height = '100vh';
-            container.style.borderRadius = '0';
-            container.style.background = 'rgba(0, 0, 0, 0.5)';
-            container.style.display = 'flex';
-            container.style.justifyContent = 'center';
-            container.style.alignItems = 'center';
-        } else {
-            container.style.top = '20px';
-            container.style.right = '20px';
-            container.style.width = '320px';
-            container.style.height = '500px';
-        }
+            if (request.mode === 'full') {
+                container.style.top = '0';
+                container.style.left = '0';
+                container.style.width = '100vw';
+                container.style.height = '100vh';
+                container.style.borderRadius = '0';
+                container.style.background = 'rgba(0, 0, 0, 0.7)'; // Darker overlay
+                container.style.display = 'flex';
+                container.style.justifyContent = 'center';
+                container.style.alignItems = 'center';
+                container.style.backdropFilter = 'blur(4px)';
+            } else {
+                container.style.top = '20px';
+                container.style.right = '20px';
+                container.style.width = '320px';
+                container.style.height = '500px';
+            }
 
-        const iframe = document.createElement('iframe');
-        iframe.src = browser.runtime.getURL('overlay.html');
-        iframe.style.border = 'none';
-        iframe.allow = "autoplay";
-        iframe.tabIndex = "-1"; // Make programmatically focusable
+            const iframe = document.createElement('iframe');
+            iframe.src = browser.runtime.getURL('overlay.html');
+            iframe.style.border = 'none';
+            iframe.allow = "autoplay";
+            iframe.tabIndex = "-1";
+            // Set initial background to match theme
+            iframe.style.background = isDark ? '#1e1e1e' : 'white';
+            iframe.style.colorScheme = isDark ? 'dark' : 'light';
 
-        iframe.addEventListener('load', () => {
-            iframe.focus();
+            iframe.addEventListener('load', () => {
+                iframe.focus();
+            });
+
+            if (request.mode === 'full') {
+                iframe.style.width = '80%';
+                iframe.style.maxWidth = '900px';
+                iframe.style.height = '90%';
+                iframe.style.maxHeight = '90vh';
+                iframe.style.borderRadius = '12px';
+                iframe.style.boxShadow = '0 10px 30px rgba(0,0,0,0.3)';
+                iframe.style.background = isDark ? '#1e1e1e' : 'white';
+            } else {
+                iframe.style.width = '100%';
+                iframe.style.height = '100%';
+            }
+
+            container.appendChild(iframe);
+            document.body.appendChild(container);
+
+            if (request.mode === 'full') {
+                document.body.style.overflow = 'hidden';
+            }
         });
-
-        if (request.mode === 'full') {
-            iframe.style.width = '80%';
-            iframe.style.maxWidth = '900px';
-            iframe.style.height = '90%';
-            iframe.style.maxHeight = '90vh';
-            iframe.style.borderRadius = '12px';
-            iframe.style.boxShadow = '0 10px 30px rgba(0,0,0,0.3)';
-            iframe.style.background = 'white';
-        } else {
-            iframe.style.width = '100%';
-            iframe.style.height = '100%';
-        }
-
-        container.appendChild(iframe);
-        document.body.appendChild(container);
-
-        if (request.mode === 'full') {
-            document.body.style.overflow = 'hidden';
-        }
     } else if (request.action === "REMOVE_PLAYER") {
         const container = document.getElementById('kokoro-overlay-container');
         if (container) {
@@ -340,6 +350,11 @@ window.addEventListener('message', (event) => {
         if (container) {
             container.remove();
             document.body.style.overflow = '';
+        }
+    } else if (event.data === 'KOKORO_PLAYER_READY') {
+        const container = document.getElementById('kokoro-overlay-container');
+        if (container) {
+            container.style.opacity = '1';
         }
     } else if (event.data && event.data.action === 'KOKORO_SCROLL_TO_BLOCK') {
         const searchText = event.data.text;

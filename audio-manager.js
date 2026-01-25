@@ -3,6 +3,7 @@ export class AudioManager {
         this.audioCache = new Map(); // index -> Promise<BlobUrl>
         this.sentences = [];
         this.abortController = new AbortController();
+        this.requestQueue = Promise.resolve(); // For sequential processing
     }
 
     clear() {
@@ -10,6 +11,7 @@ export class AudioManager {
         this.sentences = [];
         if (this.abortController) this.abortController.abort();
         this.abortController = new AbortController();
+        this.requestQueue = Promise.resolve();
     }
 
     setSentences(sentences) {
@@ -36,41 +38,45 @@ export class AudioManager {
 
     async fetchAudio(text) {
         const data = await browser.storage.local.get(['pendingVoice', 'pendingApiUrl', 'pendingNormalizationOptions']);
-        try {
-            if (!data.pendingApiUrl) {
-                throw new Error("Missing API URL");
+
+        // Use queue to ensure sequential requests to the API
+        // Catching here ensures the chain doesn't break for subsequent requests
+        return this.requestQueue = this.requestQueue.catch(() => { }).then(async () => {
+            try {
+                if (!data.pendingApiUrl) {
+                    throw new Error("Missing API URL");
+                }
+                const endpoint = new URL('audio/speech', data.pendingApiUrl).href;
+
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: 'kokoro',
+                        input: text,
+                        voice: data.pendingVoice,
+                        response_format: 'mp3',
+                        speed: 1.0,
+                        normalization_options: data.pendingNormalizationOptions
+                    }),
+                    signal: this.abortController.signal
+                });
+
+                if (!response.ok) throw new Error("API Error");
+
+                const blob = await response.blob();
+                return URL.createObjectURL(blob);
+            } catch (e) {
+                if (e.name === 'AbortError') throw e;
+
+                let msg = e.message;
+                if (msg === "Failed to fetch") {
+                    const url = data.pendingApiUrl || "unknown URL";
+                    msg = `Connection failed. Is Kokoro-FastAPI running on ${url}?`;
+                }
+                console.error("Kokoro Fetch failed:", e);
+                throw new Error(msg);
             }
-            const endpoint = new URL('audio/speech', data.pendingApiUrl).href;
-
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: 'kokoro',
-                    input: text,
-                    voice: data.pendingVoice,
-                    response_format: 'mp3',
-                    speed: 1.0, // Generate at 1x, client handles speed
-                    normalization_options: data.pendingNormalizationOptions
-                }),
-                signal: this.abortController.signal
-            });
-
-            if (!response.ok) throw new Error("API Error");
-
-            const blob = await response.blob();
-            return URL.createObjectURL(blob);
-        } catch (e) {
-            if (e.name === 'AbortError') throw e;
-
-            let msg = e.message;
-            if (msg === "Failed to fetch") {
-                const url = data.pendingApiUrl || "unknown URL";
-                msg = `Connection failed. Is Kokoro-FastAPI running on ${url}?`;
-            }
-            console.error("Kokoro Fetch failed:", e);
-            // We'll let the caller handle UI status updates
-            throw new Error(msg);
-        }
+        });
     }
 }

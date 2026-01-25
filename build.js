@@ -13,6 +13,7 @@ const SRC_FILES = [
     'overlay.css',
     'overlay.html',
     'overlay.js',
+    'popup.css',
     'popup.html',
     'popup.js',
     'text-processor.js',
@@ -108,7 +109,7 @@ function createManifest(browser) {
         ],
         web_accessible_resources: [
             {
-                resources: ["overlay.html", "overlay.js", "text-processor.js", "audio-manager.js", "dom-utils.js", "browser-polyfill.min.js",
+                resources: ["overlay.html", "overlay.css", "overlay.js", "text-processor.js", "audio-manager.js", "dom-utils.js", "browser-polyfill.min.js",
                     "compromise.js", "compromise-dates.min.js", "compromise-numbers.min.js",
                     "transliteration-lite.js", "purify.js"],
                 matches: ["<all_urls>"]

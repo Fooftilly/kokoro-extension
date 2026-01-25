@@ -121,7 +121,7 @@ async function initialize() {
     audioManager.clear();
     textDisplay.textContent = '';
 
-    const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'defaultSpeed', 'defaultVolume', 'autoScroll', 'pendingCustomPronunciations']);
+    const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'defaultSpeed', 'defaultVolume', 'autoScroll', 'pendingCustomPronunciations', 'theme']);
 
     const autoScroll = data.autoScroll || false;
     window.kokoroAutoScroll = autoScroll;
@@ -129,6 +129,14 @@ async function initialize() {
     if (!data.pendingText) {
         statusEl.textContent = "No text found.";
         return;
+    }
+
+    if (data.theme === 'dark') {
+        document.documentElement.classList.add('dark-theme');
+        localStorage.setItem('kokoro-theme', 'dark');
+    } else {
+        document.documentElement.classList.remove('dark-theme');
+        localStorage.setItem('kokoro-theme', 'light');
     }
 
     // Set custom pronunciations for the text processor
@@ -170,6 +178,7 @@ async function initialize() {
 
     renderText();
     navigate(0);
+    window.parent.postMessage('KOKORO_PLAYER_READY', '*');
 }
 
 function renderText() {
@@ -201,7 +210,7 @@ function renderText() {
             div.textContent = block.text;
             div.className = 'caption';
             div.style.fontSize = '14px';
-            div.style.color = '#777';
+            div.style.color = 'var(--status-text)';
             div.style.textAlign = 'center';
             div.style.marginBottom = '20px';
             div.style.marginTop = '-10px'; // Pull closer to image
@@ -212,10 +221,10 @@ function renderText() {
             const div = document.createElement('div');
             div.textContent = block.text;
             div.style.fontSize = '12px';
-            div.style.color = '#aaa';
+            div.style.color = 'var(--status-text)';
             div.style.padding = '8px';
             div.style.margin = '15px 0';
-            div.style.border = '1px dashed #eee';
+            div.style.border = '1px dashed var(--border-color)';
             div.style.borderRadius = '4px';
             div.style.textAlign = 'center';
             div.style.userSelect = 'none'; // Hint it's not content
@@ -254,7 +263,7 @@ function renderText() {
             div.style.margin = '20px 0';
             div.style.overflowX = 'auto'; // Horizontal scroll for wide tables
             div.style.padding = '10px';
-            div.style.border = '1px solid #eee';
+            div.style.border = '1px solid var(--border-color)';
             div.style.borderRadius = '8px';
 
             // Basic table styling injection
@@ -267,11 +276,11 @@ function renderText() {
                 table.style.fontSize = '0.9em';
 
                 table.querySelectorAll('th, td').forEach(cell => {
-                    cell.style.border = '1px solid #ddd';
+                    cell.style.border = '1px solid var(--border-color)';
                     cell.style.padding = '8px 12px';
                 });
                 table.querySelectorAll('th').forEach(header => {
-                    header.style.backgroundColor = '#f4f4f4';
+                    header.style.backgroundColor = 'var(--header-bg)';
                     header.style.fontWeight = 'bold';
                 });
             });
@@ -290,7 +299,7 @@ function renderText() {
                 const caption = fig.querySelector('figcaption');
                 if (caption) {
                     caption.style.fontSize = '0.9em';
-                    caption.style.color = '#666';
+                    caption.style.color = 'var(--status-text)';
                     caption.style.marginTop = '8px';
                     caption.style.fontStyle = 'italic';
                 }
@@ -318,7 +327,7 @@ function renderText() {
                 container.style.margin = '24px 0 16px 0';
                 container.style.fontWeight = '700';
                 container.style.lineHeight = '1.3';
-                container.style.color = '#222';
+                container.style.color = 'var(--text-color)';
 
                 // Scale font size based on level
                 const level = parseInt(block.type.substring(1));
@@ -330,11 +339,11 @@ function renderText() {
                 // Paragraph logic
                 container = document.createElement('p');
                 if (block.isQuote) {
-                    container.style.borderLeft = '4px solid #ccc';
+                    container.style.borderLeft = '4px solid var(--border-color)';
                     container.style.paddingLeft = '16px';
                     container.style.marginLeft = '20px';
                     container.style.fontStyle = 'italic';
-                    container.style.color = '#444';
+                    container.style.color = 'var(--text-color)';
                     container.style.marginBottom = '16px';
                 } else {
                     container.style.margin = '0 0 16px 0'; // Add spacing below paragraph
@@ -499,5 +508,18 @@ async function navigate(index, forcePlay = null) {
         statusEl.textContent = "Error playing audio.";
     }
 }
+
+// Handle theme changes in real-time
+browser.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === 'local' && changes.theme) {
+        if (changes.theme.newValue === 'dark') {
+            document.documentElement.classList.add('dark-theme');
+            localStorage.setItem('kokoro-theme', 'dark');
+        } else {
+            document.documentElement.classList.remove('dark-theme');
+            localStorage.setItem('kokoro-theme', 'light');
+        }
+    }
+});
 
 initialize();
