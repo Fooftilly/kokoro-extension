@@ -38,6 +38,10 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault(); // Prevent scrolling
         playPauseBtn.click();
     }
+
+    if (e.code === 'Escape') {
+        window.parent.postMessage('CLOSE_KOKORO_PLAYER', '*');
+    }
 });
 
 // Handle messages from parent for navigation
