@@ -267,10 +267,6 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         }
 
         if (request.action === "SHOW_PLAYER") {
-            // Autoplay nudge: Try to play a silent sound to capture user gesture if still present
-            const nudge = new Audio();
-            nudge.play().catch(() => { });
-
             const existingContainer = document.getElementById('kokoro-overlay-container');
             if (existingContainer) {
                 const iframe = existingContainer.querySelector('iframe');
@@ -280,8 +276,20 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
                 return;
             }
 
+            // Sync Lock to prevent double-creation race condition
+            if (window.kokoroIsCreatingPlayer) {
+                return;
+            }
+            window.kokoroIsCreatingPlayer = true;
+
             // Fetch theme to prevent white flicker
             browser.storage.local.get('theme').then(data => {
+                // Secondary check inside async callback
+                if (document.getElementById('kokoro-overlay-container')) {
+                    window.kokoroIsCreatingPlayer = false;
+                    return;
+                }
+
                 const isDark = data.theme === 'dark';
                 const container = document.createElement('div');
                 container.id = 'kokoro-overlay-container';
@@ -341,9 +349,14 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
                 container.appendChild(iframe);
                 document.body.appendChild(container);
 
+                window.kokoroIsCreatingPlayer = false;
+
                 if (request.mode === 'full') {
                     document.body.style.overflow = 'hidden';
                 }
+            }).catch(e => {
+                window.kokoroIsCreatingPlayer = false;
+                console.error("Error creating overlay", e);
             });
         } else if (request.action === "REMOVE_PLAYER") {
             const container = document.getElementById('kokoro-overlay-container');
@@ -358,6 +371,14 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
                 if (iframe && iframe.contentWindow) {
                     iframe.contentWindow.postMessage(request.action, '*');
                 }
+            }
+        } else if (request.action === "CHECK_PLAYER_ACTIVE") {
+            const container = document.getElementById('kokoro-overlay-container');
+            // Check if it exists and is not hidden
+            if (container && container.style.opacity !== '0') {
+                sendResponse({ active: true });
+            } else {
+                sendResponse({ active: false });
             }
         }
     });
