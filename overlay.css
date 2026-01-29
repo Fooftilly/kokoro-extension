@@ -12,9 +12,12 @@
     --text-display-border: #eee;
     --control-btn-bg: #f0f0f0;
     --control-btn-hover: #e0e0e0;
+    --close-btn-color: #aaa;
+    --close-btn-hover: #888;
     --sentence-hover: #f5f5f5;
     --highlight-bg: #e3f2fd;
     --highlight-text: #1565c0;
+    --padding: 24px;
 }
 
 .dark-theme {
@@ -29,6 +32,8 @@
     --text-display-border: #444;
     --control-btn-bg: #3d3d3d;
     --control-btn-hover: #4d4d4d;
+    --close-btn-color: #e0e0e0;
+    --close-btn-hover: #aaa;
     --sentence-hover: #333;
     --highlight-bg: #0d47a1;
     --highlight-text: #bbdefb;
@@ -56,7 +61,7 @@ body {
 }
 
 .header {
-    padding: 10px 15px;
+    padding: var(--padding);
     background: var(--header-bg);
     border-bottom: 1px solid var(--border-color);
     display: flex;
@@ -87,13 +92,13 @@ body {
     border: none;
     font-size: 18px;
     cursor: pointer;
-    color: #999;
+    color: var(--close-btn-color);
     padding: 0;
     line-height: 1;
 }
 
 .close-btn:hover {
-    color: #333;
+    color: var(--close-btn-hover);
 }
 
 .progress-container {
@@ -118,7 +123,7 @@ body {
 
 .content {
     flex: 1;
-    padding: 15px;
+    padding: var(--padding);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -215,7 +220,7 @@ audio {
 }
 
 .volume-slider {
-    width: 40px;
+    width: 80px;
 }
 
 #retry {
