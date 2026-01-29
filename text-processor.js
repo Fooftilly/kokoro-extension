@@ -155,19 +155,71 @@ export function processContent(blocks, segmenter) {
                     20: 'twenty', 30: 'thirty', 40: 'forty', 50: 'fifty',
                     60: 'sixty', 70: 'seventy', 80: 'eighty', 90: 'ninety'
                 };
+                const cardinalMap = {
+                    1: 'one', 2: 'two', 3: 'three', 4: 'four', 5: 'five',
+                    6: 'six', 7: 'seven', 8: 'eight', 9: 'nine', 10: 'ten',
+                    11: 'eleven', 12: 'twelve', 13: 'thirteen', 14: 'fourteen', 15: 'fifteen',
+                    16: 'sixteen', 17: 'seventeen', 18: 'eighteen', 19: 'nineteen'
+                };
+
+                const toCardinal = (n) => {
+                    if (n < 20) return cardinalMap[n];
+                    if (n < 100) {
+                        const tens = Math.floor(n / 10) * 10;
+                        const ones = n % 10;
+                        if (ones === 0) return cardinalTensMap[tens];
+                        return `${cardinalTensMap[tens]} ${cardinalMap[ones]}`;
+                    }
+                    if (n < 1000) {
+                        const hundreds = Math.floor(n / 100);
+                        const rem = n % 100;
+                        const hundStr = `${toCardinal(hundreds)} hundred`;
+                        if (rem === 0) return hundStr;
+                        return `${hundStr} and ${toCardinal(rem)}`;
+                    }
+                    if (n < 1000000) {
+                        const thousands = Math.floor(n / 1000);
+                        const rem = n % 1000;
+                        const thousandStr = `${toCardinal(thousands)} thousand`;
+                        if (rem === 0) return thousandStr;
+                        if (rem < 100) return `${thousandStr} and ${toCardinal(rem)}`;
+                        return `${thousandStr} ${toCardinal(rem)}`;
+                    }
+                    return n.toString();
+                };
 
                 const numberToOrdinal = (numStr) => {
-                    const n = parseInt(numStr, 10);
+                    let n = typeof numStr === 'number' ? numStr : parseInt(numStr, 10);
                     if (isNaN(n)) return numStr;
                     if (n === 0) return numStr;
+
                     if (ordinalMap[n]) return ordinalMap[n];
+
                     if (n < 100) {
                         const tens = Math.floor(n / 10) * 10;
                         const ones = n % 10;
                         if (ones === 0) return ordinalTensMap[tens];
                         return `${cardinalTensMap[tens]} ${ordinalMap[ones]}`;
                     }
-                    if (n % 100 === 0) return numStr;
+
+                    if (n < 1000) {
+                        const hundreds = Math.floor(n / 100);
+                        const rem = n % 100;
+                        const hundStr = `${toCardinal(hundreds)} hundred`;
+                        if (rem === 0) return `${hundStr}th`;
+                        return `${hundStr} and ${numberToOrdinal(rem)}`;
+                    }
+
+                    if (n < 1000000) {
+                        const thousands = Math.floor(n / 1000);
+                        const rem = n % 1000;
+                        const thousandStr = `${toCardinal(thousands)} thousand`;
+                        if (rem === 0) return `${thousandStr}th`;
+                        if (rem < 100) {
+                            return `${thousandStr} and ${numberToOrdinal(rem)}`;
+                        }
+                        return `${thousandStr} ${numberToOrdinal(rem)}`;
+                    }
                     return numStr;
                 };
 

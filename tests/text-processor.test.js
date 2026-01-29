@@ -316,6 +316,23 @@ describe('processContent Regressions', () => {
         expect(output).toMatch(/Sentence one\. Sentence two\./);
     });
 
+
+    test('Feature: Ordinal Normalization (Large Numbers)', () => {
+        expect(runProcessor('In this 250th anniversary')).toMatch(/two hundred and fiftieth/i);
+        expect(runProcessor('100th')).toMatch(/one hundredth/i);
+        expect(runProcessor('1000th')).toMatch(/one thousandth/i);
+        expect(runProcessor('1250th')).toMatch(/one thousand two hundred and fiftieth/i);
+
+        // st, nd, rd checks
+        expect(runProcessor('101st')).toMatch(/one hundred and first/i);
+        expect(runProcessor('102nd')).toMatch(/one hundred and second/i);
+        expect(runProcessor('103rd')).toMatch(/one hundred and third/i);
+        expect(runProcessor('111th')).toMatch(/one hundred and eleventh/i); // Special teen case
+        expect(runProcessor('121st')).toMatch(/one hundred and twenty first/i);
+        expect(runProcessor('522nd')).toMatch(/five hundred and twenty second/i);
+        expect(runProcessor('953rd')).toMatch(/nine hundred and fifty third/i);
+    });
+
     describe('Date Normalization Discovery', () => {
         const formats = [
             { name: 'Month Day (Full)', input: 'February 5', expected: /February fifth/i },

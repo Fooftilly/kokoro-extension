@@ -247,24 +247,22 @@ browser.commands.onCommand.addListener(async (command) => {
         const tabs = await browser.tabs.query({ active: true, currentWindow: true });
         if (tabs && tabs[0]) {
             const tabId = tabs[0].id;
-            // 1. Eagerly try to show player to capture user gesture
-            // We ensure script first, then send SHOW_PLAYER with a small retry logic
-            ensureContentScript(tabId).then(async () => {
-                for (let i = 0; i < 3; i++) {
-                    try {
-                        await browser.tabs.sendMessage(tabId, {
-                            action: "SHOW_PLAYER",
-                            mode: 'full'
-                        });
-                        break;
-                    } catch (e) {
-                        if (i === 2) console.warn("Failed to show player after retries", e);
-                        await new Promise(r => setTimeout(r, 200));
-                    }
-                }
-            }).catch(() => { });
 
-            // 2. Proceed with full TTS action (article extraction, etc.)
+            // Check if player is already active
+            try {
+                const response = await browser.tabs.sendMessage(tabId, { action: "CHECK_PLAYER_ACTIVE" });
+                if (response && response.active) {
+                    console.log("Player already active, ignoring shortcut.");
+                    return;
+                }
+            } catch (e) {
+                // Content script might not be there or ready, proceed to try opening
+            }
+
+            // Clear stale pending text to prevent "echo"
+            await browser.storage.local.remove(['pendingText', 'pendingContent', 'pendingVoice']);
+
+            // Proceed with full TTS action (article extraction, etc.)
             await handleTtsAction(tabs[0], "read-article");
         }
     } else if (command === "nav-next" || command === "nav-prev") {

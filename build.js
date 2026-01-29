@@ -4,7 +4,7 @@ const { execSync } = require('child_process');
 const AdmZip = require('adm-zip');
 
 const EXTENSION_NAME = 'Kokoro TTS Sender';
-const EXTENSION_VERSION = '1.2.2';
+const EXTENSION_VERSION = '1.2.3';
 const DESCRIPTION = 'Send text from browser to Kokoro-FastAPI for TTS generation';
 
 const SRC_FILES = [
