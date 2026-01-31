@@ -296,6 +296,7 @@ export function processContent(blocks, segmenter) {
 
                 // Handle 4-digit decades
                 spokenText = spokenText.replace(/\b(\d{2})(\d0)\s*s\b/g, (match, prefix, d) => {
+                    if (prefix === '20' && d === '00') return 'two thousands';
                     const period = decadeMap[d];
                     if (!period) return match;
                     return `${prefix} ${period}`;
@@ -367,6 +368,13 @@ export function processContent(blocks, segmenter) {
                     return `the ${ordinal} of ${fullMonth}, ${year}`;
                 });
 
+                // Year Pronunciation: 1805 -> eighteen o five
+                // Pattern: 1101-1909 (XX0X format, where middle is 0 and last is non-zero)
+                // We typically say "eighteen o five".
+                // We exclude 2005 (two thousand five) and 1005 (ten o five / one thousand and five).
+                // Regex matches 11-19 followed by 0 followed by 1-9.
+                spokenText = spokenText.replace(/\b(1[1-9])0([1-9])\b/g, '$1 o $2');
+
                 const dateRangeRegex = /\b((?:c\.|ca\.)?\s*\d{1,4}(?:\s*(?:AD|BC|BCE|CE))?)\s*[-–—]\s*((?:c\.|ca\.)?\s*\d{1,4}(?:\s*(?:AD|BC|BCE|CE))?)\b/gi;
 
                 spokenText = spokenText.replace(dateRangeRegex, (match, p1, p2) => {
@@ -382,6 +390,122 @@ export function processContent(blocks, segmenter) {
                         }
                     }
                     return `${p1} to ${p2}`;
+                });
+
+                const ordinalRomanMap = {
+                    "I": "first", "II": "second", "III": "third", "IV": "fourth", "V": "fifth", "VI": "sixth", "VII": "seventh", "VIII": "eighth", "IX": "ninth", "X": "tenth",
+                    "XI": "eleventh", "XII": "twelfth", "XIII": "thirteenth", "XIV": "fourteenth", "XV": "fifteenth",
+                    "XVI": "sixteenth", "XVII": "seventeenth", "XVIII": "eighteenth", "XIX": "nineteenth", "XX": "twentieth",
+                    "XXI": "twenty-first", "XXII": "twenty-second", "XXIII": "twenty-third", "L": "fiftieth"
+                };
+                const cardinalRomanMap = {
+                    "I": "one", "II": "two", "III": "three", "IV": "four", "V": "five", "VI": "six", "VII": "seven", "VIII": "eight", "IX": "nine", "X": "ten",
+                    "XI": "eleven", "XII": "twelve", "XIII": "thirteen", "XIV": "fourteen", "XV": "fifteen",
+                    "XVI": "sixteen", "XVII": "seventeen", "XVIII": "eighteen", "XIX": "nineteen", "XX": "twenty",
+                    "XXI": "twenty-one", "XXII": "twenty-two", "XXIII": "twenty-three", "XXIV": "twenty-four", "XXV": "twenty-five",
+                    "XXVI": "twenty-six", "XXVII": "twenty-seven", "XXVIII": "twenty-eight", "XXIX": "twenty-nine", "XXX": "thirty",
+                    "L": "fifty"
+                };
+
+                const nonRegnalTriggers = new Set([
+                    "Chapter", "Vol", "Volume", "Part", "Bk", "Book", "Level", "Stage", "Grade", "Phase",
+                    "Section", "Class", "Type", "Model", "Mark", "Case", "Plate", "Fig", "Figure",
+                    "No", "Number", "World", "War", "Apollo", "Saturn"
+                ]);
+                const pronounNames = new Set([
+                    "How", "May", "As", "If", "It", "When", "Where", "Why", "What", "Which", "Who", "Whom", "Whose",
+                    "This", "That", "These", "Those", "He", "She", "We", "They", "Your", "My", "Our", "Their",
+                    "But", "And", "Or", "So", "Thus", "Then", "Also", "Though", "Although", "Since", "Because",
+                    "Unless", "Until", "While", "Wherefore", "Therefore", "Moreover", "Furthermore", "However",
+                    "Indeed", "Maybe", "Perhaps", "Often", "Never", "Always", "Sometimes"
+                ]);
+                const regnalTitles = new Set([
+                    "King", "Queen", "Pope", "Tsar", "Emperor", "Empress", "Prince", "Princess", "Saint",
+                    "Archduke", "Duke", "Count", "Baron", "Lord", "Lady"
+                ]);
+
+                // Sort keys by length descending to match longest first (e.g. III before I)
+                const sortedRomans = Object.keys(ordinalRomanMap).sort((a, b) => b.length - a.length).join('|');
+                // Regex matches Name + Space + Roman + (optional list of separator+Roman) + optional suffix
+                // IMPORTANT: Wrap sortedRomans in (?:) because it creates a "X|Y|Z" string, and we want quantifiers to apply to the whole group
+                const romanRegex = new RegExp(`\\b([A-Z][a-z]+)\\s+((?:${sortedRomans})(?:(?:\\s*,\\s*|\\s+(?:and|&)\\s+)\\s*(?:${sortedRomans}))*)(['’]s)?\\b`, 'g');
+
+                spokenText = spokenText.replace(romanRegex, (match, name, romSequence, suffix, offset, fullText) => {
+                    // Check for Middle Initial pattern (e.g., "John V. Smith")
+                    // If numeral is single letter, followed by dot, space, and capital letter.
+                    // We check if the roman sequence is just one letter (e.g. "V", not "IV").
+                    // romSequence might be "V" or "IV, V". We only care if it's a single token "V".
+                    // But romSequence captures the roman part. 
+                    // However, we need to access the "dot" which is NOT part of the match (unless suffix capture includes it? No, suffix is ['’]s).
+                    // The regex uses lookahead or boundary? 
+                    // Regex: \b([A-Z][a-z]+)\s+((?:${sortedRomans})...)(['’]s)?\b
+                    // It ends at \b. "V." -> "V" matches, "." is a boundary.
+                    // So we can check fullText[offset + match.length] for ".".
+
+                    if (romSequence.length === 1 && fullText[offset + match.length] === '.') {
+                        const after = fullText.slice(offset + match.length + 1);
+                        if (/^\s+[A-Z]/.test(after)) {
+                            return match;
+                        }
+                    }
+
+                    const isNonRegnal = nonRegnalTriggers.has(name) || nonRegnalTriggers.has(name.replace(/s$/, '')); // Check singular too for "Chapters"
+
+                    // romSequence contains "IV, V and VI"
+                    // We need to split it carefully to preserve separators for the output, 
+                    // OR we can just replace the Roman numerals within the sequence.
+
+                    // First check the PRIMARY match ("IV" or "IV, V...") against "I" safety checks if it STARTS with "I" and is length 1?
+                    // The sequence might be just "I". 
+                    // Or "I, II"
+
+                    // If the sequence STARTS with "I" and is essentially "I" (or "I" followed by separators), let's do the check.
+                    // But if it's a list, it's highly likely to be numerals. "Charles I, II and III".
+                    // The "I" pronoun safety is mostly for "Charles I knew".
+                    // If matches "I" exactly (no list parts), do the check.
+
+                    if (romSequence === 'I') {
+                        // Skip if name is actually a common starting word that precedes the pronoun "I"
+                        if (pronounNames.has(name)) return match;
+
+                        const preceding = fullText.substring(0, offset).trim();
+                        const precedingWord = preceding.split(/\s+/).pop();
+                        const isPrecededByTitle = regnalTitles.has(precedingWord) || regnalTitles.has(name);
+
+                        if (!suffix && !isPrecededByTitle && !isNonRegnal) {
+                            if (/\b(?:the|a|an)\s*$/i.test(preceding)) return match;
+                            const following = fullText.substring(offset + match.length).trim();
+                            const pronounVerbs = /^(?:am|know|knew|think|thought|saw|see|say|said|went|go|believe|believed|felt|feel|hope|hoped|wish|wished)\b/i;
+                            if (pronounVerbs.test(following)) return match;
+                        }
+                    }
+
+                    // Process the sequence. Replace only the Roman numerals in the sequence.
+                    const innerRegex = new RegExp(`\\b(?:${sortedRomans})\\b`, 'g');
+
+                    if (isNonRegnal) {
+                        // Use Cardinal map for non-regnal triggers
+                        const normalizedSequence = romSequence.replace(innerRegex, (rMatch) => {
+                            return cardinalRomanMap[rMatch] || rMatch;
+                        });
+                        return `${name} ${normalizedSequence}${suffix || ''}`;
+                    } else {
+                        // Use Ordinal map for regnal checks (default)
+                        const normalizedSequence = romSequence.replace(innerRegex, (rMatch) => {
+                            return `the ${ordinalRomanMap[rMatch]}`;
+                        });
+                        return `${name} ${normalizedSequence}${suffix || ''}`;
+                    }
+                });
+
+                // Global fallback for standalone Roman numerals (multi-letter only to avoid pronouns)
+                // Exclude I, V, X, L, M, C, D single letters.
+                // Regex for multi-letter Roman numerals using our keys (length > 1)
+                const multiLetterRomans = Object.keys(cardinalRomanMap).filter(k => k.length > 1).sort((a, b) => b.length - a.length).join('|');
+                // Regex: Match word boundary, Roman, word boundary. (No suffix handling here mostly, or simple)
+                spokenText = spokenText.replace(new RegExp(`\\b(${multiLetterRomans})(['’]s)?\\b`, 'g'), (match, rom, suffix) => {
+                    const val = cardinalRomanMap[rom];
+                    return val ? `${val}${suffix || ''}` : match;
                 });
 
                 // Acronyms with plural or possessive 's' (LMs, LLMs, MIT’s)
@@ -493,12 +617,15 @@ export function processContent(blocks, segmenter) {
                     { regex: /\bibid\./gi, replacement: "ibidem" },
                     { regex: /\bfl\./gi, replacement: "flourished" },
                     { regex: /\bvs\.?/gi, replacement: "versus" },
+                    { regex: /\bv\./g, replacement: "versus" }, // Lowercase v. only, avoids "John V. Smith"
                     { regex: /\betc\./gi, replacement: "et cetera" },
                     { regex: /\bapprox\./gi, replacement: "approximately" },
                     { regex: /\bvol\./gi, replacement: "Volume" },
                     { regex: /\bch\./gi, replacement: "Chapter" },
                     { regex: /\bfig\./gi, replacement: "Figure" },
                     { regex: /\beq\./gi, replacement: "Equation" },
+                    { regex: /\bJr\.?/gi, replacement: "Junior" },
+                    { regex: /\bSr\.?/gi, replacement: "Senior" },
                     { regex: /\bc\./g, replacement: "circa" },
                     { regex: /\bca\./gi, replacement: "circa" },
                     { regex: /\bd\./g, replacement: "died" },
@@ -559,23 +686,6 @@ export function processContent(blocks, segmenter) {
                     }
 
                     return `${n} ${ordinal}`;
-                });
-
-                const ordinalRomanMap = {
-                    "II": "second", "III": "third", "IV": "fourth", "VI": "sixth", "VII": "seventh", "VIII": "eighth", "IX": "ninth",
-                    "XI": "eleventh", "XII": "twelfth", "XIII": "thirteenth", "XIV": "fourteenth", "XV": "fifteenth",
-                    "XVI": "sixteenth", "XVII": "seventeenth", "XVIII": "eighteenth", "XIX": "nineteenth", "XX": "twentieth",
-                    "XXI": "twenty-first", "XXII": "twenty-second", "XXIII": "twenty-third"
-                };
-                const nonRegnalTriggers = new Set([
-                    "Chapter", "Vol", "Volume", "Part", "Bk", "Book", "Level", "Stage", "Grade", "Phase",
-                    "Section", "Class", "Type", "Model", "Mark", "Case", "Plate", "Fig", "Figure",
-                    "No", "Number", "World", "War", "Apollo", "Saturn"
-                ]);
-
-                spokenText = spokenText.replace(/\b([A-Z][a-z]+)\s+(II|III|IV|VI|VII|VIII|IX|XI|XII|XIII|XIV|XV|XVI|XVII|XVIII|XIX|XX|XXI|XXII|XXIII)\b/g, (match, name, rom) => {
-                    if (nonRegnalTriggers.has(name)) return match;
-                    return ordinalRomanMap[rom] ? `${name} the ${ordinalRomanMap[rom]}` : match;
                 });
 
                 const romanMap = {
