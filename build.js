@@ -20,7 +20,10 @@ const SRC_FILES = [
     'audio-manager.js',
     'dom-utils.js',
     'transliteration-lite.js',
-    'theme-init.js'
+    'theme-init.js',
+    'reader.html',
+    'reader.js',
+    'reader.css'
 ];
 
 const ICONS_DIR = 'icons';
@@ -43,6 +46,14 @@ const TRANSLITERATION_DEST = 'transliteration-lite.js';
 
 const DOMPURIFY_SRC = 'node_modules/dompurify/dist/purify.js';
 const DOMPURIFY_DEST = 'purify.js';
+
+const EPUBJS_SRC = 'node_modules/epubjs/dist/epub.min.js';
+const EPUBJS_DEST = 'epub.min.js';
+
+const JSZIP_SRC = 'node_modules/jszip/dist/jszip.min.js';
+const JSZIP_DEST = 'jszip.min.js';
+
+
 
 function copyFile(src, dest) {
     fs.copyFileSync(src, dest);
@@ -112,7 +123,9 @@ function createManifest(browser) {
             {
                 resources: ["overlay.html", "overlay.css", "overlay.js", "text-processor.js", "audio-manager.js", "dom-utils.js", "browser-polyfill.min.js",
                     "compromise.js", "compromise-dates.min.js", "compromise-numbers.min.js",
-                    "transliteration-lite.js", "purify.js", "theme-init.js"],
+                    "transliteration-lite.js", "purify.js", "theme-init.js",
+                    "reader.html", "reader.js", "reader.css",
+                    "epub.min.js", "jszip.min.js"],
                 matches: ["<all_urls>"]
             }
         ],
@@ -219,6 +232,11 @@ function build() {
 
         // Copy dompurify
         copyFile(path.join(__dirname, DOMPURIFY_SRC), path.join(browserDist, DOMPURIFY_DEST));
+
+        // Copy epubjs & jszip
+        copyFile(path.join(__dirname, EPUBJS_SRC), path.join(browserDist, EPUBJS_DEST));
+        copyFile(path.join(__dirname, JSZIP_SRC), path.join(browserDist, JSZIP_DEST));
+
 
         // Generate Manifest
         const manifest = createManifest(browser);

@@ -18,6 +18,8 @@
     "compromise-dates": "^3.7.1",
     "compromise-numbers": "^1.4.0",
     "dompurify": "^3.3.1",
+    "epubjs": "^0.3.93",
+    "jszip": "^3.10.1",
     "transliteration": "^2.3.5",
     "webextension-polyfill": "^0.12.0"
   },

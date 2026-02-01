@@ -47,6 +47,7 @@ window.addEventListener('message', (event) => {
     } else if (event.data === 'NAV_PREV') {
         navigate(currentIndex - 1);
     } else if (event.data === 'RELOAD_DATA') {
+        window.hasReceivedData = true;
         initialize();
     }
 });
@@ -127,6 +128,13 @@ async function initialize() {
 
     const autoScroll = data.autoScroll || false;
     window.kokoroAutoScroll = autoScroll;
+
+    // Check for URL params
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('waitForData') === 'true' && !window.hasReceivedData) {
+        statusEl.textContent = "Waiting for document...";
+        return;
+    }
 
     if (!data.pendingText) {
         statusEl.textContent = "Extracting article...";

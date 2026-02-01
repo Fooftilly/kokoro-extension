@@ -523,6 +523,14 @@ document.addEventListener('DOMContentLoaded', () => {
         await saveOptions(false);
         checkApiConnection(url);
     });
+
+    // Open Document Handler
+    const openDocBtn = document.getElementById('openDocumentBtn');
+    if (openDocBtn) {
+        openDocBtn.addEventListener('click', () => {
+            browser.tabs.create({ url: 'reader.html' });
+        });
+    }
 });
 
 async function checkApiConnection(url) {

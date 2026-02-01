@@ -24,7 +24,7 @@ export function processContent(blocks, segmenter) {
             const tempDoc = docParser.parseFromString(window.DOMPurify.sanitize(html), 'text/html');
             const tempDiv = tempDoc.body;
 
-            const plainText = tempDiv.textContent;
+            const plainText = tempDiv.textContent.replace(/[\n\r]/g, ' ');
             if (!plainText.trim()) return;
 
             const rawSegments = Array.from(segmenter.segment(plainText));

@@ -36,7 +36,7 @@
 
 body {
     width: 350px;
-    height: 520px;
+    height: 550px;
     padding: 10px;
     font-family: sans-serif;
     box-sizing: border-box;
@@ -140,6 +140,17 @@ button {
     color: white;
     border: none;
     border-radius: 4px;
+}
+
+.primary-btn {
+    background: #007bff;
+    color: white;
+    font-weight: bold;
+}
+
+.footer button {
+    margin-top: 0;
+    margin-bottom: 5px;
 }
 
 button:hover {

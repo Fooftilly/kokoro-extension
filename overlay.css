@@ -79,7 +79,8 @@ body {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 200px;
+    flex: 1;
+    min-width: 0;
 }
 
 .close-btn {
