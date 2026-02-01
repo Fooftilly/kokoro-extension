@@ -130,6 +130,17 @@ export function processContent(blocks, segmenter) {
                 // Remove hidden/invisible characters that often break regexes (BOM, ZWS, etc.)
                 spokenText = spokenText.replace(/[\ufeff\u200b\u200c\u200d\u200e\u200f]/g, '');
 
+                // -0. Heading Roman Numerals (e.g. "I — THE", "II. Part")
+                // We target Roman numerals at the start of strings or after full stops, followed by a separator and a capitalized word.
+                // This ensures "I" in "I — THE" is expanded to "one" despite being a single letter.
+                const headingRomanMap = {
+                    "I": "one", "II": "two", "III": "three", "IV": "four", "V": "five", "VI": "six", "VII": "seven", "VIII": "eight", "IX": "nine", "X": "ten"
+                };
+                spokenText = spokenText.replace(/(^|\n|\. |\! |\? )\s*\b(I|II|III|IV|V|VI|VII|VIII|IX|X)\b\s*(—|-|:|\.)\s+([A-Z])/g, (match, prefix, rom, sep, nextChar) => {
+                    const val = headingRomanMap[rom];
+                    return val ? `${prefix}${val} ${sep} ${nextChar}` : match;
+                });
+
                 // 0. Fix Symbols
                 // Add a small pause (comma) after internal question/exclamation marks in merged sentences
                 spokenText = spokenText.replace(/([?!])\s+(?=[a-zA-Z0-9“"‘'])/g, '$1, ');

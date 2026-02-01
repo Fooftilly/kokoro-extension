@@ -359,7 +359,9 @@ describe('processContent Regressions', () => {
             { input: 'World War II.', expected: /World War two/ },
             { input: 'Model X', expected: /Model ten/ },
             { input: 'Grade XII', expected: /Grade twelve/ },
-            { input: 'Case I', expected: /Case one/ }
+            { input: 'Case I', expected: /Case one/ },
+            { input: 'I — THE HISTORICAL BACKGROUND', expected: /one (?:—|,) THE HISTORICAL BACKGROUND/ },
+            { input: 'II - SOME OTHER TOPIC', expected: /two - SOME OTHER TOPIC/ }
         ];
 
         nonRegnalCases.forEach(({ input, expected }) => {
