@@ -13,10 +13,14 @@
 <body>
 
     <div id="filePickerOverlay">
-        <div class="picker-content">
+        <div class="picker-content" id="dropZone">
             <h1>Open Document</h1>
-            <p>Select an EPUB file to read</p>
-            <input type="file" id="fileInput" accept=".epub,.txt"> <!-- Added .txt just in case -->
+            <p>Select or drag an EPUB file here to read</p>
+            <div class="file-input-wrapper">
+                <label for="fileInput" class="custom-file-label">Browse...</label>
+                <input type="file" id="fileInput" accept=".epub,.txt">
+            </div>
+            <div id="file-name-display" class="file-name-display">No file selected.</div>
             <div id="errorMsg" style="color: red; margin-top: 10px; display: none;"></div>
             <div id="loadingStatus" style="margin-top: 20px; display: none;">Loading...</div>
         </div>

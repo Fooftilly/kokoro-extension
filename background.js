@@ -194,7 +194,8 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
                 pendingApiUrl: apiUrl,
                 pendingTitle: tab.title,
                 pendingNormalizationOptions: settings.normalizationOptions,
-                pendingCustomPronunciations: settings.customPronunciations
+                pendingCustomPronunciations: settings.customPronunciations,
+                pendingAutoplay: true
             });
 
             // Send message to the active tab to show the overlay
@@ -246,6 +247,11 @@ browser.commands.onCommand.addListener(async (command) => {
     if (command === "read-article") {
         const tabs = await browser.tabs.query({ active: true, currentWindow: true });
         if (tabs && tabs[0]) {
+            const url = tabs[0].url || "";
+            if (url.includes('reader.html') || url.startsWith('extension://') && url.includes('reader.html')) {
+                console.log("Shortcut disabled on reader page.");
+                return;
+            }
             const tabId = tabs[0].id;
 
             // Check if player is already active

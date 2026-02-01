@@ -5,7 +5,7 @@ export function processContent(blocks, segmenter) {
     const renderData = [];
     let globalIndex = 0;
 
-    blocks.forEach(block => {
+    blocks.forEach((block, blockIndex) => {
         if (block.type === 'image') {
             renderData.push(block);
         } else if (block.type === 'caption' || block.type === 'silent' || block.type === 'code') {
@@ -840,7 +840,8 @@ export function processContent(blocks, segmenter) {
                 const sentenceObj = {
                     index: globalIndex++,
                     text: spokenText,
-                    html: htmlFragment
+                    html: htmlFragment,
+                    blockIndex: blockIndex
                 };
                 sentences.push(sentenceObj);
                 paraSentences.push(sentenceObj);

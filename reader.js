@@ -8,19 +8,56 @@ const sidebar = document.getElementById('sidebar');
 const appContainer = document.querySelector('.app-container');
 
 let book = null; // EPUB object
+let currentChapterBlocks = []; // For tracking progress
+let currentToc = []; // For resolving chapter titles
+let currentActiveHref = null; // To avoid redundant updates
 
 
 // Clear stale storage on load to prevent ghost audio
 browser.storage.local.remove(['pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle']).catch(console.error);
 
+const dropZone = document.getElementById('dropZone');
+const fileNameDisplay = document.getElementById('file-name-display');
+
 // --- Event Listeners ---
 
-fileInput.addEventListener('change', async (e) => {
+fileInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
-    if (!file) return;
+    if (file) handleFile(file);
+});
 
+// Drag and Drop Handling
+['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+    dropZone.addEventListener(eventName, preventDefaults, false);
+});
+
+function preventDefaults(e) {
+    e.preventDefault();
+    e.stopPropagation();
+}
+
+['dragenter', 'dragover'].forEach(eventName => {
+    dropZone.addEventListener(eventName, () => dropZone.classList.add('drag-active'), false);
+});
+
+['dragleave', 'drop'].forEach(eventName => {
+    dropZone.addEventListener(eventName, () => dropZone.classList.remove('drag-active'), false);
+});
+
+dropZone.addEventListener('drop', (e) => {
+    const dt = e.dataTransfer;
+    const file = dt.files[0];
+    if (file) handleFile(file);
+});
+
+async function handleFile(file) {
     errorMsg.style.display = 'none';
     loadingStatus.style.display = 'block';
+
+    // Update file name display
+    if (fileNameDisplay) {
+        fileNameDisplay.textContent = file.name;
+    }
 
     try {
         if (file.type === 'application/epub+zip' || file.name.endsWith('.epub')) {
@@ -30,7 +67,6 @@ fileInput.addEventListener('change', async (e) => {
         }
 
         // Check if loading was successful before hiding overlay
-        // load functions should throw if valid book info isn't found
         filePickerOverlay.style.display = 'none';
 
     } catch (err) {
@@ -40,7 +76,7 @@ fileInput.addEventListener('change', async (e) => {
     } finally {
         loadingStatus.style.display = 'none';
     }
-});
+}
 
 document.getElementById('toggleSidebar').addEventListener('click', () => {
     appContainer.classList.add('sidebar-hidden');
@@ -56,46 +92,194 @@ document.getElementById('showSidebarBtn').addEventListener('click', () => {
 
 async function loadEpub(file) {
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
         const bookData = e.target.result;
         book = ePub(bookData);
 
-        book.ready.then(() => {
-            // Populate Chapters
-            const navigation = book.navigation;
-            renderChapterList(navigation.toc);
-        });
+        try {
+            await book.ready;
+
+            loadingStatus.textContent = "Scanning for chapters...";
+            loadingStatus.style.display = 'block';
+
+            // Try to enrich TOC with hidden subchapters from spine
+            const toc = await getEnrichedToc(book);
+            currentToc = toc; // Store globally
+            renderChapterList(toc);
+
+            // Check if loading was successful before hiding overlay
+            filePickerOverlay.style.display = 'none';
+
+        } catch (err) {
+            console.error("EPUB Loading Error:", err);
+            errorMsg.textContent = "Failed to load EPUB: " + err.message;
+            errorMsg.style.display = 'block';
+        } finally {
+            loadingStatus.style.display = 'none';
+        }
     };
     reader.readAsArrayBuffer(file);
+}
+
+/**
+ * Scans the spine for sections not in the TOC and attempts to discover subchapters by parsing headings.
+ */
+async function getEnrichedToc(book) {
+    const originalToc = book.navigation.toc;
+    const spine = book.spine;
+
+    // Map of href (no hash) -> label from original TOC
+    const tocMap = new Map();
+    const collectHrefs = (items) => {
+        items.forEach(item => {
+            if (item.href) {
+                const base = item.href.split('#')[0];
+                tocMap.set(base, item.label.trim());
+            }
+            const children = item.subitems || item.items || [];
+            collectHrefs(children);
+        });
+    };
+    collectHrefs(originalToc);
+
+    const enriched = [];
+    let currentMain = null;
+
+    for (let i = 0; i < spine.length; i++) {
+        const section = spine.get(i);
+        const href = section.href;
+
+        try {
+            const doc = await section.load(book.load.bind(book));
+            const headings = doc.querySelectorAll('h1, h2, h3');
+
+            if (headings.length === 0) {
+                if (tocMap.has(href)) {
+                    const label = tocMap.get(href);
+                    if (!enriched.some(e => e.label === label)) {
+                        currentMain = { label, href, subitems: [] };
+                        enriched.push(currentMain);
+                    }
+                }
+                continue;
+            }
+
+            for (const h of headings) {
+                const tagName = h.tagName.toLowerCase();
+                const label = h.textContent.trim();
+                if (!label) continue;
+
+                // Find best ID for this heading
+                let foundId = h.id;
+
+                // Check preceding element for anchor with ID (common in EPUB)
+                if (!foundId && h.previousElementSibling && h.previousElementSibling.tagName.toLowerCase() === 'a' && h.previousElementSibling.id) {
+                    foundId = h.previousElementSibling.id;
+                }
+                if (!foundId && h.previousElementSibling && h.previousElementSibling.tagName.toLowerCase() === 'div' && h.previousElementSibling.id && !h.previousElementSibling.textContent.trim()) {
+                    foundId = h.previousElementSibling.id;
+                }
+
+                if (!foundId) {
+                    foundId = h.querySelector('[id]')?.id;
+                }
+
+                if (!foundId) {
+                    // Only climb up if we don't have a better option
+                    let target = h.parentElement;
+                    while (target && target !== doc.body && !target.id) {
+                        target = target.parentElement;
+                    }
+                    if (target && target.id) {
+                        // Only use parent ID if this heading is near the top of that container
+                        // and no other heading has claimed it yet.
+                        foundId = target.id;
+                    }
+                }
+
+                const itemHref = foundId ? `${href}#${foundId}` : href;
+
+                if (tagName === 'h1' || tagName === 'h2') {
+                    currentMain = { label, href: itemHref, subitems: [] };
+                    enriched.push(currentMain);
+                } else if (tagName === 'h3' && currentMain) {
+                    currentMain.subitems.push({ label, href: itemHref });
+                }
+            }
+        } catch (e) {
+            console.warn("Failed to scan section", href, e);
+            if (tocMap.has(href)) {
+                const label = tocMap.get(href);
+                if (!enriched.some(e => e.label === label)) {
+                    currentMain = { label, href, subitems: [] };
+                    enriched.push(currentMain);
+                }
+            }
+        }
+    }
+
+    return enriched.length > 0 ? enriched : originalToc;
 }
 
 function renderChapterList(toc) {
     chapterList.innerHTML = '';
 
-    // Recursive function to flatten or indent?
-    // Let's just flatten for simplicity for now, or simple indentation.
     const createItem = (item, level = 0) => {
-        const div = document.createElement('div');
-        div.className = 'chapter-item';
-        div.textContent = item.label.trim() || "Untitled";
-        div.style.paddingLeft = `${10 + (level * 15)}px`;
-        div.dataset.href = item.href;
+        const container = document.createElement('div');
+        container.className = 'chapter-group';
+        if (level > 0) container.classList.add('subchapter-list');
 
-        div.addEventListener('click', () => {
-            // Update UI
+        const itemEl = document.createElement('div');
+        itemEl.className = 'chapter-item';
+        itemEl.dataset.href = item.href;
+        itemEl.style.paddingLeft = `${10 + (level * 20)}px`;
+
+        const children = item.subitems || item.items || [];
+        const hasChildren = children.length > 0;
+
+        if (hasChildren) {
+            const toggle = document.createElement('span');
+            toggle.className = 'chapter-toggle';
+            toggle.textContent = '▶';
+            toggle.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const isExpanded = container.classList.toggle('expanded');
+                toggle.textContent = isExpanded ? '▼' : '▶';
+            });
+            itemEl.appendChild(toggle);
+        } else if (level > 0) {
+            const spacer = document.createElement('span');
+            spacer.className = 'chapter-spacer';
+            itemEl.appendChild(spacer);
+        }
+
+        const label = document.createElement('span');
+        label.className = 'chapter-label';
+        label.textContent = (item.label || "Untitled").trim();
+        itemEl.appendChild(label);
+
+        itemEl.addEventListener('click', () => {
             document.querySelectorAll('.chapter-item').forEach(d => d.classList.remove('active'));
-            div.classList.add('active');
-
+            itemEl.classList.add('active');
             if (book) {
                 loadEpubChapter(item.href, item.label);
             }
         });
 
-        chapterList.appendChild(div);
+        container.appendChild(itemEl);
+        chapterList.appendChild(container);
 
-        if (item.subitems && item.subitems.length > 0) {
-            item.subitems.forEach(sub => createItem(sub, level + 1));
+        if (hasChildren) {
+            const subList = document.createElement('div');
+            subList.className = 'sub-items';
+            children.forEach(sub => {
+                const subItem = createItem(sub, level + 1);
+                subList.appendChild(subItem);
+            });
+            container.appendChild(subList);
         }
+
+        return container;
     };
 
     toc.forEach(item => createItem(item));
@@ -104,40 +288,100 @@ function renderChapterList(toc) {
     const firstItem = chapterList.querySelector('.chapter-item');
     if (firstItem) {
         firstItem.click();
+        const firstGroup = firstItem.closest('.chapter-group');
+        if (firstGroup && firstGroup.querySelector('.sub-items')) {
+            firstGroup.classList.add('expanded');
+            const toggle = firstGroup.querySelector('.chapter-toggle');
+            if (toggle) toggle.textContent = '▼';
+        }
     }
 }
 
 async function loadEpubChapter(href, title) {
-    // Determine the section from href
-    // href might contain #hash
-    const section = book.spine.get(href);
-    if (section) {
-        // Render to extract text? Or use section.load?
-        // section.load returns the document.
-        const doc = await section.load(book.load.bind(book));
+    const spine = book.spine;
+    const [baseHref, fragment] = href.split('#');
+    const startSection = spine.get(baseHref);
+    if (!startSection) return;
 
-        let contentToProcess = null;
-        if (doc) {
-            contentToProcess = doc.body || (doc.documentElement ? doc.documentElement : doc);
-        }
+    // We want to load all sections from startSection until the next EXPLICIT TOC entry
+    const tocHrefs = new Set();
+    const collectHrefs = (items) => {
+        items.forEach(item => {
+            if (item.href) tocHrefs.add(item.href.split('#')[0]);
+            const children = item.subitems || item.items || [];
+            collectHrefs(children);
+        });
+    };
+    collectHrefs(book.navigation.toc);
 
-        if (contentToProcess && typeof contentToProcess.querySelectorAll === 'function') {
-            await processAndSendContent(contentToProcess, title || "Chapter");
-        } else {
-            console.warn("No valid content found for chapter", href, doc);
-            // Fallback: search strings?
-            if (doc && typeof doc === 'string') {
-                // doc itself might be the string content?
-                await sendToPlayer([{ type: 'text', content: doc }], "Chapter");
+    const sectionsToLoad = [startSection];
+    let nextIdx = startSection.index + 1;
+    while (nextIdx < spine.length) {
+        const nextSec = spine.get(nextIdx);
+        // Stop if this section starts a new TOC chapter/subchapter
+        if (tocHrefs.has(nextSec.href)) break;
+        sectionsToLoad.push(nextSec);
+        nextIdx++;
+    }
+
+    const allBlocks = [];
+    for (const sec of sectionsToLoad) {
+        const doc = await sec.load(book.load.bind(book));
+        const body = doc.body || (doc.documentElement ? doc.documentElement : doc);
+        const blocks = await extractBlocks(sec, body);
+        allBlocks.push(...blocks);
+    }
+
+    // Merge continuations across blocks
+    const mergedBlocks = [];
+    for (const b of allBlocks) {
+        if (b.type === 'text' && mergedBlocks.length > 0 && mergedBlocks[mergedBlocks.length - 1].type === 'text') {
+            const last = mergedBlocks[mergedBlocks.length - 1];
+            const lastText = last.content.trim();
+            const currText = b.content.trim();
+
+            if (lastText && currText) {
+                const endsInNoPunct = !/[.!?!"”']$/.test(lastText);
+                const startsLower = /^[a-z]/.test(currText);
+                if (endsInNoPunct || startsLower) {
+                    last.content += ' ' + b.content;
+                    last.html += ' ' + b.html;
+                    if (b.ids && b.ids.length > 0) {
+                        last.ids = [...new Set([...(last.ids || []), ...b.ids])];
+                    }
+                    continue;
+                }
             }
         }
+        mergedBlocks.push(b);
     }
+
+    currentChapterBlocks = mergedBlocks;
+
+    // baseHref and fragment are already defined at the start of the function
+    let startIndex = 0;
+
+    if (fragment) {
+        console.log("Searching for fragment:", fragment);
+        const idx = mergedBlocks.findIndex(b => b.ids && b.ids.includes(fragment));
+        if (idx !== -1) {
+            startIndex = idx;
+            console.log("Found fragment at block index:", idx);
+        } else {
+            console.warn("Fragment not found in merged blocks:", fragment);
+            const allAvailableIds = mergedBlocks.flatMap(b => b.ids || []);
+            console.log("Available IDs in merged blocks:", allAvailableIds);
+        }
+    }
+
+    const fullText = mergedBlocks.map(b => b.content).join(' ');
+    await sendToPlayer(mergedBlocks, title || "Chapter", fullText.substring(0, 100), startIndex);
 }
 
-// --- Content Processing & sending ---
+// --- Content Processing & Extraction ---
 
-async function processAndSendContent(bodyElement, title) {
-    if (!bodyElement) return;
+async function extractBlocks(section, bodyElement) {
+    if (!bodyElement) return [];
 
     // 1. Resolve images
     if (typeof bodyElement.querySelectorAll === 'function') {
@@ -156,27 +400,50 @@ async function processAndSendContent(bodyElement, title) {
     }
 
     // 2. Extract raw blocks
-    const rawBlocks = [];
+    const blocks = [];
+    const usedIds = new Set();
+    let pendingIds = [];
+
     function walk(node) {
         if (node.nodeType === Node.ELEMENT_NODE) {
             const tagName = node.tagName.toLowerCase();
-
-            // Skip scripts, styles, etc.
             if (['script', 'style', 'noscript'].includes(tagName)) return;
 
+            // Collect ID if present and not yet used
+            if (node.id && !usedIds.has(node.id)) {
+                pendingIds.push(node.id);
+                usedIds.add(node.id);
+            }
+
+            // Also collect 'name' attribute which is common in older EPUBs (especially from Word)
+            const nameAttr = node.getAttribute('name');
+            if (nameAttr && !usedIds.has(nameAttr)) {
+                pendingIds.push(nameAttr);
+                usedIds.add(nameAttr);
+            }
+
             if (['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote'].includes(tagName)) {
-                rawBlocks.push({
+                // Collect IDs/names from children too
+                const descendantWithIds = node.querySelectorAll('[id], [name]');
+                descendantWithIds.forEach(el => {
+                    const id = el.id || el.getAttribute('name');
+                    if (id && !usedIds.has(id)) {
+                        pendingIds.push(id);
+                        usedIds.add(id);
+                    }
+                });
+
+                blocks.push({
                     type: (tagName === 'p' || tagName === 'li' || tagName === 'blockquote') ? 'text' : tagName,
+                    ids: [...pendingIds],
                     html: node.innerHTML,
                     content: node.textContent.trim()
                 });
+                pendingIds = []; // Reset after assigning to a block
             } else if (tagName === 'img') {
-                rawBlocks.push({ type: 'image', src: node.src });
-            } else if (tagName === 'br') {
-                // Ignore BR for block detection, but it might suggest splitting?
-                // For now, let it be.
+                blocks.push({ type: 'image', src: node.src, ids: [...pendingIds] });
+                pendingIds = [];
             } else {
-                // Container elements (div, section, span, etc.)
                 for (const child of node.childNodes) {
                     walk(child);
                 }
@@ -184,47 +451,100 @@ async function processAndSendContent(bodyElement, title) {
         } else if (node.nodeType === Node.TEXT_NODE) {
             const text = node.textContent.trim();
             if (text && node.parentElement === bodyElement) {
-                // Loose text in body
-                rawBlocks.push({ type: 'text', content: text, html: text });
+                blocks.push({ type: 'text', content: text, html: text, ids: [...pendingIds] });
+                pendingIds = [];
             }
         }
     }
     walk(bodyElement);
 
-    // 3. Merge broken sentences across blocks (common in OCR or bad EPUB formatting)
-    const blocks = [];
-    for (const b of rawBlocks) {
-        if (b.type === 'text' && blocks.length > 0 && blocks[blocks.length - 1].type === 'text') {
-            const last = blocks[blocks.length - 1];
-            const lastText = last.content.trim();
-            const currText = b.content.trim();
-
-            if (lastText && currText) {
-                // Heuristics for continuation:
-                // - Last block doesn't end in sentence-ending punctuation.
-                // - Current block starts with a lowercase letter.
-                const endsInNoPunct = !/[.!?!"”']$/.test(lastText);
-                const startsLower = /^[a-z]/.test(currText);
-
-                if (endsInNoPunct || startsLower) {
-                    // Merge with a space
-                    last.content += ' ' + b.content;
-                    // Wrap contents if needed, or just append HTML
-                    last.html += ' ' + b.html;
-                    continue;
-                }
-            }
+    // Fallback for reader.js legacy: also provide a single 'id' property (the first one)
+    blocks.forEach(b => {
+        if (b.ids && b.ids.length > 0) {
+            b.id = b.ids[0];
+        } else {
+            b.id = "";
         }
-        blocks.push(b);
-    }
+    });
 
-    const fullText = blocks.map(b => b.content).join(' ');
-    await sendToPlayer(blocks, title || "Chapter", fullText.substring(0, 100));
+    return blocks;
 }
 
-async function sendToPlayer(content, title, textPreview) {
-    // 1. Save to storage
-    const settings = await browser.storage.sync.get(['voice', 'normalizationOptions', 'customPronunciations', 'apiUrl']);
+// --- Bi-directional Sync ---
+
+window.addEventListener('message', (event) => {
+    if (event.data && event.data.type === 'KOKORO_READING_PROGRESS') {
+        updateActiveChapter(event.data.blockIndex);
+    }
+});
+
+function updateActiveChapter(blockIndex) {
+    if (!currentChapterBlocks || !currentChapterBlocks[blockIndex]) return;
+
+    const block = currentChapterBlocks[blockIndex];
+    if (!block.ids || block.ids.length === 0) return;
+
+    // Find if any of these IDs correspond to a TOC item
+    // We need to flatten the TOC to search it efficiently or just search recursively
+    let bestMatch = null;
+
+    const findMatch = (items) => {
+        for (const item of items) {
+            // Check if this item's href points to one of our IDs
+            // item.href is like "chapter.xhtml#someId" or just "chapter.xhtml"
+            const itemHash = item.href.split('#')[1];
+
+            // If item has a hash, check if it matches one of the block's IDs
+            if (itemHash && block.ids.includes(itemHash)) {
+                return item;
+            }
+            // If item has no hash, it points to the start of the file. 
+            // We usually don't rely on this for *updates* unless we are at block 0, 
+            // but the initial load handles block 0. Here we care about specific anchors.
+
+            if (item.subitems && item.subitems.length > 0) {
+                const childMatch = findMatch(item.subitems);
+                if (childMatch) return childMatch;
+            }
+        }
+        return null;
+    };
+
+    bestMatch = findMatch(currentToc);
+
+    if (bestMatch && bestMatch.href !== currentActiveHref) {
+        currentActiveHref = bestMatch.href;
+
+        // 1. Update Sidebar
+        document.querySelectorAll('.chapter-item').forEach(d => d.classList.remove('active'));
+        const activeItem = document.querySelector(`.chapter-item[data-href="${bestMatch.href}"]`);
+        if (activeItem) {
+            activeItem.classList.add('active');
+            // Ensure parent groups are expanded
+            let parent = activeItem.parentElement;
+            while (parent) {
+                if (parent.classList.contains('chapter-group')) {
+                    parent.classList.add('expanded');
+                    const toggle = parent.querySelector('.chapter-toggle');
+                    if (toggle) toggle.textContent = '▼';
+                }
+                parent = parent.parentElement;
+            }
+            activeItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+
+        // 2. Update Overlay Title
+        if (playerFrame && playerFrame.contentWindow) {
+            playerFrame.contentWindow.postMessage({
+                type: 'UPDATE_TITLE',
+                title: bestMatch.label
+            }, '*');
+        }
+    }
+}
+
+async function sendToPlayer(content, title, textPreview, startIndex = 0) {
+    const settings = await browser.storage.sync.get(['voice', 'normalizationOptions', 'customPronunciations', 'apiUrl', 'autoplayReader']);
     const apiUrl = settings.apiUrl || 'http://127.0.0.1:8880/v1/';
 
     await browser.storage.local.set({
@@ -234,27 +554,17 @@ async function sendToPlayer(content, title, textPreview) {
         pendingApiUrl: apiUrl,
         pendingTitle: title || "Document",
         pendingNormalizationOptions: settings.normalizationOptions,
-        pendingCustomPronunciations: settings.customPronunciations
+        pendingCustomPronunciations: settings.customPronunciations,
+        pendingStartIndex: startIndex,
+        pendingAutoplay: settings.autoplayReader === undefined ? false : settings.autoplayReader
     });
-
-    // 2. Refresh iframe
-    // If iframe is already loaded, send message.
-    // If not, it will read storage on load.
-
-    // Check if iframe is ready?
-    // We can just try sending RELOAD_DATA
 
     playerFrame.contentWindow.postMessage('RELOAD_DATA', '*');
 }
 
-
-// Listen for messages from iframe?
 window.addEventListener('message', (event) => {
-    // For example, if overlay wants to close, we might just do nothing or close the tab
     if (event.data === 'CLOSE_KOKORO_PLAYER') {
-        // Close tab?
-        // window.close();
-        console.log("Player requested close - keeping reader open or implement close logic");
+        console.log("Player requested close");
     }
 });
 
