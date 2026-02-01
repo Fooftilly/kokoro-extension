@@ -11,6 +11,10 @@ let book = null; // EPUB object
 let currentChapterBlocks = []; // For tracking progress
 let currentToc = []; // For resolving chapter titles
 let currentActiveHref = null; // To avoid redundant updates
+let flatToc = []; // Flattened list for Prev/Next navigation
+
+const prevChapterBtn = document.getElementById('prevChapter');
+const nextChapterBtn = document.getElementById('nextChapter');
 
 
 // Clear stale storage on load to prevent ghost audio
@@ -223,8 +227,10 @@ async function getEnrichedToc(book) {
 
 function renderChapterList(toc) {
     chapterList.innerHTML = '';
+    flatToc = [];
 
     const createItem = (item, level = 0) => {
+        flatToc.push(item);
         const container = document.createElement('div');
         container.className = 'chapter-group';
         if (level > 0) container.classList.add('subchapter-list');
@@ -261,6 +267,8 @@ function renderChapterList(toc) {
         itemEl.addEventListener('click', () => {
             document.querySelectorAll('.chapter-item').forEach(d => d.classList.remove('active'));
             itemEl.classList.add('active');
+            currentActiveHref = item.href;
+            updateNavButtons();
             if (book) {
                 loadEpubChapter(item.href, item.label);
             }
@@ -284,6 +292,27 @@ function renderChapterList(toc) {
 
     toc.forEach(item => createItem(item));
 
+    // Navigation Button Listeners
+    prevChapterBtn.addEventListener('click', () => {
+        const currentIndex = flatToc.findIndex(item => item.href === currentActiveHref);
+        if (currentIndex > 0) {
+            const prevItem = flatToc[currentIndex - 1];
+            const el = document.querySelector(`.chapter-item[data-href="${prevItem.href}"]`);
+            if (el) el.click();
+        }
+    });
+
+    nextChapterBtn.addEventListener('click', () => {
+        const currentIndex = flatToc.findIndex(item => item.href === currentActiveHref);
+        if (currentIndex !== -1 && currentIndex < flatToc.length - 1) {
+            const nextItem = flatToc[currentIndex + 1];
+            const el = document.querySelector(`.chapter-item[data-href="${nextItem.href}"]`);
+            if (el) el.click();
+        }
+    });
+
+    updateNavButtons();
+
     // Auto-select first item
     const firstItem = chapterList.querySelector('.chapter-item');
     if (firstItem) {
@@ -295,6 +324,12 @@ function renderChapterList(toc) {
             if (toggle) toggle.textContent = '▼';
         }
     }
+}
+
+function updateNavButtons() {
+    const currentIndex = flatToc.findIndex(item => item.href === currentActiveHref);
+    prevChapterBtn.disabled = currentIndex <= 0;
+    nextChapterBtn.disabled = currentIndex === -1 || currentIndex >= flatToc.length - 1;
 }
 
 async function loadEpubChapter(href, title) {
@@ -390,7 +425,10 @@ async function extractBlocks(section, bodyElement) {
             const src = img.getAttribute('src');
             if (src && book) {
                 try {
-                    const url = await book.archive.createUrl(src);
+                    // Resolve relative path within the EPUB
+                    const baseUrl = new URL(section.url || section.href, "http://temp/").href;
+                    const absolutePath = new URL(src, baseUrl).pathname;
+                    const url = await book.archive.createUrl(absolutePath);
                     img.src = url;
                 } catch (e) {
                     console.warn("Failed to resolve image", src, e);
@@ -540,6 +578,7 @@ function updateActiveChapter(blockIndex) {
                 title: bestMatch.label
             }, '*');
         }
+        updateNavButtons();
     }
 }
 

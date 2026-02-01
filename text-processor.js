@@ -136,9 +136,11 @@ export function processContent(blocks, segmenter) {
                 const headingRomanMap = {
                     "I": "one", "II": "two", "III": "three", "IV": "four", "V": "five", "VI": "six", "VII": "seven", "VIII": "eight", "IX": "nine", "X": "ten"
                 };
-                spokenText = spokenText.replace(/(^|\n|\. |\! |\? )\s*\b(I|II|III|IV|V|VI|VII|VIII|IX|X)\b\s*(—|-|:|\.)\s+([A-Z])/g, (match, prefix, rom, sep, nextChar) => {
+                spokenText = spokenText.replace(/(^|\n|\. |\! |\? )\s*\b(I|II|III|IV|V|VI|VII|VIII|IX|X)\b\s*(—|–|-|:|\.)\s+([A-Z])/g, (match, prefix, rom, sep, nextChar) => {
                     const val = headingRomanMap[rom];
-                    return val ? `${prefix}${val} ${sep} ${nextChar}` : match;
+                    if (!val) return match;
+                    const spaceBefore = (sep === '.' || sep === ':') ? '' : ' ';
+                    return `${prefix}${val}${spaceBefore}${sep} ${nextChar}`;
                 });
 
                 // 0. Fix Symbols
@@ -439,7 +441,7 @@ export function processContent(blocks, segmenter) {
                 const sortedRomans = Object.keys(ordinalRomanMap).sort((a, b) => b.length - a.length).join('|');
                 // Regex matches Name + Space + Roman + (optional list of separator+Roman) + optional suffix
                 // IMPORTANT: Wrap sortedRomans in (?:) because it creates a "X|Y|Z" string, and we want quantifiers to apply to the whole group
-                const romanRegex = new RegExp(`\\b([A-Z][a-z]+)\\s+((?:${sortedRomans})(?:(?:\\s*,\\s*|\\s+(?:and|&)\\s+)\\s*(?:${sortedRomans}))*)(['’]s)?\\b`, 'g');
+                const romanRegex = new RegExp(`\\b([A-Z][a-z]+\\.?)\\s+((?:${sortedRomans})(?:(?:\\s*,\\s*|\\s+(?:and|&)\\s+)\\s*(?:${sortedRomans}))*)(['’]s)?\\b`, 'g');
 
                 spokenText = spokenText.replace(romanRegex, (match, name, romSequence, suffix, offset, fullText) => {
                     // Check for Middle Initial pattern (e.g., "John V. Smith")
@@ -460,7 +462,8 @@ export function processContent(blocks, segmenter) {
                         }
                     }
 
-                    const isNonRegnal = nonRegnalTriggers.has(name) || nonRegnalTriggers.has(name.replace(/s$/, '')); // Check singular too for "Chapters"
+                    const cleanName = name.replace(/\.$/, '');
+                    const isNonRegnal = nonRegnalTriggers.has(cleanName) || nonRegnalTriggers.has(cleanName.replace(/s$/, '')); // Check singular too for "Chapters"
 
                     // romSequence contains "IV, V and VI"
                     // We need to split it carefully to preserve separators for the output, 
@@ -483,16 +486,24 @@ export function processContent(blocks, segmenter) {
                         const precedingWord = preceding.split(/\s+/).pop();
                         const isPrecededByTitle = regnalTitles.has(precedingWord) || regnalTitles.has(name);
 
-                        if (!suffix && !isPrecededByTitle && !isNonRegnal) {
+                        if (!suffix && !isNonRegnal) {
                             if (/\b(?:the|a|an)\s*$/i.test(preceding)) return match;
                             const following = fullText.substring(offset + match.length).trim();
                             const pronounVerbs = /^(?:am|know|knew|think|thought|saw|see|say|said|went|go|believe|believed|felt|feel|hope|hoped|wish|wished)\b/i;
-                            if (pronounVerbs.test(following)) return match;
+
+                            // If it's a known pronoun verb following, and it's NOT explicitly preceded by a TITLE (other than the name itself being one)
+                            // or even if it IS preceded by a title, "King I am" is almost always a pronoun usage.
+                            if (pronounVerbs.test(following)) {
+                                const precedingWord = preceding.split(/\s+/).pop();
+                                const isExplicitTitlePreceding = regnalTitles.has(precedingWord);
+                                if (!isExplicitTitlePreceding) return match;
+                            }
                         }
                     }
 
                     // Process the sequence. Replace only the Roman numerals in the sequence.
-                    const innerRegex = new RegExp(`\\b(?:${sortedRomans})\\b`, 'g');
+                    // Also normalize '&' to 'and' within the sequence
+                    const innerRegex = new RegExp(`\\b(?:${sortedRomans})\\b|&`, 'g');
 
                     if (isNonRegnal) {
                         // Use Cardinal map for non-regnal triggers
@@ -503,6 +514,7 @@ export function processContent(blocks, segmenter) {
                     } else {
                         // Use Ordinal map for regnal checks (default)
                         const normalizedSequence = romSequence.replace(innerRegex, (rMatch) => {
+                            if (rMatch === '&') return 'and';
                             return `the ${ordinalRomanMap[rMatch]}`;
                         });
                         return `${name} ${normalizedSequence}${suffix || ''}`;

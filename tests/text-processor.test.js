@@ -360,8 +360,9 @@ describe('processContent Regressions', () => {
             { input: 'Model X', expected: /Model ten/ },
             { input: 'Grade XII', expected: /Grade twelve/ },
             { input: 'Case I', expected: /Case one/ },
-            { input: 'I — THE HISTORICAL BACKGROUND', expected: /one (?:—|,) THE HISTORICAL BACKGROUND/ },
-            { input: 'II - SOME OTHER TOPIC', expected: /two - SOME OTHER TOPIC/ }
+            { input: 'I — THE HISTORICAL BACKGROUND', expected: /one\s*(?:—|,)\s*THE HISTORICAL BACKGROUND/ },
+            { input: 'II - SOME OTHER TOPIC', expected: /two - SOME OTHER TOPIC/ },
+            { input: 'I – Orwell', expected: /one – Orwell/ }
         ];
 
         nonRegnalCases.forEach(({ input, expected }) => {
@@ -434,6 +435,69 @@ describe('processContent Regressions', () => {
             test(`Discovery: ${f.name} (${f.input})`, () => {
                 const output = runProcessor(f.input);
                 expect(output).toMatch(f.expected);
+            });
+        });
+        describe('Comprehensive Roman Numeral Tests', () => {
+            test('Regent names with I and V', () => {
+                expect(runProcessor('Charles I was a king.')).toMatch(/Charles the first/);
+                expect(runProcessor('Louis V reigned long.')).toMatch(/Louis the fifth/);
+                expect(runProcessor('Edward I arrived.')).toMatch(/Edward the first/);
+                expect(runProcessor('Philip V ruled.')).toMatch(/Philip the fifth/);
+            });
+
+            test('Possessives for regents', () => {
+                expect(runProcessor('Charles I\'s reign.')).toMatch(/Charles the first's/);
+                expect(runProcessor('Louis V’s decree.')).toMatch(/Louis the fifth’s/);
+            });
+
+            test('Lists of regents', () => {
+                expect(runProcessor('Kings Charles I and II.')).toMatch(/Charles the first and the second/);
+                expect(runProcessor('Louis IV & V.')).toMatch(/Louis the fourth and the fifth/);
+                expect(runProcessor('Henry IV, V and VI.')).toMatch(/fourth, the fifth and the sixth/);
+            });
+
+            test('Titles preceding names', () => {
+                expect(runProcessor('King Charles I.')).toMatch(/King Charles the first/);
+                expect(runProcessor('Queen Elizabeth I.')).toMatch(/Queen Elizabeth the first/);
+                expect(runProcessor('Pope John V.')).toMatch(/Pope John the fifth/);
+            });
+
+            test('Non-regnal triggers', () => {
+                expect(runProcessor('Chapter I.')).toMatch(/Chapter one/);
+                expect(runProcessor('Part V.')).toMatch(/Part five/);
+                expect(runProcessor('Section I.')).toMatch(/Section one/);
+                expect(runProcessor('Vol. V.')).toMatch(/Volume five/);
+                expect(runProcessor('War I.')).toMatch(/War one/);
+            });
+
+            test('I Safety: Pronoun cases (Should NOT normalize)', () => {
+                expect(runProcessor('As I was saying.')).toMatch(/As I was/);
+                expect(runProcessor('If I can.')).toMatch(/If I can/);
+                expect(runProcessor('Maybe I will.')).toMatch(/Maybe I will/);
+                expect(runProcessor('Charles I know.')).toMatch(/Charles I know/);
+                expect(runProcessor('Louis I think.')).toMatch(/Louis I think/);
+                expect(runProcessor('King I am.')).toMatch(/King I am/);
+            });
+
+            test('I Safety: True regents (Should normalize)', () => {
+                expect(runProcessor('Charles I lived.')).toMatch(/Charles the first lived/);
+                expect(runProcessor('Edward I fought.')).toMatch(/Edward the first fought/);
+                // Standalone with non-pronoun characters following
+                expect(runProcessor('Charles I, however, lived.')).toMatch(/Charles the first/);
+            });
+
+            test('Middle Initials (Should NOT normalize)', () => {
+                expect(runProcessor('John V. Smith')).toMatch(/John V. Smith/);
+                expect(runProcessor('Edward I. Smith')).toMatch(/Edward I. Smith/);
+                expect(runProcessor('Charles V. Smith arrived.')).toMatch(/Charles V. Smith/);
+            });
+
+            test('Headings or start of sentence', () => {
+                expect(runProcessor('I. Intro')).toMatch(/one. Intro/);
+                expect(runProcessor('V. Appendix')).toMatch(/five. Appendix/);
+                expect(runProcessor('X: End')).toMatch(/ten: End/);
+                expect(runProcessor('I — THE BACKGROUND')).toMatch(/one\s*(?:—|,)\s*THE BACKGROUND/);
+                expect(runProcessor('I – Orwell')).toMatch(/one – Orwell/);
             });
         });
     });
