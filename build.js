@@ -86,7 +86,8 @@ function createManifest(browser) {
             "storage",
             "activeTab",
             "notifications",
-            "scripting"
+            "scripting",
+            "alarms"
             // "downloads" is added conditionally below if needed, or kept common
         ],
         host_permissions: [

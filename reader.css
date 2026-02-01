@@ -59,6 +59,34 @@ body {
     overflow-y: auto;
     padding: 10px;
 }
+ 
+.nav-controls {
+    display: flex;
+    gap: 10px;
+    padding: 10px 15px;
+    border-bottom: 1px solid var(--border-color);
+}
+ 
+.nav-btn {
+    flex: 1;
+    background-color: var(--accent-color);
+    color: white;
+    border: none;
+    padding: 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: background-color 0.2s;
+}
+ 
+.nav-btn:hover {
+    background-color: #0056b3;
+}
+ 
+.nav-btn:disabled {
+    background-color: #ccc;
+    cursor: not-allowed;
+}
 
 .chapter-group {
     display: flex;
