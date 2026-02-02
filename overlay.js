@@ -51,6 +51,7 @@ window.addEventListener('message', (event) => {
     } else if (event.data === 'NAV_PREV') {
         navigate(currentIndex - 1);
     } else if (event.data === 'RELOAD_DATA') {
+        window.hasReceivedData = true;
         initialize();
     }
 });
@@ -116,6 +117,16 @@ audioEl.addEventListener('pause', () => {
 
 // --- Logic ---
 
+// Listen for title updates from parent (reader.js)
+window.addEventListener('message', (event) => {
+    if (event.data && event.data.type === 'UPDATE_TITLE') {
+        const titleEl = document.getElementById('pageTitle');
+        if (titleEl) {
+            titleEl.textContent = event.data.title;
+        }
+    }
+});
+
 async function initialize() {
     window.focus();
     retryBtn.style.display = 'none';
@@ -127,10 +138,17 @@ async function initialize() {
     audioManager.clear();
     textDisplay.textContent = '';
 
-    const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'defaultSpeed', 'defaultVolume', 'autoScroll', 'pendingCustomPronunciations', 'theme']);
+    const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'defaultSpeed', 'defaultVolume', 'autoScroll', 'pendingCustomPronunciations', 'theme', 'pendingStartIndex', 'pendingAutoplay']);
 
     const autoScroll = data.autoScroll || false;
     window.kokoroAutoScroll = autoScroll;
+
+    // Check for URL params
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('waitForData') === 'true' && !window.hasReceivedData) {
+        statusEl.textContent = "Waiting for document...";
+        return;
+    }
 
     if (!data.pendingText) {
         statusEl.textContent = "Extracting article...";
@@ -183,7 +201,15 @@ async function initialize() {
     audioManager.setSentences(sentences);
 
     renderText();
-    navigate(0);
+
+    const startSentenceIndex = sentences.findIndex(s => s.blockIndex === (data.pendingStartIndex || 0));
+    const initialIndex = startSentenceIndex !== -1 ? startSentenceIndex : 0;
+
+    // Default to true for regular websites (where pendingAutoplay is missing), 
+    // but respect the EPUB reader's preference if provided.
+    const shouldAutoplay = data.pendingAutoplay !== false;
+    navigate(initialIndex, shouldAutoplay);
+
     window.parent.postMessage('KOKORO_PLAYER_READY', '*');
 }
 
@@ -452,6 +478,15 @@ async function navigate(index, forcePlay = null) {
         window.parent.postMessage({
             action: 'KOKORO_SCROLL_TO_BLOCK',
             text: currentSentence.text
+        }, '*');
+    }
+
+    // Emit progress event for parent (reader.js)
+    const blockIndex = sentences[currentIndex].blockIndex;
+    if (window.parent) {
+        window.parent.postMessage({
+            type: 'KOKORO_READING_PROGRESS',
+            blockIndex: blockIndex
         }, '*');
     }
 

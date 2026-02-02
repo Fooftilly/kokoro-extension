@@ -323,6 +323,7 @@ const saveOptions = async (isDebounced = false) => {
     const defaultSpeed = document.getElementById('defaultSpeed').value;
     const defaultVolume = document.getElementById('defaultVolume').value;
     const autoScroll = document.getElementById('autoScroll').checked;
+    const autoplayReader = document.getElementById('autoplayReader').checked;
     const showFloatingButton = document.getElementById('showFloatingButton').checked;
 
     const normalizationOptions = {
@@ -336,12 +337,12 @@ const saveOptions = async (isDebounced = false) => {
     };
 
     const theme = document.documentElement.classList.contains('dark-theme') ? 'dark' : 'light';
-    const settings = { apiUrl, voice, mode, defaultSpeed, defaultVolume, autoScroll, showFloatingButton, normalizationOptions, theme };
+    const settings = { apiUrl, voice, mode, defaultSpeed, defaultVolume, autoScroll, autoplayReader, showFloatingButton, normalizationOptions, theme };
 
     try {
         // 1. Save settings immediately so they are persisted even if permission is pending
         await browser.storage.sync.set(settings);
-        await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, showFloatingButton, normalizationOptions, theme });
+        await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, autoplayReader, showFloatingButton, normalizationOptions, theme });
 
         // 2. Check permissions for custom URL
         if (!isLocalhost(apiUrl)) {
@@ -392,6 +393,7 @@ const restoreOptions = async () => {
             defaultSpeed: '1.0',
             defaultVolume: '1.0',
             autoScroll: false,
+            autoplayReader: false,
             showFloatingButton: true,
             normalizationOptions: {
                 normalize: true,
@@ -431,6 +433,7 @@ const restoreOptions = async () => {
         document.getElementById('defaultSpeed').value = items.defaultSpeed;
         document.getElementById('defaultVolume').value = items.defaultVolume;
         document.getElementById('autoScroll').checked = items.autoScroll;
+        document.getElementById('autoplayReader').checked = items.autoplayReader;
         document.getElementById('showFloatingButton').checked = items.showFloatingButton;
 
         const norm = items.normalizationOptions;
@@ -523,6 +526,14 @@ document.addEventListener('DOMContentLoaded', () => {
         await saveOptions(false);
         checkApiConnection(url);
     });
+
+    // Open Document Handler
+    const openDocBtn = document.getElementById('openDocumentBtn');
+    if (openDocBtn) {
+        openDocBtn.addEventListener('click', () => {
+            browser.tabs.create({ url: 'reader.html' });
+        });
+    }
 });
 
 async function checkApiConnection(url) {

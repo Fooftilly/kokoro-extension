@@ -2,6 +2,7 @@
 <html>
 
 <head>
+    <script src="browser-polyfill.min.js"></script>
     <script src="theme-init.js"></script>
     <link rel="stylesheet" href="popup.css">
 </head>
@@ -88,8 +89,14 @@
                         <input type="checkbox" id="autoScroll" class="checkbox-radio">
                         <label for="autoScroll" class="inline-label">Auto-scroll</label>
                     </div>
+                    <div class="flex-item mt-2">
+                        <input type="checkbox" id="autoplayReader" class="checkbox-radio">
+                        <label for="autoplayReader" class="inline-label">Autoplay in EPUB</label>
+                    </div>
                 </div>
             </div>
+
+
         </div>
 
         <div id="normalization" class="content">
@@ -133,10 +140,11 @@
     </div>
 
     <div class="footer">
+        <button id="openDocumentBtn" class="primary-btn" style="width: 100%; margin-top: 0; margin-bottom: 10px;">Open
+            Document (EPUB)</button>
         <div id="status">Saving...</div>
     </div>
 
-    <script src="browser-polyfill.min.js"></script>
     <script src="popup.js"></script>
 </body>
 

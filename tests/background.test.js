@@ -34,8 +34,17 @@ global.browser = {
     },
     commands: {
         onCommand: { addListener: jest.fn() }
+    },
+    action: {
+        setIcon: jest.fn()
+    },
+    alarms: {
+        create: jest.fn(),
+        onAlarm: { addListener: jest.fn() }
     }
 };
+
+global.browser.storage.onChanged = { addListener: jest.fn() };
 
 global.fetch = jest.fn(() => Promise.resolve({
     ok: true,

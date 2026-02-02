@@ -32,6 +32,105 @@ const notify = (title, message) => {
     });
 };
 
+let isChecking = false;
+
+// Icon management
+const setIconStatus = (isConnected) => {
+    const suffix = isConnected ? '-green' : '-red';
+    browser.action.setIcon({
+        path: {
+            48: `icons/icon-48${suffix}.png`,
+            128: `icons/icon-128${suffix}.png`
+        }
+    });
+};
+
+const checkApiStatus = async () => {
+    if (isChecking) return;
+    isChecking = true;
+
+    try {
+        const settings = await browser.storage.sync.get({
+            apiUrl: 'http://127.0.0.1:8880/v1/'
+        });
+
+        let apiUrl = settings.apiUrl;
+        if (!apiUrl.endsWith('/')) apiUrl += '/';
+
+        // Helper to try fetch with timeout
+        const tryFetch = async (url) => {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 3000);
+            try {
+                const response = await fetch(url, { signal: controller.signal });
+                return response;
+            } finally {
+                clearTimeout(timeoutId);
+            }
+        };
+
+        // Check 1: /v1/test (kokoro-fastapi specific)
+        let connected = false;
+
+        try {
+            const testUrl = new URL('test', apiUrl).href;
+            const resp = await tryFetch(testUrl);
+            if (resp.ok) {
+                const json = await resp.json();
+                if (json.status === 'ok') {
+                    connected = true;
+                }
+            }
+        } catch (e) {
+            // ignore
+        }
+
+        // If not yet connected, try /health
+        if (!connected) {
+            try {
+                const urlObj = new URL(apiUrl);
+                const healthUrl = new URL('/health', urlObj.origin).href;
+
+                const resp = await tryFetch(healthUrl);
+                if (resp.ok) {
+                    const json = await resp.json();
+                    if (json.status === 'healthy') {
+                        connected = true;
+                    }
+                }
+            } catch (e) {
+                // ignore
+            }
+        }
+
+        setIconStatus(connected);
+
+    } catch (e) {
+        console.error("API check failed completely:", e);
+        setIconStatus(false);
+    } finally {
+        isChecking = false;
+    }
+};
+
+// Initial check
+checkApiStatus();
+
+// Poll every minute
+browser.alarms.create('api-check', { periodInMinutes: 1 });
+browser.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === 'api-check') {
+        checkApiStatus();
+    }
+});
+
+// Update on settings change
+browser.storage.onChanged.addListener((changes, area) => {
+    if (area === 'sync' && changes.apiUrl) {
+        checkApiStatus();
+    }
+});
+
 // Helper to ensure content script is injected
 async function ensureContentScript(tabId) {
     try {
@@ -122,8 +221,11 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
         const statusResp = await fetch(statusUrl);
         if (!statusResp.ok) {
             console.warn("Status check returned " + statusResp.status);
+        } else {
+            setIconStatus(true);
         }
     } catch (e) {
+        checkApiStatus();
         notify("Kokoro TTS Error", `Could not connect to Kokoro API at ${apiUrl}. Is it running?`);
         return;
     }
@@ -194,7 +296,8 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
                 pendingApiUrl: apiUrl,
                 pendingTitle: tab.title,
                 pendingNormalizationOptions: settings.normalizationOptions,
-                pendingCustomPronunciations: settings.customPronunciations
+                pendingCustomPronunciations: settings.customPronunciations,
+                pendingAutoplay: true
             });
 
             // Send message to the active tab to show the overlay
@@ -220,6 +323,7 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
         }
 
     } catch (e) {
+        checkApiStatus();
         let msg = e.message;
         if (msg === "Failed to fetch") {
             msg = `Connection failed. Is Kokoro-FastAPI running on ${apiUrl}?`;
@@ -242,10 +346,16 @@ browser.runtime.onMessage.addListener(async (request, sender) => {
     }
 });
 
+
 browser.commands.onCommand.addListener(async (command) => {
     if (command === "read-article") {
         const tabs = await browser.tabs.query({ active: true, currentWindow: true });
         if (tabs && tabs[0]) {
+            const url = tabs[0].url || "";
+            if (url.includes('reader.html') || url.startsWith('extension://') && url.includes('reader.html')) {
+                console.log("Shortcut disabled on reader page.");
+                return;
+            }
             const tabId = tabs[0].id;
 
             // Check if player is already active

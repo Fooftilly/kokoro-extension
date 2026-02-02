@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kokoro Reader</title>
+    <script src="browser-polyfill.min.js"></script>
+    <script src="theme-init.js"></script>
+    <link rel="stylesheet" href="reader.css">
+</head>
+
+<body>
+
+    <div id="filePickerOverlay">
+        <div class="picker-content" id="dropZone">
+            <h1>Open Document</h1>
+            <p>Select or drag an EPUB file here to read</p>
+            <div class="file-input-wrapper">
+                <label for="fileInput" class="custom-file-label">Browse...</label>
+                <input type="file" id="fileInput" accept=".epub,.txt">
+            </div>
+            <div id="file-name-display" class="file-name-display">No file selected.</div>
+            <div id="errorMsg" style="color: red; margin-top: 10px; display: none;"></div>
+            <div id="loadingStatus" style="margin-top: 20px; display: none;">Loading...</div>
+        </div>
+    </div>
+
+    <div class="app-container">
+        <div class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h2>Chapters</h2>
+                <button id="toggleSidebar" class="icon-btn">«</button>
+            </div>
+            <div class="nav-controls">
+                <button id="prevChapter" class="nav-btn">Prev</button>
+                <button id="nextChapter" class="nav-btn">Next</button>
+            </div>
+            <div id="chapterList"></div>
+        </div>
+
+        <div class="main-content">
+            <button id="showSidebarBtn" class="icon-btn floating-sidebar-btn" style="display: none;">»</button>
+            <iframe id="playerFrame" src="overlay.html?waitForData=true" title="Kokoro Player"></iframe>
+        </div>
+    </div>
+
+    <script src="jszip.min.js"></script>
+    <script src="epub.min.js"></script>
+    <script src="reader.js" type="module"></script>
+</body>
+
+</html>

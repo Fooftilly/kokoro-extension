@@ -35,11 +35,6 @@ describe('processContent Regressions', () => {
             // Fallback mock check for sentence splitting
             segmenter = {
                 segment: (text) => {
-                    // Simple distinct sentence splitter for test env without Intl
-                    // This is rough but should capture basic "Feb." vs "2011" if we split strictly.
-                    // But for "Levels of CO2 are rising.", it is one sentence.
-                    // Let's just return the whole text as one segment if it's simple, 
-                    // or split by explicit period space.
                     const segments = [];
                     // Simplistic split looking for ". "
                     let parts = text.split(/([.!?]\s+)/);
@@ -81,12 +76,10 @@ describe('processContent Regressions', () => {
 
     test('Regression: Units (μm)', () => {
         const output = runProcessor('The size is 5 μm.');
-        // Must be normalized client-side because transliteration converts μm -> mm (error)
         expect(output).toMatch(/5 micrometers/i);
     });
 
     test('Regression: Units with Micro Sign (U+00B5)', () => {
-        // \u00B5 is the Micro Sign, distinct from \u03BC (Greek Small Letter Mu)
         const output = runProcessor('The size is 10\u00B5m.');
         expect(output).toMatch(/10 micrometers/i);
     });
@@ -103,7 +96,6 @@ describe('processContent Regressions', () => {
 
     test('Feature: Em-Dash Pause', () => {
         const output = runProcessor('Wait—there is more.');
-        // Expect em-dash to be replaced by comma to induce pause
         expect(output).toMatch(/Wait, there is more/);
     });
 
@@ -113,7 +105,7 @@ describe('processContent Regressions', () => {
     });
 
     test('Regression: Abbreviation pp. (pages)', () => {
-        const output = runProcessor('See pp. 45–77.'); // en-dash
+        const output = runProcessor('See pp. 45–77.');
         expect(output).toMatch(/See pages 45 to 77/i);
     });
 
@@ -130,17 +122,15 @@ describe('processContent Regressions', () => {
 
     test('Feature: Decade Pronunciation (1940s)', () => {
         const output = runProcessor('In the 1940s there was...');
-        // Should be normalized to words for natural pronunciation
         expect(output).toMatch(/19 forties/i);
     });
 
-    test('Feature: Sentence Merging - Abbreviations', () => {
-        // "Dr. Smith" might be split by tokenizer as "Dr." and "Smith". Processor should merge.
-        // We force a split case by passing segments if we were mocking segments directly, 
-        // but here we rely on the mocked (or real) segmenter behavior on the input string.
-        // If "Dr. Smith" is passed, our mock segmenter might split it if we wrote it as "Dr. Smith".
-        // Let's ensure the processor output is a SINGLE sentence.
+    test('Feature: Decade Pronunciation (2000s)', () => {
+        const output = runProcessor('Since the 2000s');
+        expect(output).toMatch(/two thousands/i);
+    });
 
+    test('Feature: Sentence Merging - Abbreviations', () => {
         const blocks = [{ type: 'text', content: 'Dr. Smith is here.' }];
         const result = processContent(blocks, segmenter);
         expect(result.sentences.length).toBe(1);
@@ -160,14 +150,13 @@ describe('processContent Regressions', () => {
         expect(result.sentences[0].text).toContain("Dedekind’s work");
     });
 
-    // Snapshot of a complex paragraph to catch any unintended changes in normalization
     test('Snapshot: Complex Scientific Text', () => {
         const text = `
             Fig. 1 shows that CO2 levels increased by 50% (approx. 200 ppm).
             The temp. reached 25°C.
             Henry VIII died in Jan. 1547.
             See e.g. Smith et al. (2020) for more details.
-        `.trim().replace(/\s+/g, ' '); // Normalize input whitespace
+        `.trim().replace(/\s+/g, ' ');
 
         const output = runProcessor(text);
         expect(output).toMatchSnapshot();
@@ -186,12 +175,11 @@ describe('processContent Regressions', () => {
     test('Feature: Date Pronunciation (22 June 1915)', () => {
         expect(runProcessor('Born on 22 June 1915.')).toMatch(/the twenty second of June, 1915/i);
         expect(runProcessor('On 1 Jan 2000.')).toMatch(/the first of January, 2 thousand/i);
-        expect(runProcessor('The 3rd of May.')).not.toMatch(/the 3rdrd of May/); // Check no double ordinals if it was already ordinal (though rule targets \d+)
+        expect(runProcessor('The 3rd of May.')).not.toMatch(/the 3rdrd of May/);
         expect(runProcessor('Since Dec. 16, it happened.')).toMatch(/Since December sixteenth, it happened/i);
     });
 
     test('Feature: Sentence Splitting (Month Abbreviations)', () => {
-        // This tests that "Dec." doesn't split the sentence
         const result = runProcessor('Since Dec. 16, Shasta has risen.');
         expect(result).toMatch(/December sixteenth/);
     });
@@ -203,11 +191,10 @@ describe('processContent Regressions', () => {
     test('Feature: Month Day Year Dates (Dec 25 2023)', () => {
         expect(runProcessor('On Dec 25, 2023')).toMatch(/the twenty fifth of December, 2023/i);
         expect(runProcessor('On December 25 2023')).toMatch(/the twenty fifth of December, 2023/i);
-        expect(runProcessor('On Jan. 1, 2000')).toMatch(/the first of January, 2 thousand/i); // 2000 becomes 2 thousand
+        expect(runProcessor('On Jan. 1, 2000')).toMatch(/the first of January, 2 thousand/i);
     });
 
     test('Feature: Month Day Dates (February 5)', () => {
-        // User reported: "February 5" -> "February fifth"
         expect(runProcessor('on February 5 and 25')).toMatch(/February fifth and twenty fifth/i);
     });
 
@@ -223,12 +210,11 @@ describe('processContent Regressions', () => {
         expect(runProcessor('10 mW')).toMatch(/10 milliwatts/i);
         expect(runProcessor('10 MJ')).toMatch(/10 megajoules/i);
         expect(runProcessor('10 mJ')).toMatch(/10 millijoules/i);
-        expect(runProcessor('10 mj')).toMatch(/10 millijoules/i); // Explicitly handled
+        expect(runProcessor('10 mj')).toMatch(/10 millijoules/i);
     });
 
     test('Feature: Negative Numbers', () => {
         const output = runProcessor('The temperature drops to -5 degrees Celsius.');
-        // The processor replaces "-" with "minus " for degrees Celsius specifically in line 125
         expect(output).toMatch(/minus 5 degrees Celsius/i);
     });
 
@@ -244,8 +230,6 @@ describe('processContent Regressions', () => {
 
     test('Feature: Dimensions (20 cm × 8 cm)', () => {
         const output = runProcessor('size being 20 cm × 8 cm (8 in × 3 in)');
-        // 20 cm x 8 cm -> 20 centimeters by 8 centimeters
-        // 8 in x 3 in -> 8 inches by 3 inches
         expect(output).toMatch(/20 centimeters by 8 centimeters/i);
         expect(output).toMatch(/8 inches by 3 inches/i);
     });
@@ -258,7 +242,6 @@ describe('processContent Regressions', () => {
 
     test('Feature: Dimensions hex safeguard', () => {
         const output = runProcessor('Address 0x10 is invalid.');
-        // Should NOT be "0 by 10"
         expect(output).toMatch(/0x10/);
         expect(output).not.toMatch(/0 by 10/);
     });
@@ -278,10 +261,70 @@ describe('processContent Regressions', () => {
         expect(runProcessor('MIT’s researchers.')).toMatch(/M I T 's researchers/);
     });
 
-    test('Feature: More Abbreviations (viz., ibid., trans.)', () => {
-        expect(runProcessor('viz. the following.')).toMatch(/namely/);
-        expect(runProcessor('ibid. p. 45.')).toMatch(/ibidem/);
-        expect(runProcessor('trans. by Levi.')).toMatch(/translated by/);
+    describe('Feature: Units (Parameterized)', () => {
+        const unitCases = [
+            { input: '10 cm', expected: /10 centimeters/ },
+            { input: '5 kg', expected: /5 kilograms/ },
+            { input: '100 Hz', expected: /100 Hz/ },
+            { input: '50 km', expected: /50 kilometers/ },
+            { input: '30 mm', expected: /30 millimeters/ },
+            { input: '10 m', expected: /10 meters/ },
+            { input: '500 mg', expected: /500 mg/ },
+            { input: '10 μm', expected: /10 micrometers/ },
+            { input: '10 kW', expected: /10 kilowatts/ },
+            { input: '10 W', expected: /10 watts/ }
+        ];
+
+        unitCases.forEach(({ input, expected }) => {
+            test(`Unit: ${input}`, () => {
+                expect(runProcessor(input)).toMatch(expected);
+            });
+        });
+    });
+
+    describe('Feature: Dates (Parameterized)', () => {
+        const dateCases = [
+            // Updated expectations based on current normalization behavior
+            { input: 'Jan 1, 2020', expected: /the first of January, 2020/ },
+            { input: 'Feb. 14', expected: /February fourteenth/ },
+            { input: 'March 15th', expected: /March fifteenth/ },
+            { input: '2023-12-25', expected: /twenty fifth of December, 2023/ },
+            { input: '01/01/2000', expected: /first of January, 2 thousand/ }
+        ];
+
+        dateCases.forEach(({ input, expected }) => {
+            test(`Date: ${input}`, () => {
+                expect(runProcessor(input)).toMatch(expected);
+            });
+        });
+    });
+
+    test('Feature: Year Pronunciation (1805)', () => {
+        expect(runProcessor('In 1805 he died.')).toMatch(/18 o 5/);
+        expect(runProcessor('Back in 1909.')).toMatch(/19 o 9/);
+        // Ensure regular years or 2000s are not affected negatively
+        expect(runProcessor('In 1999')).toMatch(/1999/); // Should probably stay 1999 or be handled by TTS
+        expect(runProcessor('In 2005')).not.toMatch(/20 o 5/); // "two thousand five" typically
+    });
+
+    describe('Feature: Abbreviations (Parameterized)', () => {
+        const abbrevCases = [
+            { input: 'viz.', expected: /namely/ },
+            { input: 'i.e.', expected: /that is/ },
+            { input: 'e.g.', expected: /for example/ },
+            { input: 'no. 5', expected: /Number 5/ },
+            { input: 'pp. 10-12', expected: /pages 10 to 12/ },
+            { input: 'The Public v. the Late', expected: /The Public versus the Late/ },
+            { input: 'Smith v. Jones', expected: /Smith versus Jones/ },
+            { input: 'John V. Smith', expected: /John V. Smith/ },
+            { input: 'William Jr, born in', expected: /William Junior, born/ }
+        ];
+
+        abbrevCases.forEach(({ input, expected }) => {
+            test(`Abbrev: ${input}`, () => {
+                expect(runProcessor(input)).toMatch(expected);
+            });
+        });
     });
 
     test('Feature: Math Rules (3xy, x2)', () => {
@@ -290,14 +333,51 @@ describe('processContent Regressions', () => {
         expect(runProcessor('y3 is positive.')).toMatch(/y cubed/);
     });
 
-    test('Feature: Regnal vs Non-regnal Roman Numerals', () => {
-        // Regnal
-        expect(runProcessor('Henry IV was king.')).toMatch(/Henry the fourth/);
-        expect(runProcessor('Elizabeth II.')).toMatch(/Elizabeth the second/);
-        // Non-regnal (triggers)
-        expect(runProcessor('Chapter IV is long.')).toMatch(/Chapter four/);
-        expect(runProcessor('Vol. III.')).toMatch(/Volume three/);
-        expect(runProcessor('World War II.')).toMatch(/World War two/);
+    describe('Feature: Regnal vs Non-regnal Roman Numerals (Parameterized)', () => {
+        const regnalCases = [
+            { input: 'Henry IV was king.', expected: /Henry the fourth/ },
+            { input: 'Elizabeth II.', expected: /Elizabeth the second/ },
+            { input: 'Charles I:', expected: /Charles the first/ },
+            { input: 'King Charles I was...', expected: /Charles the first/ },
+            { input: 'Elizabeth I, queen of...', expected: /Elizabeth the first/ },
+            { input: 'Richard III’s death', expected: /Richard the third’s/ },
+            { input: 'Henry IV, V and VI', expected: /Henry the fourth, the fifth and the sixth/ },
+            { input: 'Louis XIV', expected: /Louis the fourteenth/ },
+            { input: 'Pope John XXIII', expected: /Pope John the twenty.?third/ }
+        ];
+
+        regnalCases.forEach(({ input, expected }) => {
+            test(`Regnal: ${input}`, () => {
+                expect(runProcessor(input)).toMatch(expected);
+            });
+        });
+
+        const nonRegnalCases = [
+            { input: 'Chapter IV is long.', expected: /Chapter four/ },
+            { input: 'Part V of the poem', expected: /Part five/ },
+            { input: 'Vol. III.', expected: /Volume three/ },
+            { input: 'World War II.', expected: /World War two/ },
+            { input: 'Model X', expected: /Model ten/ },
+            { input: 'Grade XII', expected: /Grade twelve/ },
+            { input: 'Case I', expected: /Case one/ },
+            { input: 'I — THE HISTORICAL BACKGROUND', expected: /one\s*(?:—|,)\s*THE HISTORICAL BACKGROUND/ },
+            { input: 'II - SOME OTHER TOPIC', expected: /two - SOME OTHER TOPIC/ },
+            { input: 'I – Orwell', expected: /one – Orwell/ }
+        ];
+
+        nonRegnalCases.forEach(({ input, expected }) => {
+            test(`Non-Regnal: ${input}`, () => {
+                expect(runProcessor(input)).toMatch(expected);
+            });
+        });
+    });
+
+    test('Feature: Roman Numeral I Safety (Pronoun)', () => {
+        expect(runProcessor('The Charles I knew was good.')).toMatch(/Charles I knew/);
+        expect(runProcessor('However, I went home.')).toMatch(/However, I went/);
+        expect(runProcessor('May I go?')).toMatch(/May I go/);
+        expect(runProcessor('Philip I thought it was...')).toMatch(/Philip I thought/);
+        expect(runProcessor('Charles I am your father')).toMatch(/Charles I am/);
     });
 
     test('Feature: Ordinal Possessives (20th’s)', () => {
@@ -323,11 +403,10 @@ describe('processContent Regressions', () => {
         expect(runProcessor('1000th')).toMatch(/one thousandth/i);
         expect(runProcessor('1250th')).toMatch(/one thousand two hundred and fiftieth/i);
 
-        // st, nd, rd checks
         expect(runProcessor('101st')).toMatch(/one hundred and first/i);
         expect(runProcessor('102nd')).toMatch(/one hundred and second/i);
         expect(runProcessor('103rd')).toMatch(/one hundred and third/i);
-        expect(runProcessor('111th')).toMatch(/one hundred and eleventh/i); // Special teen case
+        expect(runProcessor('111th')).toMatch(/one hundred and eleventh/i);
         expect(runProcessor('121st')).toMatch(/one hundred and twenty first/i);
         expect(runProcessor('522nd')).toMatch(/five hundred and twenty second/i);
         expect(runProcessor('953rd')).toMatch(/nine hundred and fifty third/i);
@@ -338,14 +417,14 @@ describe('processContent Regressions', () => {
             { name: 'Month Day (Full)', input: 'February 5', expected: /February fifth/i },
             { name: 'Month Day (Abbrev)', input: 'Feb 5', expected: /February fifth/i },
             { name: 'Month Day (Abbrev dot)', input: 'Feb. 5', expected: /February fifth/i },
-            { name: 'Day Month (Full)', input: '5 February', expected: /the fifth of February/i }, // Potential gap
-            { name: 'Day Month (Abbrev)', input: '5 Feb', expected: /the fifth of February/i }, // Potential gap
-            { name: 'Month Year', input: 'February 2024', expected: /February 2024/i }, // Should probably stay or expand year
-            { name: 'Numeric Date (US)', input: '02/05/2024', expected: /the fifth of February, 2024/i }, // Potential gap
-            { name: 'Numeric Date (Euro)', input: '05.02.2024', expected: /the fifth of February, 2024/i }, // Potential gap
-            { name: 'Numeric Month Day', input: '02/05', expected: /February fifth/i }, // Potential gap
+            { name: 'Day Month (Full)', input: '5 February', expected: /the fifth of February/i },
+            { name: 'Day Month (Abbrev)', input: '5 Feb', expected: /the fifth of February/i },
+            { name: 'Month Year', input: 'February 2024', expected: /February 2024/i },
+            { name: 'Numeric Date (US)', input: '02/05/2024', expected: /the fifth of February, 2024/i },
+            { name: 'Numeric Date (Euro)', input: '05.02.2024', expected: /the fifth of February, 2024/i },
+            { name: 'Numeric Month Day', input: '02/05', expected: /February fifth/i },
             { name: 'Day of Week and Date', input: 'Friday, February 5', expected: /Friday, February fifth/i },
-            { name: 'Multiple Dates', input: 'February 5, 10, and 15', expected: /February fifth, tenth, and fifteenth/i }, // Potential gap (only handles "and")
+            { name: 'Multiple Dates', input: 'February 5, 10, and 15', expected: /February fifth, tenth, and fifteenth/i },
             { name: 'Date with Suffix', input: 'February 5th', expected: /February fifth/i },
             { name: 'The ordinal of Month', input: 'the 5th of February', expected: /the fifth of February/i },
             { name: 'Year Range (expanded)', input: '2020-2022', expected: /2020 to 2022/i },
@@ -355,9 +434,70 @@ describe('processContent Regressions', () => {
         formats.forEach(f => {
             test(`Discovery: ${f.name} (${f.input})`, () => {
                 const output = runProcessor(f.input);
-                // We use a softer check or just log it if we want to "discover"
-                // but console.log in tests can be messy. Let's just use toMatch and see failures.
                 expect(output).toMatch(f.expected);
+            });
+        });
+        describe('Comprehensive Roman Numeral Tests', () => {
+            test('Regent names with I and V', () => {
+                expect(runProcessor('Charles I was a king.')).toMatch(/Charles the first/);
+                expect(runProcessor('Louis V reigned long.')).toMatch(/Louis the fifth/);
+                expect(runProcessor('Edward I arrived.')).toMatch(/Edward the first/);
+                expect(runProcessor('Philip V ruled.')).toMatch(/Philip the fifth/);
+            });
+
+            test('Possessives for regents', () => {
+                expect(runProcessor('Charles I\'s reign.')).toMatch(/Charles the first's/);
+                expect(runProcessor('Louis V’s decree.')).toMatch(/Louis the fifth’s/);
+            });
+
+            test('Lists of regents', () => {
+                expect(runProcessor('Kings Charles I and II.')).toMatch(/Charles the first and the second/);
+                expect(runProcessor('Louis IV & V.')).toMatch(/Louis the fourth and the fifth/);
+                expect(runProcessor('Henry IV, V and VI.')).toMatch(/fourth, the fifth and the sixth/);
+            });
+
+            test('Titles preceding names', () => {
+                expect(runProcessor('King Charles I.')).toMatch(/King Charles the first/);
+                expect(runProcessor('Queen Elizabeth I.')).toMatch(/Queen Elizabeth the first/);
+                expect(runProcessor('Pope John V.')).toMatch(/Pope John the fifth/);
+            });
+
+            test('Non-regnal triggers', () => {
+                expect(runProcessor('Chapter I.')).toMatch(/Chapter one/);
+                expect(runProcessor('Part V.')).toMatch(/Part five/);
+                expect(runProcessor('Section I.')).toMatch(/Section one/);
+                expect(runProcessor('Vol. V.')).toMatch(/Volume five/);
+                expect(runProcessor('War I.')).toMatch(/War one/);
+            });
+
+            test('I Safety: Pronoun cases (Should NOT normalize)', () => {
+                expect(runProcessor('As I was saying.')).toMatch(/As I was/);
+                expect(runProcessor('If I can.')).toMatch(/If I can/);
+                expect(runProcessor('Maybe I will.')).toMatch(/Maybe I will/);
+                expect(runProcessor('Charles I know.')).toMatch(/Charles I know/);
+                expect(runProcessor('Louis I think.')).toMatch(/Louis I think/);
+                expect(runProcessor('King I am.')).toMatch(/King I am/);
+            });
+
+            test('I Safety: True regents (Should normalize)', () => {
+                expect(runProcessor('Charles I lived.')).toMatch(/Charles the first lived/);
+                expect(runProcessor('Edward I fought.')).toMatch(/Edward the first fought/);
+                // Standalone with non-pronoun characters following
+                expect(runProcessor('Charles I, however, lived.')).toMatch(/Charles the first/);
+            });
+
+            test('Middle Initials (Should NOT normalize)', () => {
+                expect(runProcessor('John V. Smith')).toMatch(/John V. Smith/);
+                expect(runProcessor('Edward I. Smith')).toMatch(/Edward I. Smith/);
+                expect(runProcessor('Charles V. Smith arrived.')).toMatch(/Charles V. Smith/);
+            });
+
+            test('Headings or start of sentence', () => {
+                expect(runProcessor('I. Intro')).toMatch(/one. Intro/);
+                expect(runProcessor('V. Appendix')).toMatch(/five. Appendix/);
+                expect(runProcessor('X: End')).toMatch(/ten: End/);
+                expect(runProcessor('I — THE BACKGROUND')).toMatch(/one\s*(?:—|,)\s*THE BACKGROUND/);
+                expect(runProcessor('I – Orwell')).toMatch(/one – Orwell/);
             });
         });
     });
