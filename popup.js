@@ -520,6 +520,14 @@ document.addEventListener('click', (e) => {
 document.addEventListener('DOMContentLoaded', () => {
     restoreOptions();
 
+    // Display version
+    try {
+        const manifest = browser.runtime.getManifest();
+        document.getElementById('version').textContent = `v${manifest.version}`;
+    } catch (e) {
+        console.error("Error getting manifest version:", e);
+    }
+
     // Setup Autosave Listeners
     const inputs = document.querySelectorAll('input, select');
     inputs.forEach(input => {

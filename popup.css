@@ -114,6 +114,17 @@ label {
     color: var(--text-color);
 }
 
+.label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 6px;
+}
+
+.label-row label {
+    margin-top: 0;
+}
+
 input[type="text"],
 textarea,
 select {
@@ -162,6 +173,15 @@ button:hover {
     color: var(--status-success);
     display: none;
     font-size: 12px;
+}
+
+#version {
+    font-size: 10px;
+    color: var(--note-color);
+    opacity: 0.8;
+    pointer-events: none;
+    user-select: none;
+    font-weight: normal;
 }
 
 #voiceMixerContainer {
