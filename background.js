@@ -375,6 +375,8 @@ browser.commands.onCommand.addListener(async (command) => {
             // Proceed with full TTS action (article extraction, etc.)
             await handleTtsAction(tabs[0], "read-article");
         }
+    } else if (command === "open-reader") {
+        browser.tabs.create({ url: 'reader.html' });
     } else if (command === "nav-next" || command === "nav-prev") {
         const tabs = await browser.tabs.query({ active: true, currentWindow: true });
         if (tabs && tabs[0]) {

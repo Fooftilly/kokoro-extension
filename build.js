@@ -131,6 +131,12 @@ function createManifest(browser) {
             }
         ],
         commands: {
+            "open-reader": {
+                "suggested_key": {
+                    "default": "Alt+M"
+                },
+                "description": "Open Document (EPUB)"
+            },
             "read-article": {
                 "suggested_key": {
                     "default": "Alt+A"
@@ -160,6 +166,12 @@ function createManifest(browser) {
 
     // Browser specific overrides
     if (browser === 'chrome') {
+        // Chrome limit is 4 default shortcuts. 
+        // We remove the default key for "open-reader" (EPUB) in Chrome.
+        if (commonManifest.commands["open-reader"]) {
+            delete commonManifest.commands["open-reader"].suggested_key;
+        }
+
         commonManifest.permissions.push("downloads");
         commonManifest.background = {
             service_worker: "background.js"
