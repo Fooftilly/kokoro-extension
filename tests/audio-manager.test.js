@@ -10,14 +10,11 @@ global.browser = {
         local: {
             get: jest.fn()
         }
+    },
+    runtime: {
+        sendMessage: jest.fn()
     }
 };
-
-// Mock fetch
-global.fetch = jest.fn();
-
-// Mock URL.createObjectURL
-global.URL.createObjectURL = jest.fn((blob) => 'blob:mock-url');
 
 describe('AudioManager', () => {
     let audioManager;
@@ -30,18 +27,19 @@ describe('AudioManager', () => {
         browser.storage.local.get.mockImplementation(async () => {
             return {
                 pendingVoice: 'af_heart',
-                pendingApiUrl: 'http://localhost:8880'
+                pendingApiUrl: 'http://localhost:8880',
+                pendingNormalizationOptions: {}
             };
         });
 
         audioManager = new AudioManager();
     });
 
-    test('should fetch audio and cache it', async () => {
-        // Mock fetch success
-        global.fetch.mockResolvedValue({
-            ok: true,
-            blob: jest.fn().mockResolvedValue(new Blob(['audio'], { type: 'audio/mpeg' }))
+    test('should fetch audio via background and cache it', async () => {
+        // Mock background fetch success
+        browser.runtime.sendMessage.mockResolvedValue({
+            success: true,
+            dataUrl: 'data:audio/mpeg;base64,mockdata'
         });
 
         audioManager.setSentences([{ text: 'Hello world' }]);
@@ -50,25 +48,23 @@ describe('AudioManager', () => {
         const urlPromise = audioManager.getAudio(0);
         const url = await urlPromise;
 
-        expect(url).toBe('blob:mock-url');
+        expect(url).toBe('data:audio/mpeg;base64,mockdata');
         expect(browser.storage.local.get).toHaveBeenCalled();
-        expect(global.fetch).toHaveBeenCalledWith(
-            expect.stringContaining('http://localhost:8880'),
+        expect(browser.runtime.sendMessage).toHaveBeenCalledWith(
             expect.objectContaining({
-                method: 'POST',
-                body: expect.stringContaining('Hello world')
+                action: 'FETCH_TTS_AUDIO',
+                endpoint: expect.stringContaining('http://localhost:8880'),
+                payload: expect.objectContaining({
+                    input: 'Hello world'
+                })
             })
         );
     });
 
     test('should return cached promise result if called twice', async () => {
-        browser.storage.local.get.mockResolvedValue({
-            pendingVoice: 'af_heart',
-            pendingApiUrl: 'http://localhost:8880'
-        });
-        global.fetch.mockResolvedValue({
-            ok: true,
-            blob: jest.fn().mockResolvedValue(new Blob())
+        browser.runtime.sendMessage.mockResolvedValue({
+            success: true,
+            dataUrl: 'data:audio/mpeg;base64,mockdata'
         });
 
         audioManager.setSentences([{ text: 'Test' }]);
@@ -78,22 +74,21 @@ describe('AudioManager', () => {
 
         await Promise.all([p1, p2]);
 
-        expect(global.fetch).toHaveBeenCalledTimes(1);
+        expect(browser.runtime.sendMessage).toHaveBeenCalledTimes(1);
     });
 
-    test('should handle fetch errors', async () => {
-        browser.storage.local.get.mockResolvedValue({
-            pendingVoice: 'af_heart',
-            pendingApiUrl: 'http://localhost:8880'
+    test('should handle background fetch errors', async () => {
+        browser.runtime.sendMessage.mockResolvedValue({
+            success: false,
+            error: 'API Error: 500 Internal Server Error'
         });
-        global.fetch.mockRejectedValue(new Error('Failed to fetch'));
 
         // Suppress console.error for this test
         const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => { });
 
         audioManager.setSentences([{ text: 'Error' }]);
 
-        await expect(audioManager.getAudio(0)).rejects.toThrow('Connection failed. Is Kokoro-FastAPI running on http://localhost:8880?');
+        await expect(audioManager.getAudio(0)).rejects.toThrow('API Error: 500 Internal Server Error');
 
         consoleSpy.mockRestore();
     });

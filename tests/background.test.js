@@ -70,7 +70,13 @@ describe('background.js logic', () => {
             mode: 'stream',
             normalizationOptions: {}
         });
-        fetch.mockResolvedValue({ ok: true });
+        fetch.mockResolvedValue({
+            ok: true,
+            status: 200,
+            json: async () => ({ status: 'ok', models: [] }),
+            text: async () => 'ok',
+            blob: async () => new Blob(['audio'], { type: 'audio/mpeg' })
+        });
         // Load the script fresh for each test
         require('../background.js');
     });
@@ -113,5 +119,26 @@ describe('background.js logic', () => {
         console.log('SendMessage calls:', browser.tabs.sendMessage.mock.calls.map(c => (c[1] ? c[1].action : 'unknown')));
 
         expect(browser.scripting.executeScript).toHaveBeenCalled();
+    });
+
+    test('Should handle FETCH_TTS_AUDIO message', async () => {
+        const onMessageListener = browser.runtime.onMessage.addListener.mock.calls[0][0];
+        const mockRequest = {
+            action: 'FETCH_TTS_AUDIO',
+            endpoint: 'http://localhost:8880/v1/audio/speech',
+            payload: { input: 'Test' }
+        };
+
+        const result = await onMessageListener(mockRequest, {});
+
+        expect(result.success).toBe(true);
+        expect(result.dataUrl).toBe('data:audio/mpeg;base64,...');
+        expect(global.fetch).toHaveBeenCalledWith(
+            'http://localhost:8880/v1/audio/speech',
+            expect.objectContaining({
+                method: 'POST',
+                body: JSON.stringify({ input: 'Test' })
+            })
+        );
     });
 });

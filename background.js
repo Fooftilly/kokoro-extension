@@ -343,6 +343,39 @@ browser.runtime.onMessage.addListener(async (request, sender) => {
         if (sender.tab) {
             await handleTtsAction(sender.tab, "send-to-kokoro", request.text);
         }
+    } else if (request.action === "FETCH_TTS_AUDIO") {
+        try {
+            const response = await fetch(request.endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(request.payload)
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                throw new Error(`API Error: ${response.status} ${errText}`);
+            }
+
+            const blob = await response.blob();
+
+            // Convert blob to Data URL as it's the safest way to pass binary data 
+            // from background to content script in various manifest versions/browsers
+            const blobToDataURL = (blob) => {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => resolve(reader.result);
+                    reader.onerror = reject;
+                    reader.readAsDataURL(blob);
+                });
+            };
+
+            const dataUrl = await blobToDataURL(blob);
+            return { success: true, dataUrl };
+
+        } catch (e) {
+            console.error("Background fetch failed:", e);
+            return { success: false, error: e.message };
+        }
     }
 });
 

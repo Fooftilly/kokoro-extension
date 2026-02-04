@@ -48,24 +48,24 @@ export class AudioManager {
                 }
                 const endpoint = new URL('audio/speech', data.pendingApiUrl).href;
 
-                const response = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
+                const result = await browser.runtime.sendMessage({
+                    action: "FETCH_TTS_AUDIO",
+                    endpoint: endpoint,
+                    payload: {
                         model: 'kokoro',
                         input: text,
                         voice: data.pendingVoice,
                         response_format: 'mp3',
                         speed: 1.0,
                         normalization_options: data.pendingNormalizationOptions
-                    }),
-                    signal: this.abortController.signal
+                    }
                 });
 
-                if (!response.ok) throw new Error("API Error");
+                if (!result || !result.success) {
+                    throw new Error(result?.error || "Background fetch failed");
+                }
 
-                const blob = await response.blob();
-                return URL.createObjectURL(blob);
+                return result.dataUrl;
             } catch (e) {
                 if (e.name === 'AbortError') throw e;
 

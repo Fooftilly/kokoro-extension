@@ -317,7 +317,19 @@ const saveOptions = async (isDebounced = false) => {
         return;
     }
 
-    const apiUrl = document.getElementById('apiUrl').value;
+    let apiUrl = document.getElementById('apiUrl').value.trim();
+    if (apiUrl) {
+        // Automatically add http:// if no protocol is present
+        if (!/^https?:\/\//i.test(apiUrl)) {
+            apiUrl = 'http://' + apiUrl;
+        }
+        // Ensure it ends with /v1/ for consistency if needed, 
+        // but at least ensure it ends with /
+        if (!apiUrl.endsWith('/')) {
+            apiUrl += '/';
+        }
+    }
+    document.getElementById('apiUrl').value = apiUrl;
     const voice = serializeVoiceString(currentVoices);
     const mode = document.querySelector('input[name="mode"]:checked').value;
     const defaultSpeed = document.getElementById('defaultSpeed').value;
