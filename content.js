@@ -313,6 +313,12 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
                     container.style.justifyContent = 'center';
                     container.style.alignItems = 'center';
                     container.style.backdropFilter = 'blur(4px)';
+
+                    container.addEventListener('click', (e) => {
+                        if (e.target === container) {
+                            window.postMessage('CLOSE_KOKORO_PLAYER', '*');
+                        }
+                    });
                 } else {
                     container.style.top = '20px';
                     container.style.right = '20px';
