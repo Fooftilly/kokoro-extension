@@ -25,14 +25,23 @@ export class AudioManager {
             return this.audioCache.get(index);
         }
 
-        const promise = this.fetchAudio(this.sentences[index].text);
+        const promise = this.fetchAudio(this.sentences[index].text).catch((error) => {
+            // A failed request must not stay in the cache: otherwise a later
+            // attempt (e.g. the user retrying after the server recovers) would
+            // keep returning the same rejected promise instead of retrying.
+            this.audioCache.delete(index);
+            throw error;
+        });
         this.audioCache.set(index, promise);
         return promise;
     }
 
     prefetch(index) {
         if (index < this.sentences.length && !this.audioCache.has(index)) {
-            this.getAudio(index);
+            // Prefetching is best-effort. Swallow the rejection so a transient
+            // server outage does not surface as an unhandled rejection; the
+            // error will still be reported when the sentence is actually played.
+            this.getAudio(index).catch(() => { });
         }
     }
 

@@ -92,4 +92,24 @@ describe('AudioManager', () => {
 
         consoleSpy.mockRestore();
     });
+
+    test('should not cache failed fetches so a retry is attempted', async () => {
+        const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => { });
+
+        // First attempt fails (server unreachable), second succeeds (recovered).
+        browser.runtime.sendMessage
+            .mockResolvedValueOnce({ success: false, error: 'Failed to fetch' })
+            .mockResolvedValueOnce({ success: true, dataUrl: 'data:audio/mpeg;base64,recovered' });
+
+        audioManager.setSentences([{ text: 'Retry me' }]);
+
+        await expect(audioManager.getAudio(0)).rejects.toThrow(/Connection failed/);
+
+        // The failed request must not be cached, so the second call retries.
+        const url = await audioManager.getAudio(0);
+        expect(url).toBe('data:audio/mpeg;base64,recovered');
+        expect(browser.runtime.sendMessage).toHaveBeenCalledTimes(2);
+
+        consoleSpy.mockRestore();
+    });
 });
