@@ -24,7 +24,7 @@ const sharedRules = {
   'no-useless-escape': 'off',
   'no-misleading-character-class': 'off',
   'preserve-caught-error': 'off',
-  'no-eval': 'off',
+  'no-eval': 'error',
 };
 
 const extensionGlobals = {
@@ -104,6 +104,10 @@ export default [
         DOMPurify: 'readonly',
       },
     },
-    rules: sharedRules,
+    rules: {
+      ...sharedRules,
+      // tests/transliteration.test.js loads the lite module via eval in a harness
+      'no-eval': 'off',
+    },
   },
 ];

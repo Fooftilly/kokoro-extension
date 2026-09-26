@@ -304,6 +304,7 @@ function packageChrome(sourceDir, outputDir) {
         console.log(`Chrome package created at ${outputPath}`);
     } catch (error) {
         console.error('Error packaging for Chrome:', error.message);
+        throw error;
     }
 }
 
