@@ -23,14 +23,20 @@ Configure the API endpoint, mix voices with weights, and control speed/volume fr
 
 ### Overlay experience
 
-Read highlighted text or a whole article with an in-page overlay and playback controls.
+Read highlighted text or a whole article with an in-page overlay and playback controls. The compact floating player can be **dragged** and **collapsed** without stopping playback.
 
 <p align="center">
   <img src="assets/screenshots/overlay_large.png" width="800" alt="Large Overlay" />
 </p>
 
 <p align="center">
-  <img src="assets/screenshots/overlay_small.png" width="800" alt="Small Overlay" />
+  <img src="assets/screenshots/overlay_floating.png" width="800" alt="Floating overlay default position" />
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/overlay_dragged.png" width="800" alt="Floating overlay after drag" />
+  &nbsp;
+  <img src="assets/screenshots/overlay_collapsed.png" width="800" alt="Floating overlay collapsed" />
 </p>
 
 ## Features
@@ -43,7 +49,7 @@ Verified against the current source (not aspirational):
 - **Stream or download** — stream audio into the overlay player, or download a file.
 - **Voice mixer** — search voices from the API and blend multiple voices with weights.
 - **Text normalization** (toggleable) — contractions, transliteration of non-Latin scripts, dates/numbers, units, URLs, emails, phones, and related pronunciation prep in `text-processor.js`.
-- **Overlay playback** — play/pause, previous/next sentence, speed & volume, Spacebar play/pause; optional auto-scroll on the origin page with a “comfort zone” to reduce jumpiness.
+- **Overlay playback** — play/pause, previous/next sentence, speed & volume, Spacebar play/pause; optional auto-scroll on the origin page with a “comfort zone” to reduce jumpiness. Compact mode is **draggable** with a persisted, viewport-clamped position, and **collapsible** (including full→floating) without stopping audio; Close still tears down the player.
 - **Floating mic button** — optional on-page control (can be disabled in settings).
 - **EPUB reader** — open documents in `reader.html` (epub.js); optional autoplay.
 - **Themes** — light/dark toggle in the popup.
