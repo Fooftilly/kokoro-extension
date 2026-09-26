@@ -287,6 +287,28 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         iframe.contentWindow.postMessage(data, overlayIframeTargetOrigin(iframe));
     }
 
+    /** Accept page-bridge messages only from our overlay iframe (not host page scripts). */
+    function isTrustedOverlayIframeMessage(event) {
+        const container = document.getElementById('kokoro-overlay-container');
+        const iframe = container && container.querySelector('iframe');
+        if (!iframe || event.source !== iframe.contentWindow) {
+            return false;
+        }
+        try {
+            const expectedOrigin = overlayIframeTargetOrigin(iframe);
+            if (
+                expectedOrigin &&
+                (expectedOrigin.startsWith('chrome-extension:') ||
+                    expectedOrigin.startsWith('moz-extension:')) &&
+                event.origin &&
+                event.origin !== expectedOrigin
+            ) {
+                return false;
+            }
+        } catch (e) { }
+        return true;
+    }
+
     function postOverlayState(container) {
         const iframe = container && container.querySelector('iframe');
         if (!iframe) return;
@@ -582,6 +604,9 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
     window.addEventListener('resize', clampFloatingOverlayToViewport);
 
     window.addEventListener('message', (event) => {
+        if (!isTrustedOverlayIframeMessage(event)) {
+            return;
+        }
         if (event.data === 'CLOSE_KOKORO_PLAYER') {
             removeOverlayContainer();
         } else if (event.data === 'KOKORO_PLAYER_READY') {
