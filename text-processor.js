@@ -1,5 +1,65 @@
 import { findRange } from './dom-utils.js';
 
+/** Apostrophe variants: straight, curly right, modifier letter apostrophe */
+const APOSTROPHE_CLASS = "['\u2019\u02BC]";
+
+/**
+ * Bases whose bare `'s` is an unambiguous contraction of "is"/"has"/"us" (let's).
+ * All other `WORD's` forms are treated as possessives and are not expanded.
+ */
+const SAFE_CONTRACTION_S_BASES = new Set([
+    'it', 'that', 'he', 'she', 'what', 'who', 'there', 'here', 'let',
+    'how', 'where', 'when', 'why', 'this',
+    'somebody', 'someone', 'everybody', 'everyone', 'nobody', 'anyone', 'anybody'
+]);
+
+/**
+ * Expand recognized contractions via compromise, but do not expand ambiguous bare `'s`
+ * possessives (e.g. Perseverance's → must not become "Perseverance is").
+ * Unambiguous forms (it's, that's, n't, 're, 'll, 've, 'm, …) still expand.
+ */
+export function expandContractionsSafely(text, nlp = (typeof window !== 'undefined' ? window.nlp : undefined)) {
+    if (!nlp || typeof text !== 'string' || !text) return text;
+
+    const placeholders = [];
+    const protectedText = text.replace(
+        new RegExp(`\\b([A-Za-z][A-Za-z0-9]*)(${APOSTROPHE_CLASS}s)\\b`, 'g'),
+        (match, word) => {
+            if (SAFE_CONTRACTION_S_BASES.has(word.toLowerCase())) return match;
+            const key = `\uE000POS${placeholders.length}\uE001`;
+            placeholders.push(match);
+            return key;
+        }
+    );
+
+    try {
+        const doc = nlp(protectedText);
+        doc.contractions().expand();
+        let out = doc.text();
+        placeholders.forEach((orig, i) => {
+            out = out.replace(`\uE000POS${i}\uE001`, orig);
+        });
+        return out;
+    } catch (e) {
+        console.warn('Compromise normalization failed', e);
+        return text;
+    }
+}
+
+/**
+ * Spell out an initialism and attach plural/possessive suffix for TTS.
+ * Plural: MMCs → "M M Cs" (suffix glued to last letter).
+ * Possessive: MMC's / MMC’s → "M M C 's" (space + normalized apostrophe-s).
+ */
+export function formatInitialismWithSuffix(acronym, suffix) {
+    const spaced = acronym.split('').join(' ');
+    const cleanSuffix = suffix.replace(new RegExp(APOSTROPHE_CLASS, 'g'), "'");
+    if (cleanSuffix === 's') {
+        return `${spaced}${cleanSuffix}`;
+    }
+    return `${spaced} ${cleanSuffix}`;
+}
+
 export function processContent(blocks, segmenter) {
     const sentences = [];
     const renderData = [];
@@ -112,15 +172,10 @@ export function processContent(blocks, segmenter) {
 
                 let spokenText = segText;
 
-                // --- Compromise Normalization ---
+                // --- Compromise Normalization (contractions before acronyms/plurals) ---
+                // Expand unambiguous contractions only; protect ambiguous bare 's possessives (#7).
                 if (window.nlp) {
-                    try {
-                        let doc = window.nlp(spokenText);
-                        doc.contractions().expand();
-                        spokenText = doc.text();
-                    } catch (e) {
-                        console.warn("Compromise normalization failed", e);
-                    }
+                    spokenText = expandContractionsSafely(spokenText);
                 }
 
                 // --- Specialized Normalization ---
@@ -531,16 +586,12 @@ export function processContent(blocks, segmenter) {
                     return val ? `${val}${suffix || ''}` : match;
                 });
 
-                // Acronyms with plural or possessive 's' (LMs, LLMs, MIT’s)
-                // We target 2+ uppercase letters followed by 's or s at the end of a word or followed by non-alpha
-                // We use a more restrictive regex to avoid matching short words like "As", "Is", "In" if they were somehow uppercase
-                spokenText = spokenText.replace(/\b([A-Z]{2,})(['\u2019\u02BC]s|s)\b/g, (match, acronym, suffix) => {
-                    // Skip if it's all uppercase and 2 letters, maybe too risky? e.g. "US", "UK"
-                    // But plural acronyms are usually 2+ letters anyway.
-                    const spaced = acronym.split('').join(' ');
-                    const cleanSuffix = suffix.replace(/['\u2019\u02BC]/, "'");
-                    return `${spaced} ${cleanSuffix}`;
-                });
+                // Acronyms with plural or possessive 's' (LMs, LLMs, MIT’s) — after contractions (#7/#8).
+                // Plural suffix stays glued to the last letter ("M M Cs"); possessive keeps a space ("M M C 's").
+                spokenText = spokenText.replace(
+                    new RegExp(`\\b([A-Z]{2,})(${APOSTROPHE_CLASS}s|s)\\b`, 'g'),
+                    (match, acronym, suffix) => formatInitialismWithSuffix(acronym, suffix)
+                );
 
                 // Numeric Date: MM/DD/YYYY or MM-DD-YYYY (US)
                 spokenText = spokenText.replace(/\b(0?[1-9]|1[0-2])[\/\-](0?[1-9]|[12]\d|3[01])[\/\-](\d{4})\b/g, (match, mStr, dStr, year) => {
