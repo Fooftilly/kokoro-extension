@@ -10,6 +10,8 @@ const {
     classifyApiFailure,
     fetchNormalizedVoices,
     probeApiConnection,
+    resolveBackendStatus,
+    messageForKind,
 } = require('../api-client.js');
 
 describe('normalizeVoiceEntry / normalizeVoiceIds (#6)', () => {
@@ -117,7 +119,10 @@ describe('fetchNormalizedVoices (#6 + #4 error kinds)', () => {
         expect(result.ok).toBe(true);
         expect(result.kind).toBe('ok');
         expect(result.voices).toEqual(['af_alloy', 'bm_george']);
-        expect(fetchImpl).toHaveBeenCalledWith('http://127.0.0.1:8880/v1/audio/voices');
+        expect(fetchImpl).toHaveBeenCalledWith(
+            'http://127.0.0.1:8880/v1/audio/voices',
+            expect.objectContaining({ signal: expect.any(AbortSignal) })
+        );
     });
 
     test('object response → ok', async () => {
@@ -211,7 +216,7 @@ describe('fetchNormalizedVoices (#6 + #4 error kinds)', () => {
 });
 
 describe('probeApiConnection (#4)', () => {
-    test('success', async () => {
+    test('success via /test', async () => {
         const fetchImpl = jest.fn().mockResolvedValue({
             ok: true,
             json: async () => ({ status: 'ok' }),
@@ -224,40 +229,115 @@ describe('probeApiConnection (#4)', () => {
         });
         expect(fetchImpl).toHaveBeenCalledWith(
             'http://127.0.0.1:8880/v1/test',
-            expect.objectContaining({ method: 'GET' })
+            expect.objectContaining({ method: 'GET', signal: expect.any(AbortSignal) })
         );
+        expect(fetchImpl.mock.calls.some((c) => String(c[0]).includes('/health'))).toBe(false);
     });
 
-    test('network failure', async () => {
+    test('falls back to /health when /test fails', async () => {
+        const fetchImpl = jest.fn(async (url) => {
+            if (String(url).includes('/health')) {
+                return { ok: true, json: async () => ({ status: 'healthy' }) };
+            }
+            return { ok: false, status: 404 };
+        });
+        const result = await probeApiConnection('http://127.0.0.1:8880/v1/', fetchImpl);
+        expect(result.ok).toBe(true);
+        expect(result.kind).toBe('ok');
+        expect(fetchImpl.mock.calls.map((c) => c[0])).toEqual([
+            'http://127.0.0.1:8880/v1/test',
+            'http://127.0.0.1:8880/health',
+        ]);
+    });
+
+    test('network failure on both probes', async () => {
         const fetchImpl = jest.fn().mockRejectedValue(new TypeError('NetworkError'));
         const result = await probeApiConnection('http://bad/', fetchImpl);
         expect(result.ok).toBe(false);
         expect(result.kind).toBe('network');
     });
 
-    test('HTTP error', async () => {
+    test('HTTP error when /test and /health both fail', async () => {
         const fetchImpl = jest.fn().mockResolvedValue({ ok: false, status: 500 });
         const result = await probeApiConnection('http://x/v1/', fetchImpl);
         expect(result.kind).toBe('http');
     });
 
     test('bad shape is not labeled unreachable', async () => {
-        const fetchImpl = jest.fn().mockResolvedValue({
-            ok: true,
-            json: async () => ({ status: 'weird' }),
+        const fetchImpl = jest.fn(async (url) => {
+            if (String(url).includes('/health')) {
+                return { ok: true, json: async () => ({ status: 'weird' }) };
+            }
+            return { ok: true, json: async () => ({ status: 'weird' }) };
         });
         const result = await probeApiConnection('http://x/v1/', fetchImpl);
         expect(result.kind).toBe('malformed');
         expect(result.message).not.toMatch(/Unable to reach/i);
     });
+
+    test('never-resolving fetch times out as network (Checking terminates)', async () => {
+        jest.useFakeTimers();
+        const fetchImpl = jest.fn(() => new Promise(() => {}));
+        const pending = probeApiConnection('http://hang/v1/', fetchImpl, { timeoutMs: 50 });
+        const assertion = expect(pending).resolves.toEqual({
+            ok: false,
+            kind: 'network',
+            message: expect.stringMatching(/reach/i),
+        });
+        await jest.advanceTimersByTimeAsync(50);
+        // /test times out, then /health also hangs — advance again
+        await jest.advanceTimersByTimeAsync(50);
+        await assertion;
+        jest.useRealTimers();
+    });
+});
+
+describe('fetchNormalizedVoices timeout', () => {
+    test('never-resolving fetch times out as network', async () => {
+        jest.useFakeTimers();
+        const fetchImpl = jest.fn(() => new Promise(() => {}));
+        const pending = fetchNormalizedVoices('http://hang/v1/', fetchImpl, { timeoutMs: 40 });
+        const assertion = expect(pending).resolves.toMatchObject({
+            ok: false,
+            kind: 'network',
+        });
+        await jest.advanceTimersByTimeAsync(40);
+        await assertion;
+        jest.useRealTimers();
+    });
+});
+
+describe('resolveBackendStatus', () => {
+    test('/test failure + voices success → connected (not HTTP error)', () => {
+        const resolved = resolveBackendStatus(
+            { ok: false, kind: 'http', message: messageForKind('http') },
+            { ok: true, kind: 'ok', voices: ['af_alloy'], message: '' }
+        );
+        expect(resolved.kind).toBe('ok');
+        expect(resolved.voices).toEqual(['af_alloy']);
+        expect(resolved.message).toMatch(/Connected/i);
+        expect(resolved.message).not.toMatch(/HTTP/i);
+    });
+
+    test('both fail → probe error surfaces', () => {
+        const resolved = resolveBackendStatus(
+            { ok: false, kind: 'network', message: messageForKind('network') },
+            { ok: false, kind: 'network', voices: [], message: messageForKind('network', 'Voice list') }
+        );
+        expect(resolved.kind).toBe('network');
+        expect(resolved.showRetry).toBe(true);
+    });
 });
 
 describe('classifyApiFailure', () => {
-    test('maps known shapes', () => {
+    test('maps known shapes including AbortError → network', () => {
         expect(classifyApiFailure(new TypeError('fail'))).toBe('network');
         const httpErr = new Error('x');
         httpErr.kind = 'http';
         expect(classifyApiFailure(httpErr)).toBe('http');
         expect(classifyApiFailure(new SyntaxError('bad json'))).toBe('malformed');
+        const abortErr = new Error('aborted');
+        abortErr.name = 'AbortError';
+        expect(classifyApiFailure(abortErr)).toBe('network');
     });
 });

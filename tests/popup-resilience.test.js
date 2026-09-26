@@ -17,9 +17,12 @@ function loadPopupDom() {
 }
 
 describe('popup backend-loss resilience (#4)', () => {
+    let popup;
+
     beforeEach(() => {
         jest.resetModules();
         jest.clearAllMocks();
+        jest.useRealTimers();
         loadPopupDom();
 
         global.browser = {
@@ -60,7 +63,7 @@ describe('popup backend-loss resilience (#4)', () => {
         global.fetch = jest.fn(() => Promise.reject(new TypeError('Failed to fetch')));
 
         Object.assign(global, require('../api-client.js'));
-        require('../popup.js');
+        popup = require('../popup.js');
     });
 
     async function flushAsync() {
@@ -161,5 +164,128 @@ describe('popup backend-loss resilience (#4)', () => {
         const dropdown = document.getElementById('voiceDropdown');
         expect(dropdown.textContent).toContain('af_alloy');
         expect(dropdown.textContent).not.toMatch(/reach/i);
+    });
+
+    test('permission denial is not overwritten by a network refresh', async () => {
+        browser.permissions.contains.mockResolvedValue(false);
+        browser.permissions.request.mockResolvedValue(false);
+        global.fetch = jest.fn(() => Promise.reject(new TypeError('Failed to fetch')));
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        document.getElementById('apiUrl').value = 'http://192.168.1.50:8880/v1/';
+        document.getElementById('saveApiUrl').click();
+        await flushAsync();
+
+        const text = document.getElementById('apiStatus').textContent;
+        expect(text).toMatch(/permission/i);
+        expect(text).not.toMatch(/Unable to reach/i);
+        expect(browser.storage.sync.set).toHaveBeenCalled();
+    });
+
+    test('stale refresh cannot overwrite a newer URL result', async () => {
+        let resolveStale;
+        const stalePromise = new Promise((resolve) => {
+            resolveStale = resolve;
+        });
+
+        global.fetch = jest.fn((url) => {
+            const u = String(url);
+            if (u.includes('127.0.0.1')) {
+                return stalePromise.then(() => {
+                    if (u.includes('test')) {
+                        return { ok: true, json: async () => ({ status: 'ok' }) };
+                    }
+                    return {
+                        ok: true,
+                        json: async () => ({ voices: [{ id: 'af_stale', name: 'af_stale' }] }),
+                    };
+                });
+            }
+            // New URL responds immediately
+            if (u.includes('test') || u.includes('/health')) {
+                return Promise.resolve({ ok: true, json: async () => ({ status: 'ok' }) });
+            }
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({ voices: [{ id: 'af_fresh', name: 'af_fresh' }] }),
+            });
+        });
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        // Open refresh still waiting on stale host
+        expect(document.getElementById('apiStatus').textContent).toMatch(/Checking/i);
+
+        document.getElementById('apiUrl').value = 'http://10.0.0.2:8880/v1/';
+        document.getElementById('saveApiUrl').click();
+        await flushAsync();
+
+        expect(document.getElementById('apiStatus').textContent).toMatch(/Connected/i);
+        expect(popup.getAvailableVoices()).toContain('af_fresh');
+
+        // Late stale responses must not win
+        resolveStale();
+        await flushAsync();
+        expect(popup.getAvailableVoices()).toContain('af_fresh');
+        expect(popup.getAvailableVoices()).not.toContain('af_stale');
+        expect(document.getElementById('apiStatus').textContent).toMatch(/Connected/i);
+    });
+
+    test('/test HTTP failure with successful voices still shows connected', async () => {
+        global.fetch = jest.fn(async (url) => {
+            const u = String(url);
+            if (u.includes('/test')) {
+                return { ok: false, status: 404 };
+            }
+            if (u.includes('/health')) {
+                return { ok: false, status: 404 };
+            }
+            return {
+                ok: true,
+                json: async () => ({ voices: [{ id: 'af_alloy', name: 'af_alloy' }] }),
+            };
+        });
+
+        jest.resetModules();
+        loadPopupDom();
+        Object.assign(global, require('../api-client.js'));
+        require('../popup.js');
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        const text = document.getElementById('apiStatus').textContent;
+        expect(text).toMatch(/Connected/i);
+        expect(text).not.toMatch(/HTTP/i);
+
+        const search = document.getElementById('voiceSearch');
+        search.value = 'af_';
+        search.dispatchEvent(new Event('input'));
+        expect(document.getElementById('voiceDropdown').textContent).toContain('af_alloy');
+    });
+
+    test('never-resolving fetch ends Checking via timeout', async () => {
+        jest.useFakeTimers();
+        global.fetch = jest.fn(() => new Promise(() => {}));
+        // Match input URL so stillCurrent() stays true during the probe
+        document.getElementById('apiUrl').value = 'http://127.0.0.1:8880/v1/';
+
+        const pending = popup.refreshBackendStatus('http://127.0.0.1:8880/v1/', {
+            timeoutMs: 30,
+        });
+        expect(document.getElementById('apiStatus').textContent).toMatch(/Checking/i);
+
+        // probe: /test timeout + /health timeout, then voices timeout
+        await jest.advanceTimersByTimeAsync(30);
+        await jest.advanceTimersByTimeAsync(30);
+        await jest.advanceTimersByTimeAsync(30);
+        await pending;
+
+        expect(document.getElementById('apiStatus').textContent).not.toMatch(/Checking/i);
+        expect(document.getElementById('apiStatus').textContent).toMatch(/reach|Unable/i);
+        expect(document.getElementById('retryApi').style.display).not.toBe('none');
+        jest.useRealTimers();
     });
 });

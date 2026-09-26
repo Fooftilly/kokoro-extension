@@ -26,7 +26,10 @@ let availableVoices = [];
 let voiceFetchStatus = { kind: 'idle', message: '' };
 /** @type {{ kind: string, message: string }} */
 let connectionStatus = { kind: 'idle', message: '' };
-let statusProbeInFlight = false;
+/** Monotonic token so only the latest refresh applies UI/voice results. */
+let refreshGeneration = 0;
+/** @type {AbortController|null} */
+let activeRefreshAbort = null;
 
 function setApiStatusUI(kind, message, { showRetry = true } = {}) {
     const row = document.getElementById('apiStatusRow');
@@ -62,49 +65,66 @@ function setApiStatusUI(kind, message, { showRetry = true } = {}) {
 
 /**
  * Probe connection and refresh voice list. Settings UI always remains usable.
+ * Newer calls abort/supersede in-flight work so stale URLs cannot overwrite status.
  */
-async function refreshBackendStatus(apiUrl, { hideOkAfterMs = 0 } = {}) {
-    if (statusProbeInFlight) return;
-    statusProbeInFlight = true;
+async function refreshBackendStatus(apiUrl, { hideOkAfterMs = 0, timeoutMs } = {}) {
+    const generation = ++refreshGeneration;
+    const requestedUrl = apiUrl;
+
+    if (activeRefreshAbort) {
+        try {
+            activeRefreshAbort.abort();
+        } catch (_) {
+            /* ignore */
+        }
+    }
+    const controller = new AbortController();
+    activeRefreshAbort = controller;
+
+    setApiStatusUI('checking', messageForKind('checking'), { showRetry: false });
+
+    const stillCurrent = () => (
+        generation === refreshGeneration
+        && document.getElementById('apiUrl')
+        && document.getElementById('apiUrl').value === requestedUrl
+    );
+
     try {
-        setApiStatusUI('checking', messageForKind('checking'), { showRetry: false });
+        const requestOpts = { signal: controller.signal, timeoutMs };
+        const probe = await probeApiConnection(requestedUrl, fetch, requestOpts);
+        if (!stillCurrent() || probe.aborted || controller.signal.aborted) return;
 
-        const probe = await probeApiConnection(apiUrl);
-        const voicesResult = await fetchNormalizedVoices(apiUrl);
-        availableVoices = voicesResult.voices;
-        voiceFetchStatus = { kind: voicesResult.kind, message: voicesResult.message };
+        const voicesResult = await fetchNormalizedVoices(requestedUrl, fetch, requestOpts);
+        if (!stillCurrent() || controller.signal.aborted) return;
 
-        // Prefer the more specific failure when /test succeeds but voices fail (or vice versa).
-        if (probe.ok && voicesResult.ok) {
-            const kind = voicesResult.kind === 'empty' ? 'empty' : 'ok';
-            const message = voicesResult.kind === 'empty'
-                ? voicesResult.message
-                : probe.message;
-            setApiStatusUI(kind === 'ok' ? 'ok' : 'empty', message, { showRetry: kind !== 'ok' });
-            if (kind === 'ok' && hideOkAfterMs > 0) {
-                setTimeout(() => {
-                    if (connectionStatus.kind === 'ok') {
-                        setApiStatusUI('idle', '');
-                    }
-                }, hideOkAfterMs);
-            }
-        } else if (!probe.ok && !voicesResult.ok) {
-            // Same failure class → one message; prefer network/http over assuming voices-only.
-            setApiStatusUI(probe.kind, probe.message);
-        } else if (!probe.ok) {
-            setApiStatusUI(probe.kind, probe.message);
-        } else {
-            // Connected but voices failed/malformed — do not call it unreachable.
-            setApiStatusUI(voicesResult.kind, voicesResult.message);
+        const resolved = resolveBackendStatus(probe, voicesResult);
+        availableVoices = resolved.voices;
+        voiceFetchStatus = {
+            kind: voicesResult.kind,
+            message: voicesResult.message || '',
+        };
+        setApiStatusUI(resolved.kind, resolved.message, { showRetry: resolved.showRetry });
+
+        if (resolved.kind === 'ok' && hideOkAfterMs > 0) {
+            setTimeout(() => {
+                if (generation === refreshGeneration && connectionStatus.kind === 'ok') {
+                    setApiStatusUI('idle', '');
+                }
+            }, hideOkAfterMs);
         }
     } catch (e) {
+        if (!stillCurrent() || (e && e.name === 'AbortError')) {
+            return;
+        }
         console.error('Backend status refresh failed:', e);
         const kind = classifyApiFailure(e);
         availableVoices = [];
         voiceFetchStatus = { kind, message: messageForKind(kind, 'API') };
         setApiStatusUI(kind, voiceFetchStatus.message);
     } finally {
-        statusProbeInFlight = false;
+        if (generation === refreshGeneration && activeRefreshAbort === controller) {
+            activeRefreshAbort = null;
+        }
     }
 }
 
@@ -379,7 +399,7 @@ const saveOptions = async (isDebounced = false) => {
     if (isDebounced) {
         clearTimeout(saveTimeout);
         saveTimeout = setTimeout(() => saveOptions(false), 500);
-        return;
+        return { ok: true, deferred: true };
     }
 
     let apiUrl = document.getElementById('apiUrl').value.trim();
@@ -439,7 +459,7 @@ const saveOptions = async (isDebounced = false) => {
                             status.style.display = 'none';
                             status.style.color = "var(--status-success)";
                         }, 3000);
-                        return;
+                        return { ok: false, permissionDenied: true };
                     }
                 }
             } catch (e) {
@@ -453,12 +473,14 @@ const saveOptions = async (isDebounced = false) => {
         status.style.color = "var(--status-success)";
         status.style.display = 'block';
         setTimeout(() => { status.style.display = 'none'; }, 1500);
+        return { ok: true, permissionDenied: false };
     } catch (e) {
         console.error("Error saving options", e);
         const status = document.getElementById('status');
         status.textContent = "Error: " + e.message;
         status.style.color = "var(--status-error)";
         status.style.display = 'block';
+        return { ok: false, error: true };
     }
 };
 
@@ -624,10 +646,13 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Manual API URL Save — persist, then re-probe connection + voices
+    // Manual API URL Save — persist, then re-probe (skip probe if host permission denied)
     const saveApiBtn = document.getElementById('saveApiUrl');
     saveApiBtn.addEventListener('click', async () => {
-        await saveOptions(false);
+        const saveResult = await saveOptions(false);
+        if (saveResult && saveResult.permissionDenied) {
+            return;
+        }
         const url = document.getElementById('apiUrl').value;
         await refreshBackendStatus(url, { hideOkAfterMs: 3000 });
     });
@@ -663,4 +688,15 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
     browser.storage.sync.set({ theme });
     browser.storage.local.set({ theme });
 });
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        refreshBackendStatus,
+        saveOptions,
+        setApiStatusUI,
+        getConnectionStatus: () => connectionStatus,
+        getAvailableVoices: () => availableVoices,
+        getVoiceFetchStatus: () => voiceFetchStatus,
+    };
+}
 

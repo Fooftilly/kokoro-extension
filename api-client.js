@@ -7,6 +7,102 @@
  */
 
 const VOICE_PREFIXES = ['am_', 'af_', 'bm_', 'bf_'];
+/** Match background.js health-check timeout. */
+const DEFAULT_FETCH_TIMEOUT_MS = 3000;
+
+function makeAbortError(message) {
+    const err = new Error(message || 'The operation was aborted');
+    err.name = 'AbortError';
+    return err;
+}
+
+function makeTimeoutError(message) {
+    const err = new Error(message || 'The operation timed out');
+    err.name = 'TimeoutError';
+    return err;
+}
+
+/**
+ * fetch() with AbortController timeout (and optional external abort signal).
+ * - Timeout → TimeoutError (classified as network; callers may fall back)
+ * - External abort → AbortError (superseded; callers should stop)
+ * Uses Promise.race so "Checking…" cannot hang even if fetchImpl ignores signal.
+ */
+async function fetchWithTimeout(url, options, fetchImpl, timeoutMs) {
+    const fetchFn = fetchImpl || fetch;
+    const ms = typeof timeoutMs === 'number' && timeoutMs >= 0
+        ? timeoutMs
+        : DEFAULT_FETCH_TIMEOUT_MS;
+    const opts = options || {};
+    const external = opts.signal;
+
+    const controller = new AbortController();
+    let timeoutId = null;
+    let onExternalAbort = null;
+    let timedOut = false;
+    let externallyAborted = !!(external && external.aborted);
+
+    const abortLocal = () => {
+        try {
+            controller.abort();
+        } catch (_) {
+            /* ignore */
+        }
+    };
+
+    if (external) {
+        if (external.aborted) {
+            externallyAborted = true;
+            abortLocal();
+        } else {
+            onExternalAbort = () => {
+                externallyAborted = true;
+                abortLocal();
+            };
+            external.addEventListener('abort', onExternalAbort);
+        }
+    }
+
+    if (!controller.signal.aborted && ms > 0) {
+        timeoutId = setTimeout(() => {
+            timedOut = true;
+            abortLocal();
+        }, ms);
+    } else if (ms === 0 && !controller.signal.aborted) {
+        timedOut = true;
+        abortLocal();
+    }
+
+    const abortPromise = new Promise((_, reject) => {
+        const rejectAbort = () => {
+            if (externallyAborted) {
+                reject(makeAbortError('The operation was aborted'));
+            } else {
+                reject(makeTimeoutError('The operation timed out'));
+            }
+        };
+        if (controller.signal.aborted) {
+            rejectAbort();
+            return;
+        }
+        controller.signal.addEventListener('abort', rejectAbort, { once: true });
+    });
+
+    try {
+        const fetchPromise = fetchFn(url, {
+            ...opts,
+            signal: controller.signal,
+        });
+        return await Promise.race([fetchPromise, abortPromise]);
+    } finally {
+        if (timeoutId != null) {
+            clearTimeout(timeoutId);
+        }
+        if (external && onExternalAbort) {
+            external.removeEventListener('abort', onExternalAbort);
+        }
+    }
+}
 
 /**
  * Normalize one voice list entry to a string ID, or null if unusable.
@@ -86,7 +182,7 @@ function classifyApiFailure(error) {
     if (error.kind === 'http' || error.kind === 'malformed' || error.kind === 'network') {
         return error.kind;
     }
-    if (error.name === 'AbortError') {
+    if (error.name === 'AbortError' || error.name === 'TimeoutError') {
         return 'network';
     }
     // JSON parse / intentional shape errors
@@ -122,51 +218,175 @@ function messageForKind(kind, context) {
 }
 
 /**
- * Probe GET {apiUrl}test — distinguishes network / HTTP / malformed / success.
- * Does not poll; caller decides when to invoke.
+ * Combine probe + voices results. Successful voices prove connectivity even
+ * when `/test` fails; probe errors only win when the functional request fails too.
  */
-async function probeApiConnection(apiUrl, fetchImpl) {
-    const fetchFn = fetchImpl || fetch;
-    const baseUrl = apiUrl.endsWith('/') ? apiUrl : `${apiUrl}/`;
-    try {
-        const response = await fetchFn(`${baseUrl}test`, {
+function resolveBackendStatus(probe, voicesResult) {
+    const voices = (voicesResult && voicesResult.voices) || [];
+    if (voicesResult && voicesResult.ok) {
+        if (voicesResult.kind === 'empty') {
+            return {
+                kind: 'empty',
+                message: voicesResult.message || messageForKind('empty'),
+                voices,
+                showRetry: true,
+            };
+        }
+        return {
+            kind: 'ok',
+            message: messageForKind('ok'),
+            voices,
+            showRetry: false,
+        };
+    }
+    if (probe && probe.ok) {
+        return {
+            kind: voicesResult.kind,
+            message: voicesResult.message || messageForKind(voicesResult.kind, 'Voice list'),
+            voices: [],
+            showRetry: true,
+        };
+    }
+    // Both failed — prefer probe classification for the shared host.
+    const kind = (probe && probe.kind) || (voicesResult && voicesResult.kind) || 'network';
+    return {
+        kind,
+        message: (probe && probe.message)
+            || (voicesResult && voicesResult.message)
+            || messageForKind(kind, 'API'),
+        voices: [],
+        showRetry: true,
+    };
+}
+
+async function tryProbeTest(baseUrl, fetchImpl, requestOpts, timeoutMs) {
+    const response = await fetchWithTimeout(
+        `${baseUrl}test`,
+        {
             method: 'GET',
             headers: { Accept: 'application/json' },
-        });
-        if (!response.ok) {
-            const err = new Error(`HTTP ${response.status}`);
-            err.kind = 'http';
-            err.status = response.status;
-            throw err;
-        }
-        let data;
-        try {
-            data = await response.json();
-        } catch (parseErr) {
-            const err = new Error('Invalid JSON from /test');
-            err.kind = 'malformed';
-            err.cause = parseErr;
-            throw err;
-        }
-        if (!data || data.status !== 'ok') {
-            const err = new Error('Unexpected /test payload');
-            err.kind = 'malformed';
-            throw err;
-        }
-        return { ok: true, kind: 'ok', message: messageForKind('ok') };
-    } catch (e) {
-        const kind = classifyApiFailure(e);
-        return { ok: false, kind, message: messageForKind(kind, 'API') };
+            signal: requestOpts.signal,
+        },
+        fetchImpl,
+        timeoutMs
+    );
+    if (!response.ok) {
+        const err = new Error(`HTTP ${response.status}`);
+        err.kind = 'http';
+        err.status = response.status;
+        throw err;
     }
+    let data;
+    try {
+        data = await response.json();
+    } catch (parseErr) {
+        const err = new Error('Invalid JSON from /test');
+        err.kind = 'malformed';
+        err.cause = parseErr;
+        throw err;
+    }
+    if (!data || data.status !== 'ok') {
+        const err = new Error('Unexpected /test payload');
+        err.kind = 'malformed';
+        throw err;
+    }
+    return { ok: true, kind: 'ok', message: messageForKind('ok') };
+}
+
+async function tryProbeHealth(apiUrl, fetchImpl, requestOpts, timeoutMs) {
+    const urlObj = new URL(apiUrl);
+    const healthUrl = new URL('/health', urlObj.origin).href;
+    const response = await fetchWithTimeout(
+        healthUrl,
+        {
+            method: 'GET',
+            headers: { Accept: 'application/json' },
+            signal: requestOpts.signal,
+        },
+        fetchImpl,
+        timeoutMs
+    );
+    if (!response.ok) {
+        const err = new Error(`HTTP ${response.status}`);
+        err.kind = 'http';
+        err.status = response.status;
+        throw err;
+    }
+    let data;
+    try {
+        data = await response.json();
+    } catch (parseErr) {
+        const err = new Error('Invalid JSON from /health');
+        err.kind = 'malformed';
+        err.cause = parseErr;
+        throw err;
+    }
+    if (!data || data.status !== 'healthy') {
+        const err = new Error('Unexpected /health payload');
+        err.kind = 'malformed';
+        throw err;
+    }
+    return { ok: true, kind: 'ok', message: messageForKind('ok') };
+}
+
+/**
+ * Probe connectivity: GET {apiUrl}test, then /health fallback (same as background.js).
+ * Options: { signal, timeoutMs }
+ */
+async function probeApiConnection(apiUrl, fetchImpl, options) {
+    const opts = options || {};
+    const timeoutMs = opts.timeoutMs;
+    const requestOpts = { signal: opts.signal };
+    const baseUrl = apiUrl.endsWith('/') ? apiUrl : `${apiUrl}/`;
+    let lastFailure = null;
+
+    try {
+        return await tryProbeTest(baseUrl, fetchImpl, requestOpts, timeoutMs);
+    } catch (e) {
+        // External supersede — stop without /health. Timeout falls through to /health.
+        if (e && e.name === 'AbortError') {
+            return {
+                ok: false,
+                kind: 'network',
+                aborted: true,
+                message: messageForKind('network', 'API'),
+            };
+        }
+        lastFailure = e;
+    }
+
+    try {
+        return await tryProbeHealth(apiUrl, fetchImpl, requestOpts, timeoutMs);
+    } catch (e) {
+        if (e && e.name === 'AbortError') {
+            return {
+                ok: false,
+                kind: 'network',
+                aborted: true,
+                message: messageForKind('network', 'API'),
+            };
+        }
+        lastFailure = e;
+    }
+
+    const kind = classifyApiFailure(lastFailure);
+    return { ok: false, kind, message: messageForKind(kind, 'API') };
 }
 
 /**
  * Fetch and normalize voice IDs from GET {apiUrl}audio/voices.
+ * Options: { signal, timeoutMs }
  */
-async function fetchNormalizedVoices(apiUrl, fetchImpl) {
-    const fetchFn = fetchImpl || fetch;
+async function fetchNormalizedVoices(apiUrl, fetchImpl, options) {
+    const opts = options || {};
+    const timeoutMs = opts.timeoutMs;
     try {
-        const response = await fetchFn(`${apiUrl}audio/voices`);
+        const response = await fetchWithTimeout(
+            `${apiUrl}audio/voices`,
+            { signal: opts.signal },
+            fetchImpl,
+            timeoutMs
+        );
         if (!response.ok) {
             const err = new Error(`HTTP ${response.status}`);
             err.kind = 'http';
@@ -219,12 +439,15 @@ async function fetchNormalizedVoices(apiUrl, fetchImpl) {
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         VOICE_PREFIXES,
+        DEFAULT_FETCH_TIMEOUT_MS,
+        fetchWithTimeout,
         normalizeVoiceEntry,
         normalizeVoiceIds,
         filterVoicesByPrefix,
         parseVoicesResponse,
         classifyApiFailure,
         messageForKind,
+        resolveBackendStatus,
         probeApiConnection,
         fetchNormalizedVoices,
     };
