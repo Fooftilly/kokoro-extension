@@ -63,6 +63,26 @@ describe('Stage 3: possessive \'s (#7) and plural initialisms (#8)', () => {
             expect(expandContractionsSafely("NASA's rover")).toContain("NASA's");
         });
 
+        test('protects ALLCAPS initialism possessives even when base is a safe contraction', () => {
+            expect(expandContractionsSafely("IT's design")).toContain("IT's");
+            expect(expandContractionsSafely("IT's design")).not.toMatch(/\bIT is\b/);
+            expect(expandContractionsSafely("LLM's design")).toContain("LLM's");
+            expect(expandContractionsSafely("LLM's design")).not.toMatch(/\bLLM is\b/);
+            // Normal title/lower contractions must still expand
+            expect(expandContractionsSafely("It's raining.")).toMatch(/It is raining/);
+            expect(expandContractionsSafely("it's raining.")).toMatch(/it is raining/i);
+        });
+
+        test('protects Unicode possessive bases (accented names)', () => {
+            expect(expandContractionsSafely("Renée's Scanning Habitable Environments")).toContain("Renée's");
+            expect(expandContractionsSafely("Renée's Scanning Habitable Environments")).not.toMatch(/Renée is/i);
+            expect(expandContractionsSafely('Renée\u2019s Scanning Habitable Environments')).toContain('Renée\u2019s');
+            expect(expandContractionsSafely('Renée\u2019s Scanning Habitable Environments')).not.toMatch(/Renée is/i);
+            // Accented name that raw compromise can mis-expand when unprotected
+            expect(expandContractionsSafely("Élodie's Garden Scanning")).toContain("Élodie's");
+            expect(expandContractionsSafely("Élodie's Garden Scanning")).not.toMatch(/Elodie is|Élodie is/i);
+        });
+
         test('raw compromise still mis-expands Perseverance\'s (documents root cause)', () => {
             const doc = nlp("Perseverance's Scanning Habitable Environments");
             doc.contractions().expand();
@@ -112,6 +132,18 @@ describe('Stage 3: possessive \'s (#7) and plural initialisms (#8)', () => {
             expect(runProcessor("MMC's design")).toMatch(/M M C 's/);
             expect(runProcessor('MMC\u2019s design')).toMatch(/M M C 's/);
             expect(runProcessor("MMC's design")).not.toMatch(/M M Cs\b/);
+        });
+
+        test('#7/#8: ALLCAPS allowlist collision still reaches initialism possessive formatting', () => {
+            expect(runProcessor("IT's design")).toMatch(/I T 's/);
+            expect(runProcessor("IT's design")).not.toMatch(/\bIT is\b/);
+            expect(runProcessor("LLM's design")).toMatch(/L L M 's/);
+        });
+
+        test('#7: Unicode possessives survive processContent', () => {
+            const out = runProcessor("Renée's Scanning Habitable Environments");
+            expect(out).toMatch(/Renée'?s|Renee'?s/);
+            expect(out).not.toMatch(/Renée is|Renee is/i);
         });
 
         test('#8: non-plural acronyms and ordinary plurals unchanged in intent', () => {

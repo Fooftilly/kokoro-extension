@@ -22,10 +22,15 @@ export function expandContractionsSafely(text, nlp = (typeof window !== 'undefin
     if (!nlp || typeof text !== 'string' || !text) return text;
 
     const placeholders = [];
+    // Unicode-aware word boundaries so accented bases (Renée's) are protected too.
+    // ALLCAPS initialisms (IT's, LLM's) are always protected — even if the lowercase
+    // form is a safe contraction base — so later initialism formatting still runs.
     const protectedText = text.replace(
-        new RegExp(`\\b([A-Za-z][A-Za-z0-9]*)(${APOSTROPHE_CLASS}s)\\b`, 'g'),
+        new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])(\\p{L}[\\p{L}\\p{M}\\p{N}]*)(${APOSTROPHE_CLASS}s)(?![\\p{L}\\p{M}\\p{N}])`, 'gu'),
         (match, word) => {
-            if (SAFE_CONTRACTION_S_BASES.has(word.toLowerCase())) return match;
+            const isSafeContraction =
+                SAFE_CONTRACTION_S_BASES.has(word.toLowerCase()) && !/^[A-Z]{2,}$/.test(word);
+            if (isSafeContraction) return match;
             const key = `\uE000POS${placeholders.length}\uE001`;
             placeholders.push(match);
             return key;
