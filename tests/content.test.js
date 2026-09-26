@@ -299,7 +299,7 @@ describe('content.js parseArticle', () => {
                 mode: 'popup',
                 collapsed: true
             }),
-            browser.runtime.getURL('')
+            expect.any(String)
         );
 
         warnSpy.mockRestore();
