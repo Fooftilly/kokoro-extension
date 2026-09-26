@@ -7,8 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.4.0] - 2026-09-26
 
-Release-candidate packaging only — not published to Chrome Web Store or AMO yet.
-
 ### Reliability / API
 
 - **New:** Clearer popup connection and voice-list error handling for Kokoro-FastAPI endpoints ([#4](https://github.com/Fooftilly/kokoro-extension/issues/4), [#22](https://github.com/Fooftilly/kokoro-extension/pull/22)).
@@ -16,7 +14,7 @@ Release-candidate packaging only — not published to Chrome Web Store or AMO ye
 
 ### Text normalization
 
-- **Fixed:** Possessive contractions such as `it's` / `that's` no longer lose the trailing `s` before TTS ([#7](https://github.com/Fooftilly/kokoro-extension/issues/7), [#23](https://github.com/Fooftilly/kokoro-extension/pull/23)).
+- **Fixed:** Possessive `'s` (for example `Perseverance's`, including proper names, Unicode bases, and initialisms) is preserved instead of being mis-expanded to `is`; normal contractions such as `it's` / `that's` still expand as before ([#7](https://github.com/Fooftilly/kokoro-extension/issues/7), [#23](https://github.com/Fooftilly/kokoro-extension/pull/23)).
 - **Fixed:** Plural initialisms (for example `APIs`, `URLs`) keep a natural plural form instead of incorrect expansions ([#8](https://github.com/Fooftilly/kokoro-extension/issues/8), [#23](https://github.com/Fooftilly/kokoro-extension/pull/23)).
 
 ### Player UX
