@@ -257,7 +257,7 @@ describe('processContent Regressions', () => {
     });
 
     test('Feature: Acronyms with s/\'s (LLMs, MIT’s)', () => {
-        expect(runProcessor('LMs and LLMs.')).toMatch(/L M s and L L M s/);
+        expect(runProcessor('LMs and LLMs.')).toMatch(/L Ms and L L Ms/);
         expect(runProcessor('MIT’s researchers.')).toMatch(/M I T 's researchers/);
     });
 

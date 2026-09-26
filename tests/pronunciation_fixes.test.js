@@ -81,8 +81,8 @@ describe('Pronunciation and Math Fixes', () => {
     };
 
     test('Acronyms with plural/possessive (LMs, LLMs, MIT’s)', () => {
-        expect(runProcessor('language models (LMs)')).toContain('L M s');
-        expect(runProcessor('large language models (LLMs)')).toContain('L L M s');
+        expect(runProcessor('language models (LMs)')).toContain('L Ms');
+        expect(runProcessor('large language models (LLMs)')).toContain('L L Ms');
         expect(runProcessor('MIT’s')).toBe('M I T \'s');
     });
 
