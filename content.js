@@ -272,40 +272,39 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         };
     }
 
-    function overlayIframeTargetOrigin(iframe) {
+    /** Trusted overlay origin from the extension URL — never from mutable iframe.src. */
+    function getExtensionOverlayOrigin() {
         try {
-            if (iframe && iframe.src) return new URL(iframe.src, location.href).origin;
+            const url = new URL(browser.runtime.getURL('overlay.html'));
+            // Browsers expose chrome-/moz-extension origins; Node/jsdom serialize them as "null".
+            if (url.origin && url.origin !== 'null') {
+                return url.origin;
+            }
+            if (url.protocol === 'chrome-extension:' || url.protocol === 'moz-extension:') {
+                return `${url.protocol}//${url.host}`;
+            }
         } catch (e) { }
-        try {
-            return new URL(browser.runtime.getURL('overlay.html')).origin;
-        } catch (e) { }
-        return location.origin;
+        return null;
     }
 
     function postToOverlayIframe(iframe, data) {
         if (!iframe || !iframe.contentWindow) return;
-        iframe.contentWindow.postMessage(data, overlayIframeTargetOrigin(iframe));
+        const targetOrigin = getExtensionOverlayOrigin();
+        if (!targetOrigin) return;
+        iframe.contentWindow.postMessage(data, targetOrigin);
     }
 
-    /** Accept page-bridge messages only from our overlay iframe (not host page scripts). */
+    /** Accept page-bridge messages only from our overlay iframe at the extension origin. */
     function isTrustedOverlayIframeMessage(event) {
         const container = document.getElementById('kokoro-overlay-container');
         const iframe = container && container.querySelector('iframe');
         if (!iframe || event.source !== iframe.contentWindow) {
             return false;
         }
-        try {
-            const expectedOrigin = overlayIframeTargetOrigin(iframe);
-            if (
-                expectedOrigin &&
-                (expectedOrigin.startsWith('chrome-extension:') ||
-                    expectedOrigin.startsWith('moz-extension:')) &&
-                event.origin &&
-                event.origin !== expectedOrigin
-            ) {
-                return false;
-            }
-        } catch (e) { }
+        const extensionOrigin = getExtensionOverlayOrigin();
+        if (!extensionOrigin || !event.origin || event.origin !== extensionOrigin) {
+            return false;
+        }
         return true;
     }
 
