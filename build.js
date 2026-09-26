@@ -12,6 +12,7 @@ const DESCRIPTION = pkg.description;
 const SRC_FILES = [
     'background.js',
     'content.js',
+    'overlay-position.js',
     'overlay.css',
     'overlay.html',
     'overlay.js',
@@ -119,13 +120,14 @@ function createManifest(browser) {
                 js: [
                     "browser-polyfill.min.js",
                     "readability.js",
+                    "overlay-position.js",
                     "content.js"
                 ]
             }
         ],
         web_accessible_resources: [
             {
-                resources: ["overlay.html", "overlay.css", "overlay.js", "text-processor.js", "audio-manager.js", "dom-utils.js", "browser-polyfill.min.js",
+                resources: ["overlay.html", "overlay.css", "overlay.js", "overlay-position.js", "text-processor.js", "audio-manager.js", "dom-utils.js", "browser-polyfill.min.js",
                     "compromise.js", "compromise-dates.min.js", "compromise-numbers.min.js",
                     "transliteration-lite.js", "purify.js", "theme-init.js",
                     "reader.html", "reader.js", "reader.css",

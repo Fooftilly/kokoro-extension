@@ -74,7 +74,11 @@ Element.prototype.scrollIntoView = jest.fn();
 
 function setupDOM() {
     document.body.innerHTML = `
-        <div id="pageTitle">Kokoro TTS</div>
+        <div id="dragHandle">
+            <span class="drag-grip">⋮⋮</span>
+            <div id="pageTitle">Kokoro TTS</div>
+        </div>
+        <button id="collapse" aria-label="Collapse player">–</button>
         <button id="close">×</button>
         <div id="progressBar"></div>
         <div id="timeEstimate"></div>
@@ -127,5 +131,99 @@ describe('overlay.js logic', () => {
         seekFwdBtn.click();
 
         expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+    });
+
+    test('Collapse posts SET_COLLAPSED without closing; expand toggles label', async () => {
+        await new Promise(r => setTimeout(r, 100));
+        const collapseBtn = document.getElementById('collapse');
+        window.parent.postMessage.mockClear();
+
+        collapseBtn.click();
+        expect(window.parent.postMessage).toHaveBeenCalledWith(
+            { action: 'KOKORO_SET_COLLAPSED', collapsed: true },
+            '*'
+        );
+        expect(window.parent.postMessage).not.toHaveBeenCalledWith('CLOSE_KOKORO_PLAYER', '*');
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { action: 'KOKORO_OVERLAY_STATE', mode: 'popup', collapsed: true, draggable: true }
+        }));
+        expect(document.body.classList.contains('collapsed')).toBe(true);
+        expect(collapseBtn.getAttribute('aria-label')).toBe('Expand player');
+
+        window.parent.postMessage.mockClear();
+        collapseBtn.click();
+        expect(window.parent.postMessage).toHaveBeenCalledWith(
+            { action: 'KOKORO_SET_COLLAPSED', collapsed: false },
+            '*'
+        );
+    });
+
+    test('Drag handle posts DRAG_START; control buttons do not', async () => {
+        await new Promise(r => setTimeout(r, 100));
+        const dragHandle = document.getElementById('dragHandle');
+        const closeBtn = document.getElementById('close');
+        window.parent.postMessage.mockClear();
+
+        const firePointerDown = (el, clientX, clientY) => {
+            const event = new Event('pointerdown', { bubbles: true, cancelable: true });
+            Object.defineProperties(event, {
+                clientX: { value: clientX },
+                clientY: { value: clientY },
+                button: { value: 0 },
+                target: { value: el },
+            });
+            el.dispatchEvent(event);
+        };
+
+        firePointerDown(dragHandle, 40, 50);
+        expect(window.parent.postMessage).toHaveBeenCalledWith(
+            { action: 'KOKORO_DRAG_START', clientX: 40, clientY: 50 },
+            '*'
+        );
+
+        window.parent.postMessage.mockClear();
+        firePointerDown(closeBtn, 10, 10);
+        expect(window.parent.postMessage).not.toHaveBeenCalledWith(
+            expect.objectContaining({ action: 'KOKORO_DRAG_START' }),
+            '*'
+        );
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { action: 'KOKORO_OVERLAY_STATE', mode: 'full', collapsed: false, draggable: false }
+        }));
+        window.parent.postMessage.mockClear();
+        firePointerDown(dragHandle, 40, 50);
+        expect(window.parent.postMessage).not.toHaveBeenCalledWith(
+            expect.objectContaining({ action: 'KOKORO_DRAG_START' }),
+            '*'
+        );
+    });
+
+    test('Collapse chrome does not pause or recreate audio', async () => {
+        await new Promise(r => setTimeout(r, 100));
+        const audio = document.getElementById('audio');
+        audio.pause = jest.fn();
+        Object.defineProperty(audio, 'paused', { value: false, configurable: true });
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { action: 'KOKORO_OVERLAY_STATE', mode: 'popup', collapsed: true, draggable: true }
+        }));
+        expect(document.body.classList.contains('collapsed')).toBe(true);
+        expect(audio.pause).not.toHaveBeenCalled();
+        expect(document.getElementById('audio')).toBe(audio);
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { action: 'KOKORO_OVERLAY_STATE', mode: 'popup', collapsed: false, draggable: true }
+        }));
+        expect(document.body.classList.contains('collapsed')).toBe(false);
+        expect(document.getElementById('audio')).toBe(audio);
+    });
+
+    test('Close still posts CLOSE_KOKORO_PLAYER', async () => {
+        await new Promise(r => setTimeout(r, 100));
+        window.parent.postMessage.mockClear();
+        document.getElementById('close').click();
+        expect(window.parent.postMessage).toHaveBeenCalledWith('CLOSE_KOKORO_PLAYER', '*');
     });
 });

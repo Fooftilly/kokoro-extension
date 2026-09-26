@@ -10,15 +10,37 @@ const seekFwdBtn = document.getElementById('seekFwd');
 const speedSelect = document.getElementById('speed');
 const retryBtn = document.getElementById('retry');
 const closeBtn = document.getElementById('close');
+const collapseBtn = document.getElementById('collapse');
+const dragHandle = document.getElementById('dragHandle');
 const spinnerEl = document.getElementById('loadingSpinner');
 
 let sentences = [];
 let currentIndex = 0;
 let isPaused = false;
 let ignoreNextPause = false;
+let overlayCollapsed = false;
+let overlayDraggable = true;
 
 const audioManager = new AudioManager();
 const playPauseBtn = document.getElementById('playPause');
+
+function applyOverlayChromeState({ mode, collapsed, draggable } = {}) {
+    const isFull = mode === 'full';
+    overlayCollapsed = !!collapsed;
+    overlayDraggable = draggable !== false && !isFull;
+    document.body.classList.toggle('collapsed', overlayCollapsed);
+    document.body.classList.toggle('mode-full', isFull);
+    if (collapseBtn) {
+        collapseBtn.setAttribute('aria-label', overlayCollapsed ? 'Expand player' : 'Collapse player');
+        collapseBtn.setAttribute('title', overlayCollapsed ? 'Expand' : 'Collapse');
+        collapseBtn.textContent = overlayCollapsed ? '+' : '–';
+        collapseBtn.setAttribute('aria-expanded', overlayCollapsed ? 'false' : 'true');
+    }
+    if (dragHandle) {
+        dragHandle.style.cursor = overlayDraggable ? 'grab' : 'default';
+        dragHandle.setAttribute('aria-disabled', overlayDraggable ? 'false' : 'true');
+    }
+}
 
 // --- Event Listeners ---
 
@@ -32,6 +54,32 @@ closeBtn.addEventListener('click', () => {
     window.parent.postMessage('CLOSE_KOKORO_PLAYER', '*');
 });
 
+if (collapseBtn) {
+    collapseBtn.addEventListener('click', () => {
+        window.parent.postMessage({
+            action: 'KOKORO_SET_COLLAPSED',
+            collapsed: !overlayCollapsed
+        }, '*');
+    });
+}
+
+if (dragHandle) {
+    dragHandle.addEventListener('pointerdown', (event) => {
+        if (!overlayDraggable) return;
+        if (event.button !== undefined && event.button !== 0) return;
+        const interactive = event.target.closest(
+            'button, a, input, select, textarea, option, label, [role="button"], [role="slider"], [role="link"]'
+        );
+        if (interactive && interactive !== dragHandle) return;
+        event.preventDefault();
+        window.parent.postMessage({
+            action: 'KOKORO_DRAG_START',
+            clientX: event.clientX,
+            clientY: event.clientY
+        }, '*');
+    });
+}
+
 // Keyboard shortcuts
 window.addEventListener('keydown', (e) => {
     if (e.code === 'Space') {
@@ -40,7 +88,7 @@ window.addEventListener('keydown', (e) => {
     }
 });
 
-// Handle messages from parent for navigation
+// Handle messages from parent for navigation / chrome state
 window.addEventListener('message', (event) => {
     if (event.data === 'NAV_NEXT') {
         navigate(currentIndex + 1);
@@ -49,6 +97,8 @@ window.addEventListener('message', (event) => {
     } else if (event.data === 'RELOAD_DATA') {
         window.hasReceivedData = true;
         initialize();
+    } else if (event.data && event.data.action === 'KOKORO_OVERLAY_STATE') {
+        applyOverlayChromeState(event.data);
     }
 });
 

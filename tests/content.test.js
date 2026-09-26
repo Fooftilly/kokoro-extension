@@ -10,11 +10,18 @@ describe('content.js parseArticle', () => {
     beforeAll(() => {
         // Setup globals BEFORE requiring content.js because content.js executes top-level code
         global.Readability = Readability;
+        require('../overlay-position.js');
 
         global.browser = {
             runtime: {
                 onMessage: {
                     addListener: jest.fn()
+                }
+            },
+            storage: {
+                local: {
+                    get: jest.fn(() => Promise.resolve({})),
+                    set: jest.fn(() => Promise.resolve())
                 }
             }
         };

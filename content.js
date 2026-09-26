@@ -255,6 +255,196 @@ if (typeof module !== 'undefined' && module.exports) {
 if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
     window.kokoroContentInjected = true;
 
+    const posApi = globalThis.KokoroOverlayPosition;
+    let overlayDragState = null;
+
+    function getOverlayViewport() {
+        return {
+            viewportWidth: window.innerWidth || document.documentElement.clientWidth || 0,
+            viewportHeight: window.innerHeight || document.documentElement.clientHeight || 0
+        };
+    }
+
+    function getOverlayPlayerSize(collapsed) {
+        return {
+            width: posApi.OVERLAY_POPUP_WIDTH,
+            height: collapsed ? posApi.OVERLAY_COLLAPSED_HEIGHT : posApi.OVERLAY_POPUP_HEIGHT
+        };
+    }
+
+    function postOverlayState(container) {
+        const iframe = container && container.querySelector('iframe');
+        if (!iframe || !iframe.contentWindow) return;
+        iframe.contentWindow.postMessage({
+            action: 'KOKORO_OVERLAY_STATE',
+            mode: container.dataset.mode || 'popup',
+            collapsed: container.dataset.collapsed === '1',
+            draggable: container.dataset.mode !== 'full'
+        }, '*');
+    }
+
+    function applyFloatingGeometry(container, left, top, collapsed) {
+        const size = getOverlayPlayerSize(collapsed);
+        const clamped = posApi.clampOverlayPosition(left, top, {
+            ...size,
+            ...getOverlayViewport()
+        });
+        container.dataset.mode = 'popup';
+        container.dataset.collapsed = collapsed ? '1' : '0';
+        container.style.position = 'fixed';
+        container.style.top = `${clamped.top}px`;
+        container.style.left = `${clamped.left}px`;
+        container.style.right = 'auto';
+        container.style.bottom = 'auto';
+        container.style.width = `${size.width}px`;
+        container.style.height = `${size.height}px`;
+        container.style.borderRadius = '12px';
+        container.style.background = '';
+        container.style.display = 'block';
+        container.style.justifyContent = '';
+        container.style.alignItems = '';
+        container.style.backdropFilter = '';
+        container.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+        return clamped;
+    }
+
+    function persistOverlayPosition(left, top) {
+        const serialized = posApi.serializeOverlayPosition({ left, top });
+        if (!serialized) return;
+        browser.storage.local.set({
+            [posApi.getOverlayPositionStorageKey()]: serialized
+        });
+    }
+
+    function clearFullModeChrome(container, iframe) {
+        document.body.style.overflow = '';
+        container.style.borderRadius = '12px';
+        container.style.background = '';
+        container.style.display = 'block';
+        container.style.justifyContent = '';
+        container.style.alignItems = '';
+        container.style.backdropFilter = '';
+        if (iframe) {
+            iframe.style.width = '100%';
+            iframe.style.height = '100%';
+            iframe.style.maxWidth = '';
+            iframe.style.maxHeight = '';
+            iframe.style.borderRadius = '';
+            iframe.style.boxShadow = '';
+        }
+    }
+
+    function switchContainerToFloating(container, { collapsed = false } = {}) {
+        const iframe = container.querySelector('iframe');
+        clearFullModeChrome(container, iframe);
+        const size = getOverlayPlayerSize(collapsed);
+        return browser.storage.local.get(posApi.getOverlayPositionStorageKey()).then((data) => {
+            const restored = posApi.restoreOverlayPosition(
+                data[posApi.getOverlayPositionStorageKey()],
+                { ...size, ...getOverlayViewport() }
+            );
+            applyFloatingGeometry(container, restored.left, restored.top, collapsed);
+            postOverlayState(container);
+            return restored;
+        });
+    }
+
+    function endOverlayDrag() {
+        if (!overlayDragState) return;
+        const { container, iframe } = overlayDragState;
+        if (iframe) iframe.style.pointerEvents = '';
+        window.removeEventListener('pointermove', onOverlayDragMove);
+        window.removeEventListener('pointerup', endOverlayDrag);
+        window.removeEventListener('pointercancel', endOverlayDrag);
+        const left = parseFloat(container.style.left);
+        const top = parseFloat(container.style.top);
+        if (Number.isFinite(left) && Number.isFinite(top)) {
+            persistOverlayPosition(left, top);
+        }
+        overlayDragState = null;
+    }
+
+    function onOverlayDragMove(event) {
+        if (!overlayDragState) return;
+        const { container, offsetX, offsetY } = overlayDragState;
+        const collapsed = container.dataset.collapsed === '1';
+        applyFloatingGeometry(
+            container,
+            event.clientX - offsetX,
+            event.clientY - offsetY,
+            collapsed
+        );
+    }
+
+    function startOverlayDrag(clientX, clientY) {
+        const container = document.getElementById('kokoro-overlay-container');
+        if (!container || container.dataset.mode === 'full') return;
+        const iframe = container.querySelector('iframe');
+        const rect = container.getBoundingClientRect();
+        overlayDragState = {
+            container,
+            iframe,
+            offsetX: clientX - rect.left,
+            offsetY: clientY - rect.top
+        };
+        if (iframe) iframe.style.pointerEvents = 'none';
+        window.addEventListener('pointermove', onOverlayDragMove);
+        window.addEventListener('pointerup', endOverlayDrag);
+        window.addEventListener('pointercancel', endOverlayDrag);
+    }
+
+    function setOverlayCollapsed(collapsed) {
+        const container = document.getElementById('kokoro-overlay-container');
+        if (!container) return;
+        const wantCollapsed = !!collapsed;
+
+        // Collapse from full mode → floating compact (keeps iframe/audio alive).
+        if (container.dataset.mode === 'full') {
+            switchContainerToFloating(container, { collapsed: wantCollapsed });
+            return;
+        }
+
+        const left = parseFloat(container.style.left);
+        const top = parseFloat(container.style.top);
+        const size = getOverlayPlayerSize(wantCollapsed);
+        const fallback = posApi.defaultOverlayPosition({
+            width: size.width,
+            viewportWidth: getOverlayViewport().viewportWidth
+        });
+        const nextLeft = Number.isFinite(left) ? left : fallback.left;
+        const nextTop = Number.isFinite(top) ? top : fallback.top;
+        applyFloatingGeometry(container, nextLeft, nextTop, wantCollapsed);
+        postOverlayState(container);
+    }
+
+    function clampFloatingOverlayToViewport() {
+        const container = document.getElementById('kokoro-overlay-container');
+        if (!container || container.dataset.mode === 'full') return;
+        const collapsed = container.dataset.collapsed === '1';
+        const left = parseFloat(container.style.left);
+        const top = parseFloat(container.style.top);
+        const size = getOverlayPlayerSize(collapsed);
+        const fallback = posApi.defaultOverlayPosition({
+            width: size.width,
+            viewportWidth: getOverlayViewport().viewportWidth
+        });
+        applyFloatingGeometry(
+            container,
+            Number.isFinite(left) ? left : fallback.left,
+            Number.isFinite(top) ? top : fallback.top,
+            collapsed
+        );
+    }
+
+    function removeOverlayContainer() {
+        endOverlayDrag();
+        const container = document.getElementById('kokoro-overlay-container');
+        if (container) {
+            container.remove();
+        }
+        document.body.style.overflow = '';
+    }
+
     browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request.action === "PING") {
             sendResponse({ action: "PONG" });
@@ -282,8 +472,9 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
             }
             window.kokoroIsCreatingPlayer = true;
 
-            // Fetch theme to prevent white flicker
-            browser.storage.local.get('theme').then(data => {
+            const positionKey = posApi.getOverlayPositionStorageKey();
+            // Fetch theme (+ stored geometry) to prevent white flicker and restore position
+            browser.storage.local.get(['theme', positionKey]).then(data => {
                 // Secondary check inside async callback
                 if (document.getElementById('kokoro-overlay-container')) {
                     window.kokoroIsCreatingPlayer = false;
@@ -291,8 +482,11 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
                 }
 
                 const isDark = data.theme === 'dark';
+                const isFull = request.mode === 'full';
                 const container = document.createElement('div');
                 container.id = 'kokoro-overlay-container';
+                container.dataset.mode = isFull ? 'full' : 'popup';
+                container.dataset.collapsed = '0';
                 container.style.position = 'fixed';
                 container.style.zIndex = '2147483647';
                 container.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
@@ -302,7 +496,7 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
                 container.style.opacity = '0'; // Start hidden
                 container.style.transition = 'opacity 0.2s ease-in-out';
 
-                if (request.mode === 'full') {
+                if (isFull) {
                     container.style.top = '0';
                     container.style.left = '0';
                     container.style.width = '100vw';
@@ -314,10 +508,12 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
                     container.style.alignItems = 'center';
                     container.style.backdropFilter = 'blur(4px)';
                 } else {
-                    container.style.top = '20px';
-                    container.style.right = '20px';
-                    container.style.width = '320px';
-                    container.style.height = '500px';
+                    const size = getOverlayPlayerSize(false);
+                    const restored = posApi.restoreOverlayPosition(data[positionKey], {
+                        ...size,
+                        ...getOverlayViewport()
+                    });
+                    applyFloatingGeometry(container, restored.left, restored.top, false);
                 }
 
                 const iframe = document.createElement('iframe');
@@ -331,9 +527,10 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
 
                 iframe.addEventListener('load', () => {
                     iframe.focus();
+                    postOverlayState(container);
                 });
 
-                if (request.mode === 'full') {
+                if (isFull) {
                     iframe.style.width = '80%';
                     iframe.style.maxWidth = '900px';
                     iframe.style.height = '90%';
@@ -351,7 +548,7 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
 
                 window.kokoroIsCreatingPlayer = false;
 
-                if (request.mode === 'full') {
+                if (isFull) {
                     document.body.style.overflow = 'hidden';
                 }
             }).catch(e => {
@@ -359,11 +556,7 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
                 console.error("Error creating overlay", e);
             });
         } else if (request.action === "REMOVE_PLAYER") {
-            const container = document.getElementById('kokoro-overlay-container');
-            if (container) {
-                container.remove();
-                document.body.style.overflow = '';
-            }
+            removeOverlayContainer();
         } else if (request.action === "NAV_NEXT" || request.action === "NAV_PREV") {
             const container = document.getElementById('kokoro-overlay-container');
             if (container) {
@@ -383,18 +576,23 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         }
     });
 
+    window.addEventListener('resize', clampFloatingOverlayToViewport);
+
     window.addEventListener('message', (event) => {
         if (event.data === 'CLOSE_KOKORO_PLAYER') {
-            const container = document.getElementById('kokoro-overlay-container');
-            if (container) {
-                container.remove();
-                document.body.style.overflow = '';
-            }
+            removeOverlayContainer();
         } else if (event.data === 'KOKORO_PLAYER_READY') {
             const container = document.getElementById('kokoro-overlay-container');
             if (container) {
                 container.style.opacity = '1';
+                postOverlayState(container);
             }
+        } else if (event.data && event.data.action === 'KOKORO_DRAG_START') {
+            if (typeof event.data.clientX === 'number' && typeof event.data.clientY === 'number') {
+                startOverlayDrag(event.data.clientX, event.data.clientY);
+            }
+        } else if (event.data && event.data.action === 'KOKORO_SET_COLLAPSED') {
+            setOverlayCollapsed(!!event.data.collapsed);
         } else if (event.data && event.data.action === 'KOKORO_SCROLL_TO_BLOCK') {
             const searchText = event.data.text;
             if (!searchText) return;
