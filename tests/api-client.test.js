@@ -305,6 +305,41 @@ describe('fetchNormalizedVoices timeout', () => {
         await assertion;
         jest.useRealTimers();
     });
+
+    test('hung response.json() times out as network (timeout through body)', async () => {
+        jest.useFakeTimers();
+        const fetchImpl = jest.fn(async () => ({
+            ok: true,
+            json: () => new Promise(() => {}),
+        }));
+        const pending = fetchNormalizedVoices('http://hang-body/v1/', fetchImpl, { timeoutMs: 40 });
+        const assertion = expect(pending).resolves.toMatchObject({
+            ok: false,
+            kind: 'network',
+        });
+        await jest.advanceTimersByTimeAsync(40);
+        await assertion;
+        jest.useRealTimers();
+    });
+});
+
+describe('probeApiConnection body timeout', () => {
+    test('hung /test JSON body times out then /health also hangs → network', async () => {
+        jest.useFakeTimers();
+        const fetchImpl = jest.fn(async () => ({
+            ok: true,
+            json: () => new Promise(() => {}),
+        }));
+        const pending = probeApiConnection('http://hang-body/v1/', fetchImpl, { timeoutMs: 40 });
+        const assertion = expect(pending).resolves.toMatchObject({
+            ok: false,
+            kind: 'network',
+        });
+        await jest.advanceTimersByTimeAsync(40);
+        await jest.advanceTimersByTimeAsync(40);
+        await assertion;
+        jest.useRealTimers();
+    });
 });
 
 describe('resolveBackendStatus', () => {

@@ -189,24 +189,78 @@ describe('popup backend-loss resilience (#4)', () => {
         browser.permissions.request.mockResolvedValue(false);
         global.fetch = jest.fn(() => Promise.reject(new TypeError('Failed to fetch')));
 
+        // Finish open restore first so it cannot overwrite the remote URL mid-test.
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        global.fetch.mockClear();
+
         document.getElementById('apiUrl').value = 'http://192.168.1.50:8880/v1/';
-        await popup.refreshBackendStatus('http://192.168.1.50:8880/v1/', {
-            requestPermission: false,
-        });
+        await popup.refreshBackendStatus('http://192.168.1.50:8880/v1/');
         await flushAsync();
         expect(document.getElementById('apiStatus').textContent).toMatch(/permission/i);
         expect(global.fetch).not.toHaveBeenCalled();
 
-        // Simulate Retry user gesture (requestPermission: true)
-        await popup.refreshBackendStatus('http://192.168.1.50:8880/v1/', {
-            requestPermission: true,
-        });
+        // Retry click starts permissions.request synchronously, then refreshes.
+        global.fetch.mockClear();
+        browser.permissions.request.mockClear();
+        document.getElementById('retryApi').click();
         await flushAsync();
 
         expect(document.getElementById('apiStatus').textContent).toMatch(/permission/i);
         expect(document.getElementById('apiStatus').textContent).not.toMatch(/Unable to reach/i);
         expect(browser.permissions.request).toHaveBeenCalled();
         // Still denied — must not fall through to fetch/network labeling
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('Save starts permissions.request before awaiting storage (Firefox gesture)', async () => {
+        const order = [];
+        browser.permissions.contains.mockResolvedValue(false);
+        browser.permissions.request.mockImplementation(() => {
+            order.push('request');
+            return Promise.resolve(false);
+        });
+        browser.storage.sync.set.mockImplementation(async () => {
+            order.push('storage');
+        });
+        browser.storage.local.set.mockImplementation(async () => {});
+        global.fetch = jest.fn(() => Promise.reject(new TypeError('Failed to fetch')));
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        order.length = 0;
+        browser.permissions.request.mockClear();
+        browser.storage.sync.set.mockClear();
+        global.fetch.mockClear();
+
+        document.getElementById('apiUrl').value = 'http://192.168.1.50:8880/v1/';
+        document.getElementById('saveApiUrl').click();
+        await flushAsync();
+
+        expect(browser.permissions.request).toHaveBeenCalled();
+        expect(order.indexOf('request')).toBeGreaterThanOrEqual(0);
+        expect(order.indexOf('storage')).toBeGreaterThanOrEqual(0);
+        expect(order.indexOf('request')).toBeLessThan(order.indexOf('storage'));
+        expect(document.getElementById('apiStatus').textContent).toMatch(/permission/i);
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('rejected permissions.request maps to permission (not network)', async () => {
+        browser.permissions.contains.mockResolvedValue(false);
+        browser.permissions.request.mockImplementation(() => Promise.reject(new Error('user gesture required')));
+        global.fetch = jest.fn(() => Promise.reject(new TypeError('Failed to fetch')));
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        global.fetch.mockClear();
+
+        document.getElementById('apiUrl').value = 'http://10.0.0.9:8880/v1/';
+        document.getElementById('retryApi').style.display = 'inline-block';
+        document.getElementById('retryApi').click();
+        await flushAsync();
+
+        expect(document.getElementById('apiStatus').textContent).toMatch(/permission/i);
+        expect(document.getElementById('apiStatus').textContent).not.toMatch(/Unable to reach/i);
         expect(global.fetch).not.toHaveBeenCalled();
     });
 

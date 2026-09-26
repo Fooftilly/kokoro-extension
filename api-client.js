@@ -218,7 +218,7 @@ function messageForKind(kind, context) {
         case 'ok':
             return 'Connected successfully!';
         case 'checking':
-            return 'Checking connection\u2026';
+            return 'Checking connection…';
         case 'http':
             return `${ctx} returned an HTTP error. Check the URL and server logs.`;
         case 'malformed':
