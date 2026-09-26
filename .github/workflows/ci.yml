@@ -56,6 +56,8 @@ jobs:
           ].slice().sort();
           const BASELINE_HOST = ['http://127.0.0.1/*', 'http://localhost/*'].slice().sort();
           const OPTIONAL_HOST = '*://*/*';
+          const BASELINE_CSP = "script-src 'self'; object-src 'self';";
+          const BASELINE_DCP = { required: ['none'] };
 
           function sameSet(actual, expected, label, browser) {
             const a = [...actual].sort();
@@ -65,6 +67,10 @@ jobs:
                 `${browser}: ${label} mismatch.\n  expected: ${JSON.stringify(e)}\n  actual:   ${JSON.stringify(a)}`
               );
             }
+          }
+
+          function deepEqual(a, b) {
+            return JSON.stringify(a) === JSON.stringify(b);
           }
 
           for (const browser of ['chrome', 'firefox']) {
@@ -108,12 +114,21 @@ jobs:
                 throw new Error(`firefox: missing/invalid browser_specific_settings.gecko.id, got ${JSON.stringify(gecko && gecko.id)}`);
               }
               const dcp = gecko.data_collection_permissions;
-              if (!dcp || !Array.isArray(dcp.required) || dcp.required.length < 1) {
-                throw new Error(`firefox: expected gecko.data_collection_permissions.required (non-empty), got ${JSON.stringify(dcp)}`);
+              if (!deepEqual(dcp, BASELINE_DCP)) {
+                throw new Error(
+                  `firefox: expected gecko.data_collection_permissions=${JSON.stringify(BASELINE_DCP)}, got ${JSON.stringify(dcp)}`
+                );
               }
             }
 
-            console.log(browser + ': OK', m.name, m.version, 'permissions + background baseline');
+            const csp = m.content_security_policy && m.content_security_policy.extension_pages;
+            if (csp !== BASELINE_CSP) {
+              throw new Error(
+                `${browser}: expected content_security_policy.extension_pages=${JSON.stringify(BASELINE_CSP)}, got ${JSON.stringify(csp)}`
+              );
+            }
+
+            console.log(browser + ': OK', m.name, m.version, 'permissions + background + CSP baseline');
           }
           EOF
           test -f "dist/package/kokoro-extension-chrome-$(node -p "require('./package.json').version").zip"
