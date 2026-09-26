@@ -35,7 +35,10 @@
                 <input type="text" id="apiUrl">
                 <button id="saveApiUrl" title="Save URL">Save</button>
             </div>
-            <div id="apiStatus" class="note mt-2" style="display: none;"></div>
+            <div id="apiStatusRow" class="api-status-row" style="display: none;">
+                <div id="apiStatus" class="note mt-2"></div>
+                <button type="button" id="retryApi" class="retry-api-btn" title="Retry connection">Retry</button>
+            </div>
 
             <label>VOICE MIXER</label>
             <div id="voiceMixerContainer">
@@ -150,6 +153,7 @@
         <div id="status">Saving...</div>
     </div>
 
+    <script src="api-client.js"></script>
     <script src="popup.js"></script>
 </body>
 

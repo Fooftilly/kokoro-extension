@@ -22,7 +22,91 @@ const isLocalhost = (url) => {
 // --- Voice Mixer Logic ---
 let currentVoices = [];
 let availableVoices = [];
-let voiceFetchError = false;
+/** @type {{ kind: string, message: string }} */
+let voiceFetchStatus = { kind: 'idle', message: '' };
+/** @type {{ kind: string, message: string }} */
+let connectionStatus = { kind: 'idle', message: '' };
+let statusProbeInFlight = false;
+
+function setApiStatusUI(kind, message, { showRetry = true } = {}) {
+    const row = document.getElementById('apiStatusRow');
+    const statusEl = document.getElementById('apiStatus');
+    const retryBtn = document.getElementById('retryApi');
+    if (!row || !statusEl) return;
+
+    connectionStatus = { kind, message };
+
+    if (kind === 'idle') {
+        row.style.display = 'none';
+        statusEl.textContent = '';
+        statusEl.className = 'note mt-2';
+        return;
+    }
+
+    row.style.display = 'flex';
+    statusEl.textContent = message;
+    statusEl.className = 'note mt-2';
+    if (kind === 'ok') {
+        statusEl.classList.add('api-status-success');
+    } else if (kind === 'checking') {
+        statusEl.classList.add('api-status-checking');
+    } else {
+        statusEl.classList.add('api-status-error');
+    }
+
+    if (retryBtn) {
+        const hideRetry = kind === 'ok' || kind === 'checking' || !showRetry;
+        retryBtn.style.display = hideRetry ? 'none' : 'inline-block';
+    }
+}
+
+/**
+ * Probe connection and refresh voice list. Settings UI always remains usable.
+ */
+async function refreshBackendStatus(apiUrl, { hideOkAfterMs = 0 } = {}) {
+    if (statusProbeInFlight) return;
+    statusProbeInFlight = true;
+    try {
+        setApiStatusUI('checking', messageForKind('checking'), { showRetry: false });
+
+        const probe = await probeApiConnection(apiUrl);
+        const voicesResult = await fetchNormalizedVoices(apiUrl);
+        availableVoices = voicesResult.voices;
+        voiceFetchStatus = { kind: voicesResult.kind, message: voicesResult.message };
+
+        // Prefer the more specific failure when /test succeeds but voices fail (or vice versa).
+        if (probe.ok && voicesResult.ok) {
+            const kind = voicesResult.kind === 'empty' ? 'empty' : 'ok';
+            const message = voicesResult.kind === 'empty'
+                ? voicesResult.message
+                : probe.message;
+            setApiStatusUI(kind === 'ok' ? 'ok' : 'empty', message, { showRetry: kind !== 'ok' });
+            if (kind === 'ok' && hideOkAfterMs > 0) {
+                setTimeout(() => {
+                    if (connectionStatus.kind === 'ok') {
+                        setApiStatusUI('idle', '');
+                    }
+                }, hideOkAfterMs);
+            }
+        } else if (!probe.ok && !voicesResult.ok) {
+            // Same failure class → one message; prefer network/http over assuming voices-only.
+            setApiStatusUI(probe.kind, probe.message);
+        } else if (!probe.ok) {
+            setApiStatusUI(probe.kind, probe.message);
+        } else {
+            // Connected but voices failed/malformed — do not call it unreachable.
+            setApiStatusUI(voicesResult.kind, voicesResult.message);
+        }
+    } catch (e) {
+        console.error('Backend status refresh failed:', e);
+        const kind = classifyApiFailure(e);
+        availableVoices = [];
+        voiceFetchStatus = { kind, message: messageForKind(kind, 'API') };
+        setApiStatusUI(kind, voiceFetchStatus.message);
+    } finally {
+        statusProbeInFlight = false;
+    }
+}
 
 /**
  * Parses a voice string into an array of voice objects.
@@ -64,25 +148,6 @@ function serializeVoiceString(voices) {
     if (voices.length === 1) return voices[0].id;
     // Always use the format voice(weight) for consistency based on user request/screenshot
     return voices.map(v => `${v.id}(${v.weight})`).join('+');
-}
-
-/**
- * Fetches available voices from the API.
- */
-async function fetchVoices(apiUrl) {
-    try {
-        const response = await fetch(`${apiUrl}audio/voices`);
-        if (!response.ok) throw new Error('Failed to fetch voices');
-        const data = await response.json();
-        voiceFetchError = false;
-        // Filter for specific prefixes as requested
-        const validPrefixes = ['am_', 'af_', 'bm_', 'bf_'];
-        return data.voices.filter(v => validPrefixes.some(prefix => v.startsWith(prefix)));
-    } catch (e) {
-        console.error("Error fetching voices:", e);
-        voiceFetchError = true;
-        return [];
-    }
 }
 
 /**
@@ -369,6 +434,7 @@ const saveOptions = async (isDebounced = false) => {
                         status.textContent = "Permission denied for this URL.";
                         status.style.color = "var(--status-error)";
                         status.style.display = 'block';
+                        setApiStatusUI('permission', messageForKind('permission'));
                         setTimeout(() => {
                             status.style.display = 'none';
                             status.style.color = "var(--status-success)";
@@ -432,10 +498,9 @@ const restoreOptions = async () => {
         currentVoices = parseVoiceString(items.voice);
         renderVoiceMixer();
 
-        // Fetch available voices for the dropdown
-        fetchVoices(items.apiUrl).then(voices => {
-            availableVoices = voices;
-        });
+        // Probe connection + voices on open (no aggressive polling).
+        // Settings above are already rendered from storage — backend loss cannot blank the UI.
+        refreshBackendStatus(items.apiUrl);
 
         if (items.mode === 'stream') {
             document.getElementById('modeStream').checked = true;
@@ -472,9 +537,29 @@ const updateVoiceDropdown = () => {
 
     dropdown.innerHTML = '';
 
-    if (voiceFetchError && (query.length > 0 || filtered.length === 0)) {
+    const fetchFailed = voiceFetchStatus.kind === 'network'
+        || voiceFetchStatus.kind === 'http'
+        || voiceFetchStatus.kind === 'malformed';
+
+    if (fetchFailed && (query.length > 0 || filtered.length === 0)) {
         dropdown.style.display = 'block';
-        dropdown.innerHTML = '<div class="note" style="color: var(--status-error); padding: 8px;">Error: Could not reach API to fetch voices.</div>';
+        const note = document.createElement('div');
+        note.className = 'note';
+        note.style.color = 'var(--status-error)';
+        note.style.padding = '8px';
+        note.textContent = voiceFetchStatus.message
+            || messageForKind(voiceFetchStatus.kind, 'Voice list');
+        dropdown.appendChild(note);
+        return;
+    }
+
+    if (voiceFetchStatus.kind === 'empty' && filtered.length === 0 && (query.length > 0 || availableVoices.length === 0)) {
+        dropdown.style.display = 'block';
+        const note = document.createElement('div');
+        note.className = 'note';
+        note.style.padding = '8px';
+        note.textContent = voiceFetchStatus.message || messageForKind('empty');
+        dropdown.appendChild(note);
         return;
     }
 
@@ -539,13 +624,21 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Manual API URL Save
+    // Manual API URL Save — persist, then re-probe connection + voices
     const saveApiBtn = document.getElementById('saveApiUrl');
     saveApiBtn.addEventListener('click', async () => {
-        const url = document.getElementById('apiUrl').value;
         await saveOptions(false);
-        checkApiConnection(url);
+        const url = document.getElementById('apiUrl').value;
+        await refreshBackendStatus(url, { hideOkAfterMs: 3000 });
     });
+
+    const retryApiBtn = document.getElementById('retryApi');
+    if (retryApiBtn) {
+        retryApiBtn.addEventListener('click', async () => {
+            const url = document.getElementById('apiUrl').value;
+            await refreshBackendStatus(url, { hideOkAfterMs: 3000 });
+        });
+    }
 
     // Open Document Handler
     const openDocBtn = document.getElementById('openDocumentBtn');
@@ -557,34 +650,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function checkApiConnection(url) {
-    const statusEl = document.getElementById('apiStatus');
-    statusEl.style.display = 'block';
-    statusEl.textContent = 'Checking connection...';
-    statusEl.className = 'note mt-2';
-
-    try {
-        // Ensure url ends with /
-        const baseUrl = url.endsWith('/') ? url : url + '/';
-        const response = await fetch(`${baseUrl}test`, {
-            method: 'GET',
-            headers: { 'Accept': 'application/json' }
-        });
-
-        if (!response.ok) throw new Error('Network response was not ok');
-        const data = await response.json();
-
-        if (data.status === 'ok') {
-            statusEl.textContent = 'Connected successfully!';
-            statusEl.classList.add('api-status-success');
-            setTimeout(() => { statusEl.style.display = 'none'; }, 3000);
-        } else {
-            throw new Error('Invalid status message');
-        }
-    } catch (e) {
-        console.error("API Connectivity Check failed:", e);
-        statusEl.textContent = 'Unable to connect to API. Please check the URL and ensure the server is running.';
-        statusEl.classList.add('api-status-error');
-    }
+    await refreshBackendStatus(url, { hideOkAfterMs: 3000 });
 }
 
 // Theme Toggle

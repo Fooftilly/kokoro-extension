@@ -9,6 +9,7 @@ Guidance for humans and coding agents working in this repository.
 | `background.js` | MV3 service worker / background scripts: context menus, API fetch, downloads, shortcuts, connection icon |
 | `content.js` | Content script: selection/article extract, overlay injection, auto-scroll, floating mic |
 | `popup.html` / `popup.js` / `popup.css` | Settings UI: API URL, voice mixer, stream/download, normalization toggles, theme |
+| `api-client.js` | Popup API helpers: voice-list normalization, connection/voice fetch error kinds |
 | `overlay.html` / `overlay.js` / `overlay.css` | In-page TTS player overlay |
 | `reader.html` / `reader.js` / `reader.css` | EPUB reader page |
 | `text-processor.js` | Text normalization / pronunciation prep before TTS |
