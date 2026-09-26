@@ -155,6 +155,25 @@ describe('content.js parseArticle', () => {
         window.dispatchEvent(new MessageEvent('message', opts));
     }
 
+    /** Shared floating-overlay DOM + viewport for postMessage bridge tests. */
+    function mountOverlayPlayerFixture({ mode = 'popup', style = '' } = {}) {
+        const posApi = globalThis.KokoroOverlayPosition;
+        Object.defineProperty(window, 'innerWidth', { value: 1000, configurable: true });
+        Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true });
+
+        const styleAttr = style ? ` style="${style}"` : '';
+        document.body.innerHTML = `
+            <div id="kokoro-overlay-container" data-mode="${mode}" data-collapsed="0"${styleAttr}>
+                <iframe id="kokoro-player-frame"></iframe>
+            </div>
+        `;
+        const container = document.getElementById('kokoro-overlay-container');
+        const iframe = document.getElementById('kokoro-player-frame');
+        iframe.src = browser.runtime.getURL('overlay.html');
+        iframe.contentWindow.postMessage = jest.fn();
+        return { posApi, container, iframe };
+    }
+
     test('should handle auto-scroll message', async () => {
         document.body.innerHTML = `
             <div id="kokoro-overlay-container"><iframe id="kokoro-player-frame"></iframe></div>
@@ -194,23 +213,13 @@ describe('content.js parseArticle', () => {
     });
 
     test('drag move deltas preserve offset from nonzero top-right position', () => {
-        const posApi = globalThis.KokoroOverlayPosition;
-        Object.defineProperty(window, 'innerWidth', { value: 1000, configurable: true });
-        Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true });
-
+        const { posApi, container, iframe } = mountOverlayPlayerFixture();
         const defaultPos = posApi.defaultOverlayPosition({
             viewportWidth: 1000,
             width: posApi.OVERLAY_POPUP_WIDTH
         });
         expect(defaultPos.left).toBeGreaterThan(500);
 
-        document.body.innerHTML = `
-            <div id="kokoro-overlay-container" data-mode="popup" data-collapsed="0">
-                <iframe src="about:blank"></iframe>
-            </div>
-        `;
-        const container = document.getElementById('kokoro-overlay-container');
-        const iframe = container.querySelector('iframe');
         container.style.position = 'fixed';
         container.style.left = `${defaultPos.left}px`;
         container.style.top = `${defaultPos.top}px`;
@@ -236,19 +245,7 @@ describe('content.js parseArticle', () => {
     });
 
     test('collapsed host height fits retained chrome constant', () => {
-        const posApi = globalThis.KokoroOverlayPosition;
-        Object.defineProperty(window, 'innerWidth', { value: 1000, configurable: true });
-        Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true });
-
-        document.body.innerHTML = `
-            <div id="kokoro-overlay-container" data-mode="popup" data-collapsed="0">
-                <iframe id="kokoro-player-frame"></iframe>
-            </div>
-        `;
-        const container = document.getElementById('kokoro-overlay-container');
-        const iframe = document.getElementById('kokoro-player-frame');
-        iframe.src = browser.runtime.getURL('overlay.html');
-        iframe.contentWindow.postMessage = jest.fn();
+        const { posApi, container, iframe } = mountOverlayPlayerFixture();
         container.style.left = '40px';
         container.style.top = '40px';
 
@@ -260,21 +257,11 @@ describe('content.js parseArticle', () => {
     });
 
     test('full→floating collapse still applies geometry when storage.get rejects', async () => {
-        const posApi = globalThis.KokoroOverlayPosition;
-        Object.defineProperty(window, 'innerWidth', { value: 1000, configurable: true });
-        Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true });
         const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-
-        document.body.innerHTML = `
-            <div id="kokoro-overlay-container" data-mode="full" data-collapsed="0"
-                 style="width:100vw;height:100vh;left:0;top:0;background:rgba(0,0,0,0.7)">
-                <iframe id="kokoro-player-frame"></iframe>
-            </div>
-        `;
-        const container = document.getElementById('kokoro-overlay-container');
-        const iframe = document.getElementById('kokoro-player-frame');
-        iframe.src = browser.runtime.getURL('overlay.html');
-        iframe.contentWindow.postMessage = jest.fn();
+        const { posApi, container, iframe } = mountOverlayPlayerFixture({
+            mode: 'full',
+            style: 'width:100vw;height:100vh;left:0;top:0;background:rgba(0,0,0,0.7)'
+        });
 
         browser.storage.local.get.mockRejectedValueOnce(new Error('storage unavailable'));
 
@@ -306,20 +293,9 @@ describe('content.js parseArticle', () => {
     });
 
     test('ignores overlay-control messages from window/wrong source; accepts iframe source', () => {
-        const posApi = globalThis.KokoroOverlayPosition;
-        Object.defineProperty(window, 'innerWidth', { value: 1000, configurable: true });
-        Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true });
-
-        document.body.innerHTML = `
-            <div id="kokoro-overlay-container" data-mode="popup" data-collapsed="0"
-                 style="left:40px;top:40px;width:320px;height:500px;opacity:0.5">
-                <iframe id="kokoro-player-frame"></iframe>
-            </div>
-        `;
-        const container = document.getElementById('kokoro-overlay-container');
-        const iframe = document.getElementById('kokoro-player-frame');
-        iframe.src = browser.runtime.getURL('overlay.html');
-        iframe.contentWindow.postMessage = jest.fn();
+        const { posApi, container, iframe } = mountOverlayPlayerFixture({
+            style: 'left:40px;top:40px;width:320px;height:500px;opacity:0.5'
+        });
         const extensionOrigin = new URL(browser.runtime.getURL('overlay.html')).origin;
 
         // Host page / wrong source must not collapse or write storage
