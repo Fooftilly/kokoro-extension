@@ -7,7 +7,8 @@
     "test": "jest",
     "lint": "eslint .",
     "build": "node build.js",
-    "package": "node build.js --package"
+    "package": "node build.js --package",
+    "package:ci": "node build.js --package --skip-tests"
   },
   "keywords": [
     "browser-extension",

@@ -15,7 +15,7 @@ Speech generation works by sending the text you select (or article content extra
 ## Data usage
 
 - **Text processing:** Selected or extracted text is sent only to your configured Kokoro-FastAPI endpoint to generate audio.
-- **Settings:** Preferences (API URL, voice selection, playback options, normalization toggles, theme, etc.) are stored in the browser’s extension storage so they persist across sessions.
+- **Settings:** Preferences (API URL, voice selection, playback options, normalization toggles, theme, etc.) are stored primarily in the browser’s **`storage.sync`** API (with some values also mirrored in `storage.local`). When browser sync is enabled for your account, the browser provider (e.g. Chrome/Firefox) may synchronize those settings across your signed-in devices according to that provider’s policies. The extension author does not operate a separate settings sync service.
 
 ## Third-party sharing
 

@@ -206,12 +206,17 @@ function createManifest(browser) {
 }
 
 function build() {
-    console.log('Running tests...');
-    try {
-        execSync('npm test', { stdio: 'inherit' });
-    } catch (e) {
-        console.error('Tests failed. Build aborted.');
-        process.exit(1);
+    const skipTests = process.argv.includes('--skip-tests');
+    if (!skipTests) {
+        console.log('Running tests...');
+        try {
+            execSync('npm test', { stdio: 'inherit' });
+        } catch (e) {
+            console.error('Tests failed. Build aborted.');
+            process.exit(1);
+        }
+    } else {
+        console.log('Skipping tests (--skip-tests).');
     }
 
     const distDir = path.resolve(__dirname, 'dist');

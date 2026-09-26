@@ -43,6 +43,32 @@ body:
       description: "Browser + OS + extension version (e.g. Firefox 142 / Linux / v1.3.1)"
     validations:
       required: true
+  - type: input
+    id: backend
+    attributes:
+      label: Kokoro-FastAPI version / config (optional)
+      description: "Backend version, image tag, or deploy notes when the bug involves the API (e.g. Kokoro-FastAPI 0.7.1, docker remsky/kokoro-fastapi-gpu:latest). Leave blank if N/A."
+      placeholder: "e.g. 0.7.1 / local Docker on :8880"
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What should be true when this bug is considered fixed?
+      placeholder: |
+        - Voice list populates against both legacy string and object API responses
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Regression validation
+      description: How should a fix be verified (Jest cases, manual checks, browsers)?
+      placeholder: |
+        - Add/adjust Jest coverage for …
+        - Manual: popup voice fetch against …
+    validations:
+      required: true
   - type: textarea
     id: logs
     attributes:

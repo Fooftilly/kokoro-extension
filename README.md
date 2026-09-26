@@ -54,7 +54,7 @@ Verified against the current source (not aspirational):
 
 - The extension does **not** hardcode a vendor cloud TTS API. Text you select or extract is sent to the **Kokoro-FastAPI base URL you configure** in settings.
 - That endpoint may be **localhost**, another machine on your **LAN**, or a **remote** host you choose. If you point it at a remote server, text leaves your browser over the network to that server.
-- Settings (API URL, voices, playback options, etc.) are stored in the browser’s extension storage.
+- Settings (API URL, voices, playback options, etc.) are stored primarily via **`browser.storage.sync`** (some values are also kept in `storage.local`). If browser sync is enabled, Chrome/Firefox may sync those settings through your browser account across devices; the extension does not run its own sync backend.
 - There is **no** built-in telemetry or analytics in this extension.
 - See [`PrivacyPolicy.md`](./PrivacyPolicy.md) for the store-facing policy text.
 

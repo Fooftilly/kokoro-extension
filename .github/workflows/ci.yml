@@ -36,8 +36,8 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Build
-        run: npm run build
+      - name: Package (build + Chrome/Firefox zips via pinned web-ext)
+        run: npm run package:ci
 
       - name: Verify Chrome and Firefox manifests
         run: |
@@ -55,12 +55,21 @@ jobs:
               console.log('${browser}: OK', m.name, m.version);
             "
           done
+          test -f "dist/package/kokoro-extension-chrome-$(node -p "require('./package.json').version").zip"
+          test -f "dist/package/kokoro-extension-firefox-$(node -p "require('./package.json').version").zip"
 
-      - name: Upload build artifacts
+      - name: Upload unpacked build artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: extension-dist
           path: |
             dist/chrome/**
             dist/firefox/**
+          if-no-files-found: error
+
+      - name: Upload package ZIP artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: extension-packages
+          path: dist/package/*.zip
           if-no-files-found: error
