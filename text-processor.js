@@ -8,9 +8,10 @@ const APOSTROPHE_CLASS = "['\u2019\u02BC]";
  * All other `WORD's` forms are treated as possessives and are not expanded.
  */
 const SAFE_CONTRACTION_S_BASES = new Set([
+    // Truly unambiguous contraction bases only. Indefinite pronouns
+    // (someone/everybody/…) are valid possessives and must stay protected.
     'it', 'that', 'he', 'she', 'what', 'who', 'there', 'here', 'let',
-    'how', 'where', 'when', 'why', 'this',
-    'somebody', 'someone', 'everybody', 'everyone', 'nobody', 'anyone', 'anybody'
+    'how', 'where', 'when', 'why', 'this'
 ]);
 
 /**

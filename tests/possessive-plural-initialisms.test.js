@@ -73,6 +73,20 @@ describe('Stage 3: possessive \'s (#7) and plural initialisms (#8)', () => {
             expect(expandContractionsSafely("it's raining.")).toMatch(/it is raining/i);
         });
 
+        test('indefinite pronouns stay possessive (not expanded to is)', () => {
+            expect(expandContractionsSafely("someone's running shoes")).toContain("someone's");
+            expect(expandContractionsSafely("someone's running shoes")).not.toMatch(/someone is/i);
+            expect(expandContractionsSafely("everyone's reading list")).toContain("everyone's");
+            expect(expandContractionsSafely("everyone's reading list")).not.toMatch(/everyone is/i);
+            expect(expandContractionsSafely("somebody's idea")).toContain("somebody's");
+            expect(expandContractionsSafely("anybody's guess")).toContain("anybody's");
+            expect(expandContractionsSafely("nobody's fault")).toContain("nobody's");
+            expect(expandContractionsSafely("everyone\u2019s reading list")).toContain('everyone\u2019s');
+            // True contraction left contracted is acceptable for Kokoro
+            expect(expandContractionsSafely("someone's coming")).toContain("someone's");
+            expect(expandContractionsSafely("someone's coming")).not.toMatch(/someone is/i);
+        });
+
         test('protects Unicode possessive bases (accented names)', () => {
             expect(expandContractionsSafely("Renée's Scanning Habitable Environments")).toContain("Renée's");
             expect(expandContractionsSafely("Renée's Scanning Habitable Environments")).not.toMatch(/Renée is/i);
