@@ -27,8 +27,16 @@ function makeTimeoutError(message) {
  * - Timeout → TimeoutError (classified as network; callers may fall back)
  * - External abort → AbortError (superseded; callers should stop)
  * Uses Promise.race so "Checking…" cannot hang even if fetchImpl ignores signal.
+ * Optional responseConsumer keeps the same timeout/abort race active through
+ * response validation and body parsing (hung response.json() cannot stick Checking).
+ *
+ * @param {string} url
+ * @param {RequestInit} [options]
+ * @param {typeof fetch} [fetchImpl]
+ * @param {number} [timeoutMs]
+ * @param {(response: Response) => Promise<*>} [responseConsumer]
  */
-async function fetchWithTimeout(url, options, fetchImpl, timeoutMs) {
+async function fetchWithTimeout(url, options, fetchImpl, timeoutMs, responseConsumer) {
     const fetchFn = fetchImpl || fetch;
     const ms = typeof timeoutMs === 'number' && timeoutMs >= 0
         ? timeoutMs
@@ -93,7 +101,15 @@ async function fetchWithTimeout(url, options, fetchImpl, timeoutMs) {
             ...opts,
             signal: controller.signal,
         });
-        return await Promise.race([fetchPromise, abortPromise]);
+        const response = await Promise.race([fetchPromise, abortPromise]);
+        if (typeof responseConsumer === 'function') {
+            // Keep timeout armed until validation + JSON parse finish.
+            return await Promise.race([
+                responseConsumer(response),
+                abortPromise,
+            ]);
+        }
+        return response;
     } finally {
         if (timeoutId != null) {
             clearTimeout(timeoutId);
@@ -202,7 +218,7 @@ function messageForKind(kind, context) {
         case 'ok':
             return 'Connected successfully!';
         case 'checking':
-            return 'Checking connection…';
+            return 'Checking connection\u2026';
         case 'http':
             return `${ctx} returned an HTTP error. Check the URL and server logs.`;
         case 'malformed':
@@ -260,7 +276,7 @@ function resolveBackendStatus(probe, voicesResult) {
 }
 
 async function tryProbeTest(baseUrl, fetchImpl, requestOpts, timeoutMs) {
-    const response = await fetchWithTimeout(
+    return fetchWithTimeout(
         `${baseUrl}test`,
         {
             method: 'GET',
@@ -268,35 +284,37 @@ async function tryProbeTest(baseUrl, fetchImpl, requestOpts, timeoutMs) {
             signal: requestOpts.signal,
         },
         fetchImpl,
-        timeoutMs
+        timeoutMs,
+        async (response) => {
+            if (!response.ok) {
+                const err = new Error(`HTTP ${response.status}`);
+                err.kind = 'http';
+                err.status = response.status;
+                throw err;
+            }
+            let data;
+            try {
+                data = await response.json();
+            } catch (parseErr) {
+                const err = new Error('Invalid JSON from /test');
+                err.kind = 'malformed';
+                err.cause = parseErr;
+                throw err;
+            }
+            if (!data || data.status !== 'ok') {
+                const err = new Error('Unexpected /test payload');
+                err.kind = 'malformed';
+                throw err;
+            }
+            return { ok: true, kind: 'ok', message: messageForKind('ok') };
+        }
     );
-    if (!response.ok) {
-        const err = new Error(`HTTP ${response.status}`);
-        err.kind = 'http';
-        err.status = response.status;
-        throw err;
-    }
-    let data;
-    try {
-        data = await response.json();
-    } catch (parseErr) {
-        const err = new Error('Invalid JSON from /test');
-        err.kind = 'malformed';
-        err.cause = parseErr;
-        throw err;
-    }
-    if (!data || data.status !== 'ok') {
-        const err = new Error('Unexpected /test payload');
-        err.kind = 'malformed';
-        throw err;
-    }
-    return { ok: true, kind: 'ok', message: messageForKind('ok') };
 }
 
 async function tryProbeHealth(apiUrl, fetchImpl, requestOpts, timeoutMs) {
     const urlObj = new URL(apiUrl);
     const healthUrl = new URL('/health', urlObj.origin).href;
-    const response = await fetchWithTimeout(
+    return fetchWithTimeout(
         healthUrl,
         {
             method: 'GET',
@@ -304,29 +322,31 @@ async function tryProbeHealth(apiUrl, fetchImpl, requestOpts, timeoutMs) {
             signal: requestOpts.signal,
         },
         fetchImpl,
-        timeoutMs
+        timeoutMs,
+        async (response) => {
+            if (!response.ok) {
+                const err = new Error(`HTTP ${response.status}`);
+                err.kind = 'http';
+                err.status = response.status;
+                throw err;
+            }
+            let data;
+            try {
+                data = await response.json();
+            } catch (parseErr) {
+                const err = new Error('Invalid JSON from /health');
+                err.kind = 'malformed';
+                err.cause = parseErr;
+                throw err;
+            }
+            if (!data || data.status !== 'healthy') {
+                const err = new Error('Unexpected /health payload');
+                err.kind = 'malformed';
+                throw err;
+            }
+            return { ok: true, kind: 'ok', message: messageForKind('ok') };
+        }
     );
-    if (!response.ok) {
-        const err = new Error(`HTTP ${response.status}`);
-        err.kind = 'http';
-        err.status = response.status;
-        throw err;
-    }
-    let data;
-    try {
-        data = await response.json();
-    } catch (parseErr) {
-        const err = new Error('Invalid JSON from /health');
-        err.kind = 'malformed';
-        err.cause = parseErr;
-        throw err;
-    }
-    if (!data || data.status !== 'healthy') {
-        const err = new Error('Unexpected /health payload');
-        err.kind = 'malformed';
-        throw err;
-    }
-    return { ok: true, kind: 'ok', message: messageForKind('ok') };
 }
 
 /**
@@ -381,50 +401,52 @@ async function fetchNormalizedVoices(apiUrl, fetchImpl, options) {
     const opts = options || {};
     const timeoutMs = opts.timeoutMs;
     try {
-        const response = await fetchWithTimeout(
+        return await fetchWithTimeout(
             `${apiUrl}audio/voices`,
             { signal: opts.signal },
             fetchImpl,
-            timeoutMs
+            timeoutMs,
+            async (response) => {
+                if (!response.ok) {
+                    const err = new Error(`HTTP ${response.status}`);
+                    err.kind = 'http';
+                    err.status = response.status;
+                    throw err;
+                }
+                let data;
+                try {
+                    data = await response.json();
+                } catch (parseErr) {
+                    const err = new Error('Invalid JSON from /audio/voices');
+                    err.kind = 'malformed';
+                    err.cause = parseErr;
+                    throw err;
+                }
+                const parsed = parseVoicesResponse(data);
+                if (!parsed.shapeOk) {
+                    return {
+                        ok: false,
+                        kind: 'malformed',
+                        voices: [],
+                        message: messageForKind('malformed', 'Voice list'),
+                    };
+                }
+                if (parsed.voices.length === 0) {
+                    return {
+                        ok: true,
+                        kind: 'empty',
+                        voices: [],
+                        message: messageForKind('empty'),
+                    };
+                }
+                return {
+                    ok: true,
+                    kind: 'ok',
+                    voices: parsed.voices,
+                    message: '',
+                };
+            }
         );
-        if (!response.ok) {
-            const err = new Error(`HTTP ${response.status}`);
-            err.kind = 'http';
-            err.status = response.status;
-            throw err;
-        }
-        let data;
-        try {
-            data = await response.json();
-        } catch (parseErr) {
-            const err = new Error('Invalid JSON from /audio/voices');
-            err.kind = 'malformed';
-            err.cause = parseErr;
-            throw err;
-        }
-        const parsed = parseVoicesResponse(data);
-        if (!parsed.shapeOk) {
-            return {
-                ok: false,
-                kind: 'malformed',
-                voices: [],
-                message: messageForKind('malformed', 'Voice list'),
-            };
-        }
-        if (parsed.voices.length === 0) {
-            return {
-                ok: true,
-                kind: 'empty',
-                voices: [],
-                message: messageForKind('empty'),
-            };
-        }
-        return {
-            ok: true,
-            kind: 'ok',
-            voices: parsed.voices,
-            message: '',
-        };
     } catch (e) {
         const kind = classifyApiFailure(e);
         return {
