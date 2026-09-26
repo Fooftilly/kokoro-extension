@@ -42,19 +42,52 @@ jobs:
       - name: Verify Chrome and Firefox manifests
         run: |
           set -euo pipefail
-          for browser in chrome firefox; do
-            manifest="dist/${browser}/manifest.json"
-            test -f "$manifest"
-            node -e "
-              const m = require('./${manifest}');
-              const pkg = require('./package.json');
-              if (m.manifest_version !== 3) throw new Error('${browser}: expected MV3');
-              if (m.version !== pkg.version) {
-                throw new Error('${browser}: manifest version ' + m.version + ' != package.json ' + pkg.version);
-              }
-              console.log('${browser}: OK', m.name, m.version);
-            "
-          done
+          node <<'EOF'
+          const fs = require('fs');
+          const pkg = require('./package.json');
+          const BASELINE_PERMISSIONS = [
+            'contextMenus',
+            'storage',
+            'activeTab',
+            'notifications',
+            'scripting',
+            'alarms',
+            'downloads',
+          ].slice().sort();
+          const BASELINE_HOST = ['http://127.0.0.1/*', 'http://localhost/*'].slice().sort();
+          const OPTIONAL_HOST = '*://*/*';
+
+          function sameSet(actual, expected, label, browser) {
+            const a = [...actual].sort();
+            const e = [...expected].sort();
+            if (a.length !== e.length || a.some((v, i) => v !== e[i])) {
+              throw new Error(
+                `${browser}: ${label} mismatch.\n  expected: ${JSON.stringify(e)}\n  actual:   ${JSON.stringify(a)}`
+              );
+            }
+          }
+
+          for (const browser of ['chrome', 'firefox']) {
+            const manifestPath = `dist/${browser}/manifest.json`;
+            if (!fs.existsSync(manifestPath)) {
+              throw new Error(`${browser}: missing ${manifestPath}`);
+            }
+            const m = require(`./${manifestPath}`);
+            if (m.manifest_version !== 3) throw new Error(`${browser}: expected MV3`);
+            if (m.version !== pkg.version) {
+              throw new Error(`${browser}: manifest version ${m.version} != package.json ${pkg.version}`);
+            }
+            sameSet(m.permissions || [], BASELINE_PERMISSIONS, 'permissions', browser);
+            sameSet(m.host_permissions || [], BASELINE_HOST, 'host_permissions', browser);
+            const optional = m.optional_host_permissions || [];
+            if (!optional.includes(OPTIONAL_HOST)) {
+              throw new Error(
+                `${browser}: optional_host_permissions must include ${OPTIONAL_HOST}, got ${JSON.stringify(optional)}`
+              );
+            }
+            console.log(browser + ': OK', m.name, m.version, 'permissions baseline');
+          }
+          EOF
           test -f "dist/package/kokoro-extension-chrome-$(node -p "require('./package.json').version").zip"
           test -f "dist/package/kokoro-extension-firefox-$(node -p "require('./package.json').version").zip"
 
