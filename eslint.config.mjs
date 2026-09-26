@@ -3,7 +3,7 @@ import globals from 'globals';
 
 /**
  * High-signal ESLint for extension source + tests.
- * Globals are scoped so `no-undef` can catch Node-only APIs in browser scripts.
+ * Globals and sourceType are scoped so `no-undef` / parse mode match how files ship.
  */
 const sharedRules = {
   'no-unused-vars': 'off',
@@ -48,18 +48,30 @@ export default [
     ],
   },
   js.configs.recommended,
+  // Classic scripts: SW / content / popup / plain <script src> (no type=module)
   {
     files: [
       'background.js',
       'content.js',
       'popup.js',
+      'theme-init.js',
+      'transliteration-lite.js',
+    ],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'script',
+      globals: extensionGlobals,
+    },
+    rules: sharedRules,
+  },
+  // ES modules: overlay/reader entrypoints and their import graph
+  {
+    files: [
       'overlay.js',
       'reader.js',
       'audio-manager.js',
       'dom-utils.js',
       'text-processor.js',
-      'theme-init.js',
-      'transliteration-lite.js',
     ],
     languageOptions: {
       ecmaVersion: 2022,

@@ -85,7 +85,35 @@ jobs:
                 `${browser}: optional_host_permissions must include ${OPTIONAL_HOST}, got ${JSON.stringify(optional)}`
               );
             }
-            console.log(browser + ': OK', m.name, m.version, 'permissions baseline');
+
+            const bg = m.background || {};
+            if (browser === 'chrome') {
+              if (!bg.service_worker || bg.service_worker !== 'background.js') {
+                throw new Error(`chrome: expected background.service_worker=background.js, got ${JSON.stringify(bg)}`);
+              }
+              if (bg.scripts) {
+                throw new Error(`chrome: must not ship background.scripts, got ${JSON.stringify(bg.scripts)}`);
+              }
+            } else if (browser === 'firefox') {
+              const expectedScripts = ['browser-polyfill.min.js', 'background.js'];
+              if (!Array.isArray(bg.scripts) || bg.scripts.length !== expectedScripts.length
+                  || expectedScripts.some((s, i) => bg.scripts[i] !== s)) {
+                throw new Error(`firefox: expected background.scripts=${JSON.stringify(expectedScripts)}, got ${JSON.stringify(bg.scripts)}`);
+              }
+              if (bg.service_worker) {
+                throw new Error(`firefox: must not use background.service_worker, got ${JSON.stringify(bg.service_worker)}`);
+              }
+              const gecko = m.browser_specific_settings && m.browser_specific_settings.gecko;
+              if (!gecko || gecko.id !== '{e4a64387-5c02-4809-a10c-982329d47225}') {
+                throw new Error(`firefox: missing/invalid browser_specific_settings.gecko.id, got ${JSON.stringify(gecko && gecko.id)}`);
+              }
+              const dcp = gecko.data_collection_permissions;
+              if (!dcp || !Array.isArray(dcp.required) || dcp.required.length < 1) {
+                throw new Error(`firefox: expected gecko.data_collection_permissions.required (non-empty), got ${JSON.stringify(dcp)}`);
+              }
+            }
+
+            console.log(browser + ': OK', m.name, m.version, 'permissions + background baseline');
           }
           EOF
           test -f "dist/package/kokoro-extension-chrome-$(node -p "require('./package.json').version").zip"
