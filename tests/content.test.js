@@ -256,4 +256,52 @@ describe('content.js parseArticle', () => {
         expect(Number.parseFloat(container.style.height)).toBe(posApi.OVERLAY_COLLAPSED_HEIGHT);
         expect(posApi.OVERLAY_COLLAPSED_HEIGHT).toBeGreaterThanOrEqual(140);
     });
+
+    test('full→floating collapse still applies geometry when storage.get rejects', async () => {
+        const posApi = globalThis.KokoroOverlayPosition;
+        Object.defineProperty(window, 'innerWidth', { value: 1000, configurable: true });
+        Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true });
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+        document.body.innerHTML = `
+            <div id="kokoro-overlay-container" data-mode="full" data-collapsed="0"
+                 style="width:100vw;height:100vh;left:0;top:0;background:rgba(0,0,0,0.7)">
+                <iframe id="kokoro-player-frame"></iframe>
+            </div>
+        `;
+        const container = document.getElementById('kokoro-overlay-container');
+        const iframe = document.getElementById('kokoro-player-frame');
+        iframe.src = browser.runtime.getURL('overlay.html');
+        iframe.contentWindow.postMessage = jest.fn();
+
+        browser.storage.local.get.mockRejectedValueOnce(new Error('storage unavailable'));
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { action: 'KOKORO_SET_COLLAPSED', collapsed: true }
+        }));
+
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(warnSpy).toHaveBeenCalledWith(
+            'Kokoro: failed to read overlay position',
+            expect.any(Error)
+        );
+        expect(container.dataset.mode).toBe('popup');
+        expect(container.dataset.collapsed).toBe('1');
+        expect(container.style.width).toBe(`${posApi.OVERLAY_POPUP_WIDTH}px`);
+        expect(Number.parseFloat(container.style.height)).toBe(posApi.OVERLAY_COLLAPSED_HEIGHT);
+        expect(container.style.width).not.toBe('100vw');
+        expect(container.style.height).not.toBe('100vh');
+        expect(iframe.contentWindow.postMessage).toHaveBeenCalledWith(
+            expect.objectContaining({
+                action: 'KOKORO_OVERLAY_STATE',
+                mode: 'popup',
+                collapsed: true
+            }),
+            browser.runtime.getURL('')
+        );
+
+        warnSpy.mockRestore();
+    });
 });

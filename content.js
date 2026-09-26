@@ -353,15 +353,20 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         const iframe = container.querySelector('iframe');
         clearFullModeChrome(container, iframe);
         const size = getOverlayPlayerSize(collapsed);
-        return browser.storage.local.get(posApi.getOverlayPositionStorageKey()).then((data) => {
-            const restored = posApi.restoreOverlayPosition(
-                data[posApi.getOverlayPositionStorageKey()],
-                { ...size, ...getOverlayViewport() }
-            );
-            applyFloatingGeometry(container, restored.left, restored.top, collapsed);
-            postOverlayState(container);
-            return restored;
-        });
+        return browser.storage.local.get(posApi.getOverlayPositionStorageKey())
+            .catch((e) => {
+                console.warn('Kokoro: failed to read overlay position', e);
+                return {};
+            })
+            .then((data) => {
+                const restored = posApi.restoreOverlayPosition(
+                    data && data[posApi.getOverlayPositionStorageKey()],
+                    { ...size, ...getOverlayViewport() }
+                );
+                applyFloatingGeometry(container, restored.left, restored.top, collapsed);
+                postOverlayState(container);
+                return restored;
+            });
     }
 
     function endOverlayDrag() {
