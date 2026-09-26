@@ -43,7 +43,7 @@ Verified against the current source (not aspirational):
 - **Stream or download** — stream audio into the overlay player, or download a file.
 - **Voice mixer** — search voices from the API and blend multiple voices with weights.
 - **Text normalization** (toggleable) — contractions, transliteration of non-Latin scripts, dates/numbers, units, URLs, emails, phones, and related pronunciation prep in `text-processor.js`.
-- **Overlay playback** — play/pause/stop, speed & volume, Spacebar play/pause; optional auto-scroll on the origin page with a “comfort zone” to reduce jumpiness.
+- **Overlay playback** — play/pause, previous/next sentence, speed & volume, Spacebar play/pause; optional auto-scroll on the origin page with a “comfort zone” to reduce jumpiness.
 - **Floating mic button** — optional on-page control (can be disabled in settings).
 - **EPUB reader** — open documents in `reader.html` (epub.js); optional autoplay.
 - **Themes** — light/dark toggle in the popup.
