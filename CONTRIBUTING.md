@@ -10,7 +10,7 @@ Thanks for helping improve **Kokoro TTS Sender**.
 
 ## Development setup
 
-Requirements: **Node.js >= 20** and npm.
+Requirements: **Node.js `^20.19.0 || ^22.13.0 || >=24`** (matches ESLint 10; CI uses Node 22) and npm.
 
 ```bash
 git clone https://github.com/Fooftilly/kokoro-extension.git

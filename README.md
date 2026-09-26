@@ -62,7 +62,7 @@ Default host permissions cover localhost; non-local URLs prompt for optional hos
 
 ## Prerequisites
 
-- **Node.js >= 20** and npm (for building from source).
+- **Node.js `^20.19.0 || ^22.13.0 || >=24`** and npm (for building from source; CI uses Node 22).
 - A reachable **[Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI)** instance (local Docker, LAN, or remote) for actual speech generation. Unit tests mock the API and do **not** require a live server.
 
 ## Installation & build

@@ -30,7 +30,7 @@
   },
   "homepage": "https://github.com/Fooftilly/kokoro-extension#readme",
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.0 || ^22.13.0 || >=24"
   },
   "type": "commonjs",
   "dependencies": {

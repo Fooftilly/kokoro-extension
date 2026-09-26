@@ -42,7 +42,7 @@ Guidance for humans and coding agents working in this repository.
 
 ## Install / test / build / package
 
-Canonical commands (Node **>= 20**):
+Canonical commands (Node **`^20.19.0 || ^22.13.0 || >=24`**; CI uses Node 22):
 
 ```bash
 npm ci                 # clean install from package-lock.json
