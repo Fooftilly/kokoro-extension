@@ -272,15 +272,30 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         };
     }
 
+    function overlayIframeTargetOrigin(iframe) {
+        try {
+            if (iframe && iframe.src) return new URL(iframe.src, location.href).origin;
+        } catch (e) { }
+        try {
+            return new URL(browser.runtime.getURL('overlay.html')).origin;
+        } catch (e) { }
+        return location.origin;
+    }
+
+    function postToOverlayIframe(iframe, data) {
+        if (!iframe || !iframe.contentWindow) return;
+        iframe.contentWindow.postMessage(data, overlayIframeTargetOrigin(iframe));
+    }
+
     function postOverlayState(container) {
         const iframe = container && container.querySelector('iframe');
-        if (!iframe || !iframe.contentWindow) return;
-        iframe.contentWindow.postMessage({
+        if (!iframe) return;
+        postToOverlayIframe(iframe, {
             action: 'KOKORO_OVERLAY_STATE',
             mode: container.dataset.mode || 'popup',
             collapsed: container.dataset.collapsed === '1',
             draggable: container.dataset.mode !== 'full'
-        }, '*');
+        });
     }
 
     function applyFloatingGeometry(container, left, top, collapsed) {
@@ -356,8 +371,8 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         window.removeEventListener('pointermove', onOverlayDragMove);
         window.removeEventListener('pointerup', endOverlayDrag);
         window.removeEventListener('pointercancel', endOverlayDrag);
-        const left = parseFloat(container.style.left);
-        const top = parseFloat(container.style.top);
+        const left = Number.parseFloat(container.style.left);
+        const top = Number.parseFloat(container.style.top);
         if (Number.isFinite(left) && Number.isFinite(top)) {
             persistOverlayPosition(left, top);
         }
@@ -404,8 +419,8 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
             return;
         }
 
-        const left = parseFloat(container.style.left);
-        const top = parseFloat(container.style.top);
+        const left = Number.parseFloat(container.style.left);
+        const top = Number.parseFloat(container.style.top);
         const size = getOverlayPlayerSize(wantCollapsed);
         const fallback = posApi.defaultOverlayPosition({
             width: size.width,
@@ -421,8 +436,8 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         const container = document.getElementById('kokoro-overlay-container');
         if (!container || container.dataset.mode === 'full') return;
         const collapsed = container.dataset.collapsed === '1';
-        const left = parseFloat(container.style.left);
-        const top = parseFloat(container.style.top);
+        const left = Number.parseFloat(container.style.left);
+        const top = Number.parseFloat(container.style.top);
         const size = getOverlayPlayerSize(collapsed);
         const fallback = posApi.defaultOverlayPosition({
             width: size.width,
@@ -445,6 +460,98 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         document.body.style.overflow = '';
     }
 
+    function styleFullModeContainer(container, iframe, isDark) {
+        container.style.top = '0';
+        container.style.left = '0';
+        container.style.width = '100vw';
+        container.style.height = '100vh';
+        container.style.borderRadius = '0';
+        container.style.background = 'rgba(0, 0, 0, 0.7)';
+        container.style.display = 'flex';
+        container.style.justifyContent = 'center';
+        container.style.alignItems = 'center';
+        container.style.backdropFilter = 'blur(4px)';
+        iframe.style.width = '80%';
+        iframe.style.maxWidth = '900px';
+        iframe.style.height = '90%';
+        iframe.style.maxHeight = '90vh';
+        iframe.style.borderRadius = '12px';
+        iframe.style.boxShadow = '0 10px 30px rgba(0,0,0,0.3)';
+        iframe.style.background = isDark ? '#1e1e1e' : 'white';
+    }
+
+    function mountOverlayPlayer(request, data) {
+        if (document.getElementById('kokoro-overlay-container')) {
+            window.kokoroIsCreatingPlayer = false;
+            return;
+        }
+
+        const isDark = data.theme === 'dark';
+        const isFull = request.mode === 'full';
+        const positionKey = posApi.getOverlayPositionStorageKey();
+        const container = document.createElement('div');
+        container.id = 'kokoro-overlay-container';
+        container.dataset.mode = isFull ? 'full' : 'popup';
+        container.dataset.collapsed = '0';
+        container.style.position = 'fixed';
+        container.style.zIndex = '2147483647';
+        container.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+        container.style.borderRadius = '12px';
+        container.style.overflow = 'hidden';
+        container.style.border = 'none';
+        container.style.opacity = '0';
+        container.style.transition = 'opacity 0.2s ease-in-out';
+
+        const iframe = document.createElement('iframe');
+        iframe.src = browser.runtime.getURL('overlay.html');
+        iframe.style.border = 'none';
+        iframe.allow = 'autoplay';
+        iframe.tabIndex = '-1';
+        iframe.style.background = isDark ? '#1e1e1e' : 'white';
+        iframe.style.colorScheme = isDark ? 'dark' : 'light';
+        iframe.addEventListener('load', () => {
+            iframe.focus();
+            postOverlayState(container);
+        });
+
+        if (isFull) {
+            styleFullModeContainer(container, iframe, isDark);
+        } else {
+            const size = getOverlayPlayerSize(false);
+            const restored = posApi.restoreOverlayPosition(data[positionKey], {
+                ...size,
+                ...getOverlayViewport()
+            });
+            applyFloatingGeometry(container, restored.left, restored.top, false);
+            iframe.style.width = '100%';
+            iframe.style.height = '100%';
+        }
+
+        container.appendChild(iframe);
+        document.body.appendChild(container);
+        window.kokoroIsCreatingPlayer = false;
+        if (isFull) {
+            document.body.style.overflow = 'hidden';
+        }
+    }
+
+    function showOverlayPlayer(request) {
+        const existingContainer = document.getElementById('kokoro-overlay-container');
+        if (existingContainer) {
+            postToOverlayIframe(existingContainer.querySelector('iframe'), 'RELOAD_DATA');
+            return;
+        }
+        if (window.kokoroIsCreatingPlayer) return;
+        window.kokoroIsCreatingPlayer = true;
+        const positionKey = posApi.getOverlayPositionStorageKey();
+        browser.storage.local.get(['theme', positionKey]).then((data) => {
+            mountOverlayPlayer(request, data);
+        }).catch((e) => {
+            window.kokoroIsCreatingPlayer = false;
+            console.error('Error creating overlay', e);
+        });
+    }
+
     browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request.action === "PING") {
             sendResponse({ action: "PONG" });
@@ -457,113 +564,13 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         }
 
         if (request.action === "SHOW_PLAYER") {
-            const existingContainer = document.getElementById('kokoro-overlay-container');
-            if (existingContainer) {
-                const iframe = existingContainer.querySelector('iframe');
-                if (iframe && iframe.contentWindow) {
-                    iframe.contentWindow.postMessage('RELOAD_DATA', '*');
-                }
-                return;
-            }
-
-            // Sync Lock to prevent double-creation race condition
-            if (window.kokoroIsCreatingPlayer) {
-                return;
-            }
-            window.kokoroIsCreatingPlayer = true;
-
-            const positionKey = posApi.getOverlayPositionStorageKey();
-            // Fetch theme (+ stored geometry) to prevent white flicker and restore position
-            browser.storage.local.get(['theme', positionKey]).then(data => {
-                // Secondary check inside async callback
-                if (document.getElementById('kokoro-overlay-container')) {
-                    window.kokoroIsCreatingPlayer = false;
-                    return;
-                }
-
-                const isDark = data.theme === 'dark';
-                const isFull = request.mode === 'full';
-                const container = document.createElement('div');
-                container.id = 'kokoro-overlay-container';
-                container.dataset.mode = isFull ? 'full' : 'popup';
-                container.dataset.collapsed = '0';
-                container.style.position = 'fixed';
-                container.style.zIndex = '2147483647';
-                container.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
-                container.style.borderRadius = '12px';
-                container.style.overflow = 'hidden';
-                container.style.border = 'none';
-                container.style.opacity = '0'; // Start hidden
-                container.style.transition = 'opacity 0.2s ease-in-out';
-
-                if (isFull) {
-                    container.style.top = '0';
-                    container.style.left = '0';
-                    container.style.width = '100vw';
-                    container.style.height = '100vh';
-                    container.style.borderRadius = '0';
-                    container.style.background = 'rgba(0, 0, 0, 0.7)'; // Darker overlay
-                    container.style.display = 'flex';
-                    container.style.justifyContent = 'center';
-                    container.style.alignItems = 'center';
-                    container.style.backdropFilter = 'blur(4px)';
-                } else {
-                    const size = getOverlayPlayerSize(false);
-                    const restored = posApi.restoreOverlayPosition(data[positionKey], {
-                        ...size,
-                        ...getOverlayViewport()
-                    });
-                    applyFloatingGeometry(container, restored.left, restored.top, false);
-                }
-
-                const iframe = document.createElement('iframe');
-                iframe.src = browser.runtime.getURL('overlay.html');
-                iframe.style.border = 'none';
-                iframe.allow = "autoplay";
-                iframe.tabIndex = "-1";
-                // Set initial background to match theme
-                iframe.style.background = isDark ? '#1e1e1e' : 'white';
-                iframe.style.colorScheme = isDark ? 'dark' : 'light';
-
-                iframe.addEventListener('load', () => {
-                    iframe.focus();
-                    postOverlayState(container);
-                });
-
-                if (isFull) {
-                    iframe.style.width = '80%';
-                    iframe.style.maxWidth = '900px';
-                    iframe.style.height = '90%';
-                    iframe.style.maxHeight = '90vh';
-                    iframe.style.borderRadius = '12px';
-                    iframe.style.boxShadow = '0 10px 30px rgba(0,0,0,0.3)';
-                    iframe.style.background = isDark ? '#1e1e1e' : 'white';
-                } else {
-                    iframe.style.width = '100%';
-                    iframe.style.height = '100%';
-                }
-
-                container.appendChild(iframe);
-                document.body.appendChild(container);
-
-                window.kokoroIsCreatingPlayer = false;
-
-                if (isFull) {
-                    document.body.style.overflow = 'hidden';
-                }
-            }).catch(e => {
-                window.kokoroIsCreatingPlayer = false;
-                console.error("Error creating overlay", e);
-            });
+            showOverlayPlayer(request);
         } else if (request.action === "REMOVE_PLAYER") {
             removeOverlayContainer();
         } else if (request.action === "NAV_NEXT" || request.action === "NAV_PREV") {
             const container = document.getElementById('kokoro-overlay-container');
             if (container) {
-                const iframe = container.querySelector('iframe');
-                if (iframe && iframe.contentWindow) {
-                    iframe.contentWindow.postMessage(request.action, '*');
-                }
+                postToOverlayIframe(container.querySelector('iframe'), request.action);
             }
         } else if (request.action === "CHECK_PLAYER_ACTIVE") {
             const container = document.getElementById('kokoro-overlay-container');

@@ -24,6 +24,24 @@ let overlayDraggable = true;
 const audioManager = new AudioManager();
 const playPauseBtn = document.getElementById('playPause');
 
+function hostPageTargetOrigin() {
+    try {
+        if (document.referrer) return new URL(document.referrer).origin;
+    } catch (e) { }
+    try {
+        if (location.ancestorOrigins && location.ancestorOrigins.length > 0) {
+            return location.ancestorOrigins[0];
+        }
+    } catch (e) { }
+    // Host page origin is unknown for extension iframes on arbitrary sites;
+    // fall back only when referrer/ancestorOrigins are unavailable.
+    return '*';
+}
+
+function postToHostPage(data) {
+    window.parent.postMessage(data, hostPageTargetOrigin());
+}
+
 function applyOverlayChromeState({ mode, collapsed, draggable } = {}) {
     const isFull = mode === 'full';
     overlayCollapsed = !!collapsed;
@@ -51,15 +69,15 @@ if (window.nlp) {
 }
 
 closeBtn.addEventListener('click', () => {
-    window.parent.postMessage('CLOSE_KOKORO_PLAYER', '*');
+    postToHostPage('CLOSE_KOKORO_PLAYER');
 });
 
 if (collapseBtn) {
     collapseBtn.addEventListener('click', () => {
-        window.parent.postMessage({
+        postToHostPage({
             action: 'KOKORO_SET_COLLAPSED',
             collapsed: !overlayCollapsed
-        }, '*');
+        });
     });
 }
 
@@ -72,11 +90,11 @@ if (dragHandle) {
         );
         if (interactive && interactive !== dragHandle) return;
         event.preventDefault();
-        window.parent.postMessage({
+        postToHostPage({
             action: 'KOKORO_DRAG_START',
             clientX: event.clientX,
             clientY: event.clientY
-        }, '*');
+        });
     });
 }
 
@@ -256,7 +274,7 @@ async function initialize() {
     const shouldAutoplay = data.pendingAutoplay !== false;
     navigate(initialIndex, shouldAutoplay);
 
-    window.parent.postMessage('KOKORO_PLAYER_READY', '*');
+    postToHostPage('KOKORO_PLAYER_READY');
 }
 
 function renderText() {
@@ -521,19 +539,19 @@ async function navigate(index, forcePlay = null) {
 
     // Scroll origin page if enabled
     if (window.kokoroAutoScroll && currentSentence.text) {
-        window.parent.postMessage({
+        postToHostPage({
             action: 'KOKORO_SCROLL_TO_BLOCK',
             text: currentSentence.text
-        }, '*');
+        });
     }
 
     // Emit progress event for parent (reader.js)
     const blockIndex = sentences[currentIndex].blockIndex;
     if (window.parent) {
-        window.parent.postMessage({
+        postToHostPage({
             type: 'KOKORO_READING_PROGRESS',
             blockIndex: blockIndex
-        }, '*');
+        });
     }
 
     // Update Progress
