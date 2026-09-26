@@ -538,12 +538,45 @@ button:hover {
     background: #218838;
 }
 
+.api-status-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-top: 2px;
+}
+
+.api-status-row .note {
+    flex: 1;
+    margin-top: 0;
+}
+
+.retry-api-btn {
+    flex-shrink: 0;
+    margin-top: 0;
+    padding: 2px 8px;
+    font-size: 11px;
+    background: transparent;
+    color: var(--text-secondary, #666);
+    border: 1px solid var(--border-color, #ccc);
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+.retry-api-btn:hover {
+    color: var(--text-primary, #222);
+    border-color: var(--text-secondary, #666);
+}
+
 .api-status-success {
     color: var(--status-success) !important;
 }
 
 .api-status-error {
     color: var(--status-error) !important;
+}
+
+.api-status-checking {
+    color: var(--text-secondary, #666) !important;
 }
 
 .mt-0 {

@@ -54,6 +54,7 @@ export default [
       'background.js',
       'content.js',
       'popup.js',
+      'api-client.js',
       'theme-init.js',
       'transliteration-lite.js',
     ],
@@ -80,11 +81,32 @@ export default [
     },
     rules: sharedRules,
   },
-  // content.js optionally exports for Jest via CJS interop (not a general Node surface)
+  // Classic scripts that optionally export for Jest via CJS interop
   {
-    files: ['content.js'],
+    files: ['content.js', 'api-client.js'],
     languageOptions: {
       globals: {
+        module: 'readonly',
+      },
+    },
+  },
+  // popup.js uses helpers from api-client.js (classic script globals)
+  {
+    files: ['popup.js'],
+    languageOptions: {
+      globals: {
+        normalizeVoiceEntry: 'readonly',
+        normalizeVoiceIds: 'readonly',
+        filterVoicesByPrefix: 'readonly',
+        parseVoicesResponse: 'readonly',
+        classifyApiFailure: 'readonly',
+        messageForKind: 'readonly',
+        resolveBackendStatus: 'readonly',
+        probeApiConnection: 'readonly',
+        fetchNormalizedVoices: 'readonly',
+        fetchWithTimeout: 'readonly',
+        VOICE_PREFIXES: 'readonly',
+        DEFAULT_FETCH_TIMEOUT_MS: 'readonly',
         module: 'readonly',
       },
     },

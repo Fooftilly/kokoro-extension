@@ -18,6 +18,7 @@ const SRC_FILES = [
     'popup.css',
     'popup.html',
     'popup.js',
+    'api-client.js',
     'text-processor.js',
     'audio-manager.js',
     'dom-utils.js',

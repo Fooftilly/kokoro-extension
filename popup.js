@@ -19,10 +19,228 @@ const isLocalhost = (url) => {
     }
 };
 
+/** Normalize API URL the same way Save does (protocol + trailing slash). */
+function normalizeApiUrl(raw) {
+    let apiUrl = (raw || '').trim();
+    if (apiUrl) {
+        if (!/^https?:\/\//i.test(apiUrl)) {
+            apiUrl = `http://${apiUrl}`;
+        }
+        if (!apiUrl.endsWith('/')) {
+            apiUrl += '/';
+        }
+    }
+    return apiUrl;
+}
+
+/**
+ * Optional host-permission origin pattern for a non-local API URL.
+ * @returns {{ origin: string|null, invalidUrl: boolean }}
+ */
+function hostPermissionOriginInfo(apiUrl) {
+    if (!apiUrl || isLocalhost(apiUrl)) {
+        return { origin: null, invalidUrl: false };
+    }
+    try {
+        return { origin: `${new URL(apiUrl).origin}/*`, invalidUrl: false };
+    } catch {
+        return { origin: null, invalidUrl: true };
+    }
+}
+
+/**
+ * Start permissions.request() synchronously (Firefox user-gesture).
+ * Call from click handlers before any await. Do not await contains() first.
+ * @returns {Promise<boolean>|null}
+ */
+function beginHostPermissionRequest(apiUrl) {
+    const { origin, invalidUrl } = hostPermissionOriginInfo(apiUrl);
+    if (invalidUrl || !origin) {
+        return null;
+    }
+    return browser.permissions.request({ origins: [origin] });
+}
+
+function applyPermissionDeniedUI() {
+    availableVoices = [];
+    voiceFetchStatus = {
+        kind: 'permission',
+        message: messageForKind('permission'),
+    };
+    setApiStatusUI('permission', messageForKind('permission'), {
+        showRetry: true,
+    });
+}
+
 // --- Voice Mixer Logic ---
 let currentVoices = [];
 let availableVoices = [];
-let voiceFetchError = false;
+/** @type {{ kind: string, message: string }} */
+let voiceFetchStatus = { kind: 'idle', message: '' };
+/** @type {{ kind: string, message: string }} */
+let connectionStatus = { kind: 'idle', message: '' };
+/** Monotonic token so only the latest refresh applies UI/voice results. */
+let refreshGeneration = 0;
+/** @type {AbortController|null} */
+let activeRefreshAbort = null;
+
+function setApiStatusUI(kind, message, { showRetry = true } = {}) {
+    const row = document.getElementById('apiStatusRow');
+    const statusEl = document.getElementById('apiStatus');
+    const retryBtn = document.getElementById('retryApi');
+    if (!row || !statusEl) return;
+
+    connectionStatus = { kind, message };
+
+    if (kind === 'idle') {
+        statusEl.textContent = message || '';
+        statusEl.className = 'note mt-2';
+        // Neutral idle can keep Retry visible (e.g. URL edited mid-probe).
+        if (showRetry) {
+            row.style.display = 'flex';
+            if (retryBtn) retryBtn.style.display = 'inline-block';
+        } else {
+            row.style.display = 'none';
+            if (retryBtn) retryBtn.style.display = 'none';
+        }
+        return;
+    }
+
+    row.style.display = 'flex';
+    statusEl.textContent = message;
+    statusEl.className = 'note mt-2';
+    if (kind === 'ok') {
+        statusEl.classList.add('api-status-success');
+    } else if (kind === 'checking') {
+        statusEl.classList.add('api-status-checking');
+    } else {
+        statusEl.classList.add('api-status-error');
+    }
+
+    if (retryBtn) {
+        const hideRetry = kind === 'ok' || kind === 'checking' || !showRetry;
+        retryBtn.style.display = hideRetry ? 'none' : 'inline-block';
+    }
+}
+
+/**
+ * Probe connection and refresh voice list. Settings UI always remains usable.
+ * Newer calls abort/supersede in-flight work so stale URLs cannot overwrite status.
+ *
+ * @param {object} [options]
+ * @param {Promise<boolean>|null} [options.permissionRequestPromise]
+ *   Pending result of permissions.request() started synchronously in a click
+ *   handler (Save/Retry). When omitted, only permissions.contains() is used
+ *   (reopen / probe without user gesture). Never call request() here after awaits.
+ */
+async function refreshBackendStatus(apiUrl, {
+    hideOkAfterMs = 0,
+    timeoutMs,
+    permissionRequestPromise = null,
+} = {}) {
+    const generation = ++refreshGeneration;
+    const requestedUrl = apiUrl;
+
+    if (activeRefreshAbort) {
+        try {
+            activeRefreshAbort.abort();
+        } catch (_) {
+            /* ignore */
+        }
+    }
+    const controller = new AbortController();
+    activeRefreshAbort = controller;
+
+    setApiStatusUI('checking', messageForKind('checking'), { showRetry: false });
+
+    const isLatestGeneration = () => generation === refreshGeneration;
+    const urlMatchesRequest = () => {
+        const el = document.getElementById('apiUrl');
+        return !!el && el.value === requestedUrl;
+    };
+
+    /**
+     * @returns {boolean} true if caller should discard results and return
+     * - Superseded generation: discard silently (newer refresh owns UI)
+     * - Latest gen but URL edited without Save/Retry: clear stuck Checking, show Retry
+     */
+    const shouldDiscardResults = () => {
+        if (!isLatestGeneration()) {
+            return true;
+        }
+        if (!urlMatchesRequest()) {
+            setApiStatusUI('idle', '', { showRetry: true });
+            return true;
+        }
+        return false;
+    };
+
+    try {
+        // Non-local hosts need optional host permission — do not mislabel as unreachable.
+        const { origin, invalidUrl } = hostPermissionOriginInfo(requestedUrl);
+        if (invalidUrl) {
+            // Malformed URL — let the probe surface the error (not a permission issue).
+        } else if (origin) {
+            let hasPerm = false;
+            if (permissionRequestPromise) {
+                try {
+                    hasPerm = await permissionRequestPromise;
+                } catch (_) {
+                    // Rejected request (e.g. lost user gesture) → permission state.
+                    hasPerm = false;
+                }
+            } else {
+                try {
+                    hasPerm = await browser.permissions.contains({ origins: [origin] });
+                } catch (_) {
+                    // Permission API failure — not a URL parse error; skip probe.
+                    hasPerm = false;
+                }
+            }
+            if (shouldDiscardResults()) return;
+            if (!hasPerm) {
+                applyPermissionDeniedUI();
+                return;
+            }
+        }
+
+        const requestOpts = { signal: controller.signal, timeoutMs };
+        const probe = await probeApiConnection(requestedUrl, fetch, requestOpts);
+        if (shouldDiscardResults() || probe.aborted) return;
+
+        const voicesResult = await fetchNormalizedVoices(requestedUrl, fetch, requestOpts);
+        if (shouldDiscardResults()) return;
+
+        const resolved = resolveBackendStatus(probe, voicesResult);
+        availableVoices = resolved.voices;
+        voiceFetchStatus = {
+            kind: voicesResult.kind,
+            message: voicesResult.message || '',
+        };
+        setApiStatusUI(resolved.kind, resolved.message, { showRetry: resolved.showRetry });
+
+        if (resolved.kind === 'ok' && hideOkAfterMs > 0) {
+            setTimeout(() => {
+                if (generation === refreshGeneration && connectionStatus.kind === 'ok') {
+                    setApiStatusUI('idle', '', { showRetry: false });
+                }
+            }, hideOkAfterMs);
+        }
+    } catch (e) {
+        if (shouldDiscardResults() || (e && e.name === 'AbortError')) {
+            return;
+        }
+        console.error('Backend status refresh failed:', e);
+        const kind = classifyApiFailure(e);
+        availableVoices = [];
+        voiceFetchStatus = { kind, message: messageForKind(kind, 'API') };
+        setApiStatusUI(kind, voiceFetchStatus.message);
+    } finally {
+        if (generation === refreshGeneration && activeRefreshAbort === controller) {
+            activeRefreshAbort = null;
+        }
+    }
+}
 
 /**
  * Parses a voice string into an array of voice objects.
@@ -64,25 +282,6 @@ function serializeVoiceString(voices) {
     if (voices.length === 1) return voices[0].id;
     // Always use the format voice(weight) for consistency based on user request/screenshot
     return voices.map(v => `${v.id}(${v.weight})`).join('+');
-}
-
-/**
- * Fetches available voices from the API.
- */
-async function fetchVoices(apiUrl) {
-    try {
-        const response = await fetch(`${apiUrl}audio/voices`);
-        if (!response.ok) throw new Error('Failed to fetch voices');
-        const data = await response.json();
-        voiceFetchError = false;
-        // Filter for specific prefixes as requested
-        const validPrefixes = ['am_', 'af_', 'bm_', 'bf_'];
-        return data.voices.filter(v => validPrefixes.some(prefix => v.startsWith(prefix)));
-    } catch (e) {
-        console.error("Error fetching voices:", e);
-        voiceFetchError = true;
-        return [];
-    }
 }
 
 /**
@@ -310,25 +509,23 @@ function startDragging(index, handle, bar) {
 
 
 let saveTimeout;
-const saveOptions = async (isDebounced = false) => {
+/**
+ * Persist settings. Does not call permissions.request() — Firefox requires that
+ * to start synchronously in a user-gesture handler. Pass permissionRequestPromise
+ * from Save click when a host-permission request was started there.
+ *
+ * @param {boolean} [isDebounced]
+ * @param {{ permissionRequestPromise?: Promise<boolean>|null }} [options]
+ */
+const saveOptions = async (isDebounced = false, options = {}) => {
     if (isDebounced) {
         clearTimeout(saveTimeout);
         saveTimeout = setTimeout(() => saveOptions(false), 500);
-        return;
+        return { ok: true, deferred: true };
     }
 
-    let apiUrl = document.getElementById('apiUrl').value.trim();
-    if (apiUrl) {
-        // Automatically add http:// if no protocol is present
-        if (!/^https?:\/\//i.test(apiUrl)) {
-            apiUrl = 'http://' + apiUrl;
-        }
-        // Ensure it ends with /v1/ for consistency if needed, 
-        // but at least ensure it ends with /
-        if (!apiUrl.endsWith('/')) {
-            apiUrl += '/';
-        }
-    }
+    const permissionRequestPromise = options.permissionRequestPromise || null;
+    const apiUrl = normalizeApiUrl(document.getElementById('apiUrl').value);
     document.getElementById('apiUrl').value = apiUrl;
     const voice = serializeVoiceString(currentVoices);
     const mode = document.querySelector('input[name="mode"]:checked').value;
@@ -351,33 +548,43 @@ const saveOptions = async (isDebounced = false) => {
     const theme = document.documentElement.classList.contains('dark-theme') ? 'dark' : 'light';
     const settings = { apiUrl, voice, mode, defaultSpeed, defaultVolume, autoScroll, autoplayReader, showFloatingButton, normalizationOptions, theme };
 
+    const showPermissionDeniedToast = () => {
+        const status = document.getElementById('status');
+        status.textContent = 'Permission denied for this URL.';
+        status.style.color = 'var(--status-error)';
+        status.style.display = 'block';
+        applyPermissionDeniedUI();
+        setTimeout(() => {
+            status.style.display = 'none';
+            status.style.color = 'var(--status-success)';
+        }, 3000);
+    };
+
     try {
-        // 1. Save settings immediately so they are persisted even if permission is pending
+        // 1. Persist immediately even if permission is pending/denied
         await browser.storage.sync.set(settings);
         await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, autoplayReader, showFloatingButton, normalizationOptions, theme });
 
-        // 2. Check permissions for custom URL
-        if (!isLocalhost(apiUrl)) {
-            try {
-                const urlObj = new URL(apiUrl);
-                const origin = urlObj.origin + "/*";
-                const hasPerm = await browser.permissions.contains({ origins: [origin] });
-                if (!hasPerm) {
-                    const granted = await browser.permissions.request({ origins: [origin] });
-                    if (!granted) {
-                        const status = document.getElementById('status');
-                        status.textContent = "Permission denied for this URL.";
-                        status.style.color = "var(--status-error)";
-                        status.style.display = 'block';
-                        setTimeout(() => {
-                            status.style.display = 'none';
-                            status.style.color = "var(--status-success)";
-                        }, 3000);
-                        return;
-                    }
+        // 2. Host permission for non-local URL (never call request() here after awaits)
+        const { origin, invalidUrl } = hostPermissionOriginInfo(apiUrl);
+        if (!invalidUrl && origin) {
+            let hasPerm = false;
+            if (permissionRequestPromise) {
+                try {
+                    hasPerm = await permissionRequestPromise;
+                } catch (_) {
+                    hasPerm = false;
                 }
-            } catch (e) {
-                // Invalid URL - ignore for now as it's already saved anyway
+            } else {
+                try {
+                    hasPerm = await browser.permissions.contains({ origins: [origin] });
+                } catch (_) {
+                    hasPerm = false;
+                }
+            }
+            if (!hasPerm) {
+                showPermissionDeniedToast();
+                return { ok: false, permissionDenied: true };
             }
         }
 
@@ -387,12 +594,14 @@ const saveOptions = async (isDebounced = false) => {
         status.style.color = "var(--status-success)";
         status.style.display = 'block';
         setTimeout(() => { status.style.display = 'none'; }, 1500);
+        return { ok: true, permissionDenied: false };
     } catch (e) {
         console.error("Error saving options", e);
         const status = document.getElementById('status');
         status.textContent = "Error: " + e.message;
         status.style.color = "var(--status-error)";
         status.style.display = 'block';
+        return { ok: false, error: true };
     }
 };
 
@@ -432,10 +641,9 @@ const restoreOptions = async () => {
         currentVoices = parseVoiceString(items.voice);
         renderVoiceMixer();
 
-        // Fetch available voices for the dropdown
-        fetchVoices(items.apiUrl).then(voices => {
-            availableVoices = voices;
-        });
+        // Probe connection + voices on open (no aggressive polling).
+        // Settings above are already rendered from storage — backend loss cannot blank the UI.
+        refreshBackendStatus(items.apiUrl);
 
         if (items.mode === 'stream') {
             document.getElementById('modeStream').checked = true;
@@ -472,9 +680,29 @@ const updateVoiceDropdown = () => {
 
     dropdown.innerHTML = '';
 
-    if (voiceFetchError && (query.length > 0 || filtered.length === 0)) {
+    const fetchFailed = voiceFetchStatus.kind === 'network'
+        || voiceFetchStatus.kind === 'http'
+        || voiceFetchStatus.kind === 'malformed';
+
+    if (fetchFailed && (query.length > 0 || filtered.length === 0)) {
         dropdown.style.display = 'block';
-        dropdown.innerHTML = '<div class="note" style="color: var(--status-error); padding: 8px;">Error: Could not reach API to fetch voices.</div>';
+        const note = document.createElement('div');
+        note.className = 'note';
+        note.style.color = 'var(--status-error)';
+        note.style.padding = '8px';
+        note.textContent = voiceFetchStatus.message
+            || messageForKind(voiceFetchStatus.kind, 'Voice list');
+        dropdown.appendChild(note);
+        return;
+    }
+
+    if (voiceFetchStatus.kind === 'empty' && filtered.length === 0 && (query.length > 0 || availableVoices.length === 0)) {
+        dropdown.style.display = 'block';
+        const note = document.createElement('div');
+        note.className = 'note';
+        note.style.padding = '8px';
+        note.textContent = voiceFetchStatus.message || messageForKind('empty');
+        dropdown.appendChild(note);
         return;
     }
 
@@ -539,13 +767,37 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Manual API URL Save
+    // Manual API URL Save — start host-permission request synchronously (Firefox
+    // user-gesture), then persist + re-probe. Skip probe if permission denied.
     const saveApiBtn = document.getElementById('saveApiUrl');
     saveApiBtn.addEventListener('click', async () => {
-        const url = document.getElementById('apiUrl').value;
-        await saveOptions(false);
-        checkApiConnection(url);
+        const url = normalizeApiUrl(document.getElementById('apiUrl').value);
+        document.getElementById('apiUrl').value = url;
+        // Must call permissions.request before any await (Firefox user-action).
+        const permissionRequestPromise = beginHostPermissionRequest(url);
+        const saveResult = await saveOptions(false, { permissionRequestPromise });
+        if (saveResult && saveResult.permissionDenied) {
+            return;
+        }
+        await refreshBackendStatus(url, {
+            hideOkAfterMs: 3000,
+            permissionRequestPromise,
+        });
     });
+
+    const retryApiBtn = document.getElementById('retryApi');
+    if (retryApiBtn) {
+        retryApiBtn.addEventListener('click', async () => {
+            const url = normalizeApiUrl(document.getElementById('apiUrl').value);
+            document.getElementById('apiUrl').value = url;
+            // User gesture: start request synchronously before any await.
+            const permissionRequestPromise = beginHostPermissionRequest(url);
+            await refreshBackendStatus(url, {
+                hideOkAfterMs: 3000,
+                permissionRequestPromise,
+            });
+        });
+    }
 
     // Open Document Handler
     const openDocBtn = document.getElementById('openDocumentBtn');
@@ -557,34 +809,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function checkApiConnection(url) {
-    const statusEl = document.getElementById('apiStatus');
-    statusEl.style.display = 'block';
-    statusEl.textContent = 'Checking connection...';
-    statusEl.className = 'note mt-2';
-
-    try {
-        // Ensure url ends with /
-        const baseUrl = url.endsWith('/') ? url : url + '/';
-        const response = await fetch(`${baseUrl}test`, {
-            method: 'GET',
-            headers: { 'Accept': 'application/json' }
-        });
-
-        if (!response.ok) throw new Error('Network response was not ok');
-        const data = await response.json();
-
-        if (data.status === 'ok') {
-            statusEl.textContent = 'Connected successfully!';
-            statusEl.classList.add('api-status-success');
-            setTimeout(() => { statusEl.style.display = 'none'; }, 3000);
-        } else {
-            throw new Error('Invalid status message');
-        }
-    } catch (e) {
-        console.error("API Connectivity Check failed:", e);
-        statusEl.textContent = 'Unable to connect to API. Please check the URL and ensure the server is running.';
-        statusEl.classList.add('api-status-error');
-    }
+    await refreshBackendStatus(url, { hideOkAfterMs: 3000 });
 }
 
 // Theme Toggle
@@ -597,4 +822,17 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
     browser.storage.sync.set({ theme });
     browser.storage.local.set({ theme });
 });
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        refreshBackendStatus,
+        saveOptions,
+        setApiStatusUI,
+        normalizeApiUrl,
+        beginHostPermissionRequest,
+        getConnectionStatus: () => connectionStatus,
+        getAvailableVoices: () => availableVoices,
+        getVoiceFetchStatus: () => voiceFetchStatus,
+    };
+}
 
