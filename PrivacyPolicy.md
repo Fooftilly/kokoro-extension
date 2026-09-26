@@ -1,28 +1,44 @@
 # Privacy Policy for Kokoro TTS Sender
 
-**Last Updated:** December 7, 2025
+**Last Updated:** September 26, 2026
 
 ## Introduction
-Kokoro TTS Sender ("we," "our," or "the extension") is a browser extension designed to convert text from web pages into speech using a self-hosted Kokoro TTS server. We do not collect, store, or transmit any of your personal data to any third-party servers. This Privacy Policy explains what the extension does with your data.
 
-## Data Collection
-The extension does not collect, store, or transmit any of your personal data to any third-party servers. The extension operates by sending the text you select (or the content of the article you are viewing) directly to a **local server running on your own machine** that you configure and control (e.g., `http://127.0.0.1:8880`). 
+Kokoro TTS Sender ("we," "our," or "the extension") is a browser extension that converts text from web pages into speech using a **Kokoro-FastAPI** server that **you** configure and control. This Privacy Policy explains what the extension does with data.
 
-## Data Usage
-- **Text Processing:** The text content you select is sent solely to the API endpoint you configure (defaulting to localhost) for the purpose of generating audio.
-- **Settings:** User preferences (such as API URL, voice selection, and playback speed) are stored locally in your browser's sync storage to persist your settings across sessions.
+## Data collection
 
-## Third-Party Sharing
-We do not share any data with third parties. The extension relies on a local connection to your own instance of the Kokoro TTS API. It does not communicate with any external cloud services or analytics platforms.
+The extension does not collect personal data for advertising or analytics, and it does not include telemetry that phones home to the extension author.
 
-## Permisions
-The extension requests the following permissions to function:
-- **Read and change all your data on the websites you visit:** Required to extract article text for the "Read Article" feature and to display the playback overlay on the page.
-- **Notifications:** Used to provide status updates (e.g., "Generating audio...") and error messages.
-- **Downloads:** Used to save the generated audio files to your computer if you select "Download File" output mode.
+Speech generation works by sending the text you select (or article content extracted for “Read Article”) to the **API base URL you configure** in settings. The default is a local address (`http://127.0.0.1:8880/v1/`), but you may point the extension at a LAN or remote Kokoro-FastAPI endpoint. In those cases, text is transmitted over the network to that endpoint.
 
-## Changes to This Policy
+## Data usage
+
+- **Text processing:** Selected or extracted text is sent only to your configured Kokoro-FastAPI endpoint to generate audio.
+- **Settings:** Preferences (API URL, voice selection, playback options, normalization toggles, theme, etc.) are stored in the browser’s extension storage so they persist across sessions.
+
+## Third-party sharing
+
+The extension does not share data with third parties for analytics or advertising. It communicates with:
+
+- The web pages you use it on (to extract text and show the overlay), and
+- The Kokoro-FastAPI endpoint you configure.
+
+If that endpoint is operated by someone else, their privacy policy applies to data they receive.
+
+## Permissions
+
+The extension requests permissions needed to function, including:
+
+- **Access to website content** — extract article/selection text and display the playback overlay.
+- **Notifications** — status and error messages.
+- **Downloads** — save generated audio when “Download” mode is selected.
+- **Host access** — default localhost permissions; optional broader host permission when you configure a non-local API URL.
+
+## Changes to this policy
+
 We may update this Privacy Policy from time to time. Any changes will be posted on this page.
 
 ## Contact
-If you have questions about this Privacy Policy, please contact me by opening an issue on the extension's GitHub repository.
+
+If you have questions about this Privacy Policy, open an issue on the extension’s GitHub repository. For security vulnerabilities, see [`SECURITY.md`](./SECURITY.md) and use private reporting when available.

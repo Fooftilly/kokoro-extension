@@ -405,7 +405,7 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
             let node;
             let bestMatch = null;
 
-            while (node = walker.nextNode()) {
+            while ((node = walker.nextNode())) {
                 if (node.textContent.includes(searchText)) {
                     const parent = node.parentElement;
                     // Avoid scrolling to our own overlay

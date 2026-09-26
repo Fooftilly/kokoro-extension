@@ -3,9 +3,11 @@ const path = require('path');
 const { execSync } = require('child_process');
 const AdmZip = require('adm-zip');
 
+const pkg = require('./package.json');
+
 const EXTENSION_NAME = 'Kokoro TTS Sender';
-const EXTENSION_VERSION = '1.3.1';
-const DESCRIPTION = 'Send text from browser to Kokoro-FastAPI for TTS generation';
+const EXTENSION_VERSION = pkg.version;
+const DESCRIPTION = pkg.description;
 
 const SRC_FILES = [
     'background.js',
@@ -304,15 +306,16 @@ function packageFirefox(sourceDir, outputDir) {
     try {
         console.log('Creating Firefox package using web-ext...');
         const zipName = `kokoro-extension-firefox-${EXTENSION_VERSION}.zip`;
-        // web-ext build --source-dir ... --artifacts-dir ...
-        // We use npx to run it without adding it as a permanent dependency if not wanted,
-        // though adding it to devDependencies is good practice. Use npx -y to auto-confirm.
-
+        const webExtBin = path.join(__dirname, 'node_modules', '.bin', 'web-ext');
         // --filename is relative to artifacts-dir
-        execSync(`npx -y web-ext build --source-dir "${sourceDir}" --artifacts-dir "${outputDir}" --filename "${zipName}" --overwrite-dest`);
+        execSync(
+            `"${webExtBin}" build --source-dir "${sourceDir}" --artifacts-dir "${outputDir}" --filename "${zipName}" --overwrite-dest`,
+            { stdio: 'inherit' }
+        );
         console.log(`Firefox package created: ${path.join(outputDir, zipName)}`);
     } catch (error) {
         console.error('Error packaging for Firefox:', error.message);
+        throw error;
     }
 }
 
