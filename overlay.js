@@ -20,6 +20,10 @@ let isPaused = false;
 let ignoreNextPause = false;
 let overlayCollapsed = false;
 let overlayDraggable = true;
+let overlayHostSupportsChrome = false;
+let activeDragPointerId = null;
+let lastDragScreenX = 0;
+let lastDragScreenY = 0;
 
 const audioManager = new AudioManager();
 const playPauseBtn = document.getElementById('playPause');
@@ -44,8 +48,10 @@ function postToHostPage(data) {
 
 function applyOverlayChromeState({ mode, collapsed, draggable } = {}) {
     const isFull = mode === 'full';
+    overlayHostSupportsChrome = true;
     overlayCollapsed = !!collapsed;
     overlayDraggable = draggable !== false && !isFull;
+    document.body.classList.add('has-host-overlay-state');
     document.body.classList.toggle('collapsed', overlayCollapsed);
     document.body.classList.toggle('mode-full', isFull);
     if (collapseBtn) {
@@ -58,6 +64,17 @@ function applyOverlayChromeState({ mode, collapsed, draggable } = {}) {
         dragHandle.style.cursor = overlayDraggable ? 'grab' : 'default';
         dragHandle.setAttribute('aria-disabled', overlayDraggable ? 'false' : 'true');
     }
+}
+
+function endOverlayPointerDrag(pointerId) {
+    if (activeDragPointerId === null || activeDragPointerId !== pointerId) return;
+    if (dragHandle && typeof dragHandle.releasePointerCapture === 'function') {
+        try {
+            dragHandle.releasePointerCapture(pointerId);
+        } catch (e) { /* already released */ }
+    }
+    activeDragPointerId = null;
+    postToHostPage({ action: 'KOKORO_DRAG_END' });
 }
 
 // --- Event Listeners ---
@@ -82,19 +99,55 @@ if (collapseBtn) {
 }
 
 if (dragHandle) {
+    // Keep the full pointer sequence in the iframe (explicit capture) so touch/pen
+    // move/up/cancel are not stranded after the host disables iframe hit-testing.
+    // Forward screen-space deltas so host geometry stays correct as the iframe moves.
     dragHandle.addEventListener('pointerdown', (event) => {
-        if (!overlayDraggable) return;
+        if (!overlayHostSupportsChrome || !overlayDraggable) return;
         if (event.button !== undefined && event.button !== 0) return;
         const interactive = event.target.closest(
             'button, a, input, select, textarea, option, label, [role="button"], [role="slider"], [role="link"]'
         );
         if (interactive && interactive !== dragHandle) return;
         event.preventDefault();
+        activeDragPointerId = event.pointerId;
+        lastDragScreenX = event.screenX;
+        lastDragScreenY = event.screenY;
+        if (typeof dragHandle.setPointerCapture === 'function') {
+            try {
+                dragHandle.setPointerCapture(event.pointerId);
+            } catch (e) { /* capture unsupported */ }
+        }
+        postToHostPage({ action: 'KOKORO_DRAG_START' });
+    });
+
+    dragHandle.addEventListener('pointermove', (event) => {
+        if (activeDragPointerId === null || event.pointerId !== activeDragPointerId) return;
+        const dx = event.screenX - lastDragScreenX;
+        const dy = event.screenY - lastDragScreenY;
+        lastDragScreenX = event.screenX;
+        lastDragScreenY = event.screenY;
+        if (dx === 0 && dy === 0) return;
         postToHostPage({
-            action: 'KOKORO_DRAG_START',
-            clientX: event.clientX,
-            clientY: event.clientY
+            action: 'KOKORO_DRAG_MOVE',
+            dx,
+            dy
         });
+    });
+
+    dragHandle.addEventListener('pointerup', (event) => {
+        endOverlayPointerDrag(event.pointerId);
+    });
+
+    dragHandle.addEventListener('pointercancel', (event) => {
+        endOverlayPointerDrag(event.pointerId);
+    });
+
+    dragHandle.addEventListener('lostpointercapture', (event) => {
+        if (activeDragPointerId !== null && event.pointerId === activeDragPointerId) {
+            activeDragPointerId = null;
+            postToHostPage({ action: 'KOKORO_DRAG_END' });
+        }
     });
 }
 

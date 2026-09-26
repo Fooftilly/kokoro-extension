@@ -145,16 +145,36 @@ body.collapsed #text-display {
     display: none;
 }
 
+body.collapsed .header {
+    padding: 8px 12px;
+    gap: 6px;
+}
+
 body.collapsed .content {
-    padding: 8px 12px 10px;
+    flex: 0 0 auto;
+    padding: 6px 12px 8px;
+    overflow: visible;
 }
 
 body.collapsed .controls {
     flex-wrap: wrap;
+    margin-top: 0;
+    row-gap: 4px;
 }
 
 body.collapsed #timeEstimate {
     display: none;
+}
+
+/* Floating-only chrome: hidden until a supporting host sends KOKORO_OVERLAY_STATE
+   (EPUB reader embeds overlay.html without that protocol). */
+body:not(.has-host-overlay-state) #collapse,
+body:not(.has-host-overlay-state) .drag-grip {
+    display: none;
+}
+
+body:not(.has-host-overlay-state) .drag-handle {
+    cursor: default;
 }
 
 .progress-container {

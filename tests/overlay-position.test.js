@@ -126,7 +126,9 @@ describe('overlay-position helpers', () => {
 
     test('compact vs full geometry constants stay separated', () => {
         expect(OVERLAY_COLLAPSED_HEIGHT).toBeLessThan(OVERLAY_POPUP_HEIGHT);
+        expect(OVERLAY_COLLAPSED_HEIGHT).toBeGreaterThanOrEqual(140);
         expect(OVERLAY_POPUP_WIDTH).toBe(320);
         expect(OVERLAY_POPUP_HEIGHT).toBe(500);
+        expect(OVERLAY_COLLAPSED_HEIGHT).toBe(148);
     });
 });

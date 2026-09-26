@@ -16,7 +16,8 @@ describe('content.js parseArticle', () => {
             runtime: {
                 onMessage: {
                     addListener: jest.fn()
-                }
+                },
+                getURL: jest.fn((path) => `chrome-extension://kokoro-test/${path}`)
             },
             storage: {
                 local: {
@@ -181,5 +182,78 @@ describe('content.js parseArticle', () => {
         window.dispatchEvent(messageEvent);
 
         expect(targetEl.scrollIntoView).toHaveBeenCalled();
+    });
+
+    test('drag move deltas preserve offset from nonzero top-right position', () => {
+        const posApi = globalThis.KokoroOverlayPosition;
+        Object.defineProperty(window, 'innerWidth', { value: 1000, configurable: true });
+        Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true });
+
+        const defaultPos = posApi.defaultOverlayPosition({
+            viewportWidth: 1000,
+            width: posApi.OVERLAY_POPUP_WIDTH
+        });
+        expect(defaultPos.left).toBeGreaterThan(500);
+
+        document.body.innerHTML = `
+            <div id="kokoro-overlay-container" data-mode="popup" data-collapsed="0">
+                <iframe src="about:blank"></iframe>
+            </div>
+        `;
+        const container = document.getElementById('kokoro-overlay-container');
+        container.style.position = 'fixed';
+        container.style.left = `${defaultPos.left}px`;
+        container.style.top = `${defaultPos.top}px`;
+        container.style.width = `${posApi.OVERLAY_POPUP_WIDTH}px`;
+        container.style.height = `${posApi.OVERLAY_POPUP_HEIGHT}px`;
+
+        const startLeft = defaultPos.left;
+        const startTop = defaultPos.top;
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { action: 'KOKORO_DRAG_START' }
+        }));
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { action: 'KOKORO_DRAG_MOVE', dx: -80, dy: 30 }
+        }));
+
+        expect(Number.parseFloat(container.style.left)).toBe(startLeft - 80);
+        expect(Number.parseFloat(container.style.top)).toBe(startTop + 30);
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { action: 'KOKORO_DRAG_END' }
+        }));
+        expect(browser.storage.local.set).toHaveBeenCalledWith({
+            [posApi.getOverlayPositionStorageKey()]: {
+                left: startLeft - 80,
+                top: startTop + 30
+            }
+        });
+    });
+
+    test('collapsed host height fits retained chrome constant', () => {
+        const posApi = globalThis.KokoroOverlayPosition;
+        Object.defineProperty(window, 'innerWidth', { value: 1000, configurable: true });
+        Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true });
+
+        document.body.innerHTML = `
+            <div id="kokoro-overlay-container" data-mode="popup" data-collapsed="0">
+                <iframe id="kokoro-player-frame"></iframe>
+            </div>
+        `;
+        const container = document.getElementById('kokoro-overlay-container');
+        const iframe = document.getElementById('kokoro-player-frame');
+        iframe.src = browser.runtime.getURL('overlay.html');
+        iframe.contentWindow.postMessage = jest.fn();
+        container.style.left = '40px';
+        container.style.top = '40px';
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { action: 'KOKORO_SET_COLLAPSED', collapsed: true }
+        }));
+
+        expect(container.dataset.collapsed).toBe('1');
+        expect(Number.parseFloat(container.style.height)).toBe(posApi.OVERLAY_COLLAPSED_HEIGHT);
+        expect(posApi.OVERLAY_COLLAPSED_HEIGHT).toBeGreaterThanOrEqual(140);
     });
 });

@@ -366,11 +366,7 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
 
     function endOverlayDrag() {
         if (!overlayDragState) return;
-        const { container, iframe } = overlayDragState;
-        if (iframe) iframe.style.pointerEvents = '';
-        window.removeEventListener('pointermove', onOverlayDragMove);
-        window.removeEventListener('pointerup', endOverlayDrag);
-        window.removeEventListener('pointercancel', endOverlayDrag);
+        const { container } = overlayDragState;
         const left = Number.parseFloat(container.style.left);
         const top = Number.parseFloat(container.style.top);
         if (Number.isFinite(left) && Number.isFinite(top)) {
@@ -379,33 +375,28 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         overlayDragState = null;
     }
 
-    function onOverlayDragMove(event) {
+    function onOverlayDragMove(dx, dy) {
         if (!overlayDragState) return;
-        const { container, offsetX, offsetY } = overlayDragState;
+        const { container } = overlayDragState;
         const collapsed = container.dataset.collapsed === '1';
+        const left = Number.parseFloat(container.style.left);
+        const top = Number.parseFloat(container.style.top);
+        if (!Number.isFinite(left) || !Number.isFinite(top)) return;
         applyFloatingGeometry(
             container,
-            event.clientX - offsetX,
-            event.clientY - offsetY,
+            left + dx,
+            top + dy,
             collapsed
         );
     }
 
-    function startOverlayDrag(clientX, clientY) {
+    function startOverlayDrag() {
         const container = document.getElementById('kokoro-overlay-container');
         if (!container || container.dataset.mode === 'full') return;
-        const iframe = container.querySelector('iframe');
-        const rect = container.getBoundingClientRect();
-        overlayDragState = {
-            container,
-            iframe,
-            offsetX: clientX - rect.left,
-            offsetY: clientY - rect.top
-        };
-        if (iframe) iframe.style.pointerEvents = 'none';
-        window.addEventListener('pointermove', onOverlayDragMove);
-        window.addEventListener('pointerup', endOverlayDrag);
-        window.addEventListener('pointercancel', endOverlayDrag);
+        // Pointer sequence stays in the overlay iframe (explicit capture). The host
+        // only applies forwarded screen-space deltas — no iframe pointer-events toggle
+        // and no parent-window move listeners (those miss touch implicit capture).
+        overlayDragState = { container };
     }
 
     function setOverlayCollapsed(collapsed) {
@@ -595,9 +586,13 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
                 postOverlayState(container);
             }
         } else if (event.data && event.data.action === 'KOKORO_DRAG_START') {
-            if (typeof event.data.clientX === 'number' && typeof event.data.clientY === 'number') {
-                startOverlayDrag(event.data.clientX, event.data.clientY);
+            startOverlayDrag();
+        } else if (event.data && event.data.action === 'KOKORO_DRAG_MOVE') {
+            if (typeof event.data.dx === 'number' && typeof event.data.dy === 'number') {
+                onOverlayDragMove(event.data.dx, event.data.dy);
             }
+        } else if (event.data && event.data.action === 'KOKORO_DRAG_END') {
+            endOverlayDrag();
         } else if (event.data && event.data.action === 'KOKORO_SET_COLLAPSED') {
             setOverlayCollapsed(!!event.data.collapsed);
         } else if (event.data && event.data.action === 'KOKORO_SCROLL_TO_BLOCK') {

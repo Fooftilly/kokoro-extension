@@ -8,7 +8,9 @@
 
     const OVERLAY_POPUP_WIDTH = 320;
     const OVERLAY_POPUP_HEIGHT = 500;
-    const OVERLAY_COLLAPSED_HEIGHT = 88;
+    // Header (~56) + compact content padding + wrapped controls row(s) (~80+).
+    // Must clear retained chrome (header + playback controls) without clipping.
+    const OVERLAY_COLLAPSED_HEIGHT = 148;
     const OVERLAY_VIEWPORT_MARGIN = 8;
     const POSITION_STORAGE_KEY = 'kokoroOverlayPosition';
 

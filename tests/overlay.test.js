@@ -73,6 +73,7 @@ jest.mock('../text-processor.js', () => ({
 Element.prototype.scrollIntoView = jest.fn();
 
 function setupDOM() {
+    document.body.className = '';
     document.body.innerHTML = `
         <div id="dragHandle">
             <span class="drag-grip">⋮⋮</span>
@@ -159,31 +160,115 @@ describe('overlay.js logic', () => {
         );
     });
 
-    test('Drag handle posts DRAG_START; control buttons do not', async () => {
+    test('Drag handle captures pointer and forwards move/end (touch/pen style)', async () => {
         await new Promise(r => setTimeout(r, 100));
         const dragHandle = document.getElementById('dragHandle');
-        const closeBtn = document.getElementById('close');
+        dragHandle.setPointerCapture = jest.fn();
+        dragHandle.releasePointerCapture = jest.fn();
+
+        // Host must opt in before floating chrome is interactive
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { action: 'KOKORO_OVERLAY_STATE', mode: 'popup', collapsed: false, draggable: true }
+        }));
+        window.parent.postMessage.mockClear();
+
+        const firePointer = (type, el, props) => {
+            const event = new Event(type, { bubbles: true, cancelable: true });
+            Object.defineProperties(event, {
+                pointerId: { value: props.pointerId ?? 7 },
+                pointerType: { value: props.pointerType ?? 'touch' },
+                button: { value: props.button ?? 0 },
+                clientX: { value: props.clientX ?? 0 },
+                clientY: { value: props.clientY ?? 0 },
+                screenX: { value: props.screenX ?? 0 },
+                screenY: { value: props.screenY ?? 0 },
+                target: { value: el },
+            });
+            el.dispatchEvent(event);
+            return event;
+        };
+
+        firePointer('pointerdown', dragHandle, {
+            pointerType: 'touch',
+            screenX: 900,
+            screenY: 80,
+            clientX: 40,
+            clientY: 20
+        });
+        expect(dragHandle.setPointerCapture).toHaveBeenCalledWith(7);
+        expect(window.parent.postMessage).toHaveBeenCalledWith(
+            { action: 'KOKORO_DRAG_START' },
+            '*'
+        );
+
+        window.parent.postMessage.mockClear();
+        firePointer('pointermove', dragHandle, {
+            pointerType: 'touch',
+            screenX: 860,
+            screenY: 100,
+            clientX: 20,
+            clientY: 40
+        });
+        expect(window.parent.postMessage).toHaveBeenCalledWith(
+            { action: 'KOKORO_DRAG_MOVE', dx: -40, dy: 20 },
+            '*'
+        );
+
+        window.parent.postMessage.mockClear();
+        firePointer('pointerup', dragHandle, {
+            pointerType: 'touch',
+            screenX: 860,
+            screenY: 100
+        });
+        expect(dragHandle.releasePointerCapture).toHaveBeenCalledWith(7);
+        expect(window.parent.postMessage).toHaveBeenCalledWith(
+            { action: 'KOKORO_DRAG_END' },
+            '*'
+        );
+    });
+
+    test('Drag handle posts DRAG_START only when host supports floating chrome', async () => {
+        await new Promise(r => setTimeout(r, 100));
+        const dragHandle = document.getElementById('dragHandle');
+        dragHandle.setPointerCapture = jest.fn();
+        dragHandle.releasePointerCapture = jest.fn();
         window.parent.postMessage.mockClear();
 
         const firePointerDown = (el, clientX, clientY) => {
             const event = new Event('pointerdown', { bubbles: true, cancelable: true });
             Object.defineProperties(event, {
+                pointerId: { value: 1 },
                 clientX: { value: clientX },
                 clientY: { value: clientY },
+                screenX: { value: clientX },
+                screenY: { value: clientY },
                 button: { value: 0 },
                 target: { value: el },
             });
             el.dispatchEvent(event);
         };
 
+        // No host state yet (EPUB reader path) — drag must not start
+        firePointerDown(dragHandle, 40, 50);
+        expect(window.parent.postMessage).not.toHaveBeenCalledWith(
+            expect.objectContaining({ action: 'KOKORO_DRAG_START' }),
+            '*'
+        );
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { action: 'KOKORO_OVERLAY_STATE', mode: 'popup', collapsed: false, draggable: true }
+        }));
+        expect(document.body.classList.contains('has-host-overlay-state')).toBe(true);
+
+        window.parent.postMessage.mockClear();
         firePointerDown(dragHandle, 40, 50);
         expect(window.parent.postMessage).toHaveBeenCalledWith(
-            { action: 'KOKORO_DRAG_START', clientX: 40, clientY: 50 },
+            { action: 'KOKORO_DRAG_START' },
             '*'
         );
 
         window.parent.postMessage.mockClear();
-        firePointerDown(closeBtn, 10, 10);
+        firePointerDown(document.getElementById('close'), 10, 10);
         expect(window.parent.postMessage).not.toHaveBeenCalledWith(
             expect.objectContaining({ action: 'KOKORO_DRAG_START' }),
             '*'
@@ -198,6 +283,16 @@ describe('overlay.js logic', () => {
             expect.objectContaining({ action: 'KOKORO_DRAG_START' }),
             '*'
         );
+    });
+
+    test('Collapse chrome is gated until host overlay state arrives', async () => {
+        await new Promise(r => setTimeout(r, 100));
+        expect(document.body.classList.contains('has-host-overlay-state')).toBe(false);
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { action: 'KOKORO_OVERLAY_STATE', mode: 'popup', collapsed: false, draggable: true }
+        }));
+        expect(document.body.classList.contains('has-host-overlay-state')).toBe(true);
     });
 
     test('Collapse chrome does not pause or recreate audio', async () => {
