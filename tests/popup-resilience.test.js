@@ -184,6 +184,53 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(browser.storage.sync.set).toHaveBeenCalled();
     });
 
+    test('denied permission → Retry keeps permission status (not network)', async () => {
+        browser.permissions.contains.mockResolvedValue(false);
+        browser.permissions.request.mockResolvedValue(false);
+        global.fetch = jest.fn(() => Promise.reject(new TypeError('Failed to fetch')));
+
+        document.getElementById('apiUrl').value = 'http://192.168.1.50:8880/v1/';
+        await popup.refreshBackendStatus('http://192.168.1.50:8880/v1/', {
+            requestPermission: false,
+        });
+        await flushAsync();
+        expect(document.getElementById('apiStatus').textContent).toMatch(/permission/i);
+        expect(global.fetch).not.toHaveBeenCalled();
+
+        // Simulate Retry user gesture (requestPermission: true)
+        await popup.refreshBackendStatus('http://192.168.1.50:8880/v1/', {
+            requestPermission: true,
+        });
+        await flushAsync();
+
+        expect(document.getElementById('apiStatus').textContent).toMatch(/permission/i);
+        expect(document.getElementById('apiStatus').textContent).not.toMatch(/Unable to reach/i);
+        expect(browser.permissions.request).toHaveBeenCalled();
+        // Still denied — must not fall through to fetch/network labeling
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('denied permission → reopen shows permission (not network)', async () => {
+        browser.storage.sync.get.mockImplementation(async (defaults) => ({
+            ...defaults,
+            apiUrl: 'http://192.168.1.77:8880/v1/',
+            voice: 'af_sarah',
+            mode: 'stream',
+            theme: 'light',
+        }));
+        browser.permissions.contains.mockResolvedValue(false);
+        global.fetch = jest.fn(() => Promise.reject(new TypeError('Failed to fetch')));
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        expect(document.getElementById('apiUrl').value).toContain('192.168.1.77');
+        expect(document.getElementById('apiStatus').textContent).toMatch(/permission/i);
+        expect(document.getElementById('apiStatus').textContent).not.toMatch(/Unable to reach/i);
+        expect(global.fetch).not.toHaveBeenCalled();
+        expect(browser.permissions.request).not.toHaveBeenCalled();
+    });
+
     test('stale refresh cannot overwrite a newer URL result', async () => {
         let resolveStale;
         const stalePromise = new Promise((resolve) => {
@@ -264,6 +311,37 @@ describe('popup backend-loss resilience (#4)', () => {
         search.value = 'af_';
         search.dispatchEvent(new Event('input'));
         expect(document.getElementById('voiceDropdown').textContent).toContain('af_alloy');
+    });
+
+    test('editing URL during refresh clears stuck Checking and shows Retry', async () => {
+        const resolvers = [];
+        global.fetch = jest.fn(() => new Promise((resolve) => {
+            resolvers.push(resolve);
+        }));
+
+        document.getElementById('apiUrl').value = 'http://127.0.0.1:8880/v1/';
+        const pending = popup.refreshBackendStatus('http://127.0.0.1:8880/v1/', {
+            timeoutMs: 10000,
+        });
+        await flushAsync();
+        expect(document.getElementById('apiStatus').textContent).toMatch(/Checking/i);
+        expect(document.getElementById('retryApi').style.display).toBe('none');
+        expect(resolvers.length).toBeGreaterThanOrEqual(1);
+
+        // Edit URL without Save — no new refresh starts
+        document.getElementById('apiUrl').value = 'http://10.0.0.9:8880/v1/';
+
+        // Complete /test; refresh should discard and clear Checking (not apply voices)
+        resolvers[0]({
+            ok: true,
+            json: async () => ({ status: 'ok' }),
+        });
+        await pending;
+        await flushAsync();
+
+        expect(document.getElementById('apiStatus').textContent).not.toMatch(/Checking/i);
+        expect(document.getElementById('retryApi').style.display).not.toBe('none');
+        expect(popup.getAvailableVoices()).toEqual([]);
     });
 
     test('never-resolving fetch ends Checking via timeout', async () => {

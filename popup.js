@@ -40,9 +40,16 @@ function setApiStatusUI(kind, message, { showRetry = true } = {}) {
     connectionStatus = { kind, message };
 
     if (kind === 'idle') {
-        row.style.display = 'none';
-        statusEl.textContent = '';
+        statusEl.textContent = message || '';
         statusEl.className = 'note mt-2';
+        // Neutral idle can keep Retry visible (e.g. URL edited mid-probe).
+        if (showRetry) {
+            row.style.display = 'flex';
+            if (retryBtn) retryBtn.style.display = 'inline-block';
+        } else {
+            row.style.display = 'none';
+            if (retryBtn) retryBtn.style.display = 'none';
+        }
         return;
     }
 
@@ -66,8 +73,16 @@ function setApiStatusUI(kind, message, { showRetry = true } = {}) {
 /**
  * Probe connection and refresh voice list. Settings UI always remains usable.
  * Newer calls abort/supersede in-flight work so stale URLs cannot overwrite status.
+ *
+ * @param {object} [options]
+ * @param {boolean} [options.requestPermission=false] When true (Save/Retry user gesture),
+ *   may call permissions.request for non-local URLs. On open/restore, only contains().
  */
-async function refreshBackendStatus(apiUrl, { hideOkAfterMs = 0, timeoutMs } = {}) {
+async function refreshBackendStatus(apiUrl, {
+    hideOkAfterMs = 0,
+    timeoutMs,
+    requestPermission = false,
+} = {}) {
     const generation = ++refreshGeneration;
     const requestedUrl = apiUrl;
 
@@ -83,19 +98,60 @@ async function refreshBackendStatus(apiUrl, { hideOkAfterMs = 0, timeoutMs } = {
 
     setApiStatusUI('checking', messageForKind('checking'), { showRetry: false });
 
-    const stillCurrent = () => (
-        generation === refreshGeneration
-        && document.getElementById('apiUrl')
-        && document.getElementById('apiUrl').value === requestedUrl
-    );
+    const isLatestGeneration = () => generation === refreshGeneration;
+    const urlMatchesRequest = () => {
+        const el = document.getElementById('apiUrl');
+        return !!el && el.value === requestedUrl;
+    };
+
+    /**
+     * @returns {boolean} true if caller should discard results and return
+     * - Superseded generation: discard silently (newer refresh owns UI)
+     * - Latest gen but URL edited without Save/Retry: clear stuck Checking, show Retry
+     */
+    const shouldDiscardResults = () => {
+        if (!isLatestGeneration()) {
+            return true;
+        }
+        if (!urlMatchesRequest()) {
+            setApiStatusUI('idle', '', { showRetry: true });
+            return true;
+        }
+        return false;
+    };
 
     try {
+        // Non-local hosts need optional host permission — do not mislabel as unreachable.
+        if (!isLocalhost(requestedUrl)) {
+            try {
+                const origin = `${new URL(requestedUrl).origin}/*`;
+                let hasPerm = await browser.permissions.contains({ origins: [origin] });
+                if (!hasPerm && requestPermission) {
+                    hasPerm = await browser.permissions.request({ origins: [origin] });
+                }
+                if (shouldDiscardResults()) return;
+                if (!hasPerm) {
+                    availableVoices = [];
+                    voiceFetchStatus = {
+                        kind: 'permission',
+                        message: messageForKind('permission'),
+                    };
+                    setApiStatusUI('permission', messageForKind('permission'), {
+                        showRetry: true,
+                    });
+                    return;
+                }
+            } catch (_) {
+                // Invalid URL — fall through to probe (will surface network/malformed).
+            }
+        }
+
         const requestOpts = { signal: controller.signal, timeoutMs };
         const probe = await probeApiConnection(requestedUrl, fetch, requestOpts);
-        if (!stillCurrent() || probe.aborted || controller.signal.aborted) return;
+        if (shouldDiscardResults() || probe.aborted) return;
 
         const voicesResult = await fetchNormalizedVoices(requestedUrl, fetch, requestOpts);
-        if (!stillCurrent() || controller.signal.aborted) return;
+        if (shouldDiscardResults()) return;
 
         const resolved = resolveBackendStatus(probe, voicesResult);
         availableVoices = resolved.voices;
@@ -108,12 +164,12 @@ async function refreshBackendStatus(apiUrl, { hideOkAfterMs = 0, timeoutMs } = {
         if (resolved.kind === 'ok' && hideOkAfterMs > 0) {
             setTimeout(() => {
                 if (generation === refreshGeneration && connectionStatus.kind === 'ok') {
-                    setApiStatusUI('idle', '');
+                    setApiStatusUI('idle', '', { showRetry: false });
                 }
             }, hideOkAfterMs);
         }
     } catch (e) {
-        if (!stillCurrent() || (e && e.name === 'AbortError')) {
+        if (shouldDiscardResults() || (e && e.name === 'AbortError')) {
             return;
         }
         console.error('Backend status refresh failed:', e);
@@ -654,14 +710,21 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         const url = document.getElementById('apiUrl').value;
-        await refreshBackendStatus(url, { hideOkAfterMs: 3000 });
+        await refreshBackendStatus(url, {
+            hideOkAfterMs: 3000,
+            requestPermission: true,
+        });
     });
 
     const retryApiBtn = document.getElementById('retryApi');
     if (retryApiBtn) {
         retryApiBtn.addEventListener('click', async () => {
             const url = document.getElementById('apiUrl').value;
-            await refreshBackendStatus(url, { hideOkAfterMs: 3000 });
+            // User gesture: may re-request optional host permission for remote URLs.
+            await refreshBackendStatus(url, {
+                hideOkAfterMs: 3000,
+                requestPermission: true,
+            });
         });
     }
 
@@ -699,4 +762,3 @@ if (typeof module !== 'undefined' && module.exports) {
         getVoiceFetchStatus: () => voiceFetchStatus,
     };
 }
-
