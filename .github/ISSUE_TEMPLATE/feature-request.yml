@@ -18,9 +18,7 @@ body:
     id: proposal
     attributes:
       label: Proposed solution
-      description: How should the extension behave?
-    validations:
-      required: true
+      description: How should the extension behave? Optional — problem-first reports are welcome.
   - type: textarea
     id: alternatives
     attributes:

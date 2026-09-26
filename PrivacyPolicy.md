@@ -10,7 +10,7 @@ Kokoro TTS Sender ("we," "our," or "the extension") is a browser extension that 
 
 The extension does not collect personal data for advertising or analytics, and it does not include telemetry that phones home to the extension author.
 
-Speech generation works by sending the text you select (or article content extracted for “Read Article”) to the **API base URL you configure** in settings. The default is a local address (`http://127.0.0.1:8880/v1/`), but you may point the extension at a LAN or remote Kokoro-FastAPI endpoint. In those cases, text is transmitted over the network to that endpoint.
+Speech generation works by sending the text you select (or article content extracted for “Read Article”) to the **API base URL you configure** in settings. The default is a local address (`http://127.0.0.1:8880/v1/`), but you may point the extension at a LAN or remote Kokoro-FastAPI endpoint. In those cases, text is transmitted over the network to that endpoint. If you configure a remote (or other non-local) **`http://`** URL rather than **`https://`**, that text is sent **unencrypted in transit** (cleartext HTTP). Prefer HTTPS for any endpoint that leaves a trusted local network.
 
 ## Data usage
 
