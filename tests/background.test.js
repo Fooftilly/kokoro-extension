@@ -119,6 +119,18 @@ describe('background.js logic', () => {
         console.log('SendMessage calls:', browser.tabs.sendMessage.mock.calls.map(c => (c[1] ? c[1].action : 'unknown')));
 
         expect(browser.scripting.executeScript).toHaveBeenCalled();
+        const injectCall = browser.scripting.executeScript.mock.calls.find(
+            (call) => call[0] && Array.isArray(call[0].files)
+        );
+        expect(injectCall).toBeDefined();
+        const files = injectCall[0].files;
+        expect(files).toEqual([
+            'browser-polyfill.min.js',
+            'readability.js',
+            'overlay-position.js',
+            'content.js'
+        ]);
+        expect(files.indexOf('overlay-position.js')).toBeLessThan(files.indexOf('content.js'));
     });
 
     test('Should handle FETCH_TTS_AUDIO message', async () => {

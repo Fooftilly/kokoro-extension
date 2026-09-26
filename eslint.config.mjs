@@ -55,6 +55,7 @@ export default [
       'content.js',
       'popup.js',
       'api-client.js',
+      'overlay-position.js',
       'theme-init.js',
       'transliteration-lite.js',
     ],
@@ -83,10 +84,19 @@ export default [
   },
   // Classic scripts that optionally export for Jest via CJS interop
   {
-    files: ['content.js', 'api-client.js'],
+    files: ['content.js', 'api-client.js', 'overlay-position.js'],
     languageOptions: {
       globals: {
         module: 'readonly',
+      },
+    },
+  },
+  // content.js depends on overlay-position.js (classic script global)
+  {
+    files: ['content.js'],
+    languageOptions: {
+      globals: {
+        KokoroOverlayPosition: 'readonly',
       },
     },
   },

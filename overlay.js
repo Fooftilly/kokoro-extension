@@ -10,15 +10,72 @@ const seekFwdBtn = document.getElementById('seekFwd');
 const speedSelect = document.getElementById('speed');
 const retryBtn = document.getElementById('retry');
 const closeBtn = document.getElementById('close');
+const collapseBtn = document.getElementById('collapse');
+const dragHandle = document.getElementById('dragHandle');
 const spinnerEl = document.getElementById('loadingSpinner');
 
 let sentences = [];
 let currentIndex = 0;
 let isPaused = false;
 let ignoreNextPause = false;
+let overlayCollapsed = false;
+let overlayDraggable = true;
+let overlayHostSupportsChrome = false;
+let activeDragPointerId = null;
+let lastDragScreenX = 0;
+let lastDragScreenY = 0;
 
 const audioManager = new AudioManager();
 const playPauseBtn = document.getElementById('playPause');
+
+function hostPageTargetOrigin() {
+    try {
+        if (document.referrer) return new URL(document.referrer).origin;
+    } catch (e) { }
+    try {
+        if (location.ancestorOrigins && location.ancestorOrigins.length > 0) {
+            return location.ancestorOrigins[0];
+        }
+    } catch (e) { }
+    // Host page origin is unknown for extension iframes on arbitrary sites;
+    // fall back only when referrer/ancestorOrigins are unavailable.
+    return '*';
+}
+
+function postToHostPage(data) {
+    window.parent.postMessage(data, hostPageTargetOrigin());
+}
+
+function applyOverlayChromeState({ mode, collapsed, draggable } = {}) {
+    const isFull = mode === 'full';
+    overlayHostSupportsChrome = true;
+    overlayCollapsed = !!collapsed;
+    overlayDraggable = draggable !== false && !isFull;
+    document.body.classList.add('has-host-overlay-state');
+    document.body.classList.toggle('collapsed', overlayCollapsed);
+    document.body.classList.toggle('mode-full', isFull);
+    if (collapseBtn) {
+        collapseBtn.setAttribute('aria-label', overlayCollapsed ? 'Expand player' : 'Collapse player');
+        collapseBtn.setAttribute('title', overlayCollapsed ? 'Expand' : 'Collapse');
+        collapseBtn.textContent = overlayCollapsed ? '+' : '–';
+        collapseBtn.setAttribute('aria-expanded', overlayCollapsed ? 'false' : 'true');
+    }
+    if (dragHandle) {
+        dragHandle.style.cursor = overlayDraggable ? 'grab' : 'default';
+        dragHandle.setAttribute('aria-disabled', overlayDraggable ? 'false' : 'true');
+    }
+}
+
+function endOverlayPointerDrag(pointerId) {
+    if (activeDragPointerId === null || activeDragPointerId !== pointerId) return;
+    if (dragHandle && typeof dragHandle.releasePointerCapture === 'function') {
+        try {
+            dragHandle.releasePointerCapture(pointerId);
+        } catch (e) { /* already released */ }
+    }
+    activeDragPointerId = null;
+    postToHostPage({ action: 'KOKORO_DRAG_END' });
+}
 
 // --- Event Listeners ---
 
@@ -29,8 +86,70 @@ if (window.nlp) {
 }
 
 closeBtn.addEventListener('click', () => {
-    window.parent.postMessage('CLOSE_KOKORO_PLAYER', '*');
+    postToHostPage('CLOSE_KOKORO_PLAYER');
 });
+
+if (collapseBtn) {
+    collapseBtn.addEventListener('click', () => {
+        postToHostPage({
+            action: 'KOKORO_SET_COLLAPSED',
+            collapsed: !overlayCollapsed
+        });
+    });
+}
+
+if (dragHandle) {
+    // Keep the full pointer sequence in the iframe (explicit capture) so touch/pen
+    // move/up/cancel are not stranded after the host disables iframe hit-testing.
+    // Forward screen-space deltas so host geometry stays correct as the iframe moves.
+    dragHandle.addEventListener('pointerdown', (event) => {
+        if (!overlayHostSupportsChrome || !overlayDraggable) return;
+        if (event.button !== undefined && event.button !== 0) return;
+        const interactive = event.target.closest(
+            'button, a, input, select, textarea, option, label, [role="button"], [role="slider"], [role="link"]'
+        );
+        if (interactive && interactive !== dragHandle) return;
+        event.preventDefault();
+        activeDragPointerId = event.pointerId;
+        lastDragScreenX = event.screenX;
+        lastDragScreenY = event.screenY;
+        if (typeof dragHandle.setPointerCapture === 'function') {
+            try {
+                dragHandle.setPointerCapture(event.pointerId);
+            } catch (e) { /* capture unsupported */ }
+        }
+        postToHostPage({ action: 'KOKORO_DRAG_START' });
+    });
+
+    dragHandle.addEventListener('pointermove', (event) => {
+        if (activeDragPointerId === null || event.pointerId !== activeDragPointerId) return;
+        const dx = event.screenX - lastDragScreenX;
+        const dy = event.screenY - lastDragScreenY;
+        lastDragScreenX = event.screenX;
+        lastDragScreenY = event.screenY;
+        if (dx === 0 && dy === 0) return;
+        postToHostPage({
+            action: 'KOKORO_DRAG_MOVE',
+            dx,
+            dy
+        });
+    });
+
+    dragHandle.addEventListener('pointerup', (event) => {
+        endOverlayPointerDrag(event.pointerId);
+    });
+
+    dragHandle.addEventListener('pointercancel', (event) => {
+        endOverlayPointerDrag(event.pointerId);
+    });
+
+    dragHandle.addEventListener('lostpointercapture', (event) => {
+        if (activeDragPointerId !== null && event.pointerId === activeDragPointerId) {
+            activeDragPointerId = null;
+            postToHostPage({ action: 'KOKORO_DRAG_END' });
+        }
+    });
+}
 
 // Keyboard shortcuts
 window.addEventListener('keydown', (e) => {
@@ -40,7 +159,7 @@ window.addEventListener('keydown', (e) => {
     }
 });
 
-// Handle messages from parent for navigation
+// Handle messages from parent for navigation / chrome state
 window.addEventListener('message', (event) => {
     if (event.data === 'NAV_NEXT') {
         navigate(currentIndex + 1);
@@ -49,6 +168,8 @@ window.addEventListener('message', (event) => {
     } else if (event.data === 'RELOAD_DATA') {
         window.hasReceivedData = true;
         initialize();
+    } else if (event.data && event.data.action === 'KOKORO_OVERLAY_STATE') {
+        applyOverlayChromeState(event.data);
     }
 });
 
@@ -206,7 +327,7 @@ async function initialize() {
     const shouldAutoplay = data.pendingAutoplay !== false;
     navigate(initialIndex, shouldAutoplay);
 
-    window.parent.postMessage('KOKORO_PLAYER_READY', '*');
+    postToHostPage('KOKORO_PLAYER_READY');
 }
 
 function renderText() {
@@ -471,19 +592,19 @@ async function navigate(index, forcePlay = null) {
 
     // Scroll origin page if enabled
     if (window.kokoroAutoScroll && currentSentence.text) {
-        window.parent.postMessage({
+        postToHostPage({
             action: 'KOKORO_SCROLL_TO_BLOCK',
             text: currentSentence.text
-        }, '*');
+        });
     }
 
     // Emit progress event for parent (reader.js)
     const blockIndex = sentences[currentIndex].blockIndex;
     if (window.parent) {
-        window.parent.postMessage({
+        postToHostPage({
             type: 'KOKORO_READING_PROGRESS',
             blockIndex: blockIndex
-        }, '*');
+        });
     }
 
     // Update Progress

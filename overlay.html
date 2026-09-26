@@ -11,8 +11,14 @@
 <body>
     <div class="header">
         <div class="header-top">
-            <div class="title" id="pageTitle">Kokoro TTS</div>
-            <button class="close-btn" id="close">&times;</button>
+            <div class="drag-handle" id="dragHandle" title="Drag to move" aria-label="Drag to move player">
+                <span class="drag-grip" aria-hidden="true">⋮⋮</span>
+                <div class="title" id="pageTitle">Kokoro TTS</div>
+            </div>
+            <div class="header-actions">
+                <button type="button" class="icon-btn" id="collapse" aria-label="Collapse player" title="Collapse">–</button>
+                <button type="button" class="close-btn" id="close" aria-label="Close player" title="Close">&times;</button>
+            </div>
         </div>
         <div class="progress-container">
             <div class="progress-bar" id="progressBar"></div>

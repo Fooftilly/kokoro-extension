@@ -8,10 +8,17 @@ describe('Substack Fixes', () => {
 
     beforeAll(() => {
         global.Readability = Readability;
+        require('../overlay-position.js');
         global.browser = {
             runtime: {
                 onMessage: {
                     addListener: jest.fn()
+                }
+            },
+            storage: {
+                local: {
+                    get: jest.fn(() => Promise.resolve({})),
+                    set: jest.fn(() => Promise.resolve())
                 }
             }
         };
