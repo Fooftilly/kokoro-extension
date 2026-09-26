@@ -1,0 +1,3 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`processContent Regressions Snapshot: Complex Scientific Text 1`] = `"Figure 1 shows that carbon dioxide levels increased by 50% (approximately 200 ppm). The temp. reached 25 degrees Celsius. Henry the eighth died in January 1547. See for example Smith and others (2020) for more details."`;
