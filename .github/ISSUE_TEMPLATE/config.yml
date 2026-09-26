@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Fooftilly/kokoro-extension/security/advisories/new
+    about: Please report security issues privately (see SECURITY.md). Do not open a public issue.
+  - name: Kokoro-FastAPI (backend)
+    url: https://github.com/remsky/Kokoro-FastAPI
+    about: Issues with the TTS server itself belong in the Kokoro-FastAPI repository.

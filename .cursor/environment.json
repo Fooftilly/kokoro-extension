@@ -1,0 +1,5 @@
+{
+  "name": "kokoro-extension",
+  "install": "npm ci",
+  "terminals": []
+}

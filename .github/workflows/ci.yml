@@ -1,0 +1,151 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-build:
+    name: Test and build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Package (build + Chrome/Firefox zips via pinned web-ext)
+        run: npm run package:ci
+
+      - name: Verify Chrome and Firefox manifests
+        run: |
+          set -euo pipefail
+          node <<'EOF'
+          const fs = require('fs');
+          const pkg = require('./package.json');
+          const BASELINE_PERMISSIONS = [
+            'contextMenus',
+            'storage',
+            'activeTab',
+            'notifications',
+            'scripting',
+            'alarms',
+            'downloads',
+          ].slice().sort();
+          const BASELINE_HOST = ['http://127.0.0.1/*', 'http://localhost/*'].slice().sort();
+          const OPTIONAL_HOST = '*://*/*';
+          const BASELINE_CSP = "script-src 'self'; object-src 'self';";
+          const BASELINE_DCP = { required: ['none'] };
+
+          function sameSet(actual, expected, label, browser) {
+            const a = [...actual].sort();
+            const e = [...expected].sort();
+            if (a.length !== e.length || a.some((v, i) => v !== e[i])) {
+              throw new Error(
+                `${browser}: ${label} mismatch.\n  expected: ${JSON.stringify(e)}\n  actual:   ${JSON.stringify(a)}`
+              );
+            }
+          }
+
+          function deepEqual(a, b) {
+            return JSON.stringify(a) === JSON.stringify(b);
+          }
+
+          for (const browser of ['chrome', 'firefox']) {
+            const manifestPath = `dist/${browser}/manifest.json`;
+            if (!fs.existsSync(manifestPath)) {
+              throw new Error(`${browser}: missing ${manifestPath}`);
+            }
+            const m = require(`./${manifestPath}`);
+            if (m.manifest_version !== 3) throw new Error(`${browser}: expected MV3`);
+            if (m.version !== pkg.version) {
+              throw new Error(`${browser}: manifest version ${m.version} != package.json ${pkg.version}`);
+            }
+            sameSet(m.permissions || [], BASELINE_PERMISSIONS, 'permissions', browser);
+            sameSet(m.host_permissions || [], BASELINE_HOST, 'host_permissions', browser);
+            const optional = m.optional_host_permissions || [];
+            if (!optional.includes(OPTIONAL_HOST)) {
+              throw new Error(
+                `${browser}: optional_host_permissions must include ${OPTIONAL_HOST}, got ${JSON.stringify(optional)}`
+              );
+            }
+
+            const bg = m.background || {};
+            if (browser === 'chrome') {
+              if (!bg.service_worker || bg.service_worker !== 'background.js') {
+                throw new Error(`chrome: expected background.service_worker=background.js, got ${JSON.stringify(bg)}`);
+              }
+              if (bg.scripts) {
+                throw new Error(`chrome: must not ship background.scripts, got ${JSON.stringify(bg.scripts)}`);
+              }
+            } else if (browser === 'firefox') {
+              const expectedScripts = ['browser-polyfill.min.js', 'background.js'];
+              if (!Array.isArray(bg.scripts) || bg.scripts.length !== expectedScripts.length
+                  || expectedScripts.some((s, i) => bg.scripts[i] !== s)) {
+                throw new Error(`firefox: expected background.scripts=${JSON.stringify(expectedScripts)}, got ${JSON.stringify(bg.scripts)}`);
+              }
+              if (bg.service_worker) {
+                throw new Error(`firefox: must not use background.service_worker, got ${JSON.stringify(bg.service_worker)}`);
+              }
+              const gecko = m.browser_specific_settings && m.browser_specific_settings.gecko;
+              if (!gecko || gecko.id !== '{e4a64387-5c02-4809-a10c-982329d47225}') {
+                throw new Error(`firefox: missing/invalid browser_specific_settings.gecko.id, got ${JSON.stringify(gecko && gecko.id)}`);
+              }
+              const dcp = gecko.data_collection_permissions;
+              if (!deepEqual(dcp, BASELINE_DCP)) {
+                throw new Error(
+                  `firefox: expected gecko.data_collection_permissions=${JSON.stringify(BASELINE_DCP)}, got ${JSON.stringify(dcp)}`
+                );
+              }
+            }
+
+            const csp = m.content_security_policy && m.content_security_policy.extension_pages;
+            if (csp !== BASELINE_CSP) {
+              throw new Error(
+                `${browser}: expected content_security_policy.extension_pages=${JSON.stringify(BASELINE_CSP)}, got ${JSON.stringify(csp)}`
+              );
+            }
+
+            console.log(browser + ': OK', m.name, m.version, 'permissions + background + CSP baseline');
+          }
+          EOF
+          test -f "dist/package/kokoro-extension-chrome-$(node -p "require('./package.json').version").zip"
+          test -f "dist/package/kokoro-extension-firefox-$(node -p "require('./package.json').version").zip"
+
+      - name: Upload unpacked build artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: extension-dist
+          path: |
+            dist/chrome/**
+            dist/firefox/**
+          if-no-files-found: error
+
+      - name: Upload package ZIP artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: extension-packages
+          path: dist/package/*.zip
+          if-no-files-found: error

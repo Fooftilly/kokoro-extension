@@ -1,16 +1,38 @@
 {
   "name": "kokoro-extension",
-  "version": "1.0.0",
-  "description": "",
+  "version": "1.3.1",
+  "description": "Browser extension that sends selected text or articles to a Kokoro-FastAPI endpoint for high-quality text-to-speech",
   "main": "background.js",
   "scripts": {
     "test": "jest",
+    "lint": "eslint .",
     "build": "node build.js",
-    "package": "node build.js --package"
+    "package": "node build.js --package",
+    "package:ci": "node build.js --package --skip-tests"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "browser-extension",
+    "chrome-extension",
+    "firefox-addon",
+    "tts",
+    "text-to-speech",
+    "kokoro",
+    "kokoro-fastapi",
+    "mv3"
+  ],
+  "author": "Nikola Perović",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fooftilly/kokoro-extension.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Fooftilly/kokoro-extension/issues"
+  },
+  "homepage": "https://github.com/Fooftilly/kokoro-extension#readme",
+  "engines": {
+    "node": "^20.19.0 || ^22.13.0 || >=24"
+  },
   "type": "commonjs",
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
@@ -26,9 +48,13 @@
   "devDependencies": {
     "@babel/core": "^7.28.5",
     "@babel/preset-env": "^7.28.5",
+    "@eslint/js": "^10.0.1",
     "adm-zip": "^0.5.16",
     "babel-jest": "^30.2.0",
+    "eslint": "^10.11.0",
+    "globals": "^17.12.0",
     "jest": "^30.2.0",
-    "jest-environment-jsdom": "^30.2.0"
+    "jest-environment-jsdom": "^30.2.0",
+    "web-ext": "10.7.0"
   }
 }

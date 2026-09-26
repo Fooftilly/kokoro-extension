@@ -1,0 +1,33 @@
+name: Engineering task
+description: Infra, tests, docs, or other non-user-facing work
+title: "[Task]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for CI, packaging, agent docs, refactors, and similar work — not end-user bugs.
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should be true when this is done?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: In-scope files/areas and explicit out-of-scope items.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Commands to run, artifacts to produce, review checklist.
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes / risks
