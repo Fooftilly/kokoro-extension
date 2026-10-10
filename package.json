@@ -36,7 +36,7 @@
   "type": "commonjs",
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
-    "compromise": "^14.14.4",
+    "compromise": "^14.18.0",
     "compromise-dates": "^3.7.1",
     "compromise-numbers": "^1.4.0",
     "dompurify": "^3.3.1",
