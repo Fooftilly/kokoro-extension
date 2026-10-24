@@ -37,7 +37,7 @@
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
     "compromise": "^14.14.4",
-    "compromise-dates": "^3.7.1",
+    "compromise-dates": "^3.10.0",
     "compromise-numbers": "^1.4.0",
     "dompurify": "^3.3.1",
     "epubjs": "^0.3.93",
