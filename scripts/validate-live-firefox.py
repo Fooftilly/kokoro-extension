@@ -21,17 +21,20 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 
 def pinned_manifest():
-    # Load the SAME source-of-truth JS catalog as the packaged extension.
-    with tempfile.TemporaryDirectory() as d:
-        esm = Path(d) / "model-catalog.mjs"
-        esm.write_text(Path("model-catalog.js").read_text(encoding="utf-8"), encoding="utf-8")
-        code = f"import {{ manifestForVariant }} from {json.dumps(esm.as_uri())}; console.log(JSON.stringify(manifestForVariant('onnx','q8')))"
-        result = subprocess.run(
-            ["node", "--input-type=module", "-e", code],
-            check=True, capture_output=True, text=True,
-        )
-        return json.loads(result.stdout)
-
+    # Read the fixed in-repository catalog as ESM, without writing source code
+    # into an executable file path or letting data control a filesystem path.
+    code = (
+        "import {readFile} from 'node:fs/promises'; "
+        "const catalog = await readFile('model-catalog.js'); "
+        "const source = 'data:text/javascript;base64,' + catalog.toString('base64'); "
+        "const {manifestForVariant} = await import(source); "
+        "console.log(JSON.stringify(manifestForVariant('onnx', 'q8')));"
+    )
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", code],
+        check=True, capture_output=True, text=True,
+    )
+    return json.loads(result.stdout)
 
 def verified_assets(manifest, directory):
     files = {}
