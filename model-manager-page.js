@@ -186,6 +186,23 @@ async function testEngine(entry, ui) {
             runs.push({ kind: 'warm', firstAudioMs: null, synthesisMs: elapsed,
                 audioDurationSec: last.samples.length / last.sampleRateHz });
         }
+        // Keep the IPA measurements distinct from dictionary-backed text synthesis.
+        // A failed or missing English lexicon must not erase a valid IPA probe.
+        let englishResult = '';
+        if (entry.provider === 'onnx') {
+            if (!(await cacheStore().status(dictionaryManifest())).ready) {
+                englishResult = ' English text not tested: download the pronunciation dictionary first.';
+            } else {
+                try {
+                    const textAudio = await engine.synthesize(text);
+                    last = textAudio;
+                    englishResult = ' Experimental English text audio is ready to listen to.';
+                } catch (error) {
+                    englishResult = ' English text synthesis failed: ' +
+                        String(error.message || error) + '. Playing the IPA probe instead.';
+                }
+            }
+        }
         const metrics = window.KokoroBenchmark.summarizeRuns(runs);
         const previous = lastAudioUrl.get(entry.key);
         if (previous) URL.revokeObjectURL(previous);
@@ -197,9 +214,13 @@ async function testEngine(entry, ui) {
             metrics.synthesisP50Ms.toFixed(0) + ' ms, p95: ' +
             metrics.synthesisP95Ms.toFixed(0) + ' ms; RTF p50: ' +
             metrics.realTimeFactorP50.toFixed(2) +
-            '. Streaming time-to-first-audio was not measured. Listen before choosing.');
-        // The ONNX probe only accepts IPA, not plain text, so it cannot yet serve
-        // article/EPUB requests. Never offer it as a functioning text backend.
+            '. Streaming time-to-first-audio was not measured.' +
+            (entry.provider === 'onnx'
+                ? ' Benchmark used IPA; English synthesis is a separate, unmeasured check.' +
+                  englishResult + ' ONNX article/EPUB backend is not yet enabled.'
+                : ' Listen before choosing.'));
+        // The ONNX text check is experimental, not an approval for general
+        // article/EPUB usage. Keep its backend chooser disabled.
         if (entry.provider === 'mediapipe') {
             await browser.storage.local.set({
                 [validationKey]: manifestForVariant('mediapipe', entry.variant).revision,
