@@ -28,10 +28,23 @@
         }
     }
 
+    // Probe the actual extension-page CSP, not just whether the API is exposed.
+    // A valid eight-byte empty WASM module compiles without fetching model data.
+    async function canCompileWasm(wasm) {
+        if (!wasm || typeof wasm.compile !== 'function') return false;
+        try {
+            await wasm.compile(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+            return true;
+        } catch {
+            // Chrome's MV3 CSP may block compilation while WebAssembly.compile exists.
+            return false;
+        }
+    }
+
     async function inspectCapabilities(environment) {
         const env = environment || globalThis;
         const nav = env.navigator || {};
-        const hasWasm = !!(env.WebAssembly && typeof env.WebAssembly.compile === 'function');
+        const hasWasm = await canCompileWasm(env.WebAssembly);
         const isolated = env.crossOriginIsolated === true;
         const sharedMemory = typeof env.SharedArrayBuffer === 'function';
         return {
