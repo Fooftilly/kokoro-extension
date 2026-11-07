@@ -124,3 +124,17 @@ Observed native result (not simulated, no network speech server):
 **Interpretation:** The model weights and native Kokoro integration work, so an intrinsically invalid or missing model/dictionary is **not** a supported diagnosis. The failure is **specific to the tested JavaScript/WASM implementation or its interaction with the extension environment**. The precise responsible layer (npm task wrapper, WASM build, wrong model-capability dispatch, or browser-specific initialization) is **still unknown**; do not claim an upstream defect is proven until an independent plain-web official reference test or a verified SDK change demonstrates the difference.
 
 **Next verification:** Run the published [official MediaPipe Text-to-Speech web demo](https://google-ai-edge.github.io/mediapipe-samples-web/) with the same CPU model/SDK if possible, or an isolated minimal HTML page using the packaged 1.2.2 JavaScript/WASM files and the same pinned model, outside the extension. This separates a general web-WASM incompatibility from extension-specific loading/CSP/caching. Keep executable code pinned and local to extension builds; no speculative fallback to Python, server TTS, unrelated wasm libraries, or altered model container. Neither the ONNX implementations nor FastAPI are affected by this diagnosis.
+
+### Isolate browser WASM from Manifest V3 (no downloads)
+
+The repository now contains `scripts/diagnose-mediapipe-web.mjs`, which runs **the same packaged official MediaPipe 1.2.2 JS/WASM assets** on an ordinary, same-origin `http://127.0.0.1` web page, rather than inside the Chrome extension. It reads the **already downloaded CPU model** at `/tmp/kokoro-live-models/<pinned SHA-256>`, validates its full bytes/hash against `model-catalog.js`, and serves the model at a URL that ends in its exact `.litertlm` filename. This provides a controlled comparison without external services or downloading model bytes again. The localhost model source is a development-only diagnostic; production retains opt-in model downloads and Cache Storage.
+
+After `npm run package:ci` (which builds the signed-package SDK assets), run from the repo root:
+
+```bash
+PW_MODULE="$(find /tmp -type f -path '*/node_modules/playwright/index.mjs' -print -quit)"
+PLAYWRIGHT_MODULE_PATH="$PW_MODULE" node scripts/diagnose-mediapipe-web.mjs
+python3 -m json.tool dist/runtime-acceptance/mediapipe-plain-web.json
+```
+
+The script outputs `dist/runtime-acceptance/mediapipe-plain-web.json` and returns a nonzero status if real synthesis fails. It does not load the browser extension, does not use any CDN, and does not change the installed packages. **It has not yet been run with the model in the maintainer's local environment.** If this plain page also fails with `tf_lite_prefill_decode`, the defect is reproducible in the official Web SDK independent of MV3, CSP, Cache Storage, blob conversion, and extension permissions. If plain web succeeds, investigate extension-specific CSP/asset URL/initialization conditions, using the same model and bundled assets.
