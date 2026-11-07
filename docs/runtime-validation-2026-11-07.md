@@ -85,3 +85,22 @@ python3 -m venv /tmp/kokoro-litert-peek-venv
 ```
 
 Review whether a tokenizer is present, what type it is tagged with, and how the TFLite model sections are identified. **No assumption of absent metadata should be made until the inspector output is available.** Do not rewrite or silently substitute downloaded weights or adopt unrelated implementations as a workaround.
+
+## Inspected actual Kokoro LiteRT-LM container (7 November 2026)
+
+The maintainer used the official `litert-lm-builder==0.19.1` package and `litert-lm-peek` on the already SHA-256-verified CPU bundle at the pinned revision. The tool identified **LiteRT-LM format 1.9.0** with **69 sections**, not an empty or plainly missing pronunciation dictionary:
+
+- Section 0: `Text2SpeechMetadataProto` with `tts_model_type { kokoro {} }`, 24,000-Hz output, and nine listed language codes.
+- Section 1: `TFLiteModel`, `model_type=tf_lite_acoustic`, constrained to CPU.
+- Section 2: `TFLiteModel`, `model_type=tf_lite_vocoder`.
+- Sections 3–56: 54 named voice embeddings, including `af_heart`.
+- Sections 57–59: `en-lexicon` (12,848,480 bytes), `ja-lexicon`, `zh-lexicon`.
+- Sections 60–68: locale-specific text normalization data, including `en-textnorm`, plus `zh-t2s`.
+
+The inspection lists **no `tf_lite_prefill_decode` section**. This is consistent with a Kokoro acoustic/vocoder model rather than an ordinary LLM prefill/decode model; it does **not** show that English lexical resources are absent. The MediaPipe WASM error instead names a different model type, suggesting wrong model-type selection, an SDK/model compatibility failure, or a loading-path issue. The causal path remains **unverified**, so avoid repackaging or adding an unrelated LLM tokenizer.
+
+### Narrow diagnostic correction
+
+Google's [Text-to-Speech model options](https://developers.google.com/edge/mediapipe/solutions/audio/text_to_speech) explicitly say to keep the original model filename because detection can use that filename. The previous Chrome acceptance `originalFilenameDiagnostic` URL ended with `.litertlm?token=...`; while the actual pathname contained the correct filename, this was not an exact filename-suffix reproduction.
+
+Commit `bdf542c` changes only the optional live-browser harness: it uses a 256-bit secret as a **path segment** on an authenticated loopback server, so the requested URL ends exactly with `/kokoro_int8_fp16.litertlm` and still uses the pinned, verified source bytes. No remote executable dependencies or model data are committed. Reruns can reuse downloaded files only after recalculating their full SHA-256. The script still reports failed MediaPipe as a failed acceptance; it does **not** claim to repair the production model loader. Re-execute the opt-in local Chromium script and check `originalFilenameDiagnostic` in `dist/runtime-acceptance/report.json`. If it still reports `tf_lite_prefill_decode`, filename-suffix ambiguity is eliminated, and the likely remaining investigation is inside the official SDK/model dispatch.
