@@ -1,7 +1,7 @@
 // Live model-backed Chromium MV3 validation. Explicit opt-in and no model weights in git.
 import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -28,19 +28,34 @@ const byFilename = new Map();
 for (const manifest of variants) for (const asset of manifest.assets) {
     const expected = Buffer.from(asset.integrity.slice(7), 'base64').toString('hex');
     if (local.has(expected)) continue;
-    const response = await fetch(asset.url);
-    if (!response.ok || !response.body) throw Error('Cannot fetch official model: ' + asset.path);
     const file = path.join(sourceDir, expected);
-    await pipeline(Readable.fromWeb(response.body), createWriteStream(file));
-    const hash = createHash('sha256');
-    let length = 0;
-    for await (const chunk of createReadStream(file)) { length += chunk.length; hash.update(chunk); }
-    if (length !== asset.bytes || hash.digest('hex') !== expected) {
-        throw Error('Model byte count or SHA-256 mismatch: ' + asset.path);
+    async function matchesPinnedAsset() {
+        let info;
+        try { info = await stat(file); } catch (error) {
+            if (error.code === 'ENOENT') return false;
+            throw error;
+        }
+        if (!info.isFile() || info.size !== asset.bytes) return false;
+        const hash = createHash('sha256');
+        for await (const chunk of createReadStream(file)) hash.update(chunk);
+        return hash.digest('hex') === expected;
+    }
+    // Local reruns may reuse the model, but only after verifying every byte
+    // against the pinned manifest; partial/altered files are redownloaded.
+    if (!(await matchesPinnedAsset())) {
+        const response = await fetch(asset.url);
+        if (!response.ok || !response.body) throw Error('Cannot fetch official model: ' + asset.path);
+        await pipeline(Readable.fromWeb(response.body), createWriteStream(file));
+        if (!(await matchesPinnedAsset())) {
+            throw Error('Model byte count or SHA-256 mismatch: ' + asset.path);
+        }
+        console.log('Downloaded and verified official model data', asset.path, asset.bytes);
+    } else {
+        console.log('Reused checksum-verified local model data', asset.path, asset.bytes);
     }
     local.set(expected, file);
     byFilename.set(path.posix.basename(asset.path), file);
-    console.log('Verified official model data', asset.path, length);
+    // The test fixture indexes the exact public model filenames as well as hashes.
 }
 let extensionOrigin = null;
 // A random per-run URL token authenticates Chrome requests, including MV3 GET
@@ -48,13 +63,19 @@ let extensionOrigin = null;
 const transferToken = randomBytes(32).toString('hex');
 const server = createServer((req, res) => {
     const url = new URL(req.url || '/', 'http://127.0.0.1');
+    // The clean-path token makes the final URL component the unmodified
+    // .litertlm filename. Some SDKs select the model decoder by path suffix.
+    const authenticatedPrefix = '/' + transferToken + '/';
+    const cleanPath = url.pathname.startsWith(authenticatedPrefix);
+    const tokenValid = cleanPath || url.searchParams.get('token') === transferToken;
     if (!extensionOrigin || (req.headers.origin && req.headers.origin !== extensionOrigin) ||
-        url.searchParams.get('token') !== transferToken || req.method !== 'GET') {
+        !tokenValid || req.method !== 'GET') {
         res.writeHead(403);
         res.end();
         return;
     }
-    const file = local.get(url.pathname.slice(1)) || byFilename.get(url.pathname.slice(1));
+    const name = cleanPath ? url.pathname.slice(authenticatedPrefix.length) : url.pathname.slice(1);
+    const file = local.get(name) || byFilename.get(name);
     if (!file) { res.writeHead(404); res.end(); return; }
     res.writeHead(200, {
         'Access-Control-Allow-Origin': extensionOrigin,
@@ -171,8 +192,8 @@ try {
                     const sdk = await import('./runtimes/mediapipe/audio_bundle.mjs');
                     const files = await sdk.FilesetResolver.forAudioTasks(
                         chrome.runtime.getURL('runtimes/mediapipe/wasm'));
-                    const modelAssetPath = 'http://127.0.0.1:' + port +
-                        '/kokoro_int8_fp16.litertlm?token=' + transferToken;
+                    const modelAssetPath = 'http://127.0.0.1:' + port + '/' +
+                        transferToken + '/kokoro_int8_fp16.litertlm';
                     task = await sdk.TextToSpeech.createFromOptions(files, {
                         baseOptions: { modelAssetPath, delegate: 'CPU' },
                         defaultVoiceId: 'af_heart', speakingRate: 1,
@@ -186,7 +207,7 @@ try {
                 } finally { try { await task?.close(); } catch { /* diagnostics only */ } }
             }, { port: server.address().port, transferToken });
             result.originalFilenameDiagnostic = diagnostic;
-            console.log('MEDIAPIPE ORIGINAL FILE NAME DIAGNOSTIC', diagnostic);
+            console.log('MEDIAPIPE EXACT .litertlm FILENAME DIAGNOSTIC', diagnostic);
             // Google AI Edge documents modelAssetBuffer for cached model data.
             // Independently test that path before claiming the .litertlm
             // model is incompatible with this packaged MediaPipe SDK.
