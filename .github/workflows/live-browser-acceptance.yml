@@ -74,7 +74,7 @@ jobs:
       - name: Install pinned geckodriver
         uses: browser-actions/setup-geckodriver@5ef1526ed36211ab6cb531ec1cfb11f924ca2dee
         with:
-          geckodriver-version: '0.36.0'
+          geckodriver-version: '0.37.1'
       - name: Install isolated Selenium driver
         run: |
           python3 -m venv "$RUNNER_TEMP/firefox-selenium"
@@ -83,6 +83,7 @@ jobs:
         env:
           KOKORO_LIVE_DOWNLOAD: '1'
           FIREFOX_BINARY: ${{ steps.firefox.outputs.firefox-path }}
+          MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: '1'
         run: |
           "$RUNNER_TEMP/firefox-selenium/bin/python" scripts/validate-live-firefox.py
       - name: Upload Firefox acceptance report
