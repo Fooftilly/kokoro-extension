@@ -76,7 +76,7 @@ export function phonemizeEnglish(text, dictionary) {
 }
 
 export async function loadBundledEnglishLexicon(browserApi, fetchImpl) {
-    const url = new URL(browserApi.runtime.getURL('data/cmudict.dict'));
+    const url = new globalThis.URL(browserApi.runtime.getURL('data/cmudict.dict'));
     if (!['chrome-extension:', 'moz-extension:'].includes(url.protocol)) {
         throw new TypeError('Only the packaged pronunciation dictionary is allowed');
     }
