@@ -9,6 +9,8 @@ on:
     paths:
       - '.github/workflows/live-browser-acceptance.yml'
       - 'scripts/validate-live-chromium.mjs'
+      - 'mediapipe-provider.js'
+      - 'onnx-provider.js'
   workflow_dispatch:
 
 permissions:
