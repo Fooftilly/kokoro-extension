@@ -2,6 +2,7 @@
  * @jest-environment node
  */
 import { validateModelManifest, formatModelSize, ModelDataStore } from '../model-data-store.js';
+import { dictionaryManifest } from '../model-catalog.js';
 
 const sha = 'a'.repeat(40);
 const integrity = 'sha256-' + Buffer.alloc(32).toString('base64');
@@ -85,6 +86,32 @@ describe('opt-in cached model data (#55)', () => {
         repeatedSlash.assets[0].url = repeatedSlash.assets[0].url.replace(
             'onnx/model_quantized.onnx', 'onnx//model_quantized.onnx');
         expect(() => validateModelManifest(repeatedSlash)).toThrow(/duplicate model asset/);
+    });
+
+    test('pins the separate dictionary host, commit, checksum and asset path', async () => {
+        const entry = dictionaryManifest();
+        expect(validateModelManifest(entry)).toBe(3618488);
+        for (const url of [
+            entry.assets[0].url.replace('raw.githubusercontent.com', 'example.com'),
+            entry.assets[0].url.replace('cmusphinx/cmudict', 'attacker/cmudict'),
+            entry.assets[0].url + '?trick=1',
+            entry.assets[0].url.replace('74790861', '84790861'),
+            entry.assets[0].url.replace('cmudict.dict', 'payload.js'),
+        ]) {
+            const malicious = dictionaryManifest();
+            malicious.assets[0].url = url;
+            expect(() => validateModelManifest(malicious)).toThrow();
+        }
+        const { store, fetchImpl } = setup();
+        const sampleEntry = dictionaryManifest();
+        sampleEntry.assets[0].bytes = 4;
+        sampleEntry.assets[0].integrity = integrity;
+        expect((await store.status(sampleEntry)).ready).toBe(false);
+        expect(fetchImpl).not.toHaveBeenCalled();
+        await store.install(sampleEntry);
+        expect(fetchImpl).toHaveBeenCalledWith(sampleEntry.assets[0].url,
+            expect.objectContaining({ integrity, cache: 'no-store' }));
+        expect((await store.status(sampleEntry)).ready).toBe(true);
     });
 
     test('downloads only when explicitly installed, verifies response size and reuses cached result', async () => {

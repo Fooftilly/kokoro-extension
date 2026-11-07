@@ -33,11 +33,17 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Compile-check Firefox live acceptance script
+        run: python3 -m py_compile scripts/validate-live-firefox.py
+
       - name: Test
         run: npm test
 
       - name: Package (build + Chrome/Firefox zips via pinned web-ext)
         run: npm run package:ci
+
+      - name: Verify bundled official runtime entrypoints and WASM assets
+        run: node scripts/verify-runtime-package.mjs
 
       - name: Verify Chrome and Firefox manifests
         run: |
@@ -56,7 +62,7 @@ jobs:
           ].slice().sort();
           const BASELINE_HOST = ['http://127.0.0.1/*', 'http://localhost/*'].slice().sort();
           const OPTIONAL_HOST = '*://*/*';
-          const BASELINE_CSP = "script-src 'self'; object-src 'self';";
+          const BASELINE_CSP = "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';";
           const BASELINE_DCP = { required: ['none'] };
 
           function sameSet(actual, expected, label, browser) {

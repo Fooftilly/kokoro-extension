@@ -77,6 +77,12 @@ export default [
       'audio-manager.js',
       'model-data-store.js',
       'onnx-kokoro-inputs.js',
+      'model-catalog.js',
+      'mediapipe-provider.js',
+      'onnx-provider.js',
+      'pcm-wav.js',
+      'phoneme-tokenizer.js',
+      'model-manager-page.js',
       'dom-utils.js',
       'text-processor.js',
     ],
@@ -144,6 +150,21 @@ export default [
       sourceType: 'commonjs',
       globals: {
         ...globals.node,
+      },
+    },
+    rules: sharedRules,
+  },
+  // Node ESM scripts include Playwright-evaluated code that executes in a browser.
+  {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        ...globals.node,
+        ...globals.browser,
+        ...globals.webextensions,
+        chrome: 'readonly',
       },
     },
     rules: sharedRules,

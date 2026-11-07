@@ -45,6 +45,62 @@ describe('AudioManager', () => {
         expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
     });
 
+    test('clear rejects a request whose settings were still loading without dispatching it', async () => {
+        let releaseSettings;
+        browser.storage.local.get.mockImplementation(() => new Promise(resolve => {
+            releaseSettings = resolve;
+        }));
+        audioManager.setSentences([{ text: 'Old private text' }]);
+        const previous = audioManager.getAudio(0);
+        audioManager.clear();
+        releaseSettings({
+            pendingTtsBackend: 'fastapi', pendingApiUrl: 'http://localhost:8880',
+        });
+        await expect(previous).rejects.toMatchObject({ name: 'AbortError' });
+        expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
+    });
+
+    test('clear cancels both in-flight remote results and older queued requests', async () => {
+        let notifyStarted;
+        const started = new Promise(resolve => { notifyStarted = resolve; });
+        let finishRemote;
+        browser.runtime.sendMessage.mockImplementationOnce(() => {
+            notifyStarted();
+            return new Promise(resolve => { finishRemote = resolve; });
+        });
+        audioManager.setSentences([{ text: 'First' }, { text: 'Second' }]);
+        const first = audioManager.getAudio(0);
+        const second = audioManager.getAudio(1);
+        await started;
+        audioManager.clear();
+        finishRemote({ success: true, dataUrl: 'data:audio/mpeg;base64,stale' });
+        await expect(first).rejects.toMatchObject({ name: 'AbortError' });
+        await expect(second).rejects.toMatchObject({ name: 'AbortError' });
+        expect(browser.runtime.sendMessage).toHaveBeenCalledTimes(1);
+
+        browser.runtime.sendMessage.mockResolvedValueOnce({
+            success: true, dataUrl: 'data:audio/mpeg;base64,new',
+        });
+        audioManager.setSentences([{ text: 'New' }]);
+        await expect(audioManager.getAudio(0)).resolves.toBe('data:audio/mpeg;base64,new');
+        expect(browser.runtime.sendMessage).toHaveBeenCalledTimes(2);
+    });
+
+    test('a failed sentence request is retried rather than permanently cached', async () => {
+        const logger = jest.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+            browser.runtime.sendMessage
+                .mockResolvedValueOnce({ success: false, error: 'Temporary TTS error' })
+                .mockResolvedValueOnce({ success: true, dataUrl: 'data:audio/mpeg;base64,retry' });
+            audioManager.setSentences([{ text: 'Retry me' }]);
+            await expect(audioManager.getAudio(0)).rejects.toThrow('Temporary TTS error');
+            await expect(audioManager.getAudio(0)).resolves.toBe('data:audio/mpeg;base64,retry');
+            expect(browser.runtime.sendMessage).toHaveBeenCalledTimes(2);
+        } finally {
+            logger.mockRestore();
+        }
+    });
+
     test('should fetch audio via background and cache it', async () => {
         // Mock background fetch success
         browser.runtime.sendMessage.mockResolvedValue({

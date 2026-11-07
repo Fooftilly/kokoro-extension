@@ -13,6 +13,7 @@ const closeBtn = document.getElementById('close');
 const collapseBtn = document.getElementById('collapse');
 const dragHandle = document.getElementById('dragHandle');
 const spinnerEl = document.getElementById('loadingSpinner');
+const saveAudioBtn = document.getElementById('saveAudio');
 
 let sentences = [];
 let currentIndex = 0;
@@ -147,6 +148,33 @@ if (dragHandle) {
         if (activeDragPointerId !== null && event.pointerId === activeDragPointerId) {
             activeDragPointerId = null;
             postToHostPage({ action: 'KOKORO_DRAG_END' });
+        }
+    });
+}
+
+// Save exactly the current sentence. Local model data never leaves this browser.
+if (saveAudioBtn) {
+    saveAudioBtn.addEventListener('click', async () => {
+        saveAudioBtn.disabled = true;
+        try {
+            const sentenceIndex = currentIndex;
+            if (!sentences[sentenceIndex]) throw new Error('No selected sentence');
+            const audioUrl = await audioManager.getAudio(sentenceIndex);
+            if (!audioUrl) throw new Error('No generated audio to save');
+            const settings = await browser.storage.local.get(['pendingTtsBackend']);
+            const extension = ['mediapipe', 'onnx'].includes(settings.pendingTtsBackend) ? 'wav' : 'mp3';
+            const safeTitle = (titleEl.textContent || 'kokoro')
+                .replace(/[^a-zA-Z0-9 _-]/g, '_').trim().slice(0, 90) || 'kokoro';
+            await browser.downloads.download({
+                url: audioUrl,
+                filename: safeTitle + '-sentence-' + (sentenceIndex + 1) + '.' + extension,
+                saveAs: true,
+            });
+            statusEl.textContent = 'Audio saved';
+        } catch (error) {
+            statusEl.textContent = 'Could not save audio: ' + String(error.message || error);
+        } finally {
+            saveAudioBtn.disabled = false;
         }
     });
 }

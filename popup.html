@@ -27,6 +27,13 @@
     <div class="content-wrapper">
 
         <div id="general" class="content active">
+            <fieldset class="backend-picker" aria-describedby="backendExplanation">
+                <legend>TTS backend</legend>
+                <label><input type="radio" name="ttsBackend" value="fastapi" checked> Kokoro server (Docker / FastAPI)</label>
+                <label><input type="radio" name="ttsBackend" value="mediapipe"> MediaPipe Kokoro (on device)</label>
+                <label><input type="radio" name="ttsBackend" value="onnx"> Kokoro ONNX Runtime (on device)</label>
+                <p id="backendExplanation" class="note">The server is the default. Local modes never send speech text to FastAPI.</p>
+            </fieldset>
             <div class="label-row">
                 <label for="apiUrl">API Base URL</label>
                 <span id="version"></span>

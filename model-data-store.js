@@ -4,13 +4,13 @@
 // This reserved .invalid URL is never fetched; Cache Storage is scoped to the extension origin.
 const CACHE_KEY_ORIGIN = 'https://kokoro-model-cache.invalid/';
 const CACHE_NAME = 'kokoro-model-data-v1';
-const ALLOWED_PROVIDERS = Object.freeze(['mediapipe', 'onnx']);
+const ALLOWED_PROVIDERS = Object.freeze(['mediapipe', 'onnx', 'dictionary']);
 const INTEGRITY_PATTERN = /^sha256-[A-Za-z0-9+/]{43}=$/;
 const SHA_PATTERN = /^[a-f0-9]{40}$/;
 const PATH_PATTERN = /^[a-zA-Z0-9._/-]+$/;
 const DATA_EXTENSIONS = Object.freeze([
     '.onnx', '.bin', '.json', '.litertlm', '.txt', '.model', '.vocab',
-    '.dat', '.fst', '.tflite', '.weights', '.npy',
+    '.dat', '.fst', '.tflite', '.weights', '.npy', '.dict',
 ]);
 const OFFICIAL_REPOSITORIES = Object.freeze({
     mediapipe: 'litert-community/Kokoro-82M',
@@ -23,6 +23,15 @@ function officialAssetUrl(manifest, asset) {
         url = new URL(asset.url);
     } catch {
         throw new TypeError('Model data URL must be a valid pinned HTTPS URL');
+    }
+    if (manifest.provider === 'dictionary') {
+        const path = '/cmusphinx/cmudict/' + manifest.revision + '/' + asset.path;
+        if (url.protocol !== 'https:' || url.hostname !== 'raw.githubusercontent.com' ||
+            url.pathname !== path || asset.path !== 'cmudict.dict' ||
+            url.username || url.password || url.port || url.search || url.hash) {
+            throw new TypeError('Dictionary data must match the pinned official CMUdict source');
+        }
+        return;
     }
     const expectedPath = '/' + OFFICIAL_REPOSITORIES[manifest.provider] +
         '/resolve/' + manifest.revision + '/' + asset.path;

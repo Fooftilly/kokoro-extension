@@ -84,9 +84,13 @@
         if (kind !== 'cold' && kind !== 'warm') {
             throw new RangeError('Runs must declare cold or warm initialization');
         }
+        // Unary inference has no first-audio event. Use explicit null instead
+        // of labeling complete generation time as time-to-first-audio.
+        const hasFirstAudio = runs[0].firstAudioMs !== null;
         for (const run of runs) {
             if (run.kind !== kind ||
-                !Number.isFinite(run.firstAudioMs) || run.firstAudioMs < 0 ||
+                (run.firstAudioMs !== null) !== hasFirstAudio ||
+                (hasFirstAudio && (!Number.isFinite(run.firstAudioMs) || run.firstAudioMs < 0)) ||
                 !Number.isFinite(run.synthesisMs) || run.synthesisMs < 0 ||
                 !Number.isFinite(run.audioDurationSec) || run.audioDurationSec <= 0) {
                 throw new TypeError('Invalid, mixed, or synthetic inference measurements');
@@ -95,8 +99,10 @@
         return {
             kind,
             runs: runs.length,
-            firstAudioP50Ms: nearestRank(runs.map(r => r.firstAudioMs), 50),
-            firstAudioP95Ms: nearestRank(runs.map(r => r.firstAudioMs), 95),
+            firstAudioP50Ms: hasFirstAudio ? nearestRank(runs.map(r => r.firstAudioMs), 50) : null,
+            firstAudioP95Ms: hasFirstAudio ? nearestRank(runs.map(r => r.firstAudioMs), 95) : null,
+            synthesisP50Ms: nearestRank(runs.map(r => r.synthesisMs), 50),
+            synthesisP95Ms: nearestRank(runs.map(r => r.synthesisMs), 95),
             realTimeFactorP50: nearestRank(
                 runs.map(r => r.synthesisMs / (1000 * r.audioDurationSec)), 50),
             realTimeFactorP95: nearestRank(

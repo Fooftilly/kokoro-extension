@@ -508,6 +508,55 @@ function startDragging(index, handle, bar) {
 }
 
 
+async function validateSelectedMediaPipe() {
+    // Enforce the test gate from both radio switching and generic settings
+    // autosaves. A radio becomes checked before its async change handler ends.
+    const { mediaPipeVariant } = await browser.storage.sync.get({ mediaPipeVariant: 'cpu' });
+    const key = 'mediapipeValidatedRevision:' + mediaPipeVariant;
+    const validated = await browser.storage.local.get({ [key]: null });
+    if (!validated[key]) throw new Error('Test the installed model first.');
+    const { manifestForVariant } = await import('./model-catalog.js');
+    const { ModelDataStore } = await import('./model-data-store.js');
+    const manifest = manifestForVariant('mediapipe', mediaPipeVariant);
+    if (validated[key] !== manifest.revision) {
+        throw new Error('The model revision changed. Repeat the local TTS test.');
+    }
+    const store = new ModelDataStore({
+        origin: browser.runtime.getURL('/'), cacheStorage: caches,
+        fetchImpl: fetch.bind(globalThis),
+        responseClass: Response, streamClass: TransformStream,
+    });
+    if (!(await store.status(manifest)).ready) {
+        throw new Error('The tested model is no longer installed.');
+    }
+}
+
+// All popup storage writes that include a backend choice share one ordered lane.
+// Otherwise an earlier async MediaPipe validation can finish after a later radio
+// change and overwrite the user's newer choice. Unrelated settings still save.
+let backendSelectionVersion = 0;
+let backendWriteTail = Promise.resolve();
+
+function selectedBackendValue() {
+    return document.querySelector('input[name="ttsBackend"]:checked')?.value;
+}
+
+function persistPopupSettings(settings, requestedBackend, selectionVersion) {
+    const pending = backendWriteTail.catch(() => {}).then(async () => {
+        const current = { ...settings };
+        if (Object.hasOwn(current, 'ttsBackend') &&
+            (selectionVersion !== backendSelectionVersion ||
+                selectedBackendValue() !== requestedBackend)) {
+            delete current.ttsBackend;
+        }
+        if (Object.keys(current).length === 0) return false;
+        await browser.storage.sync.set(current);
+        return Object.hasOwn(current, 'ttsBackend');
+    });
+    backendWriteTail = pending.catch(() => {});
+    return pending;
+}
+
 let saveTimeout;
 /**
  * Persist settings. Does not call permissions.request() — Firefox requires that
@@ -529,6 +578,17 @@ const saveOptions = async (isDebounced = false, options = {}) => {
     document.getElementById('apiUrl').value = apiUrl;
     const voice = serializeVoiceString(currentVoices);
     const mode = document.querySelector('input[name="mode"]:checked').value;
+    const ttsBackend = selectedBackendValue();
+    const selectionVersion = backendSelectionVersion;
+    if (!ttsBackend) {
+        // An unknown persisted backend leaves no checked radio. Do not silently
+        // reset the backend or reject an autosave without an explanation.
+        const status = document.getElementById('status');
+        status.textContent = 'Error: Choose a valid TTS backend before saving.';
+        status.style.color = 'var(--status-error)';
+        status.style.display = 'block';
+        return { ok: false, error: true };
+    }
     const defaultSpeed = document.getElementById('defaultSpeed').value;
     const defaultVolume = document.getElementById('defaultVolume').value;
     const autoScroll = document.getElementById('autoScroll').checked;
@@ -546,7 +606,7 @@ const saveOptions = async (isDebounced = false, options = {}) => {
     };
 
     const theme = document.documentElement.classList.contains('dark-theme') ? 'dark' : 'light';
-    const settings = { apiUrl, voice, mode, defaultSpeed, defaultVolume, autoScroll, autoplayReader, showFloatingButton, normalizationOptions, theme };
+    const settings = { apiUrl, voice, mode, ttsBackend, defaultSpeed, defaultVolume, autoScroll, autoplayReader, showFloatingButton, normalizationOptions, theme };
 
     const showPermissionDeniedToast = () => {
         const status = document.getElementById('status');
@@ -561,13 +621,25 @@ const saveOptions = async (isDebounced = false, options = {}) => {
     };
 
     try {
-        // 1. Persist immediately even if permission is pending/denied
-        await browser.storage.sync.set(settings);
+        let localValidationError = null;
+        if (ttsBackend === 'mediapipe') {
+            try {
+                await validateSelectedMediaPipe();
+            } catch (error) {
+                // An untested radio must never activate MediaPipe, but invalidated
+                // validation must not prevent saving unrelated options either.
+                delete settings.ttsBackend;
+                localValidationError = error;
+            }
+        }
+        // 1. Persist settings while retaining the previously saved backend when
+        // the local model is unavailable (no silent FastAPI fallback).
+        await persistPopupSettings(settings, ttsBackend, selectionVersion);
         await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, autoplayReader, showFloatingButton, normalizationOptions, theme });
 
         // 2. Host permission for non-local URL (never call request() here after awaits)
         const { origin, invalidUrl } = hostPermissionOriginInfo(apiUrl);
-        if (!invalidUrl && origin) {
+        if (ttsBackend === 'fastapi' && !invalidUrl && origin) {
             let hasPerm = false;
             if (permissionRequestPromise) {
                 try {
@@ -590,11 +662,16 @@ const saveOptions = async (isDebounced = false, options = {}) => {
 
         // Show generic saving toast
         const status = document.getElementById('status');
-        status.textContent = "Settings saved.";
-        status.style.color = "var(--status-success)";
+        status.textContent = localValidationError
+            ? 'Other settings saved, but MediaPipe was not activated: ' +
+                String(localValidationError.message || localValidationError)
+            : 'Settings saved.';
+        status.style.color = localValidationError ? 'var(--status-error)' : 'var(--status-success)';
         status.style.display = 'block';
-        setTimeout(() => { status.style.display = 'none'; }, 1500);
-        return { ok: true, permissionDenied: false };
+        if (!localValidationError) {
+            setTimeout(() => { status.style.display = 'none'; }, 1500);
+        }
+        return { ok: true, permissionDenied: false, backendUnavailable: !!localValidationError };
     } catch (e) {
         console.error("Error saving options", e);
         const status = document.getElementById('status');
@@ -609,6 +686,7 @@ const restoreOptions = async () => {
     try {
         const items = await browser.storage.sync.get({
             apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'fastapi',
             voice: 'af_sarah(0.5)+af_nicole(0.3)+af_sky(0.2)',
             mode: 'stream',
             defaultSpeed: '1.0',
@@ -637,13 +715,28 @@ const restoreOptions = async () => {
         }
 
         document.getElementById('apiUrl').value = items.apiUrl;
+        for (const radio of document.querySelectorAll('input[name="ttsBackend"]')) {
+            radio.checked = radio.value === items.ttsBackend;
+        }
+        const backendExplanation = document.getElementById('backendExplanation');
+        if (items.ttsBackend === 'mediapipe') {
+            backendExplanation.textContent = 'MediaPipe runs locally after installing and testing a model. Use the TTS test page to manage downloads.';
+        } else if (items.ttsBackend === 'onnx') {
+            backendExplanation.textContent = 'ONNX is an experimental phoneme-only engine. Plain-text TTS is blocked until G2P is implemented; no server fallback.';
+        } else if (items.ttsBackend !== 'fastapi') {
+            backendExplanation.textContent = 'Unknown saved backend. Select one explicitly; no server requests will run.';
+        }
 
         currentVoices = parseVoiceString(items.voice);
         renderVoiceMixer();
 
         // Probe connection + voices on open (no aggressive polling).
         // Settings above are already rendered from storage — backend loss cannot blank the UI.
-        refreshBackendStatus(items.apiUrl);
+        if (items.ttsBackend === 'fastapi') {
+            void refreshBackendStatus(items.apiUrl).catch(error => {
+                console.warn('Kokoro: server availability probe failed', error);
+            });
+        }
 
         if (items.mode === 'stream') {
             document.getElementById('modeStream').checked = true;
@@ -759,13 +852,62 @@ document.addEventListener('DOMContentLoaded', () => {
     // Setup Autosave Listeners
     const inputs = document.querySelectorAll('input, select');
     inputs.forEach(input => {
-        if (input.id === 'voiceSearch' || input.id === 'apiUrl') return;
+        if (input.id === 'voiceSearch' || input.id === 'apiUrl' || input.name === 'ttsBackend') return;
 
         const eventType = (input.type === 'text' || input.type === 'number') ? 'input' : 'change';
         input.addEventListener(eventType, () => {
             saveOptions(input.type === 'text');
         });
     });
+
+    for (const radio of document.querySelectorAll('input[name="ttsBackend"]')) {
+        radio.addEventListener('change', async () => {
+            if (!radio.checked) return;
+            const version = ++backendSelectionVersion;
+            const isCurrentSelection = () => version === backendSelectionVersion &&
+                radio.checked && selectedBackendValue() === radio.value;
+            const explanation = document.getElementById('backendExplanation');
+            if (radio.value === 'mediapipe') {
+                try {
+                    await validateSelectedMediaPipe();
+                } catch (error) {
+                    if (!isCurrentSelection()) return;
+                    // Read the final persisted selection after earlier writes.
+                    // Never revert a newer radio choice while this await runs.
+                    await backendWriteTail;
+                    if (!isCurrentSelection()) return;
+                    const { ttsBackend: saved } = await browser.storage.sync.get({ ttsBackend: 'fastapi' });
+                    if (!isCurrentSelection()) return;
+                    for (const item of document.querySelectorAll('input[name="ttsBackend"]')) {
+                        item.checked = item.value === saved;
+                    }
+                    explanation.textContent = 'MediaPipe unavailable: ' +
+                        String(error.message || error) + ' Use the TTS test page to install and validate it.';
+                    return;
+                }
+            }
+            // Validation may have completed after the user chose another backend.
+            if (!isCurrentSelection()) return;
+            // Serialize the writes so a delayed earlier request cannot overwrite
+            // the newest radio selection, including when an autosave was pending.
+            const persisted = await persistPopupSettings(
+                { ttsBackend: radio.value }, radio.value, version);
+            if (!persisted || !isCurrentSelection()) return;
+            if (radio.value === 'fastapi') {
+                explanation.textContent = 'Using the configured Kokoro server; text is sent to this endpoint.';
+                await refreshBackendStatus(document.getElementById('apiUrl').value);
+            } else {
+                // Cancel any in-flight remote status/voice fetch when switching to local.
+                refreshGeneration++;
+                if (activeRefreshAbort) activeRefreshAbort.abort();
+                explanation.textContent = radio.value === 'mediapipe'
+                    ? 'Local MediaPipe requires a downloaded model. Manage and test it on the TTS test page.'
+                    : 'Local ONNX supports only an IPA probe for now. Plain-text generation is not installed.';
+                const status = document.getElementById('apiStatusRow');
+                if (status) status.style.display = 'none';
+            }
+        });
+    }
 
     // Manual API URL Save — start host-permission request synchronously (Firefox
     // user-gesture), then persist + re-probe. Skip probe if permission denied.
@@ -774,9 +916,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const url = normalizeApiUrl(document.getElementById('apiUrl').value);
         document.getElementById('apiUrl').value = url;
         // Must call permissions.request before any await (Firefox user-action).
-        const permissionRequestPromise = beginHostPermissionRequest(url);
+        const backend = document.querySelector('input[name="ttsBackend"]:checked')?.value;
+        const permissionRequestPromise = backend === 'fastapi' ? beginHostPermissionRequest(url) : null;
         const saveResult = await saveOptions(false, { permissionRequestPromise });
-        if (saveResult && saveResult.permissionDenied) {
+        if (!saveResult?.ok || backend !== 'fastapi') {
+            // Never probe a server when the selected backend is local or invalid.
             return;
         }
         await refreshBackendStatus(url, {

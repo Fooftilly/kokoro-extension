@@ -583,7 +583,7 @@ function updateActiveChapter(blockIndex) {
 }
 
 async function sendToPlayer(content, title, textPreview, startIndex = 0) {
-    const settings = await browser.storage.sync.get(['voice', 'normalizationOptions', 'customPronunciations', 'apiUrl', 'autoplayReader', 'ttsBackend']);
+    const settings = await browser.storage.sync.get(['voice', 'normalizationOptions', 'customPronunciations', 'apiUrl', 'autoplayReader', 'ttsBackend', 'mediaPipeVariant', 'localVoice']);
     const apiUrl = settings.apiUrl || 'http://127.0.0.1:8880/v1/';
 
     await browser.storage.local.set({
@@ -591,7 +591,9 @@ async function sendToPlayer(content, title, textPreview, startIndex = 0) {
         pendingContent: content,
         pendingVoice: settings.voice,
         pendingApiUrl: apiUrl,
-        pendingTtsBackend: settings.ttsBackend || 'fastapi',
+        pendingTtsBackend: settings.ttsBackend === undefined ? 'fastapi' : settings.ttsBackend,
+        pendingMediaPipeVariant: settings.mediaPipeVariant || 'cpu',
+        pendingLocalVoice: settings.localVoice || 'af_heart',
         pendingTitle: title || "Document",
         pendingNormalizationOptions: settings.normalizationOptions,
         pendingCustomPronunciations: settings.customPronunciations,

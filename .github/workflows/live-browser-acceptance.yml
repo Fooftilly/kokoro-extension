@@ -1,0 +1,95 @@
+name: Real Kokoro MV3 model acceptance
+
+# Heavy (~388 MB) model downloads are strictly limited to explicit workflow changes
+# on the experimental runtime branch or a human-triggered dispatch. Never run for
+# general pull requests or releases.
+on:
+  push:
+    branches: [feat/official-browser-runtimes-68]
+    paths:
+      - '.github/workflows/live-browser-acceptance.yml'
+      - 'scripts/validate-live-chromium.mjs'
+      - 'scripts/validate-live-firefox.py'
+      - 'mediapipe-provider.js'
+      - 'onnx-provider.js'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  chromium-model-inference:
+    name: Real ONNX and MediaPipe Chromium MV3 synthesis
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install extension dependencies
+        run: npm ci --ignore-scripts
+      - name: Package extension for Chrome and Firefox
+        run: npm run package:ci
+      - name: Install pinned Playwright Chromium (isolated from lockfile)
+        run: |
+          mkdir -p "$RUNNER_TEMP/kokoro-playwright"
+          cd "$RUNNER_TEMP/kokoro-playwright"
+          npm init -y
+          npm install --no-save --ignore-scripts --package-lock=false playwright@1.65.0
+          ./node_modules/.bin/playwright install --with-deps chromium
+      - name: Execute real model-backed Chrome extension inference
+        env:
+          KOKORO_LIVE_DOWNLOAD: '1'
+          PLAYWRIGHT_MODULE_PATH: ${{ runner.temp }}/kokoro-playwright/node_modules/playwright/index.mjs
+        run: node scripts/validate-live-chromium.mjs
+      - name: Attach measured browser report (when available)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kokoro-live-chromium-report
+          path: dist/runtime-acceptance/report.json
+          if-no-files-found: ignore
+
+  firefox-onnx-inference:
+    name: Real ONNX Firefox MV3 phoneme synthesis
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install extension dependencies
+        run: npm ci --ignore-scripts
+      - name: Package Firefox temporary add-on
+        run: npm run package:ci
+      - name: Install Firefox binary
+        id: firefox
+        uses: browser-actions/setup-firefox@0bc507ddf224827e3b1af68e014d5e42ab93e795 # v1
+        with:
+          firefox-version: latest
+      - name: Install pinned geckodriver
+        uses: browser-actions/setup-geckodriver@5ef1526ed36211ab6cb531ec1cfb11f924ca2dee
+        with:
+          geckodriver-version: '0.37.1'
+      - name: Install isolated Selenium driver
+        run: |
+          python3 -m venv "$RUNNER_TEMP/firefox-selenium"
+          "$RUNNER_TEMP/firefox-selenium/bin/python" -m pip install --disable-pip-version-check selenium==4.38.0
+      - name: Execute real model-backed Firefox extension inference
+        env:
+          KOKORO_LIVE_DOWNLOAD: '1'
+          FIREFOX_BINARY: ${{ steps.firefox.outputs.firefox-path }}
+          MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: '1'
+        run: |
+          "$RUNNER_TEMP/firefox-selenium/bin/python" scripts/validate-live-firefox.py
+      - name: Upload Firefox acceptance report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kokoro-live-firefox-report
+          path: dist/runtime-acceptance/firefox.json
+          if-no-files-found: ignore

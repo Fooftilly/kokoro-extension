@@ -18,6 +18,29 @@ function loadPopupDom() {
 
 describe('popup backend-loss resilience (#4)', () => {
     let popup;
+    let documentListeners = [];
+
+    // Jest module resets do not remove popup.js's document-level listeners.
+    // Capture them during module loading and remove them after each case.
+    function loadPopupModule() {
+        const addListener = document.addEventListener;
+        document.addEventListener = function (type, handler, options) {
+            documentListeners.push({ type, handler, options });
+            return addListener.call(this, type, handler, options);
+        };
+        try {
+            return require('../popup.js');
+        } finally {
+            document.addEventListener = addListener;
+        }
+    }
+
+    afterEach(() => {
+        for (const { type, handler, options } of documentListeners) {
+            document.removeEventListener(type, handler, options);
+        }
+        documentListeners = [];
+    });
 
     beforeEach(() => {
         jest.resetModules();
@@ -39,6 +62,7 @@ describe('popup backend-loss resilience (#4)', () => {
                 },
                 local: {
                     set: jest.fn(async () => {}),
+                    get: jest.fn(async defaults => defaults),
                 },
             },
             permissions: {
@@ -63,7 +87,7 @@ describe('popup backend-loss resilience (#4)', () => {
         global.fetch = jest.fn(() => Promise.reject(new TypeError('Failed to fetch')));
 
         Object.assign(global, require('../api-client.js'));
-        popup = require('../popup.js');
+        popup = loadPopupModule();
     });
 
     async function flushAsync() {
@@ -97,6 +121,186 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(saved.apiUrl).toContain('192.168.1.10');
     });
 
+    test('invalid saved backend displays a controlled save error without reverting to FastAPI', async () => {
+        browser.storage.sync.get.mockImplementation(async defaults => ({
+            ...defaults, ttsBackend: 'missing-local-engine',
+            apiUrl: '', voice: 'af_sarah', mode: 'stream', theme: 'light',
+        }));
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        expect(document.querySelector('input[name="ttsBackend"]:checked')).toBeNull();
+        browser.storage.sync.set.mockClear();
+        document.getElementById('defaultSpeed').dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(document.getElementById('status').textContent).toMatch(/Choose a valid TTS backend/i);
+        expect(browser.storage.sync.set).not.toHaveBeenCalled();
+    });
+
+    test('popup refuses to activate untested MediaPipe but keeps other settings intact', async () => {
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        browser.storage.sync.set.mockClear();
+
+        const radio = document.querySelector('input[name="ttsBackend"][value="mediapipe"]');
+        radio.checked = true;
+        radio.dispatchEvent(new Event('change'));
+        await flushAsync();
+
+        expect(browser.storage.sync.set).not.toHaveBeenCalledWith({ ttsBackend: 'mediapipe' });
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('fastapi');
+        expect(document.getElementById('backendExplanation').textContent).toMatch(/Test the installed model first/i);
+    });
+
+    test('autosave cannot enable MediaPipe while its asynchronous radio test is pending', async () => {
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        browser.storage.sync.set.mockClear();
+
+        // A checked radio is not a verified backend; generic settings writes
+        // must gate it even before the radio change handler finishes.
+        const radio = document.querySelector('input[name="ttsBackend"][value="mediapipe"]');
+        radio.checked = true;
+        document.getElementById('defaultSpeed').dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(browser.storage.sync.set).not.toHaveBeenCalledWith(expect.objectContaining({
+            ttsBackend: 'mediapipe',
+        }));
+        const stored = browser.storage.sync.set.mock.calls.at(-1)[0];
+        expect(stored).toHaveProperty('defaultSpeed');
+        expect(stored).not.toHaveProperty('ttsBackend');
+        expect(document.getElementById('status').textContent).toMatch(/MediaPipe was not activated/i);
+    });
+
+    test('stale failing MediaPipe validation cannot reset a newer ONNX selection', async () => {
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        browser.storage.sync.set.mockClear();
+
+        let releaseValidation;
+        browser.storage.local.get.mockImplementation(() => new Promise(resolve => {
+            releaseValidation = resolve;
+        }));
+        const mediapipe = document.querySelector('input[name="ttsBackend"][value="mediapipe"]');
+        const onnx = document.querySelector('input[name="ttsBackend"][value="onnx"]');
+        mediapipe.checked = true;
+        mediapipe.dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(typeof releaseValidation).toBe('function');
+
+        onnx.checked = true;
+        onnx.dispatchEvent(new Event('change'));
+        await flushAsync();
+        releaseValidation({ 'mediapipeValidatedRevision:cpu': null });
+        await flushAsync();
+
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('onnx');
+        expect(browser.storage.sync.set.mock.calls
+            .some(([value]) => value.ttsBackend === 'mediapipe')).toBe(false);
+        expect(browser.storage.sync.set.mock.calls
+            .some(([value]) => value.ttsBackend === 'onnx')).toBe(true);
+        expect(document.getElementById('backendExplanation').textContent).toContain('Local ONNX');
+    });
+
+    test('serializes backend writes when an earlier storage operation is delayed', async () => {
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        const completed = [];
+        let resolveFirst;
+        browser.storage.sync.set.mockReset();
+        browser.storage.sync.set.mockImplementation(settings => {
+            if (!resolveFirst) {
+                return new Promise(resolve => {
+                    resolveFirst = () => { completed.push(settings.ttsBackend); resolve(); };
+                });
+            }
+            completed.push(settings.ttsBackend);
+            return Promise.resolve();
+        });
+
+        const onnx = document.querySelector('input[name="ttsBackend"][value="onnx"]');
+        const fastapi = document.querySelector('input[name="ttsBackend"][value="fastapi"]');
+        onnx.checked = true;
+        onnx.dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(typeof resolveFirst).toBe('function');
+
+        fastapi.checked = true;
+        fastapi.dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(completed).toEqual([]);
+        resolveFirst();
+        await flushAsync();
+
+        expect(completed).toEqual(['onnx', 'fastapi']);
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('fastapi');
+    });
+
+    test('pending MediaPipe autosave cannot overwrite a newer backend', async () => {
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        browser.storage.sync.set.mockClear();
+        let releaseValidation;
+        browser.storage.local.get.mockImplementation(() => new Promise(resolve => {
+            releaseValidation = resolve;
+        }));
+
+        const mediapipe = document.querySelector('input[name="ttsBackend"][value="mediapipe"]');
+        mediapipe.checked = true;
+        document.getElementById('defaultSpeed').dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(typeof releaseValidation).toBe('function');
+
+        const onnx = document.querySelector('input[name="ttsBackend"][value="onnx"]');
+        onnx.checked = true;
+        onnx.dispatchEvent(new Event('change'));
+        releaseValidation({ 'mediapipeValidatedRevision:cpu': null });
+        await flushAsync();
+
+        const stored = browser.storage.sync.set.mock.calls;
+        expect(stored.some(([value]) => value.ttsBackend === 'mediapipe')).toBe(false);
+        expect(stored.some(([value]) => value.ttsBackend === 'onnx')).toBe(true);
+        expect(stored.some(([value]) => value.defaultSpeed !== undefined &&
+            Object.hasOwn(value, 'ttsBackend'))).toBe(false);
+    });
+
+    test('failed MediaPipe retest does not block other settings from being saved', async () => {
+        browser.storage.sync.get.mockImplementation(async defaults => ({
+            ...defaults, ttsBackend: 'mediapipe', mediaPipeVariant: 'cpu',
+            apiUrl: '', voice: 'af_sarah', mode: 'stream', theme: 'light',
+        }));
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        browser.storage.sync.set.mockClear();
+
+        document.getElementById('defaultSpeed').value = '1.5';
+        document.getElementById('defaultSpeed').dispatchEvent(new Event('change'));
+        await flushAsync();
+
+        const saved = browser.storage.sync.set.mock.calls.at(-1)[0];
+        expect(saved).toEqual(expect.objectContaining({ defaultSpeed: '1.5' }));
+        expect(saved).not.toHaveProperty('ttsBackend');
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('mediapipe');
+        expect(document.getElementById('status').textContent).toMatch(/MediaPipe was not activated/i);
+    });
+
+    test('invalid backend Save does not request a server permission or probe', async () => {
+        browser.storage.sync.get.mockImplementation(async defaults => ({
+            ...defaults, ttsBackend: 'unknown', apiUrl: '',
+            voice: 'af_sarah', mode: 'stream', theme: 'light',
+        }));
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        global.fetch.mockClear();
+        browser.permissions.request.mockClear();
+        document.getElementById('saveApiUrl').click();
+        await flushAsync();
+
+        expect(browser.permissions.request).not.toHaveBeenCalled();
+        expect(global.fetch).not.toHaveBeenCalled();
+        expect(document.getElementById('status').textContent).toMatch(/Choose a valid TTS backend/i);
+    });
+
     test('malformed voices response is not labeled unreachable', async () => {
         global.fetch = jest.fn(async (url) => {
             if (String(url).includes('/test') || String(url).endsWith('test')) {
@@ -111,7 +315,7 @@ describe('popup backend-loss resilience (#4)', () => {
         jest.resetModules();
         loadPopupDom();
         Object.assign(global, require('../api-client.js'));
-        require('../popup.js');
+        loadPopupModule();
         document.dispatchEvent(new Event('DOMContentLoaded'));
         await flushAsync();
 
@@ -353,7 +557,7 @@ describe('popup backend-loss resilience (#4)', () => {
         jest.resetModules();
         loadPopupDom();
         Object.assign(global, require('../api-client.js'));
-        require('../popup.js');
+        loadPopupModule();
         document.dispatchEvent(new Event('DOMContentLoaded'));
         await flushAsync();
 

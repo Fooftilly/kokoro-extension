@@ -22,6 +22,9 @@ global.browser = {
         },
         onChanged: { addListener: jest.fn() }
     },
+    downloads: {
+        download: jest.fn(() => Promise.resolve(1)),
+    },
     runtime: {
         sendMessage: jest.fn(),
         onMessage: { addListener: jest.fn() }
@@ -61,7 +64,10 @@ jest.mock('../audio-manager.js', () => ({
     }))
 }));
 
-const mockSentences = [{ index: 0, text: 'Hello', html: 'Hello' }];
+const mockSentences = [
+    { index: 0, text: 'Hello', html: 'Hello' },
+    { index: 1, text: 'Next sentence', html: 'Next sentence' },
+];
 jest.mock('../text-processor.js', () => ({
     processContent: jest.fn(() => ({
         sentences: mockSentences,
@@ -92,6 +98,7 @@ function setupDOM() {
         <button id="seekFwd">Next</button>
         <input type="range" id="volumeControl" value="1">
         <button id="retry"></button>
+        <button id="saveAudio"></button>
         <select id="speed">
             <option value="1.0">1.0x</option>
         </select>
@@ -124,6 +131,35 @@ describe('overlay.js logic', () => {
 
         playPauseBtn.click();
         expect(audio.play).toHaveBeenCalled();
+    });
+
+    test('download filename retains the sentence selected before asynchronous synthesis', async () => {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const { AudioManager } = require('../audio-manager.js');
+        const manager = AudioManager.mock.results[0].value;
+        let resolveAudio;
+        manager.getAudio.mockReturnValueOnce(new Promise(resolve => { resolveAudio = resolve; }));
+
+        document.getElementById('saveAudio').click();
+        await Promise.resolve();
+        expect(manager.getAudio).toHaveBeenCalledWith(0);
+        document.getElementById('seekFwd').click();
+        resolveAudio('blob:the-original-sentence');
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        expect(browser.downloads.download).toHaveBeenCalledWith(expect.objectContaining({
+            url: 'blob:the-original-sentence',
+            filename: expect.stringMatching(/-sentence-1\.mp3$/),
+        }));
+    });
+
+    test('local ONNX sentence downloads retain WAV format', async () => {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        browser.storage.local.get.mockResolvedValueOnce({ pendingTtsBackend: 'onnx' });
+        document.getElementById('saveAudio').click();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const call = browser.downloads.download.mock.calls[0][0];
+        expect(call.filename.endsWith('-sentence-1.wav')).toBe(true);
     });
 
     test('Handles navigation calls correctly', async () => {
