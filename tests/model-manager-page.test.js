@@ -24,7 +24,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
             <button id="testServer"></button><button id="chooseServer"></button>
             <p id="serverStatus"></p><audio id="serverAudio"></audio>`;
         global.browser = {
-            runtime: { getURL: path => 'moz-extension://test/' + path.replace(/^\\//, '') },
+            runtime: { getURL: path => 'moz-extension://test/' + (path.startsWith('/') ? path.slice(1) : path) },
             permissions: { request: jest.fn() },
             storage: { local: { remove: jest.fn(), set: jest.fn() },
                 sync: { get: jest.fn(), set: jest.fn() } },
