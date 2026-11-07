@@ -33,6 +33,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Compile-check Firefox live acceptance script
+        run: python3 -m py_compile scripts/validate-live-firefox.py
+
       - name: Test
         run: npm test
 
