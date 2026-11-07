@@ -24,7 +24,7 @@ export function parseEnglishLexicon(data) {
         const word = entry.slice(0, boundary).toLowerCase();
         // Choose primary entries only; (2), (3) variants need POS context.
         if (!VALID_WORD.test(word) || dictionary.has(word)) continue;
-        const phones = entry.slice(boundary).trim();
+        const phones = entry.slice(boundary).split('#', 1)[0].trim();
         if (phones) dictionary.set(word, phones);
     }
     if (dictionary.size === 0) throw new Error('Pronunciation dictionary is empty');
