@@ -18,7 +18,11 @@ const asset = manifest.assets[0];
 const digest = Buffer.from(asset.integrity.slice('sha256-'.length), 'base64').toString('hex');
 const modelFile = path.resolve(process.env.KOKORO_MEDIAPIPE_MODEL ||
     path.join(os.tmpdir(), 'kokoro-live-models', digest));
-const runtime = path.resolve('dist/chrome/runtimes/mediapipe');
+// Compare stable and official prerelease SDKs without changing package.json,
+// package-lock.json, or extension bundles. The override must point to the
+// installed @mediapipe/tasks-audio package root (audio_bundle.mjs + wasm/).
+const runtime = path.resolve(process.env.MEDIAPIPE_WEB_RUNTIME_DIR ||
+    'dist/chrome/runtimes/mediapipe');
 
 async function verifyModel() {
     const info = await stat(modelFile);
@@ -30,6 +34,7 @@ async function verifyModel() {
 await verifyModel();
 await stat(path.join(runtime, 'audio_bundle.mjs'));
 await stat(path.join(runtime, 'wasm', 'audio_wasm_internal.wasm'));
+console.log('Using official runtime files from', runtime);
 console.log('Verified pinned local model', asset.path, asset.bytes);
 
 // Only the pinned model and packaged SDK files are served, over loopback.
@@ -64,7 +69,9 @@ const origin = 'http://127.0.0.1:' + server.address().port;
 const reportFile = path.resolve('dist/runtime-acceptance/mediapipe-plain-web.json');
 let browser;
 let result = { success: false, scenario: 'plain localhost web origin',
-    modelSha256: digest, runtime: '@mediapipe/tasks-audio packaged in dist/chrome', browser: null };
+    modelSha256: digest, runtime: process.env.MEDIAPIPE_WEB_RUNTIME_DIR
+        ? 'isolated @mediapipe/tasks-audio at ' + runtime
+        : '@mediapipe/tasks-audio packaged in dist/chrome', browser: null };
 try {
     const { chromium } = await import(pathToFileURL(path.resolve(process.env.PLAYWRIGHT_MODULE_PATH)).href);
     browser = await chromium.launch({ channel: 'chromium', headless: true });
