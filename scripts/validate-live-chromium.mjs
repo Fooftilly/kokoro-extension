@@ -17,8 +17,17 @@ const { manifestForVariant, dictionaryManifest } = await import(pathToFileURL(ca
 if (process.env.KOKORO_LIVE_DOWNLOAD !== '1' || !process.env.PLAYWRIGHT_MODULE_PATH) {
     throw Error('Live model download opt-in and pinned Playwright module path required');
 }
-const variants = [dictionaryManifest(), manifestForVariant('onnx', 'q8'),
-    manifestForVariant('mediapipe', 'cpu')];
+// Test a single provider in isolation when diagnosing memory pressure. The
+// default still tests both providers and fails if either fails.
+const providerFilter = process.env.KOKORO_LIVE_PROVIDER || 'both';
+if (!['both', 'onnx', 'mediapipe'].includes(providerFilter)) {
+    throw Error('KOKORO_LIVE_PROVIDER must be both, onnx, or mediapipe');
+}
+const variants = [
+    ...(providerFilter === 'mediapipe' ? [] :
+        [dictionaryManifest(), manifestForVariant('onnx', 'q8')]),
+    ...(providerFilter === 'onnx' ? [] : [manifestForVariant('mediapipe', 'cpu')]),
+];
 const sourceDir = path.join(os.tmpdir(), 'kokoro-live-models');
 const resultsDir = path.resolve('dist/runtime-acceptance');
 await mkdir(sourceDir, { recursive: true });
@@ -96,27 +105,43 @@ try {
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', { timeout: 30000 });
     const extensionId = new URL(worker.url()).hostname;
     extensionOrigin = 'chrome-extension://' + extensionId;
-    const page = await context.newPage();
+    const preflightPage = await context.newPage();
     const errors = [];
-    page.on('pageerror', error => errors.push(String(error)));
-    await page.goto('chrome-extension://' + extensionId + '/benchmark.html');
-    await page.locator('#runCheck').click();
+    preflightPage.on('pageerror', error => errors.push(String(error)));
+    await preflightPage.goto('chrome-extension://' + extensionId + '/benchmark.html');
+    await preflightPage.locator('#runCheck').click();
     // Clicking only awaits DOM dispatch, not the async capability inspection.
     // Wait until the extension's result is complete before parsing JSON.
-    await page.waitForFunction(() => {
+    await preflightPage.waitForFunction(() => {
         const run = document.getElementById('runCheck');
         const status = document.getElementById('status')?.textContent || '';
         return !run?.disabled && (/preflight complete/i.test(status) || /preflight failed/i.test(status));
     }, null, { timeout: 60000 });
-    const preflightStatus = await page.locator('#status').textContent();
+    const preflightStatus = await preflightPage.locator('#status').textContent();
     if (/preflight failed/i.test(preflightStatus)) {
         throw Error('Chrome extension capability preflight failed: ' + preflightStatus);
     }
-    const preflight = JSON.parse(await page.locator('#report').textContent());
+    const preflight = JSON.parse(await preflightPage.locator('#report').textContent());
     if (!preflight.wasmCompilation) throw Error('Chrome extension CSP blocks WebAssembly compilation');
+    // A separate renderer page per model releases ONNX WASM allocations before
+    // starting the much larger MediaPipe WASM engine. Keep extension Cache
+    // Storage persistent across pages so the test still uses real cached data.
+    await preflightPage.close();
     const results = [];
+    const saveReport = () => writeFile(path.join(resultsDir, 'report.json'), JSON.stringify({
+        testedAt: new Date().toISOString(), browser: preflight.browser, preflight, results,
+        providerFilter,
+        scope: 'Linux Chrome MV3 extension origin; Firefox and audible quality still require separate acceptance',
+    }, null, 2));
     for (const manifest of variants) {
-        await page.evaluate(async ({ manifest, port, transferToken }) => {
+        const page = await context.newPage();
+        let crashed = false;
+        let stage = 'model-cache-population';
+        page.on('pageerror', error => errors.push(String(error)));
+        page.on('crash', () => { crashed = true; });
+        try {
+            await page.goto('chrome-extension://' + extensionId + '/benchmark.html');
+            await page.evaluate(async ({ manifest, port, transferToken }) => {
             const { ModelDataStore } = await import('./model-data-store.js');
             const store = new ModelDataStore({ origin: chrome.runtime.getURL('/'),
                 cacheStorage: caches, fetchImpl: fetch, responseClass: Response, streamClass: TransformStream });
@@ -132,8 +157,9 @@ try {
             }
             if (!(await store.status(manifest)).ready) throw Error('Verified browser model cache incomplete');
         }, { manifest, port: server.address().port, transferToken });
-        if (manifest.provider === 'dictionary') continue; // verified/cache-preloaded; no inference engine
-        await page.evaluate(({ provider, variant }) => {
+            if (manifest.provider === 'dictionary') continue; // verified/cache-preloaded; no inference engine
+            stage = 'model-initialization-and-synthesis';
+            await page.evaluate(({ provider, variant }) => {
             window.__kokoroProbe = { done: false };
             void (async () => {
                 let engine;
@@ -241,12 +267,19 @@ try {
             result.bufferedModelDiagnostic = bufferedDiagnostic;
             console.log('MEDIAPIPE MODEL BUFFER DIAGNOSTIC', bufferedDiagnostic);
         }
-        console.log(result.success ? 'REAL MODEL INFERENCE' : 'MODEL INFERENCE FAILURE', result);
-        results.push({ provider: manifest.provider, variant: manifest.variant, ...result });
-        await writeFile(path.join(resultsDir, 'report.json'), JSON.stringify({
-            testedAt: new Date().toISOString(), browser: preflight.browser, preflight, results,
-            scope: 'Linux Chrome MV3 extension origin; Firefox and audible quality still require separate acceptance',
-        }, null, 2));
+            console.log(result.success ? 'REAL MODEL INFERENCE' : 'MODEL INFERENCE FAILURE', result);
+            results.push({ provider: manifest.provider, variant: manifest.variant, ...result });
+            await saveReport();
+        } catch (error) {
+            const failure = { provider: manifest.provider, variant: manifest.variant,
+                success: false, crashed, stage, error: String(error) };
+            results.push(failure);
+            await saveReport();
+            console.error('MODEL VALIDATION ABORTED', failure);
+            throw error;
+        } finally {
+            if (!page.isClosed()) await page.close();
+        }
     }
     if (errors.length) throw Error('Extension errors: ' + errors.join('; '));
     if (results.some(result => !result.success)) {
