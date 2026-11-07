@@ -80,7 +80,7 @@ export async function loadBundledEnglishLexicon(browserApi, fetchImpl) {
     if (!['chrome-extension:', 'moz-extension:'].includes(url.protocol)) {
         throw new TypeError('Only the packaged pronunciation dictionary is allowed');
     }
-    const response = await fetchImpl.call(globalThis, url.href);
+    const response = await fetchImpl(url.href);
     if (!response?.ok || typeof response.text !== 'function') {
         throw new Error('Cannot read the packaged English dictionary');
     }

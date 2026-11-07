@@ -10,7 +10,7 @@ import { validateKokoroPcm } from './pcm-wav.js';
 
 export class OnnxKokoroProvider {
     constructor({ variant = 'q8', browserApi = globalThis.browser,
-        cacheStorage = globalThis.caches, fetchImpl = globalThis.fetch,
+        cacheStorage = globalThis.caches, fetchImpl = (...args) => globalThis.fetch(...args),
         loadSDK = () => import('./runtimes/onnx/ort.wasm.bundle.min.mjs'),
         loadDictionary = null } = {}) {
         this.manifest = manifestForVariant('onnx', variant);
