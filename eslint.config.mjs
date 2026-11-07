@@ -144,12 +144,27 @@ export default [
     },
   },
   {
-    files: ['build.js', 'jest.config.js', 'scripts/**/*.mjs'],
+    files: ['build.js', 'jest.config.js'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'commonjs',
       globals: {
         ...globals.node,
+      },
+    },
+    rules: sharedRules,
+  },
+  // Node ESM scripts include Playwright-evaluated code that executes in a browser.
+  {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        ...globals.node,
+        ...globals.browser,
+        ...globals.webextensions,
+        chrome: 'readonly',
       },
     },
     rules: sharedRules,
