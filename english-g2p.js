@@ -83,7 +83,7 @@ export async function loadCachedEnglishLexicon(browserApi, cacheStorage, fetchIm
     const manifest = dictionaryManifest();
     const store = new ModelDataStore({
         origin: browserApi.runtime.getURL('/'),
-        cacheStorage, fetchImpl, responseClass: Response, streamClass: TransformStream,
+        cacheStorage, fetchImpl, responseClass: globalThis.Response, streamClass: globalThis.TransformStream,
     });
     const status = await store.status(manifest);
     if (!status.ready) {
