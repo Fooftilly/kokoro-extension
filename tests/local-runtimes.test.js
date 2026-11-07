@@ -7,7 +7,7 @@ import { MediaPipeKokoroProvider } from '../mediapipe-provider.js';
 import { OnnxKokoroProvider } from '../onnx-provider.js';
 
 function browserApi() {
-    return { runtime: { getURL: path => 'moz-extension://test-uuid/' + path.replace(/^\\//, '') } };
+    return { runtime: { getURL: path => 'moz-extension://test-uuid/' + (path.startsWith('/') ? path.slice(1) : path) } };
 }
 
 function fakeCache(manifest) {
