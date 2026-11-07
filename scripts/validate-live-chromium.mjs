@@ -1,14 +1,18 @@
 // Live model-backed Chromium MV3 validation. Explicit opt-in and no model weights in git.
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
-import { manifestForVariant } from '../model-catalog.js';
+// The extension's .js modules are ESM while package.json is CommonJS for the
+// build tool. Copy the pure catalog into a temporary .mjs file for the Node harness.
+const catalogFile = path.join(os.tmpdir(), 'kokoro-runtime-model-catalog.mjs');
+await writeFile(catalogFile, await readFile(path.resolve('model-catalog.js')));
+const { manifestForVariant } = await import(pathToFileURL(catalogFile).href);
 
 if (process.env.KOKORO_LIVE_DOWNLOAD !== '1' || !process.env.PLAYWRIGHT_MODULE_PATH) {
     throw Error('Live model download opt-in and pinned Playwright module path required');
