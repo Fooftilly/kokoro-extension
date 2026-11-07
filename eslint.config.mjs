@@ -58,6 +58,7 @@ export default [
       'overlay-position.js',
       'theme-init.js',
       'transliteration-lite.js',
+      'tts-providers.js',
     ],
     languageOptions: {
       ecmaVersion: 2022,
@@ -84,7 +85,7 @@ export default [
   },
   // Classic scripts that optionally export for Jest via CJS interop
   {
-    files: ['content.js', 'api-client.js', 'overlay-position.js'],
+    files: ['content.js', 'api-client.js', 'overlay-position.js', 'tts-providers.js'],
     languageOptions: {
       globals: {
         module: 'readonly',
