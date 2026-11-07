@@ -153,4 +153,18 @@ PLAYWRIGHT_MODULE_PATH="$PW_MODULE" \
 node scripts/diagnose-mediapipe-web.mjs
 ```
 
-Official prerelease does not imply it works. It has **not yet been run** on the maintainer's machine; do not change the production `@mediapipe/tasks-audio@1.2.2` pin until an official build passes model-backed real synthesis and the extension acceptance tests. The script logs its selected runtime path and reports `dist/runtime-acceptance/mediapipe-plain-web.json`; each run overwrites that file.
+**The official prerelease now has independently verified plain-web real inference.** The maintainer installed exactly `@mediapipe/tasks-audio@1.2.2-rc.20261106` in a separate /tmp directory and reran the isolated plain-web diagnostic with the *same pinned Kokoro CPU model*, unchanged browser and same-origin local harness. It **succeeded** under HeadlessChrome 158: initialization **1,899 ms**, **38,400** samples at **24,000 Hz**, RMS **0.0465186341**, and **no page errors**. This is a successful real model-backed WebAssembly TTS inference, versus the proven failure with official stable `1.2.2`. It does not yet establish which change in the prerelease fixed the problem.
+
+The PR now **pins the exact prerelease** `@mediapipe/tasks-audio@1.2.2-rc.20261106` in both `package.json` and `package-lock.json` using the official npm tarball URL and published SHA-512 integrity checksum. This is a deliberate release-candidate dependency for validating the extension; it is not yet a confirmed production-ready replacement. The existing Chrome and Firefox packaging process copies the official SDK JS/WASM from this pinned npm dependency. **Full Chrome and Firefox extension-origin audio acceptance remains outstanding**, as do the documented user-facing download, long-form speech and playback behavior gates.
+
+Run the existing live Chromium harness using the pinned branch artifacts, without replacing dependencies externally:
+
+```bash
+git pull --ff-only
+npm ci --ignore-scripts
+npm run package:ci
+PW_MODULE="$(find /tmp -type f -path '*/node_modules/playwright/index.mjs' -print -quit)"
+KOKORO_LIVE_DOWNLOAD=1 PLAYWRIGHT_MODULE_PATH="$PW_MODULE" node scripts/validate-live-chromium.mjs
+```
+
+The test reuses local pinned model data after checksum validation; the script exits with an error if either actual ONNX or MediaPipe synthesis fails, and writes `dist/runtime-acceptance/report.json`. Model/voice and text must stay local with no silent fallback to FastAPI. The script logs its selected runtime path and reports `dist/runtime-acceptance/mediapipe-plain-web.json`; each run overwrites that file.
