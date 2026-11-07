@@ -21,6 +21,7 @@ export class MediaPipeKokoroProvider {
         this.fetchImpl = fetchImpl;
         this.loadSDK = loadSDK;
         this.engine = null;
+        this.modelUrl = null;
         this.loading = null;
     }
 
@@ -62,14 +63,22 @@ export class MediaPipeKokoroProvider {
         }
         const files = await sdk.FilesetResolver.forAudioTasks(
             this.browserApi.runtime.getURL('runtimes/mediapipe/wasm'));
-        this.engine = await sdk.TextToSpeech.createFromOptions(files, {
-            baseOptions: {
-                modelAssetBuffer: model,
-                delegate: this.variant === 'gpu' ? 'GPU' : 'CPU',
-            },
-            defaultVoiceId: 'af_heart', speakingRate: 1,
-            cacheDirectory: ':nocache',
-        });
+        // The upstream browser API documents modelAssetPath for .litertlm bundles.
+        // Keep this URL alive until close() in case the SDK lazily accesses assets.
+        const modelUrl = URL.createObjectURL(new Blob([model], { type: 'application/octet-stream' }));
+        try {
+            this.engine = await sdk.TextToSpeech.createFromOptions(files, {
+                baseOptions: {
+                    modelAssetPath: modelUrl,
+                    delegate: this.variant === 'gpu' ? 'GPU' : 'CPU',
+                },
+                defaultVoiceId: 'af_heart', speakingRate: 1,
+            });
+            this.modelUrl = modelUrl;
+        } catch (error) {
+            URL.revokeObjectURL(modelUrl);
+            throw error;
+        }
     }
 
     async synthesize(text, { voiceId = 'af_heart', speakingRate = 1 } = {}) {
@@ -94,5 +103,7 @@ export class MediaPipeKokoroProvider {
     async close() {
         if (this.engine && typeof this.engine.close === 'function') await this.engine.close();
         this.engine = null;
+        if (this.modelUrl) URL.revokeObjectURL(this.modelUrl);
+        this.modelUrl = null;
     }
 }
