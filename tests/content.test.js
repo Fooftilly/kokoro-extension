@@ -6,6 +6,7 @@ import { Readability } from '@mozilla/readability';
 
 describe('content.js parseArticle', () => {
     let parseArticle;
+    let respondToArticleRequest;
 
     beforeAll(() => {
         // Setup globals BEFORE requiring content.js because content.js executes top-level code
@@ -31,12 +32,59 @@ describe('content.js parseArticle', () => {
         // require content.js now
         const contentModule = require('../content.js');
         parseArticle = contentModule.parseArticle;
+        respondToArticleRequest = contentModule.respondToArticleRequest;
     });
 
     beforeEach(() => {
         // Reset DOM before each test
         document.body.innerHTML = '';
         jest.clearAllMocks();
+    });
+
+    test('article response helper sends a completed result', async () => {
+        const sendResponse = jest.fn();
+        await respondToArticleRequest(async () => ({ text: 'Hello', content: [] }), sendResponse);
+        expect(sendResponse).toHaveBeenCalledTimes(1);
+        expect(sendResponse).toHaveBeenCalledWith({ text: 'Hello', content: [] });
+    });
+
+    test('article response helper maps an internally caught Readability failure to an error', async () => {
+        const sendResponse = jest.fn();
+        await respondToArticleRequest(async () => ({ text: null }), sendResponse);
+        expect(sendResponse).toHaveBeenCalledTimes(1);
+        expect(sendResponse).toHaveBeenCalledWith({ error: 'Could not extract article text.' });
+    });
+
+    test('article response helper maps empty parsed text to a failure without hanging', async () => {
+        const sendResponse = jest.fn();
+        await respondToArticleRequest(async () => ({ text: '' }), sendResponse);
+        expect(sendResponse).toHaveBeenCalledWith({ error: 'Could not extract article text.' });
+    });
+
+    test('article response helper replies on asynchronous parser failure', async () => {
+        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+            const sendResponse = jest.fn();
+            await respondToArticleRequest(async () => {
+                throw new Error('Cannot clone page');
+            }, sendResponse);
+            expect(sendResponse).toHaveBeenCalledTimes(1);
+            expect(sendResponse).toHaveBeenCalledWith({ error: 'Could not extract article text.' });
+            expect(errorSpy).toHaveBeenCalledWith('Kokoro: article extraction failed', expect.any(Error));
+        } finally {
+            errorSpy.mockRestore();
+        }
+    });
+
+    test('article response helper replies on synchronous parser exceptions', async () => {
+        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+            const sendResponse = jest.fn();
+            await respondToArticleRequest(() => { throw new Error('Bad DOM'); }, sendResponse);
+            expect(sendResponse).toHaveBeenCalledWith({ error: 'Could not extract article text.' });
+        } finally {
+            errorSpy.mockRestore();
+        }
     });
 
     test('should extract simple paragraph text', async () => {
