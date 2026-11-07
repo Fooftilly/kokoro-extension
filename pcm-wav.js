@@ -1,5 +1,26 @@
 // Original PCM-to-WAV serialization, shared by both local Kokoro engines.
 // WAV 16-bit mono is widely playable in Firefox and Chrome without MP3 encoders.
+//
+// This validates basic PCM sanity, not perceptual sound quality or correct G2P.
+// Calling it before enabling a backend prevents silent/corrupt mock-like output
+// from being mistaken for working local speech.
+export function validateKokoroPcm(samples, sampleRateHz = 24000) {
+    if (!(samples instanceof Float32Array) || sampleRateHz !== 24000 ||
+        samples.length === 0 || samples.length > sampleRateHz * 60 * 10) {
+        throw new TypeError('Expected nonempty, bounded Kokoro 24-kHz Float32 PCM');
+    }
+    let squares = 0;
+    for (const sample of samples) {
+        if (!Number.isFinite(sample)) throw new TypeError('PCM sample must be finite');
+        squares += sample * sample;
+    }
+    const rms = Math.sqrt(squares / samples.length);
+    if (!Number.isFinite(rms) || rms <= 0.0001) {
+        throw new Error('Local Kokoro generated silent or near-silent PCM');
+    }
+    return { samples, sampleRateHz, rms };
+}
+
 export function encodePcm16Wav(samples, sampleRateHz = 24000) {
     if (!(samples instanceof Float32Array) || !Number.isInteger(sampleRateHz) ||
         sampleRateHz < 8000 || sampleRateHz > 192000 ||

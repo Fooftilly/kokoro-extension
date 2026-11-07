@@ -2,6 +2,7 @@
 // SDK executes inference. There is no network fallback or model auto-download.
 import { manifestForVariant } from './model-catalog.js';
 import { ModelDataStore } from './model-data-store.js';
+import { validateKokoroPcm } from './pcm-wav.js';
 
 function extensionStore(api, cacheStorage, fetchImpl) {
     return new ModelDataStore({
@@ -89,10 +90,9 @@ export class MediaPipeKokoroProvider {
         }
         await this.initialize();
         const result = await this.engine.synthesize(text, { voiceId, speakingRate });
-        if (!(result?.samples instanceof Float32Array) || result.samples.length === 0 ||
-            result.sampleRateHz !== 24000) {
-            throw new Error('MediaPipe did not return valid Kokoro 24-kHz PCM');
-        }
+        // Successful SDK execution alone does not mean it produced usable audio.
+        // Never validate a backend with silent, non-finite or unbounded PCM.
+        validateKokoroPcm(result?.samples, result?.sampleRateHz);
         return { samples: result.samples, sampleRateHz: result.sampleRateHz, voiceId };
     }
 

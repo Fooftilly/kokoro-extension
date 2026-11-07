@@ -5,6 +5,7 @@ import { manifestForVariant } from './model-catalog.js';
 import { ModelDataStore } from './model-data-store.js';
 import { prepareKokoroOnnxInputs, asOnnxRuntimeFeeds } from './onnx-kokoro-inputs.js';
 import { tokenizePhonemes } from './phoneme-tokenizer.js';
+import { validateKokoroPcm } from './pcm-wav.js';
 
 export class OnnxKokoroProvider {
     constructor({ variant = 'q8', browserApi = globalThis.browser,
@@ -88,6 +89,7 @@ export class OnnxKokoroProvider {
             !Array.isArray(audio.dims) || audio.dims.reduce((v, d) => v * d, 1) !== audio.data.length) {
             throw new Error('ONNX graph did not return valid float32 audio');
         }
+        validateKokoroPcm(audio.data, 24000);
         return { samples: audio.data, sampleRateHz: 24000 };
     }
 

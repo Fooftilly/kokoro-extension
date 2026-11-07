@@ -2,7 +2,7 @@
 import { manifestForVariant, listModelVariants } from '../model-catalog.js';
 import { validateModelManifest } from '../model-data-store.js';
 import { tokenizePhonemes, PHONEME_VOCAB } from '../phoneme-tokenizer.js';
-import { encodePcm16Wav } from '../pcm-wav.js';
+import { encodePcm16Wav, validateKokoroPcm } from '../pcm-wav.js';
 import { MediaPipeKokoroProvider } from '../mediapipe-provider.js';
 import { OnnxKokoroProvider } from '../onnx-provider.js';
 
@@ -55,6 +55,20 @@ describe('original Kokoro phoneme and PCM adapters', () => {
         expect(() => tokenizePhonemes('🚫')).toThrow(/Unknown Kokoro phoneme/);
         expect(() => tokenizePhonemes('')).toThrow();
     });
+    test('requires finite and non-silent PCM before a local engine can be validated', () => {
+        expect(validateKokoroPcm(new Float32Array([0.1, -0.2]), 24000).rms)
+            .toBeGreaterThan(0.0001);
+        expect(() => validateKokoroPcm(new Float32Array([0, 0]), 24000))
+            .toThrow(/silent/);
+        expect(() => validateKokoroPcm(new Float32Array([0.000001]), 24000))
+            .toThrow(/silent/);
+        expect(() => validateKokoroPcm(new Float32Array([NaN]), 24000))
+            .toThrow(/finite/);
+        expect(() => validateKokoroPcm(new Float32Array([Infinity]), 24000))
+            .toThrow(/finite/);
+        expect(() => validateKokoroPcm(new Float32Array([0.1]), 16000))
+            .toThrow(/24-kHz/);
+    });
     test('encodes finite mono samples to standard PCM WAV with clipping', () => {
         const wav = encodePcm16Wav(new Float32Array([-1.2, 0, 1.2]), 24000);
         const view = new DataView(wav.buffer);
@@ -100,6 +114,24 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
                 modelAssetPath: expect.stringMatching(/^blob:/) }) }));
         expect(synthesize).toHaveBeenCalledWith('Hello', { voiceId: 'af_heart', speakingRate: 1 });
     });
+    test('MediaPipe cannot mark an installed model as working when SDK outputs silence', async () => {
+        const manifest = manifestForVariant('mediapipe', 'cpu');
+        manifest.assets[0].bytes = 4;
+        const synthesize = jest.fn(async () => ({
+            samples: new Float32Array(1024), sampleRateHz: 24000,
+        }));
+        const sdk = {
+            FilesetResolver: { forAudioTasks: async () => ({}) },
+            TextToSpeech: { createFromOptions: async () => ({ synthesize }) },
+        };
+        const provider = new MediaPipeKokoroProvider({
+            browserApi: browserApi(), cacheStorage: fakeCache(manifest),
+            fetchImpl: jest.fn(), loadSDK: async () => sdk,
+        });
+        provider.manifest = manifest;
+        await expect(provider.synthesize('Hello')).rejects.toThrow(/silent/);
+        expect(synthesize).toHaveBeenCalledTimes(1);
+    });
     test('ONNX refuses uninstalled model and does not call SDK or fetch', async () => {
         const loadSDK = jest.fn(), fetchImpl = jest.fn();
         const provider = new OnnxKokoroProvider({
@@ -110,6 +142,30 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
         await expect(provider.synthesize('Hello')).rejects.toThrow(/G2P validation/);
         expect(loadSDK).not.toHaveBeenCalled();
         expect(fetchImpl).not.toHaveBeenCalled();
+    });
+    test('ONNX inference rejects non-finite PCM instead of presenting it as valid speech', async () => {
+        const manifest = manifestForVariant('onnx', 'q8');
+        manifest.assets[0].bytes = 4;
+        manifest.assets[1].bytes = 4096;
+        const session = {
+            outputNames: ['audio'],
+            run: jest.fn(async () => ({
+                audio: { data: new Float32Array([NaN, 0.1]), dims: [1, 2] },
+            })),
+        };
+        class Tensor {
+            constructor(type, data, dims) { Object.assign(this, { type, data, dims }); }
+        }
+        const sdk = {
+            env: { wasm: {} }, InferenceSession: { create: async () => session }, Tensor,
+        };
+        const provider = new OnnxKokoroProvider({
+            browserApi: browserApi(), cacheStorage: fakeCache(manifest),
+            fetchImpl: jest.fn(), loadSDK: async () => sdk,
+        });
+        provider.manifest = manifest;
+        await expect(provider.synthesizePhonemes('a b')).rejects.toThrow(/finite/);
+        expect(session.run).toHaveBeenCalledTimes(1);
     });
     test('ONNX builds real graph input tensors through the injected official SDK contract', async () => {
         const manifest = manifestForVariant('onnx', 'q8');
