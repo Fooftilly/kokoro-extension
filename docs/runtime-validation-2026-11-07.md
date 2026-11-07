@@ -216,3 +216,30 @@ The median MediaPipe warm run was **13,121.2 ms** to produce **3.05 seconds** of
 **Not yet verified:** audible voice quality; opt-in download-progress UI on a full real network transfer; long-form article/EPUB integration and cancellation; multi-sentence behavior and memory over time; Chrome GPU execution (no adapter); MediaPipe extension-origin **Firefox** (existing Firefox live harness currently tests ONNX q8 only); security/privacy and version-stability of the official prerelease; standardized same-text comparative benchmarks.
 
 PR #68 therefore remains **open**, with further functional acceptance and independent review required before declaring three complete backends. Do not replace the official MediaPipe SDK, change models, or silently fall back to FastAPI.
+
+## Firefox opt-in MediaPipe CPU acceptance
+
+The Firefox live harness formerly tested only ONNX q8 and dictionary-backed English. PR #68 now supports a separate **MediaPipe CPU** test with `KOKORO_FIREFOX_PROVIDER=mediapipe` while retaining ONNX as the **default** (`KOKORO_FIREFOX_PROVIDER=onnx` or unset). Selection is explicit: the two large engines do not execute sequentially in a single Firefox renderer. The script validates a complete `kokoro_int8_fp16.litertlm` download with the pinned SHA-256 and size, and reuses the same verified files previously downloaded for Chromium at `/tmp/kokoro-live-models/<digest>` when available. The Firefox extension's model cache is still populated from this verified local source, so it exercises actual packaged JS/WASM with no model weights committed or remote executable code. Default CI Firefox behavior remains ONNX.
+
+**On Arch Linux**, with Firefox and `geckodriver` installed and the PR's Chrome/Firefox packages rebuilt after any SDK change:
+
+```bash
+cd ~/GitHub/kokoro-extension
+git pull --ff-only
+npm run package:ci
+
+command -v firefox
+command -v geckodriver
+PY_ENV="$(mktemp -d /tmp/kokoro-ff-venv-XXXXXX)"
+python3 -m venv "$PY_ENV"
+"$PY_ENV/bin/pip" install 'selenium==4.38.0' urllib3
+KOKORO_LIVE_DOWNLOAD=1 \
+KOKORO_FIREFOX_PROVIDER=mediapipe \
+FIREFOX_BINARY="$(command -v firefox)" \
+MOZ_REMOTE_ALLOW_SYSTEM_ACCESS=1 \
+"$PY_ENV/bin/python" scripts/validate-live-firefox.py
+
+python3 -m json.tool dist/runtime-acceptance/firefox.json
+```
+
+A successful result must identify `provider: mediapipe`, `status: passed`, three measured warm syntheses, finite non-silent 24-kHz samples and the Firefox extension ID. A reported error is a failing acceptance, not a skipped gate. **This MediaPipe Firefox path has not yet been run by the maintainer**, so it is not a verified compatibility claim. If the default ONNX acceptance is also run, preserve one `firefox.json` between runs because the next one overwrites it.
