@@ -2,34 +2,38 @@
 (function () {
     'use strict';
 
+    function adapterDetails(adapter) {
+        return {
+            status: 'adapter-available',
+            features: Array.from(adapter.features || []),
+            limits: adapter.limits ? {
+                maxBufferSize: adapter.limits.maxBufferSize ?? null,
+                maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize ?? null,
+            } : null,
+        };
+    }
+
+    async function inspectWebGPU(nav) {
+        if (!nav.gpu || typeof nav.gpu.requestAdapter !== 'function') {
+            return { status: 'not-exposed' };
+        }
+        try {
+            const adapter = await nav.gpu.requestAdapter();
+            return adapter ? adapterDetails(adapter) : { status: 'no-adapter' };
+        } catch (error) {
+            return {
+                status: 'request-failed',
+                error: String(error && error.message || error),
+            };
+        }
+    }
+
     async function inspectCapabilities(environment) {
         const env = environment || globalThis;
         const nav = env.navigator || {};
-        const wasm = env.WebAssembly;
-        const hasWasm = !!(wasm && typeof wasm.compile === 'function');
+        const hasWasm = !!(env.WebAssembly && typeof env.WebAssembly.compile === 'function');
         const isolated = env.crossOriginIsolated === true;
         const sharedMemory = typeof env.SharedArrayBuffer === 'function';
-        const gpu = { status: 'not-exposed' };
-
-        if (nav.gpu && typeof nav.gpu.requestAdapter === 'function') {
-            try {
-                const adapter = await nav.gpu.requestAdapter();
-                if (!adapter) {
-                    gpu.status = 'no-adapter';
-                } else {
-                    gpu.status = 'adapter-available';
-                    gpu.features = Array.from(adapter.features || []);
-                    gpu.limits = adapter.limits ? {
-                        maxBufferSize: adapter.limits.maxBufferSize ?? null,
-                        maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize ?? null,
-                    } : null;
-                }
-            } catch (error) {
-                gpu.status = 'request-failed';
-                gpu.error = String(error && error.message || error);
-            }
-        }
-
         return {
             kind: 'capability-preflight',
             schemaVersion: 1,
@@ -40,7 +44,7 @@
             crossOriginIsolated: isolated,
             sharedArrayBuffer: sharedMemory,
             wasmThreadsPrerequisites: hasWasm && isolated && sharedMemory,
-            webgpu: gpu,
+            webgpu: await inspectWebGPU(nav),
             inferenceValidated: false,
             offlineModelValidated: false,
         };
