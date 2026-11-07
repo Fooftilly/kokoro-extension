@@ -101,7 +101,7 @@ jobs:
                 throw new Error(`chrome: must not ship background.scripts, got ${JSON.stringify(bg.scripts)}`);
               }
             } else if (browser === 'firefox') {
-              const expectedScripts = ['browser-polyfill.min.js', 'background.js'];
+              const expectedScripts = ['browser-polyfill.min.js', 'tts-providers.js', 'background.js'];
               if (!Array.isArray(bg.scripts) || bg.scripts.length !== expectedScripts.length
                   || expectedScripts.some((s, i) => bg.scripts[i] !== s)) {
                 throw new Error(`firefox: expected background.scripts=${JSON.stringify(expectedScripts)}, got ${JSON.stringify(bg.scripts)}`);
