@@ -4,10 +4,26 @@
 // This validates basic PCM sanity, not perceptual sound quality or correct G2P.
 // Calling it before enabling a backend prevents silent/corrupt mock-like output
 // from being mistaken for working local speech.
+// Firefox/SDK-generated typed arrays may originate in a different JS realm.
+// The intrinsic ArrayBuffer.isView check is realm-independent; the intrinsic
+// Float32 tag distinguishes 32-bit floating-point PCM from integer views.
+function isFloat32Pcm(samples) {
+    return ArrayBuffer.isView(samples) &&
+        Object.prototype.toString.call(samples) === '[object Float32Array]';
+}
+
 export function validateKokoroPcm(samples, sampleRateHz) {
-    if (!(samples instanceof Float32Array) || sampleRateHz !== 24000 ||
-        samples.length === 0 || samples.length > sampleRateHz * 60 * 10) {
-        throw new TypeError('Expected nonempty, bounded Kokoro 24-kHz Float32 PCM');
+    if (!isFloat32Pcm(samples)) {
+        throw new TypeError('Expected Kokoro Float32 PCM; received ' +
+            Object.prototype.toString.call(samples));
+    }
+    if (sampleRateHz !== 24000) {
+        throw new TypeError('Expected Kokoro 24-kHz PCM; received sampleRateHz=' +
+            String(sampleRateHz));
+    }
+    if (samples.length === 0 || samples.length > sampleRateHz * 60 * 10) {
+        throw new TypeError('Expected nonempty, bounded Kokoro 24-kHz Float32 PCM; length=' +
+            String(samples.length));
     }
     let squares = 0;
     for (const sample of samples) {
@@ -22,7 +38,7 @@ export function validateKokoroPcm(samples, sampleRateHz) {
 }
 
 export function encodePcm16Wav(samples, sampleRateHz = 24000) {
-    if (!(samples instanceof Float32Array) || !Number.isInteger(sampleRateHz) ||
+    if (!isFloat32Pcm(samples) || !Number.isInteger(sampleRateHz) ||
         sampleRateHz < 8000 || sampleRateHz > 192000 ||
         samples.length === 0 || samples.length > sampleRateHz * 60 * 10) {
         throw new TypeError('Expected a nonempty, bounded Float32Array and valid sample rate');
