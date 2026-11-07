@@ -149,7 +149,7 @@ describe('overlay.js logic', () => {
 
         expect(browser.downloads.download).toHaveBeenCalledWith(expect.objectContaining({
             url: 'blob:the-original-sentence',
-            filename: expect.stringMatching(/-sentence-1\\.mp3$/),
+            filename: expect.stringMatching(/-sentence-1\.mp3$/),
         }));
     });
 

@@ -204,7 +204,8 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
     test('ONNX sends text-derived phoneme tokens to the official session', async () => {
         const manifest = manifestForVariant('onnx', 'q8');
         manifest.assets[0].bytes = 4;
-        manifest.assets[1].bytes = 4096;
+        // Allocate enough style rows to cover the full English test phrase.
+        manifest.assets[1].bytes = 65536;
         const run = jest.fn(async () => ({
             audio: { data: new Float32Array([0.2, -0.2]), dims: [1, 2] },
         }));
