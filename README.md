@@ -131,7 +131,7 @@ Before opening a PR: `npm ci`, targeted tests as needed, `npm test`, `npm run li
 
 - **Kokoro TTS** via [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI)
 - [Compromise](https://github.com/spencermountain/compromise) (+ dates/numbers) for text normalization
-- [Transliteration](https://github.com/yf-hk/transliteration) (lite bundle in-repo) for script conversion
+- Local `transliteration-lite.js` implementation for script conversion, including the extension's Serbian and Greek mappings
 - [WebExtension Polyfill](https://github.com/mozilla/webextension-polyfill)
 - [Readability](https://github.com/mozilla/readability) for article extraction
 - [DOMPurify](https://github.com/cure53/DOMPurify), [epub.js](https://github.com/futurepress/epub.js), [JSZip](https://github.com/Stuk/jszip)
