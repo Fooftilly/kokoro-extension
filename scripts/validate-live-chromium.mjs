@@ -12,12 +12,13 @@ import { pathToFileURL } from 'node:url';
 // build tool. Copy the pure catalog into a temporary .mjs file for the Node harness.
 const catalogFile = path.join(os.tmpdir(), 'kokoro-runtime-model-catalog.mjs');
 await writeFile(catalogFile, await readFile(path.resolve('model-catalog.js')));
-const { manifestForVariant } = await import(pathToFileURL(catalogFile).href);
+const { manifestForVariant, dictionaryManifest } = await import(pathToFileURL(catalogFile).href);
 
 if (process.env.KOKORO_LIVE_DOWNLOAD !== '1' || !process.env.PLAYWRIGHT_MODULE_PATH) {
     throw Error('Live model download opt-in and pinned Playwright module path required');
 }
-const variants = [manifestForVariant('onnx', 'q8'), manifestForVariant('mediapipe', 'cpu')];
+const variants = [dictionaryManifest(), manifestForVariant('onnx', 'q8'),
+    manifestForVariant('mediapipe', 'cpu')];
 const sourceDir = path.join(os.tmpdir(), 'kokoro-live-models');
 const resultsDir = path.resolve('dist/runtime-acceptance');
 await mkdir(sourceDir, { recursive: true });
@@ -110,6 +111,7 @@ try {
             }
             if (!(await store.status(manifest)).ready) throw Error('Verified browser model cache incomplete');
         }, { manifest, port: server.address().port, transferToken });
+        if (manifest.provider === 'dictionary') continue; // verified/cache-preloaded; no inference engine
         await page.evaluate(({ provider, variant }) => {
             window.__kokoroProbe = { done: false };
             void (async () => {

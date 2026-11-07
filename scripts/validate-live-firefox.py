@@ -27,8 +27,8 @@ def pinned_manifest():
         "import {readFile} from 'node:fs/promises'; "
         "const catalog = await readFile('model-catalog.js'); "
         "const source = 'data:text/javascript;base64,' + catalog.toString('base64'); "
-        "const {manifestForVariant} = await import(source); "
-        "console.log(JSON.stringify(manifestForVariant('onnx', 'q8')));"
+        "const {manifestForVariant,dictionaryManifest} = await import(source); "
+        "console.log(JSON.stringify([manifestForVariant('onnx', 'q8'), dictionaryManifest()]));"
     )
     result = subprocess.run(
         ["node", "--input-type=module", "-e", code],
@@ -41,14 +41,19 @@ def verified_assets(manifest, directory):
     http = urllib3.PoolManager()
     for asset in manifest["assets"]:
         name = asset["path"]
-        # Allow only the exact pinned official ONNX repository asset. The
-        # browser-side manifest validator applies the corresponding restriction.
+        # The model comes from official Hugging Face; CMUdict is pinned to its
+        # original upstream GitHub commit. Neither URL is user-controlled.
         url = urlsplit(asset["url"])
-        expected = (f"/onnx-community/Kokoro-82M-v1.0-ONNX/"
-                    f"resolve/{manifest['revision']}/{name}")
-        if (url.scheme != "https" or url.netloc != "huggingface.co" or
+        if manifest["provider"] == "dictionary":
+            host = "raw.githubusercontent.com"
+            expected = f"/cmusphinx/cmudict/{manifest['revision']}/cmudict.dict"
+        else:
+            host = "huggingface.co"
+            expected = (f"/onnx-community/Kokoro-82M-v1.0-ONNX/"
+                        f"resolve/{manifest['revision']}/{name}")
+        if (url.scheme != "https" or url.netloc != host or
                 url.path != expected or url.query or url.fragment):
-            raise ValueError("Untrusted or unpinned model asset URL")
+            raise ValueError("Untrusted or unpinned model/dictionary asset URL")
         digest_bytes = __import__("base64").b64decode(asset["integrity"][7:])
         digest = digest_bytes.hex()
         filename = directory / digest
@@ -83,8 +88,10 @@ def main():
     with tempfile.TemporaryDirectory(prefix="kokoro-firefox-") as tmp:
         root = Path(tmp)
         try:
-            manifest = pinned_manifest()
-            files = verified_assets(manifest, root)
+            manifests = pinned_manifest()
+            files = {}
+            for manifest in manifests:
+                files.update(verified_assets(manifest, root))
             token = secrets.token_hex(32)
             state = {"origin": None}
             class Server(http.server.BaseHTTPRequestHandler):
@@ -152,14 +159,14 @@ def main():
             # Use only pinned bytes verified on the runner, and copy to the
             # extension's cache. The loopback server never receives TTS text.
             cache_result = driver.execute_async_script("""
-                const [manifest,port,token,done]=arguments;
+                const [manifests,port,token,done]=arguments;
                 (async()=>{
                     const {ModelDataStore}=await import('./model-data-store.js');
                     const store=new ModelDataStore({origin:browser.runtime.getURL('/'),
                         cacheStorage:caches,fetchImpl:fetch,
                         responseClass:Response,streamClass:TransformStream});
                     const cache=await caches.open('kokoro-model-data-v1');
-                    for(const asset of manifest.assets){
+                    for(const manifest of manifests)for(const asset of manifest.assets){
                         const raw=Uint8Array.from(atob(asset.integrity.slice(7)),c=>c.charCodeAt(0));
                         const hex=Array.from(raw).map(b=>b.toString(16).padStart(2,'0')).join('');
                         const response=await fetch('http://127.0.0.1:'+port+'/'+hex+'?token='+token);
@@ -168,10 +175,12 @@ def main():
                             'x-kokoro-integrity':asset.integrity,
                             'x-kokoro-bytes':String(asset.bytes)}}));
                     }
-                    if(!(await store.status(manifest)).ready)throw Error('Browser cache not ready');
+                    for(const manifest of manifests){
+                        if(!(await store.status(manifest)).ready)throw Error('Browser cache not ready: '+manifest.provider);
+                    }
                     done({success:true});
                 })().catch(e=>done({success:false,error:String(e)}));
-            """, manifest, server.server_port, token)
+            """, manifests, server.server_port, token)
             if not cache_result.get("success"):
                 raise RuntimeError("Firefox extension cache preload failed: " + str(cache_result))
             metrics = driver.execute_async_script("""

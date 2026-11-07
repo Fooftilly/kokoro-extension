@@ -133,7 +133,7 @@ Before opening a PR: `npm ci`, targeted tests as needed, `npm test`, `npm run li
 - **Kokoro TTS** via [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI)
 - [Compromise](https://github.com/spencermountain/compromise) (+ dates/numbers) for text normalization
 - Local `transliteration-lite.js` implementation for script conversion, including the extension's Serbian and Greek mappings
-- [CMU Pronouncing Dictionary](https://github.com/cmusphinx/cmudict), unmodified data from commit `74790861f652b15e4ac49015a90074ad62a27690` (BSD-style license in `data/CMUDICT_LICENSE`), used for experimental US-English offline pronunciation; no third-party G2P runtime source code is copied.
+- [CMU Pronouncing Dictionary](https://github.com/cmusphinx/cmudict), downloaded separately on user request from pinned commit `74790861f652b15e4ac49015a90074ad62a27690` (SHA-256 and byte-count verified; BSD-style license in `data/CMUDICT_LICENSE`) and cached for experimental offline US-English pronunciation. The 120,000-line dictionary is not shipped in the extension or stored in this repository's final tree.
 - [WebExtension Polyfill](https://github.com/mozilla/webextension-polyfill)
 - [Readability](https://github.com/mozilla/readability) for article extraction
 - [DOMPurify](https://github.com/cure53/DOMPurify), [epub.js](https://github.com/futurepress/epub.js), [JSZip](https://github.com/Stuk/jszip)

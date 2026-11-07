@@ -5,7 +5,7 @@ import { manifestForVariant } from './model-catalog.js';
 import { ModelDataStore } from './model-data-store.js';
 import { prepareKokoroOnnxInputs, asOnnxRuntimeFeeds } from './onnx-kokoro-inputs.js';
 import { tokenizePhonemes } from './phoneme-tokenizer.js';
-import { loadBundledEnglishLexicon, phonemizeEnglish } from './english-g2p.js';
+import { loadCachedEnglishLexicon, phonemizeEnglish } from './english-g2p.js';
 import { validateKokoroPcm } from './pcm-wav.js';
 
 export class OnnxKokoroProvider {
@@ -26,7 +26,7 @@ export class OnnxKokoroProvider {
         this.dictionary = null;
         this.dictionaryLoading = null;
         this.loadDictionary = loadDictionary ||
-            (() => loadBundledEnglishLexicon(this.browserApi, this.fetchImpl));
+            (() => loadCachedEnglishLexicon(this.browserApi, this.cacheStorage, this.fetchImpl));
     }
 
     get store() {

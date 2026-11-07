@@ -269,8 +269,11 @@ function build() {
 
         // Copy icons
         copyDir(path.join(__dirname, ICONS_DIR), path.join(browserDist, ICONS_DIR));
-        // Only pronunciation data and its required license; no external executable runtime.
-        copyDir(path.join(__dirname, 'data'), path.join(browserDist, 'data'));
+        // Attribution for user-downloaded CMUdict, but not the large dictionary.
+        const licenseTarget = path.join(browserDist, 'data');
+        fs.mkdirSync(licenseTarget, { recursive: true });
+        copyFile(path.join(__dirname, 'data', 'CMUDICT_LICENSE'),
+            path.join(licenseTarget, 'CMUDICT_LICENSE'));
 
         // Copy polyfill
         copyFile(path.join(__dirname, POLYFILL_SRC), path.join(browserDist, POLYFILL_DEST));

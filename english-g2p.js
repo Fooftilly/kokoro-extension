@@ -1,7 +1,9 @@
 // Original, strict English grapheme-to-phoneme frontend for Kokoro ONNX.
-// Pronunciations are DATA from CMUdict; see data/CMUDICT_LICENSE.
+// Pronunciations are separately downloaded CMUdict data; see data/CMUDICT_LICENSE.
 // No copied third-party phonemizer or executable WASM implementation.
 import { tokenizePhonemes } from './phoneme-tokenizer.js';
+import { dictionaryManifest } from './model-catalog.js';
+import { ModelDataStore } from './model-data-store.js';
 
 const PHONES = Object.freeze({
     AA: 'ɑ', AE: 'æ', AH: 'ʌ', AO: 'ɔ', AW: 'aʊ', AY: 'aɪ',
@@ -75,14 +77,23 @@ export function phonemizeEnglish(text, dictionary) {
     return phonemes;
 }
 
-export async function loadBundledEnglishLexicon(browserApi, fetchImpl) {
-    const url = new globalThis.URL(browserApi.runtime.getURL('data/cmudict.dict'));
-    if (!['chrome-extension:', 'moz-extension:'].includes(url.protocol)) {
-        throw new TypeError('Only the packaged pronunciation dictionary is allowed');
+export async function loadCachedEnglishLexicon(browserApi, cacheStorage, fetchImpl = () => {}) {
+    // Inference only reads local Cache Storage. Downloads require an explicit
+    // click in the model manager; speech text never goes to GitHub.
+    const manifest = dictionaryManifest();
+    const store = new ModelDataStore({
+        origin: browserApi.runtime.getURL('/'),
+        cacheStorage, fetchImpl, responseClass: Response, streamClass: TransformStream,
+    });
+    const status = await store.status(manifest);
+    if (!status.ready) {
+        throw new Error('English dictionary not installed. Download it in the TTS model manager.');
     }
-    const response = await fetchImpl(url.href);
-    if (!response?.ok || typeof response.text !== 'function') {
-        throw new Error('Cannot read the packaged English dictionary');
+    const cache = await cacheStorage.open('kokoro-model-data-v1');
+    const asset = manifest.assets[0];
+    const response = await cache.match(store.key(manifest, asset));
+    if (!store.isCurrent(response, asset)) {
+        throw new Error('Verified English dictionary missing from local cache');
     }
     const contents = await response.text();
     if (contents.length > 8_000_000) throw new RangeError('Pronunciation dictionary exceeds safety bound');

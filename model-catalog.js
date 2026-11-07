@@ -34,6 +34,25 @@ function asset(provider, path, bytes, sha256) {
     });
 }
 
+// Dictionary data comes from the official pinned upstream revision, never the
+// signed extension package. The user explicitly downloads it separately.
+const ENGLISH_DICTIONARY = Object.freeze({
+    provider: 'dictionary', variant: 'english',
+    revision: '74790861f652b15e4ac49015a90074ad62a27690',
+    assets: Object.freeze([{
+        path: 'cmudict.dict',
+        bytes: 3618488,
+        integrity: sha256SRI('81917843c7f44ce2b094ac63873c2c7a4cf802040792c455ba3ca406891c3d22'),
+        url: 'https://raw.githubusercontent.com/cmusphinx/cmudict/' +
+            '74790861f652b15e4ac49015a90074ad62a27690/cmudict.dict',
+    }]),
+});
+
+export function dictionaryManifest() {
+    return { ...ENGLISH_DICTIONARY,
+        assets: ENGLISH_DICTIONARY.assets.map(item => ({ ...item })) };
+}
+
 const VOICE_AF = asset('onnx', 'voices/af.bin', 524288,
     'a4f11d9d055a12bfa0db2668a3e4f0ef8fd1f1ccca69494479718e44dbf9e41a');
 

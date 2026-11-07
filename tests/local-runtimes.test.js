@@ -1,10 +1,8 @@
 /** @jest-environment node */
-import { manifestForVariant, listModelVariants } from '../model-catalog.js';
+import { manifestForVariant, listModelVariants, dictionaryManifest } from '../model-catalog.js';
 import { validateModelManifest } from '../model-data-store.js';
 import { tokenizePhonemes, PHONEME_VOCAB } from '../phoneme-tokenizer.js';
-import { parseEnglishLexicon, phonemizeEnglish, loadBundledEnglishLexicon } from '../english-g2p.js';
-import fs from 'node:fs';
-import path from 'node:path';
+import { parseEnglishLexicon, phonemizeEnglish, loadCachedEnglishLexicon } from '../english-g2p.js';
 import { encodePcm16Wav, validateKokoroPcm } from '../pcm-wav.js';
 import { MediaPipeKokoroProvider } from '../mediapipe-provider.js';
 import { OnnxKokoroProvider } from '../onnx-provider.js';
@@ -106,21 +104,38 @@ describe('original strict English dictionary phonemizer', () => {
         expect(() => phonemizeEnglish('hello 😀', lexicon)).toThrow(/Unsupported English text/);
         expect(() => phonemizeEnglish('hello '.repeat(130), lexicon)).toThrow(/at most 510/);
     });
-    test('the upstream BSD dictionary is installed as licensed source data', () => {
-        const raw = fs.readFileSync(path.join(__dirname, '..', 'data', 'cmudict.dict'), 'utf8');
-        const dictionary = parseEnglishLexicon(raw);
-        expect(dictionary.has('hello')).toBe(true);
-        expect(dictionary.has('world')).toBe(true);
-        expect(phonemizeEnglish('Hello world.', dictionary)).toContain('ʊ');
+    test('the dictionary is a separate pinned download, not a bundled source file', () => {
+        const manifest = dictionaryManifest();
+        expect(manifest.provider).toBe('dictionary');
+        expect(manifest.assets[0].bytes).toBe(3618488);
+        expect(manifest.assets[0].integrity).toMatch(/^sha256-/);
+        expect(manifest.assets[0].url).toBe(
+            'https://raw.githubusercontent.com/cmusphinx/cmudict/' +
+            manifest.revision + '/cmudict.dict');
     });
-    test('loads only from extension-owned URL, never external code or G2P', async () => {
-        const fetcher = jest.fn(async () => new Response(data));
-        const dictionary = await loadBundledEnglishLexicon(browserApi(), fetcher);
-        expect(dictionary.size).toBe(2);
-        expect(fetcher).toHaveBeenCalledWith('moz-extension://test-uuid/data/cmudict.dict');
-        await expect(loadBundledEnglishLexicon({
-            runtime: { getURL: () => 'https://example.com/dict' },
-        }, fetcher)).rejects.toThrow(/packaged/);
+    test('does not download pronunciation data implicitly during synthesis', async () => {
+        const manifest = dictionaryManifest();
+        const store = fakeCache(manifest);
+        const original = await store.open();
+        const contents = data;
+        original.match.mockImplementation(async () => new Response(contents, {
+            headers: {
+                'x-kokoro-integrity': manifest.assets[0].integrity,
+                'x-kokoro-bytes': String(manifest.assets[0].bytes),
+            },
+        }));
+        const fetcher = jest.fn();
+        const words = await loadCachedEnglishLexicon(browserApi(), store, fetcher);
+        expect(words.size).toBe(2);
+        expect(fetcher).not.toHaveBeenCalled();
+        expect(phonemizeEnglish('Hello world.', words)).toContain('ʊ');
+    });
+    test('fails closed when dictionary has not been downloaded', async () => {
+        const fetcher = jest.fn();
+        await expect(loadCachedEnglishLexicon(browserApi(), {
+            open: async () => ({ match: async () => null }),
+        }, fetcher)).rejects.toThrow(/Download it in the TTS model manager/);
+        expect(fetcher).not.toHaveBeenCalled();
     });
 });
 
@@ -231,38 +246,41 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
         await provider.synthesize('Hello world.');
         expect(loadDictionary).toHaveBeenCalledTimes(1);
     });
-    test('the ONNX provider default fetch reads only packaged dictionary data', async () => {
+    test('ONNX default dictionary loader uses local cache and never calls fetch', async () => {
         const manifest = manifestForVariant('onnx', 'q8');
         manifest.assets[0].bytes = 4;
         manifest.assets[1].bytes = 65536;
-        const originalFetch = globalThis.fetch;
-        const fetcher = jest.fn(async () => new Response(
-            ['hello HH AH0 L OW1', 'world W ER1 L D', ''].join(String.fromCharCode(10))));
-        globalThis.fetch = fetcher;
-        try {
-            const session = {
-                outputNames: ['audio'],
-                run: jest.fn(async () => ({
-                    audio: { data: new Float32Array([0.2, -0.2]), dims: [1, 2] },
-                })),
-            };
-            class Tensor {
-                constructor(type, data, dims) { Object.assign(this, { type, data, dims }); }
-            }
-            const provider = new OnnxKokoroProvider({
-                browserApi: browserApi(), cacheStorage: fakeCache(manifest),
-                loadSDK: async () => ({
-                    env: { wasm: {} }, InferenceSession: { create: async () => session }, Tensor,
-                }),
-            });
-            provider.manifest = manifest;
-            expect((await provider.synthesize('Hello world.')).samples.length).toBe(2);
-            expect(fetcher).toHaveBeenCalledTimes(1);
-            expect(fetcher).toHaveBeenCalledWith(
-                'moz-extension://test-uuid/data/cmudict.dict');
-        } finally {
-            globalThis.fetch = originalFetch;
-        }
+        const dictionary = dictionaryManifest();
+        const storage = fakeCache(manifest);
+        const cache = await storage.open();
+        const getModel = cache.match;
+        cache.match = jest.fn(async key => String(key).includes('/dictionary/')
+            ? new Response(['hello HH AH0 L OW1', 'world W ER1 L D', ''].join('\n'), {
+                headers: {
+                    'x-kokoro-integrity': dictionary.assets[0].integrity,
+                    'x-kokoro-bytes': String(dictionary.assets[0].bytes),
+                },
+            }) : getModel(key));
+        const fetcher = jest.fn();
+        const session = {
+            outputNames: ['audio'],
+            run: jest.fn(async () => ({
+                audio: { data: new Float32Array([0.2, -0.2]), dims: [1, 2] },
+            })),
+        };
+        class Tensor { constructor(type, data, dims) { Object.assign(this, { type, data, dims }); } }
+        const provider = new OnnxKokoroProvider({
+            browserApi: browserApi(), cacheStorage: storage, fetchImpl: fetcher,
+            loadSDK: async () => ({
+                env: { wasm: {} }, InferenceSession: { create: async () => session }, Tensor,
+            }),
+        });
+        provider.manifest = manifest;
+        expect((await provider.synthesize('Hello world.')).samples.length).toBe(2);
+        expect(fetcher).not.toHaveBeenCalled();
+        expect(cache.match).toHaveBeenCalledWith(
+            'https://kokoro-model-cache.invalid/model-data/dictionary/' +
+            dictionary.revision + '/english/cmudict.dict');
     });
     test('ONNX inference rejects non-finite PCM instead of presenting it as valid speech', async () => {
         const manifest = manifestForVariant('onnx', 'q8');

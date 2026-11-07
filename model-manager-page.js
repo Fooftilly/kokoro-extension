@@ -1,13 +1,23 @@
 // Extension-owned local model manager and *real* opt-in test harness.
 // No model fetch occurs when this page loads, and local test inputs stay here.
-import { listModelVariants, manifestForVariant } from './model-catalog.js';
+import { listModelVariants, manifestForVariant, dictionaryManifest } from './model-catalog.js';
 import { ModelDataStore, formatModelSize } from './model-data-store.js';
 import { MediaPipeKokoroProvider } from './mediapipe-provider.js';
 import { OnnxKokoroProvider } from './onnx-provider.js';
 import { pcmToWavBlob } from './pcm-wav.js';
 
 const page = document.getElementById('modelManager');
-const variants = listModelVariants();
+const dictionary = dictionaryManifest();
+const variants = [...listModelVariants(), {
+    key: 'dictionary-english', provider: 'dictionary', variant: 'english',
+    label: 'English pronunciation dictionary (optional offline download)',
+    totalBytes: dictionary.assets.reduce((sum, asset) => sum + asset.bytes, 0),
+}];
+
+function entryManifest(entry) {
+    return entry.provider === 'dictionary'
+        ? dictionaryManifest() : manifestForVariant(entry.provider, entry.variant);
+}
 const engineByKey = new Map();
 const inFlightDownloads = new Map();
 const lastAudioUrl = new Map();
@@ -57,6 +67,11 @@ function createModelRow(entry) {
     choose.textContent = 'Use this backend';
     choose.className = 'model-choose';
     choose.disabled = true;
+    if (entry.provider === 'dictionary') {
+        test.hidden = true;
+        choose.hidden = true;
+        test.disabled = true;
+    }
     actions.append(download, remove, test, choose);
     const audio = document.createElement('audio');
     audio.controls = true;
@@ -66,9 +81,9 @@ function createModelRow(entry) {
 }
 
 async function refresh(entry, ui) {
-    const state = await cacheStore().status(manifestForVariant(entry.provider, entry.variant));
+    const state = await cacheStore().status(entryManifest(entry));
     setMessage(ui.status, displayModelStatus(entry, state.ready, state.totalBytes));
-    ui.test.disabled = !state.ready;
+    ui.test.disabled = entry.provider === 'dictionary' || !state.ready;
     ui.remove.disabled = !state.storedBytes;
     ui.download.disabled = state.ready;
     return state;
@@ -80,12 +95,14 @@ async function doDownload(entry, ui) {
         running.abort();
         return;
     }
-    // Request before the first await to retain Firefox's user gesture, but
-    // handle both a synchronous exception and an asynchronous rejection.
+    // Request only the selected asset host, before the first await so
+    // Firefox preserves the user gesture. Neither host is granted by default.
+    const manifest = entryManifest(entry);
+    const hostOrigin = new URL(manifest.assets[0].url).origin;
     let permissionPromise;
     try {
         permissionPromise = browser.permissions.request({
-            origins: ['https://huggingface.co/*'],
+            origins: [hostOrigin + '/*'],
         });
     } catch (error) {
         setMessage(ui.status, 'Cannot request model download permission: ' + String(error.message || error));
@@ -111,7 +128,7 @@ async function doDownload(entry, ui) {
     ui.download.textContent = 'Cancel download';
     let downloadError = null;
     try {
-        await cacheStore().install(manifestForVariant(entry.provider, entry.variant), {
+        await cacheStore().install(manifest, {
             signal: controller.signal,
             onProgress: ({ completedBytes, totalBytes }) => {
                 setMessage(ui.status, 'Verified ' + formatModelSize(completedBytes) + ' / ' +
@@ -144,6 +161,7 @@ function currentEngine(entry) {
 }
 
 async function testEngine(entry, ui) {
+    if (entry.provider === 'dictionary') return;
     ui.test.disabled = true;
     ui.choose.disabled = true;
     const validationKey = 'mediapipeValidatedRevision:' + entry.variant;
@@ -209,7 +227,16 @@ function registerModel(entry) {
                 await engine.close();
                 engineByKey.delete(entry.key);
             }
-            await cacheStore().remove(manifestForVariant(entry.provider, entry.variant));
+            await cacheStore().remove(entryManifest(entry));
+            if (entry.provider === 'dictionary') {
+                // Invalidate in-memory lexicons after explicit removal.
+                for (const [key, provider] of engineByKey.entries()) {
+                    if (key.startsWith('onnx-')) {
+                        await provider.close();
+                        engineByKey.delete(key);
+                    }
+                }
+            }
             if (entry.provider === 'mediapipe') {
                 await browser.storage.local.remove('mediapipeValidatedRevision:' + entry.variant);
             }
