@@ -22,6 +22,7 @@ const SRC_FILES = [
     'api-client.js',
     'text-processor.js',
     'audio-manager.js',
+    'onnx-kokoro-inputs.js',
     'dom-utils.js',
     'transliteration-lite.js',
     'theme-init.js',
