@@ -72,6 +72,7 @@ export default [
       'overlay.js',
       'reader.js',
       'audio-manager.js',
+      'model-data-store.js',
       'dom-utils.js',
       'text-processor.js',
     ],
