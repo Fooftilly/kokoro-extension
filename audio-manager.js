@@ -51,75 +51,75 @@ export class AudioManager {
         }
     }
 
+    async localAudio(text, data) {
+        // Local PCM synthesis runs in the extension-owned playback page.
+        // Never call runtime.sendMessage or a remote endpoint from this path.
+        const variant = data.pendingMediaPipeVariant || 'cpu';
+        if (!this.localProvider || this.localVariant !== variant) {
+            if (this.localProvider) await this.localProvider.close();
+            this.localProvider = new MediaPipeKokoroProvider({ variant });
+            this.localVariant = variant;
+        }
+        const generation = this.generation;
+        const result = await this.localProvider.synthesize(text, {
+            voiceId: data.pendingLocalVoice || 'af_heart',
+        });
+        if (generation !== this.generation) {
+            throw new DOMException('Local generation cancelled', 'AbortError');
+        }
+        const url = URL.createObjectURL(pcmToWavBlob(result.samples, result.sampleRateHz));
+        this.objectUrls.add(url);
+        return url;
+    }
+
+    async remoteAudio(text, data) {
+        if (!data.pendingApiUrl) throw new Error('Missing API URL');
+        const endpoint = new URL('audio/speech', data.pendingApiUrl).href;
+        const result = await browser.runtime.sendMessage({
+            action: 'FETCH_TTS_AUDIO',
+            backend: 'fastapi',
+            endpoint,
+            payload: {
+                model: 'kokoro',
+                input: text,
+                voice: data.pendingVoice,
+                response_format: 'mp3',
+                speed: 1.0,
+                normalization_options: data.pendingNormalizationOptions,
+            },
+        });
+        if (!result || !result.success) {
+            throw new Error(result?.error || 'Background fetch failed');
+        }
+        return result.dataUrl;
+    }
+
+    async routeAudio(text, data) {
+        const backend = data.pendingTtsBackend === undefined ? 'fastapi' : data.pendingTtsBackend;
+        if (backend === 'mediapipe') return this.localAudio(text, data);
+        if (backend === 'fastapi') return this.remoteAudio(text, data);
+        throw new Error('Local TTS backend ONNX plain-text synthesis is not yet available. No text was sent to Kokoro-FastAPI.');
+    }
+
     async fetchAudio(text) {
         const data = await browser.storage.local.get([
             'pendingVoice', 'pendingApiUrl', 'pendingNormalizationOptions',
             'pendingTtsBackend', 'pendingMediaPipeVariant', 'pendingLocalVoice',
         ]);
-
-        // Use queue to ensure sequential requests to the API
-        // Catching here ensures the chain doesn't break for subsequent requests
-        return this.requestQueue = this.requestQueue.catch(() => { }).then(async () => {
+        // Preserve serialized generation and recover the queue after earlier errors.
+        this.requestQueue = this.requestQueue.catch(() => {}).then(async () => {
             try {
-                const backend = data.pendingTtsBackend === undefined ? 'fastapi' : data.pendingTtsBackend;
-                if (backend === 'mediapipe') {
-                    // The extension-owned iframe synthesizes local PCM and plays WAV.
-                    // No runtime.sendMessage or remote fetch is used in this branch.
-                    const variant = data.pendingMediaPipeVariant || 'cpu';
-                    if (!this.localProvider || this.localVariant !== variant) {
-                        if (this.localProvider) await this.localProvider.close();
-                        this.localProvider = new MediaPipeKokoroProvider({ variant });
-                        this.localVariant = variant;
-                    }
-                    const generation = this.generation;
-                    const result = await this.localProvider.synthesize(text, {
-                        voiceId: data.pendingLocalVoice || 'af_heart',
-                    });
-                    if (generation !== this.generation) {
-                        throw new DOMException('Local generation cancelled', 'AbortError');
-                    }
-                    const url = URL.createObjectURL(pcmToWavBlob(result.samples, result.sampleRateHz));
-                    this.objectUrls.add(url);
-                    return url;
+                return await this.routeAudio(text, data);
+            } catch (error) {
+                if (error.name === 'AbortError') throw error;
+                let message = error.message;
+                if (message === 'Failed to fetch') {
+                    message = `Connection failed. Is Kokoro-FastAPI running on ${data.pendingApiUrl || 'unknown URL'}?`;
                 }
-                if (backend !== 'fastapi') {
-                    throw new Error('Local TTS backend ONNX plain-text synthesis is not yet available. No text was sent to Kokoro-FastAPI.');
-                }
-                if (!data.pendingApiUrl) {
-                    throw new Error("Missing API URL");
-                }
-                const endpoint = new URL('audio/speech', data.pendingApiUrl).href;
-
-                const result = await browser.runtime.sendMessage({
-                    action: "FETCH_TTS_AUDIO",
-                    backend,
-                    endpoint: endpoint,
-                    payload: {
-                        model: 'kokoro',
-                        input: text,
-                        voice: data.pendingVoice,
-                        response_format: 'mp3',
-                        speed: 1.0,
-                        normalization_options: data.pendingNormalizationOptions
-                    }
-                });
-
-                if (!result || !result.success) {
-                    throw new Error(result?.error || "Background fetch failed");
-                }
-
-                return result.dataUrl;
-            } catch (e) {
-                if (e.name === 'AbortError') throw e;
-
-                let msg = e.message;
-                if (msg === "Failed to fetch") {
-                    const url = data.pendingApiUrl || "unknown URL";
-                    msg = `Connection failed. Is Kokoro-FastAPI running on ${url}?`;
-                }
-                console.error("Kokoro Fetch failed:", e);
-                throw new Error(msg);
+                console.error('Kokoro Fetch failed:', error);
+                throw new Error(message);
             }
         });
+        return this.requestQueue;
     }
 }
