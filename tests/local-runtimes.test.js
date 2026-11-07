@@ -231,6 +231,39 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
         await provider.synthesize('Hello world.');
         expect(loadDictionary).toHaveBeenCalledTimes(1);
     });
+    test('the ONNX provider default fetch reads only packaged dictionary data', async () => {
+        const manifest = manifestForVariant('onnx', 'q8');
+        manifest.assets[0].bytes = 4;
+        manifest.assets[1].bytes = 65536;
+        const originalFetch = globalThis.fetch;
+        const fetcher = jest.fn(async () => new Response(
+            'hello HH AH0 L OW1\\nworld W ER1 L D\\n'));
+        globalThis.fetch = fetcher;
+        try {
+            const session = {
+                outputNames: ['audio'],
+                run: jest.fn(async () => ({
+                    audio: { data: new Float32Array([0.2, -0.2]), dims: [1, 2] },
+                })),
+            };
+            class Tensor {
+                constructor(type, data, dims) { Object.assign(this, { type, data, dims }); }
+            }
+            const provider = new OnnxKokoroProvider({
+                browserApi: browserApi(), cacheStorage: fakeCache(manifest),
+                loadSDK: async () => ({
+                    env: { wasm: {} }, InferenceSession: { create: async () => session }, Tensor,
+                }),
+            });
+            provider.manifest = manifest;
+            expect((await provider.synthesize('Hello world.')).samples.length).toBe(2);
+            expect(fetcher).toHaveBeenCalledTimes(1);
+            expect(fetcher).toHaveBeenCalledWith(
+                'moz-extension://test-uuid/data/cmudict.dict');
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
+    });
     test('ONNX inference rejects non-finite PCM instead of presenting it as valid speech', async () => {
         const manifest = manifestForVariant('onnx', 'q8');
         manifest.assets[0].bytes = 4;

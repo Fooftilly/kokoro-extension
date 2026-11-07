@@ -153,6 +153,15 @@ describe('overlay.js logic', () => {
         }));
     });
 
+    test('local ONNX sentence downloads retain WAV format', async () => {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        browser.storage.local.get.mockResolvedValueOnce({ pendingTtsBackend: 'onnx' });
+        document.getElementById('saveAudio').click();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const call = browser.downloads.download.mock.calls[0][0];
+        expect(call.filename.endsWith('-sentence-1.wav')).toBe(true);
+    });
+
     test('Handles navigation calls correctly', async () => {
         await new Promise(r => setTimeout(r, 100));
         const seekFwdBtn = document.getElementById('seekFwd');
