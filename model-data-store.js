@@ -1,5 +1,8 @@
 // Original, extension-origin model data cache. No automatic model downloads.
 // Executable SDK JS/WASM must be shipped with the extension, never fetched here.
+// Cache API request keys must have HTTP(S) schemes even in extension-owned caches.
+// This reserved .invalid URL is never fetched; Cache Storage is scoped to the extension origin.
+const CACHE_KEY_ORIGIN = 'https://kokoro-model-cache.invalid/';
 const CACHE_NAME = 'kokoro-model-data-v1';
 const ALLOWED_PROVIDERS = Object.freeze(['mediapipe', 'onnx']);
 const INTEGRITY_PATTERN = /^sha256-[A-Za-z0-9+/]{43}=$/;
@@ -65,7 +68,7 @@ export class ModelDataStore {
 
     key(manifest, asset) {
         return new URL('model-data/' + manifest.provider + '/' + manifest.revision +
-            '/' + manifest.variant + '/' + asset.path, this.origin).href;
+            '/' + manifest.variant + '/' + asset.path, CACHE_KEY_ORIGIN).href;
     }
 
     async status(manifest) {
