@@ -37,12 +37,16 @@ export class AudioManager {
     }
 
     async fetchAudio(text) {
-        const data = await browser.storage.local.get(['pendingVoice', 'pendingApiUrl', 'pendingNormalizationOptions']);
+        const data = await browser.storage.local.get(['pendingVoice', 'pendingApiUrl', 'pendingNormalizationOptions', 'pendingTtsBackend']);
 
         // Use queue to ensure sequential requests to the API
         // Catching here ensures the chain doesn't break for subsequent requests
         return this.requestQueue = this.requestQueue.catch(() => { }).then(async () => {
             try {
+                const backend = data.pendingTtsBackend === undefined ? 'fastapi' : data.pendingTtsBackend;
+                if (backend !== 'fastapi') {
+                    throw new Error('Local TTS backend is not yet available. No text was sent to Kokoro-FastAPI.');
+                }
                 if (!data.pendingApiUrl) {
                     throw new Error("Missing API URL");
                 }
@@ -50,6 +54,7 @@ export class AudioManager {
 
                 const result = await browser.runtime.sendMessage({
                     action: "FETCH_TTS_AUDIO",
+                    backend,
                     endpoint: endpoint,
                     payload: {
                         model: 'kokoro',

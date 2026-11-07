@@ -1,10 +1,17 @@
 try {
     if (typeof importScripts === 'function') {
         importScripts('browser-polyfill.min.js');
+        importScripts('tts-providers.js');
     }
 } catch (e) {
     console.error("Polyfill load error:", e);
 }
+
+// Firefox loads tts-providers.js before this background script via its manifest.
+// Jest uses the same pure helper via CommonJS.
+const TtsProviders = typeof require === 'function'
+    ? require('./tts-providers.js')
+    : globalThis.KokoroTtsProviders;
 
 browser.runtime.onInstalled.addListener(() => {
     browser.contextMenus.create({
@@ -51,8 +58,15 @@ const checkApiStatus = async () => {
 
     try {
         const settings = await browser.storage.sync.get({
-            apiUrl: 'http://127.0.0.1:8880/v1/'
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: TtsProviders.FASTAPI
         });
+        const backend = TtsProviders.resolveBackend(settings.ttsBackend);
+        if (backend !== TtsProviders.FASTAPI) {
+            // Do not probe an HTTP server when a local engine was selected.
+            setIconStatus(false);
+            return;
+        }
 
         let apiUrl = settings.apiUrl;
         if (!apiUrl.endsWith('/')) apiUrl += '/';
@@ -126,7 +140,7 @@ browser.alarms.onAlarm.addListener((alarm) => {
 
 // Update on settings change
 browser.storage.onChanged.addListener((changes, area) => {
-    if (area === 'sync' && changes.apiUrl) {
+    if (area === 'sync' && (changes.apiUrl || changes.ttsBackend)) {
         checkApiStatus();
     }
 });
@@ -198,6 +212,7 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
     // Get settings
     const settings = await browser.storage.sync.get({
         apiUrl: 'http://127.0.0.1:8880/v1/',
+        ttsBackend: TtsProviders.FASTAPI,
         voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
         mode: 'stream',
         autoScroll: false,
@@ -212,6 +227,18 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
         },
         customPronunciations: {}
     });
+
+    let backend;
+    try {
+        backend = TtsProviders.resolveBackend(settings.ttsBackend);
+    } catch (error) {
+        notify('Kokoro TTS Error', error.message);
+        return;
+    }
+    if (backend !== TtsProviders.FASTAPI) {
+        notify('Kokoro TTS', TtsProviders.unavailableResponse(backend).error);
+        return; // Never send local-mode text to a FastAPI endpoint.
+    }
 
     let apiUrl = settings.apiUrl;
     if (!apiUrl.endsWith('/')) apiUrl += '/';
@@ -295,6 +322,7 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
                 pendingContent: structuredContent || [{ type: 'text', content: text }],
                 pendingVoice: settings.voice,
                 pendingApiUrl: apiUrl,
+                pendingTtsBackend: backend,
                 pendingTitle: tab.title,
                 pendingNormalizationOptions: settings.normalizationOptions,
                 pendingCustomPronunciations: settings.customPronunciations,
@@ -346,6 +374,14 @@ browser.runtime.onMessage.addListener(async (request, sender) => {
         }
     } else if (request.action === "FETCH_TTS_AUDIO") {
         try {
+            const selected = await browser.storage.sync.get({ ttsBackend: TtsProviders.FASTAPI });
+            const selectedBackend = TtsProviders.resolveBackend(selected.ttsBackend);
+            const requestedBackend = TtsProviders.resolveBackend(request.backend);
+            if (selectedBackend !== TtsProviders.FASTAPI || requestedBackend !== TtsProviders.FASTAPI) {
+                return TtsProviders.unavailableResponse(
+                    selectedBackend !== TtsProviders.FASTAPI ? selectedBackend : requestedBackend
+                );
+            }
             const response = await fetch(request.endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
