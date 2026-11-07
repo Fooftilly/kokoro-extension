@@ -82,6 +82,7 @@ export default [
       'onnx-provider.js',
       'pcm-wav.js',
       'phoneme-tokenizer.js',
+      'model-manager-page.js',
       'dom-utils.js',
       'text-processor.js',
     ],
