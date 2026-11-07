@@ -18,6 +18,29 @@ function loadPopupDom() {
 
 describe('popup backend-loss resilience (#4)', () => {
     let popup;
+    let documentListeners = [];
+
+    // Jest module resets do not remove popup.js's document-level listeners.
+    // Capture them during module loading and remove them after each case.
+    function loadPopupModule() {
+        const addListener = document.addEventListener;
+        document.addEventListener = function (type, handler, options) {
+            documentListeners.push({ type, handler, options });
+            return addListener.call(this, type, handler, options);
+        };
+        try {
+            return require('../popup.js');
+        } finally {
+            document.addEventListener = addListener;
+        }
+    }
+
+    afterEach(() => {
+        for (const { type, handler, options } of documentListeners) {
+            document.removeEventListener(type, handler, options);
+        }
+        documentListeners = [];
+    });
 
     beforeEach(() => {
         jest.resetModules();
@@ -64,7 +87,7 @@ describe('popup backend-loss resilience (#4)', () => {
         global.fetch = jest.fn(() => Promise.reject(new TypeError('Failed to fetch')));
 
         Object.assign(global, require('../api-client.js'));
-        popup = require('../popup.js');
+        popup = loadPopupModule();
     });
 
     async function flushAsync() {
@@ -292,7 +315,7 @@ describe('popup backend-loss resilience (#4)', () => {
         jest.resetModules();
         loadPopupDom();
         Object.assign(global, require('../api-client.js'));
-        require('../popup.js');
+        loadPopupModule();
         document.dispatchEvent(new Event('DOMContentLoaded'));
         await flushAsync();
 
@@ -534,7 +557,7 @@ describe('popup backend-loss resilience (#4)', () => {
         jest.resetModules();
         loadPopupDom();
         Object.assign(global, require('../api-client.js'));
-        require('../popup.js');
+        loadPopupModule();
         document.dispatchEvent(new Event('DOMContentLoaded'));
         await flushAsync();
 
