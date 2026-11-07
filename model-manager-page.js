@@ -198,7 +198,55 @@ function registerModel(entry) {
     });
 }
 
+async function testFastApi() {
+    const button = document.getElementById('testServer');
+    const choose = document.getElementById('chooseServer');
+    const status = document.getElementById('serverStatus');
+    choose.disabled = true;
+    button.disabled = true;
+    try {
+        const settings = await browser.storage.sync.get({
+            ttsBackend: 'fastapi', apiUrl: 'http://127.0.0.1:8880/v1/',
+            voice: 'af_heart',
+        });
+        if (settings.ttsBackend !== 'fastapi') {
+            throw new Error('Select the FastAPI backend first. Local-mode text is never sent to a server.');
+        }
+        const input = document.getElementById('benchmarkText').value.trim();
+        if (!input || input.length > 20000) throw new TypeError('Enter a short text sample');
+        const base = new URL(settings.apiUrl);
+        if (!['http:', 'https:'].includes(base.protocol)) throw new TypeError('Unsupported server URL');
+        const endpoint = new URL('audio/speech', base.href.endsWith('/') ? base : base.href + '/');
+        setMessage(status, 'Testing the explicitly configured FastAPI server…');
+        const started = performance.now();
+        const result = await browser.runtime.sendMessage({
+            action: 'FETCH_TTS_AUDIO', backend: 'fastapi', endpoint: endpoint.href,
+            payload: { model: 'kokoro', input, voice: settings.voice,
+                response_format: 'mp3', speed: 1 },
+        });
+        const elapsed = performance.now() - started;
+        if (!result?.success || !result.dataUrl) throw new Error(result?.error || 'No MP3 data returned');
+        const audio = document.getElementById('serverAudio');
+        audio.src = result.dataUrl;
+        audio.hidden = false;
+        setMessage(status, 'Server returned playable MP3 in ' + elapsed.toFixed(0) +
+            ' ms (network + synthesis; not a comparable local RTF).');
+        choose.disabled = false;
+    } catch (error) {
+        setMessage(status, 'Server test failed: ' + String(error.message || error));
+    } finally {
+        button.disabled = false;
+    }
+}
+
 if (page) {
+    document.getElementById('testServer').addEventListener('click', () => {
+        void testFastApi();
+    });
+    document.getElementById('chooseServer').addEventListener('click', async () => {
+        await browser.storage.sync.set({ ttsBackend: 'fastapi' });
+        setMessage(document.getElementById('serverStatus'), 'FastAPI selected.');
+    });
     for (const entry of variants) registerModel(entry);
     window.addEventListener('pagehide', () => {
         for (const url of lastAudioUrl.values()) URL.revokeObjectURL(url);
