@@ -530,7 +530,15 @@ const saveOptions = async (isDebounced = false, options = {}) => {
     const voice = serializeVoiceString(currentVoices);
     const mode = document.querySelector('input[name="mode"]:checked').value;
     const ttsBackend = document.querySelector('input[name="ttsBackend"]:checked')?.value;
-    if (!ttsBackend) throw new Error('Choose a valid TTS backend before saving');
+    if (!ttsBackend) {
+        // An unknown persisted backend leaves no checked radio. Do not silently
+        // reset the backend or reject an autosave without an explanation.
+        const status = document.getElementById('status');
+        status.textContent = 'Error: Choose a valid TTS backend before saving.';
+        status.style.color = 'var(--status-error)';
+        status.style.display = 'block';
+        return { ok: false, error: true };
+    }
     const defaultSpeed = document.getElementById('defaultSpeed').value;
     const defaultVolume = document.getElementById('defaultVolume').value;
     const autoScroll = document.getElementById('autoScroll').checked;

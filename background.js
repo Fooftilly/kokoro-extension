@@ -244,8 +244,15 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
     // MediaPipe runs directly in the extension's audio player from cached model bytes.
     // It must never probe or request audio from FastAPI while selected.
 
-    let apiUrl = settings.apiUrl;
-    if (!apiUrl.endsWith('/')) apiUrl += '/';
+    // A local engine must not require, parse, or transmit a FastAPI URL.
+    let apiUrl = null;
+    if (backend === TtsProviders.FASTAPI) {
+        if (typeof settings.apiUrl !== 'string' || !settings.apiUrl.trim()) {
+            notify('Kokoro TTS Error', 'Configure a Kokoro server URL before using FastAPI.');
+            return;
+        }
+        apiUrl = settings.apiUrl.endsWith('/') ? settings.apiUrl : settings.apiUrl + '/';
+    }
 
     // Network connectivity matters only for the explicitly selected server backend.
     if (backend === TtsProviders.FASTAPI) {
@@ -264,18 +271,16 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
         }
     }
 
-    // Prepare request
-    const endpoint = new URL('audio/speech', apiUrl).href;
-    const body = {
-        model: 'kokoro',
-        input: text,
-        voice: settings.voice,
-        response_format: 'mp3',
-        normalization_options: settings.normalizationOptions
-    };
-
     try {
         if (backend === TtsProviders.FASTAPI && settings.mode === 'download' && !isArticleMode) {
+            const endpoint = new URL('audio/speech', apiUrl).href;
+            const body = {
+                model: 'kokoro',
+                input: text,
+                voice: settings.voice,
+                response_format: 'mp3',
+                normalization_options: settings.normalizationOptions
+            };
             notify("Kokoro TTS", "Generating audio...");
             const response = await fetch(endpoint, {
                 method: 'POST',

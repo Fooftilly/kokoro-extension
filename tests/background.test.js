@@ -148,6 +148,30 @@ describe('background.js logic', () => {
         expect(fetch.mock.calls.some(([url]) => String(url).includes('/audio/speech'))).toBe(false);
     });
 
+    test.each(['', 'not a valid server URL', undefined])(
+        'MediaPipe selection works without a usable server URL (%s)', async apiUrl => {
+            browser.storage.sync.get.mockResolvedValue({
+                ttsBackend: 'mediapipe', apiUrl, mediaPipeVariant: 'cpu',
+                localVoice: 'af_heart', voice: 'af_sarah', mode: 'stream',
+                normalizationOptions: {},
+            });
+            const listener = browser.contextMenus.onClicked.addListener.mock.calls[0][0];
+            await listener(
+                { menuItemId: 'send-to-kokoro', selectionText: 'Private offline sentence' },
+                { id: 17, title: 'Private page' }
+            );
+            expect(browser.storage.local.set).toHaveBeenCalledWith(expect.objectContaining({
+                pendingTtsBackend: 'mediapipe',
+                pendingText: 'Private offline sentence',
+                pendingApiUrl: null,
+            }));
+            expect(browser.tabs.sendMessage).toHaveBeenCalledWith(
+                17, expect.objectContaining({ action: 'SHOW_PLAYER' })
+            );
+            expect(fetch).not.toHaveBeenCalled();
+        }
+    );
+
     test('local fetch messages cannot fall through to FastAPI HTTP', async () => {
         browser.storage.sync.get.mockResolvedValue({ ttsBackend: 'mediapipe' });
         const handler = browser.runtime.onMessage.addListener.mock.calls[0][0];

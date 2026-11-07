@@ -97,6 +97,22 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(saved.apiUrl).toContain('192.168.1.10');
     });
 
+    test('invalid saved backend displays a controlled save error without reverting to FastAPI', async () => {
+        browser.storage.sync.get.mockImplementation(async defaults => ({
+            ...defaults, ttsBackend: 'missing-local-engine',
+            apiUrl: '', voice: 'af_sarah', mode: 'stream', theme: 'light',
+        }));
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        expect(document.querySelector('input[name="ttsBackend"]:checked')).toBeNull();
+        browser.storage.sync.set.mockClear();
+        document.getElementById('defaultSpeed').dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(document.getElementById('status').textContent).toMatch(/Choose a valid TTS backend/i);
+        expect(browser.storage.sync.set).not.toHaveBeenCalled();
+    });
+
     test('malformed voices response is not labeled unreachable', async () => {
         global.fetch = jest.fn(async (url) => {
             if (String(url).includes('/test') || String(url).endsWith('test')) {

@@ -95,6 +95,7 @@ async function doDownload(entry, ui) {
     inFlightDownloads.set(entry.key, controller);
     ui.download.disabled = false;
     ui.download.textContent = 'Cancel download';
+    let downloadError = null;
     try {
         await cacheStore().install(manifestForVariant(entry.provider, entry.variant), {
             signal: controller.signal,
@@ -103,14 +104,19 @@ async function doDownload(entry, ui) {
                     formatModelSize(totalBytes) + ' (integrity checking may buffer progress)');
             },
         });
-        await refresh(entry, ui);
     } catch (error) {
-        setMessage(ui.status, 'Download failed: ' + String(error.message || error));
+        downloadError = 'Download failed: ' + String(error.message || error);
     } finally {
         inFlightDownloads.delete(entry.key);
         ui.download.textContent = 'Download ' + formatModelSize(entry.totalBytes);
         ui.download.disabled = false;
-        await refresh(entry, ui);
+        try {
+            await refresh(entry, ui);
+        } catch (error) {
+            if (!downloadError) downloadError = 'Cannot inspect model cache: ' + String(error.message || error);
+        }
+        // The model status refresh must not erase the actual download failure.
+        if (downloadError) setMessage(ui.status, downloadError);
     }
 }
 

@@ -122,7 +122,11 @@ def main():
             options.set_preference("extensions.experiments.enabled", True)
             driver = webdriver.Firefox(options=options)
             driver.set_script_timeout(250)
-            addon_path = Path("dist/package/kokoro-extension-firefox-1.4.0.zip").resolve()
+            package_version = json.loads(Path("package.json").read_text(encoding="utf-8"))["version"]
+            addon_path = (Path("dist/package") /
+                          f"kokoro-extension-firefox-{package_version}.zip").resolve()
+            if not addon_path.is_file():
+                raise FileNotFoundError(f"Packaged Firefox extension not found: {addon_path}")
             addon_id = driver.install_addon(str(addon_path), temporary=True)
             driver.set_context("chrome")
             pref = driver.execute_script(
