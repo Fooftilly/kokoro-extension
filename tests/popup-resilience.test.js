@@ -129,6 +129,40 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(document.getElementById('backendExplanation').textContent).toMatch(/Test the installed model first/i);
     });
 
+    test('autosave cannot enable MediaPipe while its asynchronous radio test is pending', async () => {
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        browser.storage.sync.set.mockClear();
+
+        // A checked radio is not a verified backend; generic settings writes
+        // must gate it even before the radio change handler finishes.
+        const radio = document.querySelector('input[name="ttsBackend"][value="mediapipe"]');
+        radio.checked = true;
+        document.getElementById('defaultSpeed').dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(browser.storage.sync.set).not.toHaveBeenCalledWith(expect.objectContaining({
+            ttsBackend: 'mediapipe',
+        }));
+        expect(document.getElementById('status').textContent).toMatch(/Test the installed model first/i);
+    });
+
+    test('invalid backend Save does not request a server permission or probe', async () => {
+        browser.storage.sync.get.mockImplementation(async defaults => ({
+            ...defaults, ttsBackend: 'unknown', apiUrl: '',
+            voice: 'af_sarah', mode: 'stream', theme: 'light',
+        }));
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        global.fetch.mockClear();
+        browser.permissions.request.mockClear();
+        document.getElementById('saveApiUrl').click();
+        await flushAsync();
+
+        expect(browser.permissions.request).not.toHaveBeenCalled();
+        expect(global.fetch).not.toHaveBeenCalled();
+        expect(document.getElementById('status').textContent).toMatch(/Choose a valid TTS backend/i);
+    });
+
     test('malformed voices response is not labeled unreachable', async () => {
         global.fetch = jest.fn(async (url) => {
             if (String(url).includes('/test') || String(url).endsWith('test')) {

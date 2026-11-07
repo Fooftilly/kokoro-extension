@@ -508,6 +508,29 @@ function startDragging(index, handle, bar) {
 }
 
 
+async function validateSelectedMediaPipe() {
+    // Enforce the test gate from both radio switching and generic settings
+    // autosaves. A radio becomes checked before its async change handler ends.
+    const { mediaPipeVariant } = await browser.storage.sync.get({ mediaPipeVariant: 'cpu' });
+    const key = 'mediapipeValidatedRevision:' + mediaPipeVariant;
+    const validated = await browser.storage.local.get({ [key]: null });
+    if (!validated[key]) throw new Error('Test the installed model first.');
+    const { manifestForVariant } = await import('./model-catalog.js');
+    const { ModelDataStore } = await import('./model-data-store.js');
+    const manifest = manifestForVariant('mediapipe', mediaPipeVariant);
+    if (validated[key] !== manifest.revision) {
+        throw new Error('The model revision changed. Repeat the local TTS test.');
+    }
+    const store = new ModelDataStore({
+        origin: browser.runtime.getURL('/'), cacheStorage: caches,
+        fetchImpl: fetch.bind(globalThis),
+        responseClass: Response, streamClass: TransformStream,
+    });
+    if (!(await store.status(manifest)).ready) {
+        throw new Error('The tested model is no longer installed.');
+    }
+}
+
 let saveTimeout;
 /**
  * Persist settings. Does not call permissions.request() — Firefox requires that
@@ -571,6 +594,9 @@ const saveOptions = async (isDebounced = false, options = {}) => {
     };
 
     try {
+        if (ttsBackend === 'mediapipe') {
+            await validateSelectedMediaPipe();
+        }
         // 1. Persist immediately even if permission is pending/denied
         await browser.storage.sync.set(settings);
         await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, autoplayReader, showFloatingButton, normalizationOptions, theme });
@@ -798,29 +824,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!radio.checked) return;
             const explanation = document.getElementById('backendExplanation');
             if (radio.value === 'mediapipe') {
-                // The model-manager must first complete real local synthesis.
-                // An installed model or SDK alone is not proof of compatibility.
                 try {
-                    const { mediaPipeVariant } = await browser.storage.sync.get({ mediaPipeVariant: 'cpu' });
-                    const key = 'mediapipeValidatedRevision:' + mediaPipeVariant;
-                    const validated = await browser.storage.local.get({ [key]: null });
-                    if (!validated[key]) throw new Error('Test the installed model first.');
-                    const { manifestForVariant } = await import('./model-catalog.js');
-                    const { ModelDataStore } = await import('./model-data-store.js');
-                    const manifest = manifestForVariant('mediapipe', mediaPipeVariant);
-                    if (validated[key] !== manifest.revision) {
-                        throw new Error('The model revision changed. Repeat the local TTS test.');
-                    }
-                    const store = new ModelDataStore({
-                        origin: browser.runtime.getURL('/'), cacheStorage: caches,
-                        fetchImpl: fetch.bind(globalThis), responseClass: Response,
-                        streamClass: TransformStream,
-                    });
-                    if (!(await store.status(manifest)).ready) {
-                        throw new Error('The tested model is no longer installed.');
-                    }
+                    await validateSelectedMediaPipe();
                 } catch (error) {
-                    // Reject the attempted switch without changing stored backend.
+                    // Ignore this invalid attempt; the saved setting was not changed.
                     const { ttsBackend: saved } = await browser.storage.sync.get({ ttsBackend: 'fastapi' });
                     for (const item of document.querySelectorAll('input[name="ttsBackend"]')) {
                         item.checked = item.value === saved;
@@ -830,6 +837,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
             }
+            // A separate autosave may have run while verification was pending;
+            // saveOptions independently performs this same validation.
             await browser.storage.sync.set({ ttsBackend: radio.value });
             if (radio.value === 'fastapi') {
                 explanation.textContent = 'Using the configured Kokoro server; text is sent to this endpoint.';
@@ -854,9 +863,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const url = normalizeApiUrl(document.getElementById('apiUrl').value);
         document.getElementById('apiUrl').value = url;
         // Must call permissions.request before any await (Firefox user-action).
-        const permissionRequestPromise = beginHostPermissionRequest(url);
+        const backend = document.querySelector('input[name="ttsBackend"]:checked')?.value;
+        const permissionRequestPromise = backend === 'fastapi' ? beginHostPermissionRequest(url) : null;
         const saveResult = await saveOptions(false, { permissionRequestPromise });
-        if (saveResult && saveResult.permissionDenied) {
+        if (!saveResult?.ok || backend !== 'fastapi') {
+            // Never probe a server when the selected backend is local or invalid.
             return;
         }
         await refreshBackendStatus(url, {

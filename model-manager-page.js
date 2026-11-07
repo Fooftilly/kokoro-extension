@@ -147,12 +147,12 @@ async function testEngine(entry, ui) {
     ui.test.disabled = true;
     ui.choose.disabled = true;
     const validationKey = 'mediapipeValidatedRevision:' + entry.variant;
-    if (entry.provider === 'mediapipe') {
-        // Any failed re-test invalidates the previous approval for this variant.
-        await browser.storage.local.remove(validationKey);
-    }
     setMessage(ui.status, 'Loading locally packaged runtime and cached model…');
     try {
+        if (entry.provider === 'mediapipe') {
+            // A failing re-test cannot leave its previous approval active.
+            await browser.storage.local.remove(validationKey);
+        }
         const engine = currentEngine(entry);
         await engine.initialize(); // Initialize outside warm-run timings.
         const text = document.getElementById('benchmarkText').value.trim();
