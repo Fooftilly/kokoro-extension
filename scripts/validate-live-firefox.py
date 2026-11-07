@@ -128,7 +128,7 @@ def main():
 
             # Use only pinned bytes verified on the runner, and copy to the
             # extension's cache. The loopback server never receives TTS text.
-            driver.execute_async_script("""
+            cache_result = driver.execute_async_script("""
                 const [manifest,port,token,done]=arguments;
                 (async()=>{
                     const {ModelDataStore}=await import('./model-data-store.js');
@@ -149,6 +149,8 @@ def main():
                     done({success:true});
                 })().catch(e=>done({success:false,error:String(e)}));
             """, manifest, server.server_port, token)
+            if not cache_result.get("success"):
+                raise RuntimeError("Firefox extension cache preload failed: " + str(cache_result))
             metrics = driver.execute_async_script("""
                 const done=arguments[arguments.length-1];
                 (async()=>{
