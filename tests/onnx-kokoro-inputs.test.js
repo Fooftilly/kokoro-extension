@@ -34,11 +34,15 @@ describe('original Kokoro ONNX tensor preparation (#60)', () => {
         expect(() => prepareKokoroOnnxInputs(new Array(511).fill(2), voiceFixture())).toThrow();
         expect(() => prepareKokoroOnnxInputs([0], voiceFixture())).toThrow();
         expect(() => prepareKokoroOnnxInputs([2.5], voiceFixture())).toThrow();
+        expect(() => prepareKokoroOnnxInputs(new DataView(new ArrayBuffer(8)), voiceFixture())).toThrow(/array of phoneme/);
         expect(() => prepareKokoroOnnxInputs([1], voiceFixture(), 0)).toThrow();
         expect(() => prepareKokoroOnnxInputs([1], voiceFixture(), Infinity)).toThrow();
         expect(() => prepareKokoroOnnxInputs([1], voiceFixture(), 5)).toThrow();
         expect(() => prepareKokoroOnnxInputs([2, 3, 4, 5, 6], voiceFixture())).toThrow(/style vector/);
         expect(() => styleForLength(new Uint8Array(5), 1)).toThrow(/256-float/);
+        const corrupted = voiceFixture();
+        new DataView(corrupted.buffer).setFloat32(3 * 256 * 4, NaN, true);
+        expect(() => prepareKokoroOnnxInputs([11, 42, 7], corrupted)).toThrow(/non-finite/);
     });
 
     test('converts the declared model input contract through an injected official Tensor API', () => {
