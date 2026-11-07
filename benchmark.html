@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Kokoro — Browser TTS preflight</title>
+    <link rel="stylesheet" href="benchmark.css">
+</head>
+<body>
+    <main>
+        <h1>Browser TTS preflight</h1>
+        <p>This first-stage diagnostic checks browser prerequisites only. It does <strong>not</strong> load a Kokoro model, run inference, or measure speech speed. No model or data is downloaded.</p>
+        <section>
+            <h2>Three planned backends</h2>
+            <table>
+                <thead><tr><th>Backend</th><th>Current test status</th></tr></thead>
+                <tbody>
+                    <tr><td>Kokoro-FastAPI (Docker/server)</td><td>Existing extension mode; not tested on this page</td></tr>
+                    <tr><td>MediaPipe Kokoro (on-device)</td><td>Model integration pending</td></tr>
+                    <tr><td>ONNX Runtime Web (on-device)</td><td>Model integration pending</td></tr>
+                </tbody>
+            </table>
+            <p>WebAssembly or WebGPU support alone does not prove either Kokoro backend works. Later versions will require actual synthesized samples before showing speed rankings.</p>
+        </section>
+        <section>
+            <h2>Browser prerequisites</h2>
+            <button type="button" id="runCheck">Check browser support</button>
+            <button type="button" id="copyCheck" disabled>Copy local report</button>
+            <p id="status" role="status" aria-live="polite">Not checked</p>
+            <pre id="report"></pre>
+            <p>WebGPU needs a real adapter. WebAssembly threads additionally require an isolated context and shared memory. Results are stored only in this page until you copy them.</p>
+        </section>
+    </main>
+    <script src="benchmark-capabilities.js"></script>
+    <script src="benchmark-page.js"></script>
+</body>
+</html>
