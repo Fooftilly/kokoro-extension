@@ -63,6 +63,9 @@ describe('opt-in cached model data (#55)', () => {
     test('downloads only when explicitly installed, verifies response size and reuses cached result', async () => {
         const { store, fetchImpl, cacheStorage } = setup();
         const data = manifest();
+        const key = store.key(data, data.assets[0]);
+        expect(new URL(key).protocol).toBe('https:');
+        expect(new URL(key).hostname).toBe('kokoro-model-cache.invalid');
         expect((await store.status(data)).ready).toBe(false);
         expect(fetchImpl).not.toHaveBeenCalled();
         const progress = jest.fn();
