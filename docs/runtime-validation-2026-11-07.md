@@ -57,3 +57,31 @@ The maintainer independently used the extension's user-facing model test page in
 - The maintainer requested visible model download progress. PR #68 now has an opt-in download progress indicator with byte counts and completion gated on successful cache storage; **real visual/interactive acceptance of the new indicator is still outstanding**.
 
 The official model/runtime tokenizer incompatibility remains the primary merge blocker. The q8 ONNX success should not be presented as proof of full text/EPUB support.
+
+## Follow-up installed-extension results: both ONNX precisions (7 November 2026)
+
+The maintainer reran all four selectable local model tests from the installed Chromium extension:
+
+| Provider / variant | Full-clip synthesis p50 / p95 (three warm runs) | RTF p50 | Observed outcome |
+| --- | --- | --- | --- |
+| ONNX q8 WASM | **1,521 / 1,548 ms** | **0.92** | Real IPA synthesis passed. Experimental English dictionary-backed audio generated, but listening-quality acceptance not provided |
+| ONNX q8f16 WASM | **1,598 / 1,688 ms** | **0.98** | Real IPA synthesis passed. Experimental English dictionary-backed audio generated, but listening-quality acceptance not provided |
+| MediaPipe CPU | — | — | Failed task creation: `No tokenizer found in the model for model type: tf_lite_prefill_decode` |
+| MediaPipe GPU | — | — | Same task creation failure; this is not evidence that WebGPU was used |
+
+The optional English pronunciation dictionary is installed at its verified 3.6 MB size. The q8 sample p50 is ~4.8% lower than q8f16; with only three runs and IPA input, this is neither a production performance ranking nor a long-form/English throughput measurement. Prior capability preflight reported `webgpu.status=no-adapter`; the GPU failure must not be interpreted as a functional WebGPU benchmark.
+
+### Targeted next diagnostic: inspect MediaPipe container tokenizer sections
+
+The upstream `litert-community/Kokoro-82M` model card claims the `.litertlm` files include text front-end data and work with the MediaPipe TextToSpeech task, but no published reference run has been independently validated in this extension. Google's official `litert-lm-peek` tool can enumerate the file's sections without extracting weights: https://developers.google.com/edge/litert-lm/file_builder .
+
+The optional Chromium live acceptance script places the checksum-verified CPU bundle at `/tmp/kokoro-live-models/e7b931ee5d4b7104012a838c9eee240d19ea69cb3ca269041a3274f83dbb7fa1` on Linux. If the file still exists after the earlier run, install the official inspector in an isolated venv and run:
+
+```bash
+python3 -m venv /tmp/kokoro-litert-peek-venv
+/tmp/kokoro-litert-peek-venv/bin/python -m pip install --upgrade litert-lm-builder
+/tmp/kokoro-litert-peek-venv/bin/litert-lm-peek --litertlm_file \
+  /tmp/kokoro-live-models/e7b931ee5d4b7104012a838c9eee240d19ea69cb3ca269041a3274f83dbb7fa1
+```
+
+Review whether a tokenizer is present, what type it is tagged with, and how the TFLite model sections are identified. **No assumption of absent metadata should be made until the inspector output is available.** Do not rewrite or silently substitute downloaded weights or adopt unrelated implementations as a workaround.
