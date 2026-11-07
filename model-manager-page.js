@@ -196,6 +196,19 @@ async function testEngine(entry, ui) {
             // A failing re-test cannot leave its previous approval active.
             await browser.storage.local.remove(validationKey);
         }
+        // An installed GPU model is not proof that this browser has a usable
+        // GPU delegate. Do not initialize the official GPU runtime when the
+        // browser cannot provide a WebGPU adapter; show a clear unavailable
+        // result instead of surfacing an opaque upstream device.queue error.
+        if (entry.provider === 'mediapipe' && entry.variant === 'gpu') {
+            const capabilities = await window.KokoroBenchmark.inspectCapabilities();
+            const gpuStatus = capabilities.webgpu?.status || 'unknown';
+            if (gpuStatus !== 'adapter-available') {
+                setMessage(ui.status, 'GPU test unavailable in this browser (' + gpuStatus +
+                    '). No inference was attempted. Try MediaPipe CPU instead.');
+                return;
+            }
+        }
         const engine = currentEngine(entry);
         await engine.initialize(); // Initialize outside warm-run timings.
         const text = document.getElementById('benchmarkText').value.trim();
