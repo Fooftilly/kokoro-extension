@@ -90,6 +90,11 @@ describe('original Kokoro phoneme and PCM adapters', () => {
 describe('original strict English dictionary phonemizer', () => {
     const data = 'hello HH AH0 L OW1\nworld W ER1 L D\n';
     const lexicon = parseEnglishLexicon(data);
+    test('ignores inline CMUdict comments rather than treating them as phonemes', () => {
+        const annotated = parseEnglishLexicon('gdp JH IY1 D IY1 P IY1 # initialism\\n');
+        expect(annotated.get('gdp')).toBe('JH IY1 D IY1 P IY1');
+        expect(() => phonemizeEnglish('GDP.', annotated)).not.toThrow();
+    });
     test('converts CMUdict pronunciation data to Kokoro IPA', () => {
         const ipa = phonemizeEnglish('Hello world.', lexicon);
         expect(ipa).toBe('həlˈoʊ wˈɚld.');

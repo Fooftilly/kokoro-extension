@@ -157,16 +157,17 @@ if (saveAudioBtn) {
     saveAudioBtn.addEventListener('click', async () => {
         saveAudioBtn.disabled = true;
         try {
-            if (!sentences[currentIndex]) throw new Error('No selected sentence');
-            const audioUrl = await audioManager.getAudio(currentIndex);
+            const sentenceIndex = currentIndex;
+            if (!sentences[sentenceIndex]) throw new Error('No selected sentence');
+            const audioUrl = await audioManager.getAudio(sentenceIndex);
             if (!audioUrl) throw new Error('No generated audio to save');
             const settings = await browser.storage.local.get(['pendingTtsBackend']);
-            const extension = settings.pendingTtsBackend === 'mediapipe' ? 'wav' : 'mp3';
+            const extension = ['mediapipe', 'onnx'].includes(settings.pendingTtsBackend) ? 'wav' : 'mp3';
             const safeTitle = (titleEl.textContent || 'kokoro')
                 .replace(/[^a-zA-Z0-9 _-]/g, '_').trim().slice(0, 90) || 'kokoro';
             await browser.downloads.download({
                 url: audioUrl,
-                filename: safeTitle + '-sentence-' + (currentIndex + 1) + '.' + extension,
+                filename: safeTitle + '-sentence-' + (sentenceIndex + 1) + '.' + extension,
                 saveAs: true,
             });
             statusEl.textContent = 'Audio saved';
