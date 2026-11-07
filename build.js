@@ -29,6 +29,10 @@ const SRC_FILES = [
     'audio-manager.js',
     'model-data-store.js',
     'onnx-kokoro-inputs.js',
+    'model-catalog.js',
+    'mediapipe-provider.js',
+    'onnx-provider.js',
+    'pcm-wav.js',
     'dom-utils.js',
     'transliteration-lite.js',
     'theme-init.js',
@@ -63,6 +67,18 @@ const EPUBJS_DEST = 'epub.min.js';
 
 const JSZIP_SRC = 'node_modules/jszip/dist/jszip.min.js';
 const JSZIP_DEST = 'jszip.min.js';
+
+// Executable TTS SDKs and WASM ship inside the signed extension package.
+// Model weights/data are downloaded separately, only with user consent.
+const RUNTIME_FILES = [
+    ['node_modules/@mediapipe/tasks-audio/audio_bundle.mjs', 'runtimes/mediapipe/audio_bundle.mjs'],
+    ['node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs', 'runtimes/onnx/ort.wasm.bundle.min.mjs'],
+    ['node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs', 'runtimes/onnx/ort-wasm-simd-threaded.mjs'],
+    ['node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm', 'runtimes/onnx/ort-wasm-simd-threaded.wasm'],
+];
+const RUNTIME_DIRS = [
+    ['node_modules/@mediapipe/tasks-audio/wasm', 'runtimes/mediapipe/wasm'],
+];
 
 
 
@@ -143,7 +159,9 @@ function createManifest(browser) {
             }
         ],
         content_security_policy: {
-            extension_pages: "script-src 'self'; object-src 'self';"
+            // Packaged WASM inference needs this narrow extension-page CSP permission.
+            // No eval of JS or remote code is permitted.
+            extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
         },
         commands: {
             "open-reader": {
@@ -270,6 +288,16 @@ function build() {
         copyFile(path.join(__dirname, EPUBJS_SRC), path.join(browserDist, EPUBJS_DEST));
         copyFile(path.join(__dirname, JSZIP_SRC), path.join(browserDist, JSZIP_DEST));
 
+
+        // Always copy official SDK executables locally; never load executable CDN assets.
+        for (const [src, dest] of RUNTIME_FILES) {
+            const target = path.join(browserDist, dest);
+            fs.mkdirSync(path.dirname(target), { recursive: true });
+            copyFile(path.join(__dirname, src), target);
+        }
+        for (const [src, dest] of RUNTIME_DIRS) {
+            copyDir(path.join(__dirname, src), path.join(browserDist, dest));
+        }
 
         // Generate Manifest
         const manifest = createManifest(browser);
