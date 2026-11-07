@@ -45,7 +45,7 @@ export function validateModelManifest(manifest) {
     for (const asset of manifest.assets) {
         if (!asset || typeof asset.path !== 'string' ||
             !PATH_PATTERN.test(asset.path) ||
-            asset.path.startsWith('/') || asset.path.split('/').includes('..') ||
+            asset.path.split('/').some(segment => segment === '' || segment === '.' || segment === '..') ||
             seen.has(asset.path) ||
             !Number.isSafeInteger(asset.bytes) || asset.bytes <= 0 ||
             !INTEGRITY_PATTERN.test(asset.integrity || '') ||
@@ -167,5 +167,29 @@ export class ModelDataStore {
         for (const asset of manifest.assets) {
             await cache.delete(this.key(manifest, asset));
         }
+    }
+
+    // Explicit cleanup after a model revision/catalog update. The caller supplies
+    // ALL currently retained manifests so installed alternatives are not lost.
+    async removeUnreferenced(retainedManifests) {
+        if (!Array.isArray(retainedManifests)) {
+            throw new TypeError('Retained model manifests must be an array');
+        }
+        const retained = new Set();
+        for (const manifest of retainedManifests) {
+            validateModelManifest(manifest);
+            for (const asset of manifest.assets) {
+                retained.add(this.key(manifest, asset));
+            }
+        }
+        const prefix = new URL('model-data/', CACHE_KEY_ORIGIN).href;
+        const cache = await this.cacheStorage.open(CACHE_NAME);
+        let deleted = 0;
+        for (const request of await cache.keys()) {
+            if (request.url.startsWith(prefix) && !retained.has(request.url)) {
+                if (await cache.delete(request)) deleted++;
+            }
+        }
+        return deleted;
     }
 }
