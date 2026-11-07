@@ -58,6 +58,22 @@ describe('opt-in cached model data (#55)', () => {
         const missingHash = manifest();
         missingHash.assets[0].integrity = '';
         expect(() => validateModelManifest(missingHash)).toThrow();
+        const wrongRepo = manifest();
+        wrongRepo.assets[0].url = wrongRepo.assets[0].url.replace(
+            'onnx-community/Kokoro-82M-v1.0-ONNX', 'arbitrary-user/foreign-model');
+        expect(() => validateModelManifest(wrongRepo)).toThrow(/pinned official repository/);
+        const wrongPath = manifest();
+        wrongPath.assets[0].url = wrongPath.assets[0].url.replace(
+            'onnx/model_quantized.onnx', 'onnx/other.onnx');
+        expect(() => validateModelManifest(wrongPath)).toThrow(/asset path/);
+        const queryInjected = manifest();
+        queryInjected.assets[0].url += '?filename=model.onnx';
+        expect(() => validateModelManifest(queryInjected)).toThrow();
+        const executable = manifest();
+        executable.assets[0].path = 'remote-executable.wasm';
+        executable.assets[0].url = executable.assets[0].url.replace(
+            'onnx/model_quantized.onnx', 'remote-executable.wasm');
+        expect(() => validateModelManifest(executable)).toThrow(/non-data/);
     });
 
     test('downloads only when explicitly installed, verifies response size and reuses cached result', async () => {
