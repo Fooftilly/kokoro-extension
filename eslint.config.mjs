@@ -92,6 +92,11 @@ export default [
       },
     },
   },
+  // background.js only uses require() in the Jest CommonJS harness.
+  {
+    files: ['background.js'],
+    languageOptions: { globals: { require: 'readonly' } },
+  },
   // content.js depends on overlay-position.js (classic script global)
   {
     files: ['content.js'],
