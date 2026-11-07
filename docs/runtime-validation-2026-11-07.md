@@ -1,17 +1,19 @@
 # Kokoro browser runtimes: measured validation (2026-11-07)
 
-Status: **partial, not release-ready**. This is the reproducible evidence for #53 and parent #52. Real model-backed browser synthesis is distinct from static API availability, mocked tests, and passing builds.
+Status: **CPU browser inference verified in Chrome and Firefox; full product acceptance still incomplete.** This document records the chronology of #53/#52 validation, including superseded failures with the stable MediaPipe SDK. Real model-backed inference is distinct from static API availability, mocked tests, passing builds, audible quality, and working article/EPUB playback.
 
-## Reproducible setup
+**Current verified baseline (7 November 2026, maintainer machine):** `@mediapipe/tasks-audio@1.2.2-rc.20261106` is pinned in the extension. **Chrome MV3 ONNX q8 and MediaPipe CPU both passed** sequentially in separate pages of one Chromium extension session. **Firefox 159.0.1 MediaPipe CPU also passed** after accepting *genuine* cross-realm Float32 arrays without weakening the PCM constraints; Firefox ONNX q8 passed in earlier live acceptance. MediaPipe Chrome warm p50 **13,121.2 ms** for 3.05 seconds of output; Firefox warm p50 **12,909 ms** for the same 3.05 seconds. Both are slower than real-time. **GPU, listening quality, full text/EPUB workflow, and long-form playback remain unverified.** Earlier `tf_lite_prefill_decode` and Firefox PCM errors below are *historical failures*, not current runtime status.
+
+## Initial reproducible setup (historical, prior stable SDK)
 
 - Browser: **Chromium 158.0.8127.18**, Linux GitHub Actions runner, Manifest V3 extension with `wasm-unsafe-eval` allowed. Test executes inside an installed `chrome-extension://` page, not a normal website. Neither Windows nor Firefox results should be inferred from this run.
 - Official WASM runtime: `onnxruntime-web@1.31.1`; WebAssembly, 1 thread; not WebGPU. ONNX model: `onnx-community/Kokoro-82M-v1.0-ONNX@1939ad2a8e416c0acfeecc08a694d14ef25f2231`.
 - Official ONNX q8 model: `onnx/model_quantized.onnx` (92,361,116 bytes, SHA-256 `fbae9257e1e05ffc727e951ef9b9c98418e6d79f1c9b6b13bd59f5c9028a1478`); voice `voices/af.bin` (524,288 bytes, SHA-256 `a4f11d9d055a12bfa0db2668a3e4f0ef8fd1f1ccca69494479718e44dbf9e41a`). Data transfer totals **92,885,404 bytes (92.9 MB decimal)** excluding executable JS/WASM shipped in the extension.
-- Official `@mediapipe/tasks-audio@1.2.2`. Model: `litert-community/Kokoro-82M@33ad69fec6c4d9eb10a547aaf9a8c63e7c446a56`, CPU bundle `kokoro_int8_fp16.litertlm` (294,783,298 bytes, SHA-256 `e7b931ee5d4b7104012a838c9eee240d19ea69cb3ca269041a3274f83dbb7fa1`).
+- Initially tested **stable** `@mediapipe/tasks-audio@1.2.2` (subsequently superseded by pinned **`1.2.2-rc.20261106`** after successful real-model validation). Model: `litert-community/Kokoro-82M@33ad69fec6c4d9eb10a547aaf9a8c63e7c446a56`, CPU bundle `kokoro_int8_fp16.litertlm` (294,783,298 bytes, SHA-256 `e7b931ee5d4b7104012a838c9eee240d19ea69cb3ca269041a3274f83dbb7fa1`).
 - Every download is initiated only by the explicit opt-in GitHub Actions workflow; byte lengths and SHA-256 are checked before use. No downloaded executable JS/WASM; official runtime scripts come from the bundled, pinned npm dependencies. Tests store model bytes in extension-owned Cache Storage. The temporary authenticated localhost transfer server is only a CI fixture.
 - Reproduction: `.github/workflows/live-browser-acceptance.yml` runs `scripts/validate-live-chromium.mjs`; a machine-readable `kokoro-live-chromium-report` artifact contains actual results even when an engine fails. This workflow is intentionally not a claim of supported user deployments.
 
-## Observed results
+## Historical initial observations (before the MediaPipe prerelease fix)
 
 | Configuration | Result | Evidence |
 | --- | --- | --- |
@@ -26,11 +28,11 @@ In one Chromium MV3 ONNX run, model initialization took 1,152.6 ms; 3 completed 
 
 ## Compatibility decision and remaining gates
 
-**Keep all three provider IDs.** Keep Docker/FastAPI unchanged and the default. ONNX q8 has actual Chromium **and Firefox** phoneme-input evidence; it now has a limited original CMUdict-based English G2P path, but still lacks robust arbitrary-text coverage, audible quality review, and production-style user-initiated download acceptance. Do not silently route ONNX text to FastAPI. MediaPipe CPU is a reproducible failed configuration and must remain unavailable in user-facing product claims until an upstream SDK/model compatibility solution is verified with real synthesis. The `modelAssetPath` variant and original filename diagnostic did not repair it.
+**Keep all three provider IDs.** Keep Docker/FastAPI unchanged and the default. ONNX q8 has actual Chromium **and Firefox** phoneme-input evidence and limited original CMUdict-based English G2P, but still lacks robust arbitrary-text coverage, audible quality review, and production-style download acceptance. Do not silently route ONNX text to FastAPI. **MediaPipe CPU now passes real inference in both Chrome and Firefox with the pinned official prerelease**; stable `1.2.2` previously failed. Do not confuse successfully generating a short PCM clip with validated user-facing playback or long-form reading.
 
 MediaPipe official web guide describes the model and SDK API: https://developers.google.com/edge/mediapipe/solutions/audio/text_to_speech/web_js ; source model: https://huggingface.co/litert-community/Kokoro-82M . The failure might be an SDK/model metadata incompatibility; no root cause beyond the observed native error has been established. Avoid inventing one.
 
-Still required before #53 closure: reproduce real successful MediaPipe and ONNX speech using production-style cached assets in **both Chrome and Firefox extension origins**; establish supported CPU/GPU model/delegate matrix; verify audible quality/voice selection/cancellation; complete and validate ONNX English G2P beyond the strict dictionary path; measure cold/warm separate metrics, true first-audio, memory and long-form behavior; review bundled MediaPipe SDK's external metrics/privacy behavior; make all tests optional with no silent model download, and rerun the same acceptance on release candidates. #56/#60 remain implementation work.
+The **CPU inference** part of #53 has now passed for both runtimes in both browser extension origins. Still required before #53 closure: establish the supported **GPU** model/delegate matrix; verify audible quality, voice selection, cancellation and user-click download UI; complete/validate ONNX English G2P beyond the strict dictionary path; measure real first-audio, memory and long-form behavior; review SDK metrics/privacy behavior; keep model download opt-in, and rerun acceptance on release candidates. #56/#60 retain outstanding integration work.
 
 The extension-owned test page reports **full-clip synthesis p50/p95 and real-time factor**, rather than incorrectly presenting unary completion as streaming time-to-first-audio. A true first-audio timestamp remains unmeasured. Audio requests created before playback reset are invalidated, and failed synthesis entries can be retried after errors; these lifecycle changes are covered by unit tests.
 
@@ -56,7 +58,7 @@ The maintainer independently used the extension's user-facing model test page in
 - **Capability preflight**: WebAssembly compilation available; `crossOriginIsolated=false`, therefore WASM threads prerequisites absent; WebGPU reported `no-adapter`. GPU acceleration cannot be assumed available in this Chromium session.
 - The maintainer requested visible model download progress. PR #68 now has an opt-in download progress indicator with byte counts and completion gated on successful cache storage; **real visual/interactive acceptance of the new indicator is still outstanding**.
 
-The official model/runtime tokenizer incompatibility remains the primary merge blocker. The q8 ONNX success should not be presented as proof of full text/EPUB support.
+**Historical note:** At this point in the investigation the stable MediaPipe SDK tokenizer mismatch was the primary blocker. The pinned official prerelease later fixed initialization and passed model-backed CPU synthesis inside **both** browsers. ONNX IPA or short MediaPipe PCM success still must not be presented as full article/EPUB support.
 
 ## Follow-up installed-extension results: both ONNX precisions (7 November 2026)
 
@@ -213,7 +215,7 @@ The median MediaPipe warm run was **13,121.2 ms** to produce **3.05 seconds** of
 
 **What passed:** official downloaded model-data integrity, packaged runtime loading, full waveform synthesis, sample-rate and non-silent finite-sample checks, and ONNX's limited dictionary-backed English text check, all inside Chrome MV3.
 
-**Not yet verified:** audible voice quality; opt-in download-progress UI on a full real network transfer; long-form article/EPUB integration and cancellation; multi-sentence behavior and memory over time; Chrome GPU execution (no adapter); MediaPipe extension-origin **Firefox** (existing Firefox live harness currently tests ONNX q8 only); security/privacy and version-stability of the official prerelease; standardized same-text comparative benchmarks.
+**Not yet verified:** audible voice quality; opt-in download-progress UI on a full real network transfer; long-form article/EPUB integration and cancellation; multi-sentence behavior and memory over time; Chrome GPU execution (no adapter); security/privacy and version-stability of the official prerelease; standardized same-text comparative benchmarks. **Firefox MediaPipe CPU was subsequently validated** in the dedicated Firefox run documented below.
 
 PR #68 therefore remains **open**, with further functional acceptance and independent review required before declaring three complete backends. Do not replace the official MediaPipe SDK, change models, or silently fall back to FastAPI.
 
@@ -242,7 +244,7 @@ MOZ_REMOTE_ALLOW_SYSTEM_ACCESS=1 \
 python3 -m json.tool dist/runtime-acceptance/firefox.json
 ```
 
-A successful result must identify `provider: mediapipe`, `status: passed`, three measured warm syntheses, finite non-silent 24-kHz samples and the Firefox extension ID. A reported error is a failing acceptance, not a skipped gate. **This MediaPipe Firefox path has not yet been run by the maintainer**, so it is not a verified compatibility claim. If the default ONNX acceptance is also run, preserve one `firefox.json` between runs because the next one overwrites it.
+A successful result must identify `provider: mediapipe`, `status: passed`, three measured warm syntheses, finite non-silent 24-kHz samples and the Firefox extension ID. A reported error is a failing acceptance, not a skipped gate. **This path was subsequently run and passed** using Firefox 159.0.1, as documented below. If the default ONNX acceptance is also run, preserve one `firefox.json` between runs because the next one overwrites it.
 
 ## Firefox 159 MediaPipe PCM validation failure (7 November 2026)
 
@@ -253,3 +255,19 @@ MediaPipe progressed **past model initialization and into its `engine.synthesize
 Commit `37dd24e` makes the shared PCM validator accept only **real Float32 typed-array views regardless of their JavaScript realm**, checked with `ArrayBuffer.isView` plus the native `[object Float32Array]` tag. The same check applies to WAV encoding so valid foreign-realm audio does not later fail export. It also reports mismatched **sample type, sample rate, or sample count separately**. Every existing NaN, Infinity, silence, duration and 24-kHz safety check remains in place: this does **not** coerce numeric arrays, float64 arrays, integer arrays, or invalid waveform data into a pass. Targeted Jest tests cover foreign-realm valid audio and rejecting invalid types/rates/silence.
 
 This is a **hypothesis-driven compatibility change**, not a verified Firefox runtime fix. A new rebuild plus real Firefox test is required; it will either pass genuinely valid PCM or return a more specific failure identifying exactly what the SDK produced. Do not weaken the PCM acceptance gates, merge, or infer GPU functionality from this run.
+
+## Firefox 159.0.1 MediaPipe CPU real synthesis passed (7 November 2026)
+
+The maintainer rebuilt the extension from commit `2df0a5e` and reran the optional real `KOKORO_FIREFOX_PROVIDER=mediapipe` harness using Firefox **159.0.1**, Selenium **4.38.0**, and `geckodriver` on Arch Linux. The exact pinned **294,783,298-byte** official Kokoro CPU bundle was reused **after SHA-256 verification**. Firefox MV3 extension initialization, WebAssembly task creation and **three independent full-clip syntheses** completed without the previous PCM error:
+
+- Model initialization: **2,393 ms**.
+- Three warm syntheses: **12,909 / 12,590 / 13,316 ms**; median **12,909 ms**, p95 (nearest-rank) **13,316 ms**.
+- Validated waveform: **3.05 seconds** at **24,000 Hz**, RMS **0.0483619969**; the provider's finite-sample, bounded-size and non-silence checks all passed.
+- Median measured real-time factor **4.23×**. This is completion latency, **not** streaming time-to-first-audio.
+- Firefox preflight: `wasmCompilation=true`, `secureContext=true`, `crossOriginIsolated=false`, `sharedArrayBuffer=false`, `webgpu.status=not-exposed`. This is **CPU-only**, not Firefox GPU acceptance.
+
+The original Firefox type validation failed before real sample metadata was captured. With the strict **cross-realm Float32Array** compatibility change it now passes without altering the model, voice, prompt or original official npm SDK. This is evidence that the PCM validation change repaired this tested Firefox integration path, but is **not proof of the exact JavaScript realm identity of the original failed samples**, which was not recorded.
+
+**Current model-backed browser matrix:** Chrome MV3 ONNX q8 CPU **passed**, Chrome MV3 MediaPipe CPU **passed**, Firefox MV3 ONNX q8 CPU **passed**, Firefox MV3 MediaPipe CPU **passed**. Browser-origin synthesis is now verified for these four CPU cases. ONNX mixed precision passed on Chromium's user-facing test page, but this matrix does not imply Firefox mixed precision or GPU acceptance.
+
+**Not yet satisfied:** audible review, end-to-end article/EPUB integration, actual download/cancel UX, robust English G2P for arbitrary text, multi-sentence/long-form memory and timing, GPU delegate support, and upstream prerelease stability/privacy. The `preflight.inferenceValidated=false` field is a capability-inspection field recorded **before** the model-backed probe, not evidence that the later successful `mediapipe.success=true` result failed. The meaningful inference outcome is the post-run `status=passed` and validated PCM.
