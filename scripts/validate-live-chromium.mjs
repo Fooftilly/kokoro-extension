@@ -1,5 +1,5 @@
 // Live model-backed Chromium MV3 validation. Explicit opt-in and no model weights in git.
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -40,13 +40,18 @@ for (const manifest of variants) for (const asset of manifest.assets) {
     console.log('Verified official model data', asset.path, length);
 }
 let extensionOrigin = null;
+// A random per-run URL token authenticates Chrome requests, including MV3 GET
+// requests for which Chrome intentionally omits the Origin header.
+const transferToken = randomBytes(32).toString('hex');
 const server = createServer((req, res) => {
-    if (!extensionOrigin || req.headers.origin !== extensionOrigin) {
+    const url = new URL(req.url || '/', 'http://127.0.0.1');
+    if (!extensionOrigin || (req.headers.origin && req.headers.origin !== extensionOrigin) ||
+        url.searchParams.get('token') !== transferToken || req.method !== 'GET') {
         res.writeHead(403);
         res.end();
         return;
     }
-    const file = local.get((req.url || '').slice(1));
+    const file = local.get(url.pathname.slice(1));
     if (!file) { res.writeHead(404); res.end(); return; }
     res.writeHead(200, {
         'Access-Control-Allow-Origin': extensionOrigin,
@@ -76,7 +81,7 @@ try {
     if (!preflight.wasmCompilation) throw Error('Chrome extension CSP blocks WebAssembly compilation');
     const results = [];
     for (const manifest of variants) {
-        await page.evaluate(async ({ manifest, port }) => {
+        await page.evaluate(async ({ manifest, port, transferToken }) => {
             const { ModelDataStore } = await import('./model-data-store.js');
             const store = new ModelDataStore({ origin: chrome.runtime.getURL('/'),
                 cacheStorage: caches, fetchImpl: fetch, responseClass: Response, streamClass: TransformStream });
@@ -84,14 +89,14 @@ try {
             for (const asset of manifest.assets) {
                 const hex = Array.from(Uint8Array.from(atob(asset.integrity.slice(7)), ch => ch.charCodeAt(0)))
                     .map(b => b.toString(16).padStart(2, '0')).join('');
-                const downloaded = await fetch('http://127.0.0.1:' + port + '/' + hex);
+                const downloaded = await fetch('http://127.0.0.1:' + port + '/' + hex + '?token=' + transferToken);
                 if (!downloaded.ok || !downloaded.body) throw Error('Local verified model transfer failed');
                 await cache.put(store.key(manifest, asset), new Response(downloaded.body, {
                     headers: { 'x-kokoro-integrity': asset.integrity, 'x-kokoro-bytes': String(asset.bytes) },
                 }));
             }
             if (!(await store.status(manifest)).ready) throw Error('Verified browser model cache incomplete');
-        }, { manifest, port: server.address().port });
+        }, { manifest, port: server.address().port, transferToken });
         await page.evaluate(({ provider, variant }) => {
             window.__kokoroProbe = { done: false };
             void (async () => {
