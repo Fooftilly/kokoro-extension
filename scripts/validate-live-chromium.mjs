@@ -39,10 +39,20 @@ for (const manifest of variants) for (const asset of manifest.assets) {
     local.set(expected, file);
     console.log('Verified official model data', asset.path, length);
 }
+let extensionOrigin = null;
 const server = createServer((req, res) => {
+    if (!extensionOrigin || req.headers.origin !== extensionOrigin) {
+        res.writeHead(403);
+        res.end();
+        return;
+    }
     const file = local.get((req.url || '').slice(1));
     if (!file) { res.writeHead(404); res.end(); return; }
-    res.writeHead(200, { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/octet-stream' });
+    res.writeHead(200, {
+        'Access-Control-Allow-Origin': extensionOrigin,
+        'Vary': 'Origin',
+        'Content-Type': 'application/octet-stream',
+    });
     createReadStream(file).pipe(res);
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -56,6 +66,7 @@ try {
     });
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', { timeout: 30000 });
     const extensionId = new URL(worker.url()).hostname;
+    extensionOrigin = 'chrome-extension://' + extensionId;
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', error => errors.push(String(error)));
@@ -83,7 +94,7 @@ try {
         }, { manifest, port: server.address().port });
         await page.evaluate(({ provider, variant }) => {
             window.__kokoroProbe = { done: false };
-            (async () => {
+            void (async () => {
                 let engine;
                 try {
                     const sdk = provider === 'onnx' ? await import('./onnx-provider.js')
@@ -117,15 +128,17 @@ try {
         }, { provider: manifest.provider, variant: manifest.variant });
         await page.waitForFunction(() => window.__kokoroProbe?.done === true, null, { timeout: 240000 });
         const result = await page.evaluate(() => window.__kokoroProbe);
-        if (!result.success) throw Error(JSON.stringify(result));
-        console.log('REAL MODEL INFERENCE', result);
-        results.push(result);
+        console.log(result.success ? 'REAL MODEL INFERENCE' : 'MODEL INFERENCE FAILURE', result);
+        results.push({ provider: manifest.provider, variant: manifest.variant, ...result });
+        await writeFile(path.join(resultsDir, 'report.json'), JSON.stringify({
+            testedAt: new Date().toISOString(), browser: preflight.browser, preflight, results,
+            scope: 'Linux Chrome MV3 extension origin; Firefox and audible quality still require separate acceptance',
+        }, null, 2));
     }
     if (errors.length) throw Error('Extension errors: ' + errors.join('; '));
-    await writeFile(path.join(resultsDir, 'report.json'), JSON.stringify({
-        testedAt: new Date().toISOString(), browser: preflight.browser, preflight, results,
-        scope: 'Linux Chrome MV3 extension origin; Firefox and audible quality still require separate acceptance',
-    }, null, 2));
+    if (results.some(result => !result.success)) {
+        throw Error('One or more actual model integrations failed: see attached report.json');
+    }
 } finally {
     if (context) await context.close();
     await new Promise(resolve => server.close(resolve));
