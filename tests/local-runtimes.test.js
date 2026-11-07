@@ -68,6 +68,8 @@ describe('original Kokoro phoneme and PCM adapters', () => {
             .toThrow(/finite/);
         expect(() => validateKokoroPcm(new Float32Array([0.1]), 16000))
             .toThrow(/24-kHz/);
+        expect(() => validateKokoroPcm(new Float32Array([0.1]), undefined))
+            .toThrow(/24-kHz/);
     });
     test('encodes finite mono samples to standard PCM WAV with clipping', () => {
         const wav = encodePcm16Wav(new Float32Array([-1.2, 0, 1.2]), 24000);
@@ -113,6 +115,22 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
             expect.objectContaining({ baseOptions: expect.objectContaining({ delegate: 'CPU',
                 modelAssetPath: expect.stringMatching(/^blob:/) }) }));
         expect(synthesize).toHaveBeenCalledWith('Hello', { voiceId: 'af_heart', speakingRate: 1 });
+    });
+    test('MediaPipe rejects a missing sample rate even with valid PCM', async () => {
+        const manifest = manifestForVariant('mediapipe', 'cpu');
+        manifest.assets[0].bytes = 4;
+        const sdk = {
+            FilesetResolver: { forAudioTasks: async () => ({}) },
+            TextToSpeech: { createFromOptions: async () => ({
+                synthesize: async () => ({ samples: new Float32Array([0.2, -0.3]) }),
+            }) },
+        };
+        const provider = new MediaPipeKokoroProvider({
+            browserApi: browserApi(), cacheStorage: fakeCache(manifest),
+            fetchImpl: jest.fn(), loadSDK: async () => sdk,
+        });
+        provider.manifest = manifest;
+        await expect(provider.synthesize('Hello')).rejects.toThrow(/24-kHz/);
     });
     test('MediaPipe cannot mark an installed model as working when SDK outputs silence', async () => {
         const manifest = manifestForVariant('mediapipe', 'cpu');

@@ -79,6 +79,17 @@ try {
     page.on('pageerror', error => errors.push(String(error)));
     await page.goto('chrome-extension://' + extensionId + '/benchmark.html');
     await page.locator('#runCheck').click();
+    // Clicking only awaits DOM dispatch, not the async capability inspection.
+    // Wait until the extension's result is complete before parsing JSON.
+    await page.waitForFunction(() => {
+        const run = document.getElementById('runCheck');
+        const status = document.getElementById('status')?.textContent || '';
+        return !run?.disabled && (/preflight complete/i.test(status) || /preflight failed/i.test(status));
+    }, null, { timeout: 60000 });
+    const preflightStatus = await page.locator('#status').textContent();
+    if (/preflight failed/i.test(preflightStatus)) {
+        throw Error('Chrome extension capability preflight failed: ' + preflightStatus);
+    }
     const preflight = JSON.parse(await page.locator('#report').textContent());
     if (!preflight.wasmCompilation) throw Error('Chrome extension CSP blocks WebAssembly compilation');
     const results = [];

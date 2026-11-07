@@ -4,7 +4,7 @@
 // This validates basic PCM sanity, not perceptual sound quality or correct G2P.
 // Calling it before enabling a backend prevents silent/corrupt mock-like output
 // from being mistaken for working local speech.
-export function validateKokoroPcm(samples, sampleRateHz = 24000) {
+export function validateKokoroPcm(samples, sampleRateHz) {
     if (!(samples instanceof Float32Array) || sampleRateHz !== 24000 ||
         samples.length === 0 || samples.length > sampleRateHz * 60 * 10) {
         throw new TypeError('Expected nonempty, bounded Kokoro 24-kHz Float32 PCM');
