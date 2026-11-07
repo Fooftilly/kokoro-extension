@@ -23,6 +23,24 @@
             <p>WebAssembly or WebGPU support alone does not prove either Kokoro backend works. Later versions will require actual synthesized samples before showing speed rankings.</p>
         </section>
         <section>
+            <h2>Real TTS tests and model downloads</h2>
+            <p>Every local model is downloaded only when you click its Download button. The sizes cover the exact selected model and voice data; official executable SDK/WASM code is already packaged with the extension. MediaPipe's one-file bundle includes its phonemizer and voices. ONNX is still an IPA-only development probe until an original text-to-phoneme pipeline is validated.</p>
+            <label for="benchmarkText">Shared English text (server and MediaPipe)</label>
+            <textarea id="benchmarkText" rows="3">Hello from Kokoro running directly in this browser.</textarea>
+            <label for="benchmarkIpa">ONNX IPA phonemes (not ordinary text)</label>
+            <input id="benchmarkIpa" value="hɛˈloʊ." spellcheck="false">
+            <div class="model-variant" id="serverBench">
+                <h3>Kokoro-FastAPI — existing Docker/server</h3>
+                <p>Runs only on the configured server, never when a local backend is selected. Testing sends the sample text to that server.</p>
+                <button type="button" id="testServer">Test configured FastAPI</button>
+                <button type="button" id="chooseServer" disabled>Use this backend</button>
+                <p id="serverStatus" role="status">Not tested</p>
+                <audio id="serverAudio" controls hidden></audio>
+            </div>
+            <div id="modelManager"></div>
+            <p>Measurements are taken from actual synthesized audio, not GPU adapter detection. Local figures are warm, after engine initialization; server timings exclude audio playback. Since the ONNX probe currently takes phonemes instead of the shared text, its timings are not directly comparable with the other backends yet.</p>
+        </section>
+        <section>
             <h2>Browser prerequisites</h2>
             <button type="button" id="runCheck">Check browser support</button>
             <button type="button" id="copyCheck" disabled>Copy local report</button>
@@ -31,7 +49,9 @@
             <p>WebGPU needs a real adapter. WebAssembly threads additionally require an isolated context and shared memory. Results are stored only in this page until you copy them.</p>
         </section>
     </main>
+    <script src="browser-polyfill.min.js"></script>
     <script src="benchmark-capabilities.js"></script>
     <script src="benchmark-page.js"></script>
+    <script type="module" src="model-manager-page.js"></script>
 </body>
 </html>
