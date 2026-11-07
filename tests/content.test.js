@@ -48,6 +48,19 @@ describe('content.js parseArticle', () => {
         expect(sendResponse).toHaveBeenCalledWith({ text: 'Hello', content: [] });
     });
 
+    test('article response helper maps an internally caught Readability failure to an error', async () => {
+        const sendResponse = jest.fn();
+        await respondToArticleRequest(async () => ({ text: null }), sendResponse);
+        expect(sendResponse).toHaveBeenCalledTimes(1);
+        expect(sendResponse).toHaveBeenCalledWith({ error: 'Could not extract article text.' });
+    });
+
+    test('article response helper maps empty parsed text to a failure without hanging', async () => {
+        const sendResponse = jest.fn();
+        await respondToArticleRequest(async () => ({ text: '' }), sendResponse);
+        expect(sendResponse).toHaveBeenCalledWith({ error: 'Could not extract article text.' });
+    });
+
     test('article response helper replies on asynchronous parser failure', async () => {
         const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
         try {
