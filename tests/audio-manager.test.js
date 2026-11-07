@@ -35,6 +35,16 @@ describe('AudioManager', () => {
         audioManager = new AudioManager();
     });
 
+    test('local selection never dispatches to remote audio fetch', async () => {
+        browser.storage.local.get.mockResolvedValue({
+            pendingTtsBackend: 'onnx', pendingVoice: 'af_heart',
+            pendingApiUrl: 'http://localhost:8880',
+        });
+        audioManager.setSentences([{ text: 'Private text' }]);
+        await expect(audioManager.getAudio(0)).rejects.toThrow(/Local TTS backend/);
+        expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
+    });
+
     test('should fetch audio via background and cache it', async () => {
         // Mock background fetch success
         browser.runtime.sendMessage.mockResolvedValue({

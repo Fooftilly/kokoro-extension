@@ -133,6 +133,35 @@ describe('background.js logic', () => {
         expect(files.indexOf('overlay-position.js')).toBeLessThan(files.indexOf('content.js'));
     });
 
+    test('local engine selection does not send selected text to the server', async () => {
+        browser.storage.sync.get.mockResolvedValue({
+            ttsBackend: 'onnx', apiUrl: 'http://localhost:8880/v1/',
+            voice: 'af_sarah', mode: 'stream', normalizationOptions: {},
+        });
+        const listener = browser.contextMenus.onClicked.addListener.mock.calls[0][0];
+        await listener(
+            { menuItemId: 'send-to-kokoro', selectionText: 'Private selection' },
+            { id: 7, title: 'Private page' }
+        );
+        expect(browser.storage.local.set).not.toHaveBeenCalled();
+        expect(browser.notifications.create).toHaveBeenCalled();
+        expect(fetch.mock.calls.some(([url]) => String(url).includes('/audio/speech'))).toBe(false);
+    });
+
+    test('local fetch messages cannot fall through to FastAPI HTTP', async () => {
+        browser.storage.sync.get.mockResolvedValue({ ttsBackend: 'mediapipe' });
+        const handler = browser.runtime.onMessage.addListener.mock.calls[0][0];
+        const result = await handler({
+            action: 'FETCH_TTS_AUDIO', backend: 'mediapipe',
+            endpoint: 'http://localhost:8880/v1/audio/speech',
+            payload: { input: 'Private text' },
+        }, {});
+        expect(result).toMatchObject({
+            success: false, kind: 'local-backend-not-installed', backend: 'mediapipe',
+        });
+        expect(fetch.mock.calls.some(([url]) => String(url).includes('/audio/speech'))).toBe(false);
+    });
+
     test('Should handle FETCH_TTS_AUDIO message', async () => {
         const onMessageListener = browser.runtime.onMessage.addListener.mock.calls[0][0];
         const mockRequest = {

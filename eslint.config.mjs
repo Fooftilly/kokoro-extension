@@ -58,6 +58,7 @@ export default [
       'overlay-position.js',
       'theme-init.js',
       'transliteration-lite.js',
+      'tts-providers.js',
       'benchmark-capabilities.js',
       'benchmark-page.js',
     ],
@@ -86,7 +87,7 @@ export default [
   },
   // Classic scripts that optionally export for Jest via CJS interop
   {
-    files: ['content.js', 'api-client.js', 'overlay-position.js', 'benchmark-capabilities.js'],
+    files: ['content.js', 'api-client.js', 'overlay-position.js', 'benchmark-capabilities.js', 'tts-providers.js'],
     languageOptions: {
       globals: {
         module: 'readonly',
@@ -98,6 +99,11 @@ export default [
     languageOptions: {
       globals: { KokoroBenchmark: 'readonly' },
     },
+  },
+  // background.js uses require only in its Jest CommonJS harness.
+  {
+    files: ['background.js'],
+    languageOptions: { globals: { require: 'readonly' } },
   },
   // content.js depends on overlay-position.js (classic script global)
   {
