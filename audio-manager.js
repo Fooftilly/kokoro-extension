@@ -83,7 +83,7 @@ export class AudioManager {
                     return url;
                 }
                 if (backend !== 'fastapi') {
-                    throw new Error('ONNX plain-text synthesis is not yet available. No text was sent to Kokoro-FastAPI.');
+                    throw new Error('Local TTS backend ONNX plain-text synthesis is not yet available. No text was sent to Kokoro-FastAPI.');
                 }
                 if (!data.pendingApiUrl) {
                     throw new Error("Missing API URL");
