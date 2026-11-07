@@ -531,6 +531,32 @@ async function validateSelectedMediaPipe() {
     }
 }
 
+// All popup storage writes that include a backend choice share one ordered lane.
+// Otherwise an earlier async MediaPipe validation can finish after a later radio
+// change and overwrite the user's newer choice. Unrelated settings still save.
+let backendSelectionVersion = 0;
+let backendWriteTail = Promise.resolve();
+
+function selectedBackendValue() {
+    return document.querySelector('input[name="ttsBackend"]:checked')?.value;
+}
+
+function persistPopupSettings(settings, requestedBackend, selectionVersion) {
+    const pending = backendWriteTail.catch(() => {}).then(async () => {
+        const current = { ...settings };
+        if (Object.hasOwn(current, 'ttsBackend') &&
+            (selectionVersion !== backendSelectionVersion ||
+                selectedBackendValue() !== requestedBackend)) {
+            delete current.ttsBackend;
+        }
+        if (Object.keys(current).length === 0) return false;
+        await browser.storage.sync.set(current);
+        return Object.hasOwn(current, 'ttsBackend');
+    });
+    backendWriteTail = pending.catch(() => {});
+    return pending;
+}
+
 let saveTimeout;
 /**
  * Persist settings. Does not call permissions.request() — Firefox requires that
@@ -552,7 +578,8 @@ const saveOptions = async (isDebounced = false, options = {}) => {
     document.getElementById('apiUrl').value = apiUrl;
     const voice = serializeVoiceString(currentVoices);
     const mode = document.querySelector('input[name="mode"]:checked').value;
-    const ttsBackend = document.querySelector('input[name="ttsBackend"]:checked')?.value;
+    const ttsBackend = selectedBackendValue();
+    const selectionVersion = backendSelectionVersion;
     if (!ttsBackend) {
         // An unknown persisted backend leaves no checked radio. Do not silently
         // reset the backend or reject an autosave without an explanation.
@@ -607,7 +634,7 @@ const saveOptions = async (isDebounced = false, options = {}) => {
         }
         // 1. Persist settings while retaining the previously saved backend when
         // the local model is unavailable (no silent FastAPI fallback).
-        await browser.storage.sync.set(settings);
+        await persistPopupSettings(settings, ttsBackend, selectionVersion);
         await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, autoplayReader, showFloatingButton, normalizationOptions, theme });
 
         // 2. Host permission for non-local URL (never call request() here after awaits)
@@ -836,13 +863,21 @@ document.addEventListener('DOMContentLoaded', () => {
     for (const radio of document.querySelectorAll('input[name="ttsBackend"]')) {
         radio.addEventListener('change', async () => {
             if (!radio.checked) return;
+            const version = ++backendSelectionVersion;
+            const isCurrentSelection = () => version === backendSelectionVersion &&
+                radio.checked && selectedBackendValue() === radio.value;
             const explanation = document.getElementById('backendExplanation');
             if (radio.value === 'mediapipe') {
                 try {
                     await validateSelectedMediaPipe();
                 } catch (error) {
-                    // Ignore this invalid attempt; the saved setting was not changed.
+                    if (!isCurrentSelection()) return;
+                    // Read the final persisted selection after earlier writes.
+                    // Never revert a newer radio choice while this await runs.
+                    await backendWriteTail;
+                    if (!isCurrentSelection()) return;
                     const { ttsBackend: saved } = await browser.storage.sync.get({ ttsBackend: 'fastapi' });
+                    if (!isCurrentSelection()) return;
                     for (const item of document.querySelectorAll('input[name="ttsBackend"]')) {
                         item.checked = item.value === saved;
                     }
@@ -851,9 +886,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
             }
-            // A separate autosave may have run while verification was pending;
-            // saveOptions independently performs this same validation.
-            await browser.storage.sync.set({ ttsBackend: radio.value });
+            // Validation may have completed after the user chose another backend.
+            if (!isCurrentSelection()) return;
+            // Serialize the writes so a delayed earlier request cannot overwrite
+            // the newest radio selection, including when an autosave was pending.
+            const persisted = await persistPopupSettings(
+                { ttsBackend: radio.value }, radio.value, version);
+            if (!persisted || !isCurrentSelection()) return;
             if (radio.value === 'fastapi') {
                 explanation.textContent = 'Using the configured Kokoro server; text is sent to this endpoint.';
                 await refreshBackendStatus(document.getElementById('apiUrl').value);
