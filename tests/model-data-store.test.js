@@ -135,7 +135,7 @@ describe('opt-in cached model data (#55)', () => {
         expect((await store.status(old)).ready).toBe(false);
         expect(fetchImpl).toHaveBeenCalledTimes(3);
         expect(cache.keys).toHaveBeenCalledTimes(1);
-        expect(() => store.removeUnreferenced(null)).rejects.toThrow();
+        await expect(store.removeUnreferenced(null)).rejects.toThrow();
     });
 
     test('rejects incorrect byte count and discards partial cache entries', async () => {
