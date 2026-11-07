@@ -28,6 +28,7 @@ const SRC_FILES = [
     'text-processor.js',
     'audio-manager.js',
     'model-data-store.js',
+    'onnx-kokoro-inputs.js',
     'dom-utils.js',
     'transliteration-lite.js',
     'theme-init.js',
