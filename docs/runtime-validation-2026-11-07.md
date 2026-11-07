@@ -46,3 +46,14 @@ A maintainer ran the PR #68 acceptance instructions on Arch Linux (Node.js v26.1
 - Local `npm ci` reported 28 dependency audit advisories (5 low, 20 moderate, 2 high, 1 critical). The affected packages and whether they ship in release artifacts **have not yet been audited**; do not assume they are all production-exploitable, and do not blindly apply `npm audit fix --force`.
 
 Follow-up: investigate official MediaPipe SDK/model tokenizer compatibility, verify a working reference model/runtime combination, and test actual user-click model downloads, audible quality, and long-form reading in both browsers. The failing acceptance output remains a merge blocker.
+
+## Installed Chromium manual results (7 November 2026)
+
+The maintainer independently used the extension's user-facing model test page in Chromium on Linux (user agent Chrome/156.0.0.0). The following is **user-reported** acceptance evidence rather than simulated Jest output:
+
+- **ONNX q8 WASM**: real local IPA inference passed with full-clip synthesis p50 **1,560 ms**, p95 **1,621 ms**, and RTF p50 **0.95**. The experimental `Hello world.` dictionary-backed English audio was generated and offered for listening. No affirmative listening-quality assessment or article/EPUB support has been supplied.
+- **MediaPipe CPU and GPU**: both failed to create the official `TextToSpeech` task with `No tokenizer found in the model for model type: tf_lite_prefill_decode`. This shows the same tokenizer blocker affects both published variants in this test environment; it does not demonstrate working GPU inference.
+- **Capability preflight**: WebAssembly compilation available; `crossOriginIsolated=false`, therefore WASM threads prerequisites absent; WebGPU reported `no-adapter`. GPU acceleration cannot be assumed available in this Chromium session.
+- The maintainer requested visible model download progress. PR #68 now has an opt-in download progress indicator with byte counts and completion gated on successful cache storage; **real visual/interactive acceptance of the new indicator is still outstanding**.
+
+The official model/runtime tokenizer incompatibility remains the primary merge blocker. The q8 ONNX success should not be presented as proof of full text/EPUB support.
