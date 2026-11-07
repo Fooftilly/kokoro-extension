@@ -657,7 +657,11 @@ const restoreOptions = async () => {
 
         // Probe connection + voices on open (no aggressive polling).
         // Settings above are already rendered from storage — backend loss cannot blank the UI.
-        if (items.ttsBackend === 'fastapi') refreshBackendStatus(items.apiUrl);
+        if (items.ttsBackend === 'fastapi') {
+            void refreshBackendStatus(items.apiUrl).catch(error => {
+                console.warn('Kokoro: server availability probe failed', error);
+            });
+        }
 
         if (items.mode === 'stream') {
             document.getElementById('modeStream').checked = true;
