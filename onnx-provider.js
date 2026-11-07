@@ -5,12 +5,14 @@ import { manifestForVariant } from './model-catalog.js';
 import { ModelDataStore } from './model-data-store.js';
 import { prepareKokoroOnnxInputs, asOnnxRuntimeFeeds } from './onnx-kokoro-inputs.js';
 import { tokenizePhonemes } from './phoneme-tokenizer.js';
+import { loadBundledEnglishLexicon, phonemizeEnglish } from './english-g2p.js';
 import { validateKokoroPcm } from './pcm-wav.js';
 
 export class OnnxKokoroProvider {
     constructor({ variant = 'q8', browserApi = globalThis.browser,
         cacheStorage = globalThis.caches, fetchImpl = globalThis.fetch,
-        loadSDK = () => import('./runtimes/onnx/ort.wasm.bundle.min.mjs') } = {}) {
+        loadSDK = () => import('./runtimes/onnx/ort.wasm.bundle.min.mjs'),
+        loadDictionary = null } = {}) {
         this.manifest = manifestForVariant('onnx', variant);
         this.variant = variant;
         this.browserApi = browserApi;
@@ -21,6 +23,10 @@ export class OnnxKokoroProvider {
         this.engine = null;
         this.voice = null;
         this.loading = null;
+        this.dictionary = null;
+        this.dictionaryLoading = null;
+        this.loadDictionary = loadDictionary ||
+            (() => loadBundledEnglishLexicon(this.browserApi, this.fetchImpl));
     }
 
     get store() {
@@ -75,8 +81,8 @@ export class OnnxKokoroProvider {
         this.voice = assets[1];
     }
 
-    // Accepts IPA phonemes, not arbitrary text. The official ONNX graph consumes
-    // phoneme IDs; the original English G2P integration is tracked by #60.
+    // The official ONNX graph consumes phoneme IDs, not words.
+    // Keep this entrypoint for IPA-only model diagnostics.
     async synthesizePhonemes(phonemes, { speed = 1 } = {}) {
         const tokens = tokenizePhonemes(phonemes);
         await this.initialize();
@@ -93,8 +99,29 @@ export class OnnxKokoroProvider {
         return { samples: audio.data, sampleRateHz: 24000 };
     }
 
-    async synthesize() {
-        throw new Error('ONNX arbitrary-text synthesis is unavailable until G2P validation (#60); no server fallback.');
+    async englishLexicon() {
+        if (this.dictionary) return this.dictionary;
+        if (this.dictionaryLoading) return this.dictionaryLoading;
+        this.dictionaryLoading = this.loadDictionary();
+        try {
+            const lexicon = await this.dictionaryLoading;
+            if (!(lexicon instanceof Map) || !lexicon.size) throw new Error('English dictionary missing');
+            this.dictionary = lexicon;
+            return lexicon;
+        } finally {
+            this.dictionaryLoading = null;
+        }
+    }
+
+    // Experimental US English dictionary mode. No invented OOV pronunciations,
+    // server fallback, or claim of coverage/quality parity with Kokoro's G2P.
+    async synthesize(text, { speed = 1 } = {}) {
+        if (typeof text !== 'string' || !text.trim() || text.length > 20000) {
+            throw new TypeError('Bounded English text required');
+        }
+        await this.initialize();
+        const dictionary = await this.englishLexicon();
+        return this.synthesizePhonemes(phonemizeEnglish(text, dictionary), { speed });
     }
 
     async close() {
@@ -102,5 +129,6 @@ export class OnnxKokoroProvider {
         this.session = null;
         this.engine = null;
         this.voice = null;
+        this.dictionary = null;
     }
 }

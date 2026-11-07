@@ -55,6 +55,7 @@ Verified against the current source (not aspirational):
 - **Themes** — light/dark toggle in the popup.
 - **Keyboard shortcuts** — e.g. read article, next/previous sentence, close overlay; EPUB open shortcut is suggested on Firefox (Chrome has a tighter default-shortcut limit).
 - **Connection status icon** — toolbar icon reflects API reachability.
+- **Experimental local runtime tests** — official MediaPipe and ONNX WASM are packaged, with separate opt-in model downloads. An original offline CMUdict-backed English G2P path is being validated for ONNX; it rejects unknown words and is not yet full reading support. MediaPipe model startup currently fails in the official SDK. Neither experimental backend replaces normal server reading yet.
 
 ## Privacy & data handling
 
@@ -132,6 +133,7 @@ Before opening a PR: `npm ci`, targeted tests as needed, `npm test`, `npm run li
 - **Kokoro TTS** via [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI)
 - [Compromise](https://github.com/spencermountain/compromise) (+ dates/numbers) for text normalization
 - Local `transliteration-lite.js` implementation for script conversion, including the extension's Serbian and Greek mappings
+- [CMU Pronouncing Dictionary](https://github.com/cmusphinx/cmudict), unmodified data from commit `74790861f652b15e4ac49015a90074ad62a27690` (BSD-style license in `data/CMUDICT_LICENSE`), used for experimental US-English offline pronunciation; no third-party G2P runtime source code is copied.
 - [WebExtension Polyfill](https://github.com/mozilla/webextension-polyfill)
 - [Readability](https://github.com/mozilla/readability) for article extraction
 - [DOMPurify](https://github.com/cure53/DOMPurify), [epub.js](https://github.com/futurepress/epub.js), [JSZip](https://github.com/Stuk/jszip)

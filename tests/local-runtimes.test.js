@@ -2,6 +2,9 @@
 import { manifestForVariant, listModelVariants } from '../model-catalog.js';
 import { validateModelManifest } from '../model-data-store.js';
 import { tokenizePhonemes, PHONEME_VOCAB } from '../phoneme-tokenizer.js';
+import { parseEnglishLexicon, phonemizeEnglish, loadBundledEnglishLexicon } from '../english-g2p.js';
+import fs from 'node:fs';
+import path from 'node:path';
 import { encodePcm16Wav, validateKokoroPcm } from '../pcm-wav.js';
 import { MediaPipeKokoroProvider } from '../mediapipe-provider.js';
 import { OnnxKokoroProvider } from '../onnx-provider.js';
@@ -84,6 +87,38 @@ describe('original Kokoro phoneme and PCM adapters', () => {
     });
 });
 
+describe('original strict English dictionary phonemizer', () => {
+    const data = 'hello HH AH0 L OW1\nworld W ER1 L D\n';
+    const lexicon = parseEnglishLexicon(data);
+    test('converts CMUdict pronunciation data to Kokoro IPA', () => {
+        const ipa = phonemizeEnglish('Hello world.', lexicon);
+        expect(ipa).toBe('həlˈoʊ wˈɚld.');
+        expect(tokenizePhonemes(ipa).length).toBeGreaterThan(4);
+    });
+    test('rejects unknown words, digits, unsupported Unicode and long input', () => {
+        expect(() => phonemizeEnglish('unknown', lexicon)).toThrow(/Missing English pronunciation/);
+        expect(() => phonemizeEnglish('hello 123', lexicon)).toThrow(/Unsupported English text/);
+        expect(() => phonemizeEnglish('hello 😀', lexicon)).toThrow(/Unsupported English text/);
+        expect(() => phonemizeEnglish('hello '.repeat(130), lexicon)).toThrow(/at most 510/);
+    });
+    test('the upstream BSD dictionary is installed as licensed source data', () => {
+        const raw = fs.readFileSync(path.join(__dirname, '..', 'data', 'cmudict.dict'), 'utf8');
+        const dictionary = parseEnglishLexicon(raw);
+        expect(dictionary.has('hello')).toBe(true);
+        expect(dictionary.has('world')).toBe(true);
+        expect(phonemizeEnglish('Hello world.', dictionary)).toContain('ʊ');
+    });
+    test('loads only from extension-owned URL, never external code or G2P', async () => {
+        const fetcher = jest.fn(async () => new Response(data));
+        const dictionary = await loadBundledEnglishLexicon(browserApi(), fetcher);
+        expect(dictionary.size).toBe(2);
+        expect(fetcher).toHaveBeenCalledWith('moz-extension://test-uuid/data/cmudict.dict');
+        await expect(loadBundledEnglishLexicon({
+            runtime: { getURL: () => 'https://example.com/dict' },
+        }, fetcher)).rejects.toThrow(/packaged/);
+    });
+});
+
 describe('official packaged backend adapters — SDK mocks, no fake inference claim', () => {
     test('MediaPipe refuses inference before explicit model install and never fetches a remote URL', async () => {
         const fetchImpl = jest.fn();
@@ -157,9 +192,38 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
             cacheStorage: { open: async () => ({ match: async () => null }) },
         });
         await expect(provider.synthesizePhonemes('a b')).rejects.toThrow(/not installed/);
-        await expect(provider.synthesize('Hello')).rejects.toThrow(/G2P validation/);
+        await expect(provider.synthesize('Hello')).rejects.toThrow(/not installed/);
         expect(loadSDK).not.toHaveBeenCalled();
         expect(fetchImpl).not.toHaveBeenCalled();
+    });
+    test('ONNX sends text-derived phoneme tokens to the official session', async () => {
+        const manifest = manifestForVariant('onnx', 'q8');
+        manifest.assets[0].bytes = 4;
+        manifest.assets[1].bytes = 4096;
+        const run = jest.fn(async () => ({
+            audio: { data: new Float32Array([0.2, -0.2]), dims: [1, 2] },
+        }));
+        const session = { outputNames: ['audio'], run };
+        class Tensor {
+            constructor(type, data, dims) { Object.assign(this, { type, data, dims }); }
+        }
+        const loadDictionary = jest.fn(async () => parseEnglishLexicon(
+            'hello HH AH0 L OW1\nworld W ER1 L D'));
+        const provider = new OnnxKokoroProvider({
+            browserApi: browserApi(), cacheStorage: fakeCache(manifest),
+            fetchImpl: jest.fn(), loadDictionary,
+            loadSDK: async () => ({
+                env: { wasm: {} }, InferenceSession: { create: async () => session }, Tensor,
+            }),
+        });
+        provider.manifest = manifest;
+        const output = await provider.synthesize('Hello world.');
+        expect(output.samples.length).toBe(2);
+        const expected = tokenizePhonemes('həlˈoʊ wˈɚld.');
+        expect(Array.from(run.mock.calls[0][0].input_ids.data))
+            .toEqual([0n, ...expected.map(BigInt), 0n]);
+        await provider.synthesize('Hello world.');
+        expect(loadDictionary).toHaveBeenCalledTimes(1);
     });
     test('ONNX inference rejects non-finite PCM instead of presenting it as valid speech', async () => {
         const manifest = manifestForVariant('onnx', 'q8');

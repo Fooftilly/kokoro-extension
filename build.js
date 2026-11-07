@@ -35,6 +35,7 @@ const SRC_FILES = [
     'onnx-provider.js',
     'pcm-wav.js',
     'phoneme-tokenizer.js',
+    'english-g2p.js',
     'dom-utils.js',
     'transliteration-lite.js',
     'theme-init.js',
@@ -268,6 +269,8 @@ function build() {
 
         // Copy icons
         copyDir(path.join(__dirname, ICONS_DIR), path.join(browserDist, ICONS_DIR));
+        // Only pronunciation data and its required license; no external executable runtime.
+        copyDir(path.join(__dirname, 'data'), path.join(browserDist, 'data'));
 
         // Copy polyfill
         copyFile(path.join(__dirname, POLYFILL_SRC), path.join(browserDist, POLYFILL_DEST));

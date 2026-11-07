@@ -1,0 +1,5 @@
+# Experimental US-English dictionary frontend for ONNX
+
+CMUdict is licensed by Carnegie Mellon University (license in `data/CMUDICT_LICENSE`) and bundled unchanged as data. The source is `cmusphinx/cmudict` commit `74790861f652b15e4ac49015a90074ad62a27690` with blob `2c0411740cce3e2026a80b90b650d5f6a7258164`. All ARPABET→IPA logic is original extension code; no unlicensed phonemizer or external executable WASM is bundled.
+
+Pronunciations are US English dictionary words only. Unsupported words, numbers, long sequences, and glyphs fail closed without remote speech fallback. Stress placement is approximate relative to Kokoro's G2P training. No claim of full English or multilingual coverage, sound quality, long-form reading, POS-sensitive heteronyms, or user-visible ONNX readiness is made pending real browser and audible checks.
