@@ -38,8 +38,16 @@ export class AudioManager {
             return this.audioCache.get(index);
         }
 
-        const promise = this.fetchAudio(this.sentences[index].text);
+        const generation = this.generation;
+        const promise = this.fetchAudio(this.sentences[index].text, generation);
         this.audioCache.set(index, promise);
+        // A missing model or a transient server error must not permanently
+        // poison this sentence's cache. Do not delete a newer generation's entry.
+        void promise.catch(() => {
+            if (this.generation === generation && this.audioCache.get(index) === promise) {
+                this.audioCache.delete(index);
+            }
+        });
         return promise;
     }
 
@@ -101,15 +109,27 @@ export class AudioManager {
         throw new Error('Local TTS backend ONNX plain-text synthesis is not yet available. No text was sent to Kokoro-FastAPI.');
     }
 
-    async fetchAudio(text) {
+    async fetchAudio(text, generation = this.generation) {
         const data = await browser.storage.local.get([
             'pendingVoice', 'pendingApiUrl', 'pendingNormalizationOptions',
             'pendingTtsBackend', 'pendingMediaPipeVariant', 'pendingLocalVoice',
         ]);
+        if (generation !== this.generation) {
+            throw new DOMException('Audio request cancelled', 'AbortError');
+        }
         // Preserve serialized generation and recover the queue after earlier errors.
+        // Recheck inside the queue: clear() may run while this request is waiting
+        // behind another synthesis, or while remote synthesis is in progress.
         this.requestQueue = this.requestQueue.catch(() => {}).then(async () => {
+            if (generation !== this.generation) {
+                throw new DOMException('Audio request cancelled', 'AbortError');
+            }
             try {
-                return await this.routeAudio(text, data);
+                const audio = await this.routeAudio(text, data);
+                if (generation !== this.generation) {
+                    throw new DOMException('Audio request cancelled', 'AbortError');
+                }
+                return audio;
             } catch (error) {
                 if (error.name === 'AbortError') throw error;
                 let message = error.message;
