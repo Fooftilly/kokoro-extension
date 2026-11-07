@@ -97,7 +97,7 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
         expect(forAudioTasks).toHaveBeenCalledWith('moz-extension://test-uuid/runtimes/mediapipe/wasm');
         expect(createFromOptions).toHaveBeenCalledWith({ runtime: 'packed' },
             expect.objectContaining({ baseOptions: expect.objectContaining({ delegate: 'CPU',
-                modelAssetBuffer: expect.any(Uint8Array) }) }));
+                modelAssetPath: expect.stringMatching(/^blob:/) }) }));
         expect(synthesize).toHaveBeenCalledWith('Hello', { voiceId: 'af_heart', speakingRate: 1 });
     });
     test('ONNX refuses uninstalled model and does not call SDK or fetch', async () => {
