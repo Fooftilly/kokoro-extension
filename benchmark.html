@@ -24,7 +24,7 @@
         </section>
         <section>
             <h2>Real TTS tests and model downloads</h2>
-            <p>Every local model is downloaded only when you click its Download button. The sizes cover the exact selected model and voice data; official executable SDK/WASM code is already packaged with the extension. MediaPipe's one-file bundle includes its phonemizer and voices. ONNX is still an IPA-only development probe until an original text-to-phoneme pipeline is validated.</p>
+            <p>Every local model is downloaded only when you click its Download button. The sizes cover the exact selected model and voice data; official executable SDK/WASM code is already packaged with the extension. MediaPipe's one-file bundle includes its phonemizer and voices. ONNX has an experimental offline US-English dictionary-to-phoneme path for known words, but arbitrary text and long-form reading are still unavailable until pronunciation quality and handling are validated.</p>
             <label for="benchmarkText">Shared English text (server and MediaPipe)</label>
             <textarea id="benchmarkText" rows="3">Hello from Kokoro running directly in this browser.</textarea>
             <label for="benchmarkIpa">ONNX IPA phonemes (not ordinary text)</label>
@@ -38,7 +38,7 @@
                 <audio id="serverAudio" controls hidden></audio>
             </div>
             <div id="modelManager"></div>
-            <p>Measurements are taken from actual synthesized audio, not GPU adapter detection. Local figures are warm, after engine initialization; server timings exclude audio playback. Since the ONNX probe currently takes phonemes instead of the shared text, its timings are not directly comparable with the other backends yet.</p>
+            <p>Measurements are taken from actual synthesized audio, not GPU adapter detection. Local figures are warm, after engine initialization; server timings exclude audio playback. The ONNX page probe still takes explicit IPA, so its timings are not directly comparable with the other backends. Separate real-browser checks exercise limited dictionary-backed English synthesis.</p>
         </section>
         <section>
             <h2>Browser prerequisites</h2>

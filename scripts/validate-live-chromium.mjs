@@ -130,6 +130,18 @@ try {
                             : await engine.synthesize('Hello from Kokoro running on this device.');
                         samples.push(performance.now() - t);
                     }
+                    let englishText = null;
+                    if (provider === 'onnx') {
+                        const plain = await engine.synthesize('Hello world.');
+                        const textRms = Math.sqrt(plain.samples.reduce(
+                            (s, v) => s + v * v, 0) / plain.samples.length);
+                        if (!Number.isFinite(textRms) || textRms < 0.0001 ||
+                            plain.sampleRateHz !== 24000 || !plain.samples.every(Number.isFinite)) {
+                            throw Error('Invalid ONNX English dictionary PCM output');
+                        }
+                        englishText = { input: 'Hello world.', rms: textRms,
+                            durationSec: plain.samples.length / plain.sampleRateHz };
+                    }
                     const rms = Math.sqrt(audio.samples.reduce((s, v) => s + v * v, 0) / audio.samples.length);
                     const seconds = audio.samples.length / audio.sampleRateHz;
                     if (!audio.samples.length || !Number.isFinite(rms) || rms < 0.0001 ||
@@ -137,7 +149,8 @@ try {
                         throw Error('Empty, silent or malformed PCM output');
                     }
                     window.__kokoroProbe = { done: true, success: true, provider, variant, initMs,
-                        warmSynthesisMs: samples, durationSec: seconds, rms, sampleRateHz: audio.sampleRateHz };
+                        warmSynthesisMs: samples, durationSec: seconds, rms,
+                        sampleRateHz: audio.sampleRateHz, englishText };
                 } catch (error) {
                     window.__kokoroProbe = { done: true, success: false, error: String(error),
                         stack: String(error.stack || '') };

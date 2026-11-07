@@ -191,12 +191,22 @@ def main():
                             audio=await engine.synthesizePhonemes('hɛˈloʊ.');
                             samples.push(performance.now()-t);
                         }
+                        // Validate the separately implemented dictionary text path,
+                        // not merely prewritten IPA phonemes.
+                        const words=await engine.synthesize('Hello world.');
+                        const englishRms=Math.sqrt(words.samples.reduce(
+                            (s,v)=>s+v*v,0)/words.samples.length);
+                        if(!(englishRms>0.0001)||words.sampleRateHz!==24000||
+                            !words.samples.every(Number.isFinite))
+                            throw Error('Invalid ONNX English dictionary PCM');
                         const rms=Math.sqrt(audio.samples.reduce((s,v)=>s+v*v,0)/audio.samples.length);
                         if(!(rms>0.0001)||audio.sampleRateHz!==24000||
                             !audio.samples.every(Number.isFinite))throw Error('Invalid or silent PCM');
                         done({success:true,initMs,warmSynthesisMs:samples,
                             durationSec:audio.samples.length/audio.sampleRateHz,
-                            sampleRateHz:audio.sampleRateHz,rms});
+                            sampleRateHz:audio.sampleRateHz,rms,
+                            englishText:{input:'Hello world.',rms:englishRms,
+                                durationSec:words.samples.length/words.sampleRateHz}});
                     }catch(e){done({success:false,error:String(e),stack:String(e.stack||'')});}
                     finally{try{await engine?.close()}catch{}}
                 })().catch(e=>done({success:false,error:String(e)}));
@@ -204,7 +214,7 @@ def main():
             result = {"status": "passed" if metrics.get("success") else "failed",
                 "browser": driver.capabilities.get("browserVersion"), "extensionId": addon_id,
                 "preflight": preflight, "onnx": metrics,
-                "scope": "Firefox/Linux MV3 real ONNX q8 IPA inference; no G2P or MediaPipe"}
+                "scope": "Firefox/Linux MV3 real ONNX q8 IPA and limited CMUdict English text inference; not complete G2P, MediaPipe or audio-quality acceptance"}
             print("FIREFOX REAL INFERENCE", json.dumps(result), flush=True)
             if not metrics.get("success"):
                 raise RuntimeError("Firefox model-backed ONNX inference failed")
