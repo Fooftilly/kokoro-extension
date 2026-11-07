@@ -72,6 +72,7 @@ export default [
       'overlay.js',
       'reader.js',
       'audio-manager.js',
+      'onnx-kokoro-inputs.js',
       'dom-utils.js',
       'text-processor.js',
     ],
