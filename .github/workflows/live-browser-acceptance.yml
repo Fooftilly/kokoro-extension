@@ -1,0 +1,50 @@
+name: Real Kokoro MV3 model acceptance
+
+# Heavy (~388 MB) model downloads are strictly limited to explicit workflow changes
+# on the experimental runtime branch or a human-triggered dispatch. Never run for
+# general pull requests or releases.
+on:
+  push:
+    branches: [feat/official-browser-runtimes-68]
+    paths:
+      - '.github/workflows/live-browser-acceptance.yml'
+      - 'scripts/validate-live-chromium.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  chromium-model-inference:
+    name: Real ONNX and MediaPipe Chromium MV3 synthesis
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install extension dependencies
+        run: npm ci
+      - name: Package extension for Chrome and Firefox
+        run: npm run package:ci
+      - name: Install pinned Playwright Chromium (isolated from lockfile)
+        run: |
+          mkdir -p "$RUNNER_TEMP/kokoro-playwright"
+          cd "$RUNNER_TEMP/kokoro-playwright"
+          npm init -y
+          npm install --no-save --ignore-scripts playwright@1.65.0
+          npx playwright install --with-deps chromium
+      - name: Execute real model-backed Chrome extension inference
+        env:
+          KOKORO_LIVE_DOWNLOAD: '1'
+          PLAYWRIGHT_MODULE_PATH: ${{ runner.temp }}/kokoro-playwright/node_modules/playwright/index.mjs
+        run: node scripts/validate-live-chromium.mjs
+      - name: Attach measured browser report (when available)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kokoro-live-chromium-report
+          path: dist/runtime-acceptance/report.json
+          if-no-files-found: ignore
