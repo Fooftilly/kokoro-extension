@@ -197,3 +197,22 @@ python3 -m json.tool dist/runtime-acceptance/report.json
 This isolated run confirms that `@mediapipe/tasks-audio@1.2.2-rc.20261106` can perform valid **MediaPipe CPU inference inside a Chrome MV3 extension**. It does **not** prove the prior crash's cause or that the original combined ONNX→MediaPipe test now passes. Because the initial failing run shared a renderer and the new passing run uses a fresh page, retained WASM memory is a plausible explanation but unconfirmed. The extension's regular article/EPUB flows, voice quality, GPU delegate, and Firefox remain unverified.
 
 **Next Chrome gate:** run the same script with the default `both` provider selection (omit `KOKORO_LIVE_PROVIDER`), which allocates a separate page for each model and records both real results in `dist/runtime-acceptance/report.json`. The ONNX and MediaPipe tests use different input texts; **do not treat the reported times as a controlled performance comparison**. If the combined test still crashes, preserve the stage and crash report and inspect matching kernel/browser evidence rather than assuming OOM. Do not add server or third-party runtime fallback.
+
+## Combined Chromium MV3 model-backed acceptance passed (7 November 2026)
+
+The maintainer ran the default `KOKORO_LIVE_DOWNLOAD=1` / `KOKORO_LIVE_PROVIDER=both` Chromium harness on Arch Linux after committing the per-model page isolation. All four pinned input assets were reused **only after full size and SHA-256 validation**; no new model download was needed. This is evidence from the **actual extension origin**, not a mock or an ordinary web page.
+
+| Variant | Initialization | Warm full-clip syntheses (3 runs) | Audio | Measured validity |
+| --- | ---: | --- | --- | --- |
+| ONNX q8 CPU (WASM) | **1,132.1 ms** | **1,550.7 / 1,539.7 / 1,530.3 ms** | 1.65 sec at 24 kHz; RMS 0.0340519 | **Passed** real IPA inference; separately `Hello world.` with pinned dictionary yielded 1.875 sec, RMS 0.0342531 |
+| MediaPipe CPU (WASM) | **1,367.5 ms** | **12,222.2 / 13,121.2 / 13,302.6 ms** | 3.05 sec at 24 kHz; RMS 0.0483620 | **Passed** real plain-text inference using official pinned `@mediapipe/tasks-audio@1.2.2-rc.20261106` |
+
+The original sequential same-renderer crash **did not recur** after running the two providers in separate renderer pages within the same browser context. This establishes that the combined Chrome MV3 CPU acceptance now passes in this configuration, but it **does not identify the original crash's cause**. Chromium reported `webgpu.status=no-adapter` and `crossOriginIsolated=false`: these CPU results **do not demonstrate GPU or multithreaded WASM**.
+
+The median MediaPipe warm run was **13,121.2 ms** to produce **3.05 seconds** of output (approximately **4.30× real-time factor**). The median ONNX IPA run was **1,539.7 ms** for **1.65 seconds** of output (~**0.93×**). The test sentences differ, so this is not a controlled provider comparison. Both figures are **full-clip completion latency**, not streaming time-to-first-audio.
+
+**What passed:** official downloaded model-data integrity, packaged runtime loading, full waveform synthesis, sample-rate and non-silent finite-sample checks, and ONNX's limited dictionary-backed English text check, all inside Chrome MV3.
+
+**Not yet verified:** audible voice quality; opt-in download-progress UI on a full real network transfer; long-form article/EPUB integration and cancellation; multi-sentence behavior and memory over time; Chrome GPU execution (no adapter); MediaPipe extension-origin **Firefox** (existing Firefox live harness currently tests ONNX q8 only); security/privacy and version-stability of the official prerelease; standardized same-text comparative benchmarks.
+
+PR #68 therefore remains **open**, with further functional acceptance and independent review required before declaring three complete backends. Do not replace the official MediaPipe SDK, change models, or silently fall back to FastAPI.
