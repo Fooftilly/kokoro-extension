@@ -213,6 +213,8 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
     const settings = await browser.storage.sync.get({
         apiUrl: 'http://127.0.0.1:8880/v1/',
         ttsBackend: TtsProviders.FASTAPI,
+        mediaPipeVariant: 'cpu',
+        localVoice: 'af_heart',
         voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
         mode: 'stream',
         autoScroll: false,
@@ -235,27 +237,31 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
         notify('Kokoro TTS Error', error.message);
         return;
     }
-    if (backend !== TtsProviders.FASTAPI) {
-        notify('Kokoro TTS', TtsProviders.unavailableResponse(backend).error);
-        return; // Never send local-mode text to a FastAPI endpoint.
+    if (backend === TtsProviders.ONNX) {
+        notify('Kokoro TTS', 'ONNX requires a validated grapheme-to-phoneme frontend. No text was sent to a server.');
+        return;
     }
+    // MediaPipe runs directly in the extension's audio player from cached model bytes.
+    // It must never probe or request audio from FastAPI while selected.
 
     let apiUrl = settings.apiUrl;
     if (!apiUrl.endsWith('/')) apiUrl += '/';
 
-    // Check status
-    try {
-        const statusUrl = new URL('models', apiUrl).href;
-        const statusResp = await fetch(statusUrl);
-        if (!statusResp.ok) {
-            console.warn("Status check returned " + statusResp.status);
-        } else {
-            setIconStatus(true);
+    // Network connectivity matters only for the explicitly selected server backend.
+    if (backend === TtsProviders.FASTAPI) {
+        try {
+            const statusUrl = new URL('models', apiUrl).href;
+            const statusResp = await fetch(statusUrl);
+            if (!statusResp.ok) {
+                console.warn("Status check returned " + statusResp.status);
+            } else {
+                setIconStatus(true);
+            }
+        } catch (e) {
+            checkApiStatus();
+            notify("Kokoro TTS Error", `Could not connect to Kokoro API at ${apiUrl}. Is it running?`);
+            return;
         }
-    } catch (e) {
-        checkApiStatus();
-        notify("Kokoro TTS Error", `Could not connect to Kokoro API at ${apiUrl}. Is it running?`);
-        return;
     }
 
     // Prepare request
@@ -269,7 +275,7 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
     };
 
     try {
-        if (settings.mode === 'download' && !isArticleMode) {
+        if (backend === TtsProviders.FASTAPI && settings.mode === 'download' && !isArticleMode) {
             notify("Kokoro TTS", "Generating audio...");
             const response = await fetch(endpoint, {
                 method: 'POST',
@@ -323,6 +329,8 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
                 pendingVoice: settings.voice,
                 pendingApiUrl: apiUrl,
                 pendingTtsBackend: backend,
+                pendingMediaPipeVariant: settings.mediaPipeVariant,
+                pendingLocalVoice: settings.localVoice,
                 pendingTitle: tab.title,
                 pendingNormalizationOptions: settings.normalizationOptions,
                 pendingCustomPronunciations: settings.customPronunciations,
