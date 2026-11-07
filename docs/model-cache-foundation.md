@@ -1,0 +1,31 @@
+# Opt-in local model data cache (#55)
+
+This is the first stage of a shared model manager for the separate MediaPipe and ONNX backends. It is not a complete download UI, not a model catalog, and not a working TTS engine.
+
+The module model-data-store.js accepts an extension-shipped model manifest that declares a provider (mediapipe or onnx), a variant, a 40-character immutable Hugging Face model revision SHA, and the **complete set of data assets**, each with a path, pinned HTTPS URL, exact byte size and a SHA-256 Subresource Integrity value (base64). It rejects unpinned URLs, invalid sizes, duplicate paths, unrecognized providers, and missing integrity values.
+
+Calling status() does not download anything. Calling install() explicitly makes CORS fetches with the browser's SRI-integrity option and AbortSignal and streams each response into extension-origin Cache Storage with byte progress. It discards any asset with an unexpected received length, permits reusing assets with matching version metadata, and supports removal. The extension's own origin is required for cache keys; no large files are written to browser.storage.sync or local. MediaPipe and ONNX executable JavaScript and WASM binaries must be packaged through build.js separately, not fetched through this data store.
+
+Cache Storage is owned by the extension origin but Cache.put requires an HTTP(S) request key. Stored assets use synthetic https://kokoro-model-cache.invalid/ keys; that reserved host is never contacted. The bytes are fetched only from manifest-pinned model asset URLs. Request metadata records the expected hash/size, while the initial download uses the browser's Fetch SRI check. Since Fetch SRI may buffer before exposing a response, this first-stage progress counter is not guaranteed to reflect network transfer in real time. Model manager UI must not label it a real-time percentage until verified in Chrome and Firefox; #55 still requires a tested streaming verification/download strategy. Cache status should not be treated as proof of intact bytes after external corruption; final usage must verify integrity when loading or repairing cache entries.
+
+Asset paths reject empty, '.' and '..' segments to prevent normalized cache-key collisions. Paths and URLs must match exactly, including the official repository identity and immutable revision. The only permitted file extensions are model/voice/text data types; no remotely downloaded .js/.wasm/executable assets.
+
+The manager exposes an explicit removeUnreferenced(retainedManifests) operation for post-upgrade cleanup: callers pass *all* selected/installed model manifests to retain and the cache enumerates its own model-data keys, deleting older revisions/variants not listed. This never removes unrelated Cache Storage entries, and is not invoked automatically by normal installation. A future UI must offer explicit cleanup and track which variants remain installed.
+
+The model-data store must be instantiated only from a suitable extension-origin page/worker that exposes Cache Storage, Fetch, Response and TransformStream; this module doesn't create such a context. Tests use small fake data; no production weights or executable code are downloaded by CI.
+
+Before enabling any Download button in #58 or #61:
+- Confirm official ONNX and MediaPipe model commits, checksums, voice/config/phonemizer assets and exact sizes against upstream. Do not substitute the approximate 86/92/295/326 MB model-only figures for actual total bytes.
+- Add a registry containing only supported model/delegate configurations validated by #53, and track installed revisions/variants so removeUnreferenced is called with the correct retain list.
+- Validate Firefox and Chrome installed extension CORS/Cache Storage/SRI behavior, Browser quota, cache eviction, failed/cancelled/retried downloads, network disconnect and restart.
+- Verify that browser Fetch's SRI is enforced on downloaded opaque redirect chains, and that Cache Storage retains the response after restarts. Treat absence of a readable CORS response as an explicit error.
+- Add a shared in-flight-download lock and resumable partial-file storage only if that proves useful; current stage retries the whole failed asset.
+- Keep runtime code local and never transmit speech input to model hosts.
+
+Original implementation; no code copied from third-party Kokoro extensions.
+
+Official sources:
+- https://developer.mozilla.org/en-US/docs/Web/API/Request/integrity
+- https://developer.mozilla.org/en-US/docs/Web/API/CacheStorage
+- https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX
+- https://huggingface.co/litert-community/Kokoro-82M
