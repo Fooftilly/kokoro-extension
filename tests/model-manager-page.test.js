@@ -140,6 +140,44 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(button.disabled).toBe(true);
     });
 
+    test('unsupported MediaPipe GPU shows capability result without attempting inference', async () => {
+        installedModels.add('gpu');
+        window.KokoroBenchmark.inspectCapabilities = jest.fn(async () => ({
+            webgpu: { status: 'no-adapter' },
+        }));
+        const row = document.querySelector('[data-variant="mediapipe-gpu"]');
+        const button = row.querySelector('.model-test');
+        button.disabled = false; // Model is cached in this test scenario.
+        button.click();
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('GPU test unavailable'));
+        expect(row.querySelector('.model-status').textContent).toContain('no-adapter');
+        expect(row.querySelector('.model-status').textContent).toContain('No inference was attempted');
+        expect(require('../mediapipe-provider.js').MediaPipeKokoroProvider).not.toHaveBeenCalled();
+        expect(global.browser.storage.local.remove).toHaveBeenCalledWith('mediapipeValidatedRevision:gpu');
+        expect(global.browser.storage.local.set).not.toHaveBeenCalled();
+        expect(row.querySelector('.model-choose').disabled).toBe(true);
+        expect(button.disabled).toBe(false);
+    });
+
+    test('MediaPipe GPU only attempts its real provider when adapter is available', async () => {
+        installedModels.add('gpu');
+        window.KokoroBenchmark.inspectCapabilities = jest.fn(async () => ({
+            webgpu: { status: 'adapter-available' },
+        }));
+        require('../mediapipe-provider.js').MediaPipeKokoroProvider.mockImplementation(() => engine);
+        const row = document.querySelector('[data-variant="mediapipe-gpu"]');
+        const button = row.querySelector('.model-test');
+        button.disabled = false;
+        button.click();
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('Full-clip synthesis p50'));
+        expect(engine.initialize).toHaveBeenCalledTimes(1);
+        expect(engine.synthesize).toHaveBeenCalledTimes(3);
+        expect(require('../mediapipe-provider.js').MediaPipeKokoroProvider)
+            .toHaveBeenCalledWith({ variant: 'gpu' });
+        expect(global.browser.storage.local.set).toHaveBeenCalled();
+        expect(row.querySelector('audio').hidden).toBe(false);
+    });
+
     test('refused optional download permission hides the progress bar without fetching', async () => {
         global.browser.permissions.request.mockResolvedValue(false);
         const row = document.querySelector('[data-variant="mediapipe-gpu"]');
