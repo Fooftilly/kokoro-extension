@@ -6,14 +6,17 @@ describe('Browser backend preflight (#53)', () => {
             features: new Set(['shader-f16']),
             limits: { maxBufferSize: 1024 },
         }));
+        const compile = jest.fn(async () => {});
         const report = await inspectCapabilities({
             navigator: { userAgent: 'Test Browser', gpu: { requestAdapter } },
-            WebAssembly: { compile: async () => {} },
+            WebAssembly: { compile },
             SharedArrayBuffer: class SharedArrayBuffer {},
             crossOriginIsolated: true,
             isSecureContext: true,
         });
         expect(requestAdapter).toHaveBeenCalledTimes(1);
+        expect(compile).toHaveBeenCalledTimes(1);
+        expect(Array.from(compile.mock.calls[0][0])).toEqual([0, 97, 115, 109, 1, 0, 0, 0]);
         expect(report).toMatchObject({
             schemaVersion: 1,
             wasmCompilation: true,
@@ -33,6 +36,38 @@ describe('Browser backend preflight (#53)', () => {
         expect(report.webgpu.status).toBe('not-exposed');
         expect(report.wasmThreadsPrerequisites).toBe(false);
         expect(report.wasmCompilation).toBe(true);
+    });
+
+    test('CSP-blocked WASM compile is not reported as available, even with API exposed', async () => {
+        const requestAdapter = jest.fn(async () => ({ features: new Set() }));
+        const blocked = await inspectCapabilities({
+            navigator: { gpu: { requestAdapter } },
+            WebAssembly: { compile: jest.fn(async () => { throw new EvalError('WASM blocked by CSP'); }) },
+            SharedArrayBuffer: class SharedArrayBuffer {},
+            crossOriginIsolated: true,
+            isSecureContext: true,
+        });
+        expect(blocked).toMatchObject({
+            wasmCompilation: false,
+            wasmThreadsPrerequisites: false,
+            webgpu: { status: 'adapter-available' },
+            inferenceValidated: false,
+        });
+        expect(requestAdapter).toHaveBeenCalledTimes(1);
+    });
+
+    test('synchronous WASM compile exceptions and absent API do not abort GPU checks', async () => {
+        const compileThrows = await inspectCapabilities({
+            navigator: { gpu: { requestAdapter: async () => null } },
+            WebAssembly: { compile() { throw new EvalError('blocked'); } },
+        });
+        const missing = await inspectCapabilities({
+            navigator: {}, WebAssembly: {},
+        });
+        expect(compileThrows.wasmCompilation).toBe(false);
+        expect(compileThrows.webgpu.status).toBe('no-adapter');
+        expect(missing.wasmCompilation).toBe(false);
+        expect(missing.wasmThreadsPrerequisites).toBe(false);
     });
 
     test('no adapter and adapter rejection are distinctly reported', async () => {

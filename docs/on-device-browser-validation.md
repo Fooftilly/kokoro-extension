@@ -9,6 +9,8 @@ Status: **preflight only; NOT an inference benchmark**. No backend/model has bee
 4. Select **Check browser support**, then optionally **Copy local report**. The preflight makes zero requests and does not download model weights.
 5. Record browser version, OS, extension mode, GPU/driver, secureContext, crossOriginIsolated, wasmCompilation, wasmThreadsPrerequisites, and webgpu.status. Browser conditions differ between extension contexts and normal web pages.
 
+The WebAssembly check compiles an eight-byte, valid empty WASM module in the **actual extension page**. Chrome's current extension-page CSP (`script-src 'self'` without `wasm-unsafe-eval`) can prevent compilation even when the `WebAssembly.compile` API exists. Such a rejection correctly reports `wasmCompilation: false` and `wasmThreadsPrerequisites: false`. When the official inference runtimes are integrated, review the minimum necessary CSP change separately.
+
 A WebGPU adapter does **not** establish ONNX graph support or MediaPipe GPU compatibility. WASM compilation does **not** establish the Kokoro model's memory/CPU feasibility. Do not classify either backend as working until it produces validated audio inside both packaged extensions.
 
 ## Next stage — verified real inference (#53, #56, #60)
