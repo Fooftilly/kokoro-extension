@@ -1,0 +1,9 @@
+body { margin: 0; font: 16px/1.55 system-ui, sans-serif; color: CanvasText; background: Canvas; }
+main { max-width: 850px; padding: 20px 26px 60px; margin: auto; }
+h1, h2 { line-height: 1.25; }
+section { border-top: 1px solid GrayText; margin-top: 28px; padding-top: 14px; }
+table { border-collapse: collapse; width: 100%; }
+th, td { padding: 10px; border: 1px solid GrayText; text-align: left; }
+button { border: 1px solid currentColor; border-radius: 0; font: inherit; padding: 8px 15px; margin: 3px; background: Canvas; color: CanvasText; cursor: pointer; }
+button:disabled { opacity: 0.5; cursor: default; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 14px; background: color-mix(in srgb, CanvasText 5%, Canvas); }

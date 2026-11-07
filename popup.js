@@ -799,6 +799,13 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    const openBenchmarkBtn = document.getElementById('openBenchmarkBtn');
+    if (openBenchmarkBtn) {
+        openBenchmarkBtn.addEventListener('click', () => {
+            browser.tabs.create({ url: 'benchmark.html' });
+        });
+    }
+
     // Open Document Handler
     const openDocBtn = document.getElementById('openDocumentBtn');
     if (openDocBtn) {

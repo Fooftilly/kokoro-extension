@@ -58,6 +58,8 @@ export default [
       'overlay-position.js',
       'theme-init.js',
       'transliteration-lite.js',
+      'benchmark-capabilities.js',
+      'benchmark-page.js',
     ],
     languageOptions: {
       ecmaVersion: 2022,
@@ -84,11 +86,17 @@ export default [
   },
   // Classic scripts that optionally export for Jest via CJS interop
   {
-    files: ['content.js', 'api-client.js', 'overlay-position.js'],
+    files: ['content.js', 'api-client.js', 'overlay-position.js', 'benchmark-capabilities.js'],
     languageOptions: {
       globals: {
         module: 'readonly',
       },
+    },
+  },
+  {
+    files: ['benchmark-page.js'],
+    languageOptions: {
+      globals: { KokoroBenchmark: 'readonly' },
     },
   },
   // content.js depends on overlay-position.js (classic script global)
