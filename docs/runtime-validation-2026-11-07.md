@@ -137,4 +137,20 @@ PLAYWRIGHT_MODULE_PATH="$PW_MODULE" node scripts/diagnose-mediapipe-web.mjs
 python3 -m json.tool dist/runtime-acceptance/mediapipe-plain-web.json
 ```
 
-The script outputs `dist/runtime-acceptance/mediapipe-plain-web.json` and returns a nonzero status if real synthesis fails. It does not load the browser extension, does not use any CDN, and does not change the installed packages. **It has not yet been run with the model in the maintainer's local environment.** If this plain page also fails with `tf_lite_prefill_decode`, the defect is reproducible in the official Web SDK independent of MV3, CSP, Cache Storage, blob conversion, and extension permissions. If plain web succeeds, investigate extension-specific CSP/asset URL/initialization conditions, using the same model and bundled assets.
+The script outputs `dist/runtime-acceptance/mediapipe-plain-web.json` and returns a nonzero status if real synthesis fails. It does not load the browser extension, does not use any CDN, and does not change the installed packages. **The maintainer ran the isolated plain-web test in HeadlessChrome 158.0.0.0 on Arch Linux.** It failed with the **identical** `No tokenizer found in the model for model type: tf_lite_prefill_decode` error from the same `audio_wasm_internal.wasm` stack, while `pageErrors: []`. The verified CPU model had SHA-256 `e7b931ee5d4b7104012a838c9eee240d19ea69cb3ca269041a3274f83dbb7fa1`; it was served as `/models/kokoro_int8_fp16.litertlm` on a plain HTTP localhost origin. This **demonstrates failure of the tested official JavaScript/WASM SDK outside Manifest V3**, independent of extension CSP, permissions, Cache Storage, or Blob handling. It does not prove an SDK bug is unfixable or identify the exact wrong-dispatch instruction.
+
+### Official SDK version comparison (no production dependency change)
+
+The new `MEDIAPIPE_WEB_RUNTIME_DIR` override on `scripts/diagnose-mediapipe-web.mjs` allows comparison against a **separately installed pinned upstream MediaPipe prerelease package** without touching the extension's dependency lockfile or signed assets. The same pinned Kokoro model, local serving path, Chromium, and valid PCM criteria are retained.
+
+```bash
+SDK_DIR="$(mktemp -d /tmp/kokoro-mediapipe-prerelease-XXXXXX)"
+npm install --prefix "$SDK_DIR" --no-save --ignore-scripts --package-lock=false \
+  '@mediapipe/tasks-audio@1.2.2-rc.20261106'
+PW_MODULE="$(find /tmp -type f -path '*/node_modules/playwright/index.mjs' -print -quit)"
+MEDIAPIPE_WEB_RUNTIME_DIR="$SDK_DIR/node_modules/@mediapipe/tasks-audio" \
+PLAYWRIGHT_MODULE_PATH="$PW_MODULE" \
+node scripts/diagnose-mediapipe-web.mjs
+```
+
+Official prerelease does not imply it works. It has **not yet been run** on the maintainer's machine; do not change the production `@mediapipe/tasks-audio@1.2.2` pin until an official build passes model-backed real synthesis and the extension acceptance tests. The script logs its selected runtime path and reports `dist/runtime-acceptance/mediapipe-plain-web.json`; each run overwrites that file.
