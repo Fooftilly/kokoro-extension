@@ -168,3 +168,28 @@ KOKORO_LIVE_DOWNLOAD=1 PLAYWRIGHT_MODULE_PATH="$PW_MODULE" node scripts/validate
 ```
 
 The test reuses local pinned model data after checksum validation; the script exits with an error if either actual ONNX or MediaPipe synthesis fails, and writes `dist/runtime-acceptance/report.json`. Model/voice and text must stay local with no silent fallback to FastAPI. The script logs its selected runtime path and reports `dist/runtime-acceptance/mediapipe-plain-web.json`; each run overwrites that file.
+
+## Chromium extension crash after pinned prerelease update (7 November 2026)
+
+After updating PR #68 to the proven plain-web `@mediapipe/tasks-audio@1.2.2-rc.20261106` and rerunning `npm ci --ignore-scripts` / `npm run package:ci` on Arch Linux (Node 26.12.1, Playwright Chromium 158), the maintainer ran the real Chrome MV3 acceptance script. Its SHA-256 verification/reuse for the pinned CMUdict, ONNX q8, voice embedding, and 294.8 MB Kokoro CPU model all succeeded. ONNX real extension-origin synthesis **passed**: initialization 876.2 ms, three warm syntheses 1581 / 1566.8 / 1558.5 ms, 24 kHz, RMS ~0.03405; separate experimental English output also passed, RMS ~0.03425.
+
+**MediaPipe did not return the prior tokenizer exception**. Instead, Playwright reported `page.waitForFunction: Target crashed` during the MediaPipe probe, before a MediaPipe synthesis result could be collected. This means the prerelease's extension-origin success or failure is **unknown**, not a verified MediaPipe pass. This does **not prove an out-of-memory (OOM) fault**; it could be renderer memory pressure, native WASM failure, or another browser crash cause. The previous harness ran ONNX and MediaPipe sequentially inside **the same renderer page**, potentially retaining large WASM allocations.
+
+Commit `9d74f29` adjusts only the optional Chrome acceptance harness to close the preflight page, use a **fresh browser page for each model probe**, and close the page after each model. The model cache remains extension-scoped and each model still must be checksum-verified. It also introduces `KOKORO_LIVE_PROVIDER=mediapipe|onnx|both` (default `both`) for targeted isolation and persists a failure record with `crashed` and `stage` into `dist/runtime-acceptance/report.json` before surfacing Playwright errors. The script does **not** ignore crashes, suppress failures, weaken PCM checks or change the runtime provider. CI and CodeQL passed, but **a new real-model run after that harness commit is still required**.
+
+For the first rerun, **isolate MediaPipe** to avoid the previously observed ONNX-then-MediaPipe peak-memory overlap:
+
+```bash
+cd ~/GitHub/kokoro-extension
+git pull --ff-only
+# Rebuild only when the checked-out code or pinned dependencies changed:
+npm ci --ignore-scripts
+npm run package:ci
+PW_MODULE="$(find /tmp -type f -path '*/node_modules/playwright/index.mjs' -print -quit)"
+test -f "$PW_MODULE" || exit 1
+KOKORO_LIVE_DOWNLOAD=1 KOKORO_LIVE_PROVIDER=mediapipe \
+PLAYWRIGHT_MODULE_PATH="$PW_MODULE" node scripts/validate-live-chromium.mjs
+python3 -m json.tool dist/runtime-acceptance/report.json
+```
+
+If that succeeds, test the original default `both` mode to verify separate-page resource reclamation and inspect Firefox extension-origin real synthesis independently. If it **still crashes**, preserve the JSON report and inspect Arch kernel OOM signals / Chromium crash logs from the same time period; do not claim a fix without such evidence. Do not change to server TTS or a third-party runtime as a fallback.
