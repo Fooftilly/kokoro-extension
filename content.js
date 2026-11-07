@@ -251,7 +251,13 @@ function parseArticle(doc, win = window) {
 // Keep an MV3 message-response channel alive until parsing completes. Failure must
 // still send a response; otherwise the caller waits for a channel that never replies.
 function respondToArticleRequest(parse, sendResponse) {
-    return Promise.resolve().then(parse).then(sendResponse).catch(error => {
+    return Promise.resolve().then(parse).then(result => {
+        if (!result || !result.text) {
+            sendResponse({ error: 'Could not extract article text.' });
+        } else {
+            sendResponse(result);
+        }
+    }).catch(error => {
         console.error('Kokoro: article extraction failed', error);
         sendResponse({ error: 'Could not extract article text.' });
     });
