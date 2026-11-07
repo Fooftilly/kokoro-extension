@@ -237,7 +237,7 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
         manifest.assets[1].bytes = 65536;
         const originalFetch = globalThis.fetch;
         const fetcher = jest.fn(async () => new Response(
-            'hello HH AH0 L OW1\\nworld W ER1 L D\\n'));
+            ['hello HH AH0 L OW1', 'world W ER1 L D', ''].join(String.fromCharCode(10))));
         globalThis.fetch = fetcher;
         try {
             const session = {
