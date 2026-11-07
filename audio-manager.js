@@ -81,9 +81,20 @@ export class AudioManager {
                 this.localProvider = new MediaPipeKokoroProvider({ variant });
                 this.localVariant = variant;
             }
-            const result = await this.localProvider.synthesize(text, {
-                voiceId: data.pendingLocalVoice || 'af_heart',
-            });
+            let result;
+            try {
+                result = await this.localProvider.synthesize(text, {
+                    voiceId: data.pendingLocalVoice || 'af_heart',
+                });
+            } catch (error) {
+                // A best-effort cancel() may make the SDK throw its own error.
+                // The caller requested cancellation; never misreport the stale
+                // session as a fresh inference failure or synthesize a fallback.
+                if (generation !== this.generation) {
+                    throw new DOMException('Local generation cancelled', 'AbortError');
+                }
+                throw error;
+            }
             if (generation !== this.generation) {
                 throw new DOMException('Local generation cancelled', 'AbortError');
             }
