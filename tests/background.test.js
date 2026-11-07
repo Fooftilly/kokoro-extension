@@ -168,7 +168,9 @@ describe('background.js logic', () => {
             expect(browser.tabs.sendMessage).toHaveBeenCalledWith(
                 17, expect.objectContaining({ action: 'SHOW_PLAYER' })
             );
-            expect(fetch).not.toHaveBeenCalled();
+            // Background startup may independently check a server health URL.
+            // Offline synthesis must never send speech text or request server audio.
+            expect(fetch.mock.calls.every(([url]) => !String(url).includes('/audio/speech'))).toBe(true);
         }
     );
 

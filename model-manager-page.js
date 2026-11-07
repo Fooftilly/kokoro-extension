@@ -80,12 +80,26 @@ async function doDownload(entry, ui) {
         running.abort();
         return;
     }
-    // Firefox and Chrome require request() in the user-gesture stack.
-    const permissionPromise = browser.permissions.request({
-        origins: ['https://huggingface.co/*'],
-    });
+    // Request before the first await to retain Firefox's user gesture, but
+    // handle both a synchronous exception and an asynchronous rejection.
+    let permissionPromise;
+    try {
+        permissionPromise = browser.permissions.request({
+            origins: ['https://huggingface.co/*'],
+        });
+    } catch (error) {
+        setMessage(ui.status, 'Cannot request model download permission: ' + String(error.message || error));
+        return;
+    }
     ui.download.disabled = true;
-    const allowed = await permissionPromise;
+    let allowed;
+    try {
+        allowed = await permissionPromise;
+    } catch (error) {
+        setMessage(ui.status, 'Model download permission failed: ' + String(error.message || error));
+        ui.download.disabled = false;
+        return;
+    }
     if (!allowed) {
         setMessage(ui.status, 'Official Hugging Face model host permission was denied.');
         ui.download.disabled = false;
@@ -132,6 +146,11 @@ function currentEngine(entry) {
 async function testEngine(entry, ui) {
     ui.test.disabled = true;
     ui.choose.disabled = true;
+    const validationKey = 'mediapipeValidatedRevision:' + entry.variant;
+    if (entry.provider === 'mediapipe') {
+        // Any failed re-test invalidates the previous approval for this variant.
+        await browser.storage.local.remove(validationKey);
+    }
     setMessage(ui.status, 'Loading locally packaged runtime and cached model…');
     try {
         const engine = currentEngine(entry);
@@ -163,7 +182,12 @@ async function testEngine(entry, ui) {
             '. Streaming time-to-first-audio was not measured. Listen before choosing.');
         // The ONNX probe only accepts IPA, not plain text, so it cannot yet serve
         // article/EPUB requests. Never offer it as a functioning text backend.
-        if (entry.provider === 'mediapipe') ui.choose.disabled = false;
+        if (entry.provider === 'mediapipe') {
+            await browser.storage.local.set({
+                [validationKey]: manifestForVariant('mediapipe', entry.variant).revision,
+            });
+            ui.choose.disabled = false;
+        }
     } catch (error) {
         setMessage(ui.status, 'Actual inference failed: ' + String(error.message || error));
     } finally {
@@ -186,6 +210,9 @@ function registerModel(entry) {
                 engineByKey.delete(entry.key);
             }
             await cacheStore().remove(manifestForVariant(entry.provider, entry.variant));
+            if (entry.provider === 'mediapipe') {
+                await browser.storage.local.remove('mediapipeValidatedRevision:' + entry.variant);
+            }
         } catch (error) {
             setMessage(ui.status, 'Removal failed: ' + String(error.message || error));
         }

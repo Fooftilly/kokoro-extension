@@ -39,6 +39,7 @@ describe('popup backend-loss resilience (#4)', () => {
                 },
                 local: {
                     set: jest.fn(async () => {}),
+                    get: jest.fn(async defaults => defaults),
                 },
             },
             permissions: {
@@ -111,6 +112,21 @@ describe('popup backend-loss resilience (#4)', () => {
         await flushAsync();
         expect(document.getElementById('status').textContent).toMatch(/Choose a valid TTS backend/i);
         expect(browser.storage.sync.set).not.toHaveBeenCalled();
+    });
+
+    test('popup refuses to activate untested MediaPipe but keeps other settings intact', async () => {
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        browser.storage.sync.set.mockClear();
+
+        const radio = document.querySelector('input[name="ttsBackend"][value="mediapipe"]');
+        radio.checked = true;
+        radio.dispatchEvent(new Event('change'));
+        await flushAsync();
+
+        expect(browser.storage.sync.set).not.toHaveBeenCalledWith({ ttsBackend: 'mediapipe' });
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('fastapi');
+        expect(document.getElementById('backendExplanation').textContent).toMatch(/Test the installed model first/i);
     });
 
     test('malformed voices response is not labeled unreachable', async () => {

@@ -796,8 +796,41 @@ document.addEventListener('DOMContentLoaded', () => {
     for (const radio of document.querySelectorAll('input[name="ttsBackend"]')) {
         radio.addEventListener('change', async () => {
             if (!radio.checked) return;
-            await browser.storage.sync.set({ ttsBackend: radio.value });
             const explanation = document.getElementById('backendExplanation');
+            if (radio.value === 'mediapipe') {
+                // The model-manager must first complete real local synthesis.
+                // An installed model or SDK alone is not proof of compatibility.
+                try {
+                    const { mediaPipeVariant } = await browser.storage.sync.get({ mediaPipeVariant: 'cpu' });
+                    const key = 'mediapipeValidatedRevision:' + mediaPipeVariant;
+                    const validated = await browser.storage.local.get({ [key]: null });
+                    if (!validated[key]) throw new Error('Test the installed model first.');
+                    const { manifestForVariant } = await import('./model-catalog.js');
+                    const { ModelDataStore } = await import('./model-data-store.js');
+                    const manifest = manifestForVariant('mediapipe', mediaPipeVariant);
+                    if (validated[key] !== manifest.revision) {
+                        throw new Error('The model revision changed. Repeat the local TTS test.');
+                    }
+                    const store = new ModelDataStore({
+                        origin: browser.runtime.getURL('/'), cacheStorage: caches,
+                        fetchImpl: fetch.bind(globalThis), responseClass: Response,
+                        streamClass: TransformStream,
+                    });
+                    if (!(await store.status(manifest)).ready) {
+                        throw new Error('The tested model is no longer installed.');
+                    }
+                } catch (error) {
+                    // Reject the attempted switch without changing stored backend.
+                    const { ttsBackend: saved } = await browser.storage.sync.get({ ttsBackend: 'fastapi' });
+                    for (const item of document.querySelectorAll('input[name="ttsBackend"]')) {
+                        item.checked = item.value === saved;
+                    }
+                    explanation.textContent = 'MediaPipe unavailable: ' +
+                        String(error.message || error) + ' Use the TTS test page to install and validate it.';
+                    return;
+                }
+            }
+            await browser.storage.sync.set({ ttsBackend: radio.value });
             if (radio.value === 'fastapi') {
                 explanation.textContent = 'Using the configured Kokoro server; text is sent to this endpoint.';
                 await refreshBackendStatus(document.getElementById('apiUrl').value);
