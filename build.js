@@ -33,6 +33,7 @@ const SRC_FILES = [
     'mediapipe-provider.js',
     'onnx-provider.js',
     'pcm-wav.js',
+    'phoneme-tokenizer.js',
     'dom-utils.js',
     'transliteration-lite.js',
     'theme-init.js',
