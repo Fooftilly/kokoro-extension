@@ -26,7 +26,7 @@ jobs:
           node-version: '22'
           cache: npm
       - name: Install extension dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Package extension for Chrome and Firefox
         run: npm run package:ci
       - name: Install pinned Playwright Chromium (isolated from lockfile)
@@ -34,8 +34,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/kokoro-playwright"
           cd "$RUNNER_TEMP/kokoro-playwright"
           npm init -y
-          npm install --no-save --ignore-scripts playwright@1.65.0
-          npx playwright install --with-deps chromium
+          npm install --no-save --ignore-scripts --package-lock=false playwright@1.65.0
+          ./node_modules/.bin/playwright install --with-deps chromium
       - name: Execute real model-backed Chrome extension inference
         env:
           KOKORO_LIVE_DOWNLOAD: '1'
