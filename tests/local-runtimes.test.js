@@ -167,9 +167,44 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
         expect(result.sampleRateHz).toBe(24000);
         expect(forAudioTasks).toHaveBeenCalledWith('moz-extension://test-uuid/runtimes/mediapipe/wasm');
         expect(createFromOptions).toHaveBeenCalledWith({ runtime: 'packed' },
-            expect.objectContaining({ baseOptions: expect.objectContaining({ delegate: 'CPU',
-                modelAssetPath: expect.stringMatching(/^blob:/) }) }));
+            expect.objectContaining({ cacheDirectory: ':nocache',
+                baseOptions: expect.objectContaining({ delegate: 'CPU',
+                    modelAssetPath: expect.stringMatching(/^blob:/) }) }));
         expect(synthesize).toHaveBeenCalledWith('Hello', { voiceId: 'af_heart', speakingRate: 1 });
+    });
+    test('MediaPipe initializes from cached Blob without allocating a second typed-array copy', async () => {
+        const manifest = manifestForVariant('mediapipe', 'cpu');
+        manifest.assets[0].bytes = 4;
+        const asset = manifest.assets[0];
+        const response = {
+            headers: new Headers({
+                'x-kokoro-integrity': asset.integrity,
+                'x-kokoro-bytes': String(asset.bytes),
+            }),
+            blob: jest.fn(async () => new Blob([new Uint8Array(4)])),
+            arrayBuffer: jest.fn(() => { throw new Error('Unexpected full model copy'); }),
+        };
+        const createFromOptions = jest.fn(async () => ({
+            synthesize: async () => ({
+                samples: new Float32Array([0.1, -0.1]), sampleRateHz: 24000,
+            }),
+        }));
+        const provider = new MediaPipeKokoroProvider({
+            browserApi: browserApi(),
+            cacheStorage: { open: async () => ({ match: async () => response }) },
+            fetchImpl: jest.fn(),
+            loadSDK: async () => ({
+                FilesetResolver: { forAudioTasks: async () => ({}) },
+                TextToSpeech: { createFromOptions },
+            }),
+        });
+        provider.manifest = manifest;
+        expect((await provider.synthesize('Hello')).sampleRateHz).toBe(24000);
+        expect(response.blob).toHaveBeenCalledTimes(1);
+        expect(response.arrayBuffer).not.toHaveBeenCalled();
+        expect(createFromOptions).toHaveBeenCalledWith({}, expect.objectContaining({
+            cacheDirectory: ':nocache',
+        }));
     });
     test('MediaPipe rejects a missing sample rate even with valid PCM', async () => {
         const manifest = manifestForVariant('mediapipe', 'cpu');
