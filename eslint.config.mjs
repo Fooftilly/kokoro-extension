@@ -59,6 +59,8 @@ export default [
       'theme-init.js',
       'transliteration-lite.js',
       'tts-providers.js',
+      'benchmark-capabilities.js',
+      'benchmark-page.js',
     ],
     languageOptions: {
       ecmaVersion: 2022,
@@ -85,14 +87,20 @@ export default [
   },
   // Classic scripts that optionally export for Jest via CJS interop
   {
-    files: ['content.js', 'api-client.js', 'overlay-position.js', 'tts-providers.js'],
+    files: ['content.js', 'api-client.js', 'overlay-position.js', 'benchmark-capabilities.js', 'tts-providers.js'],
     languageOptions: {
       globals: {
         module: 'readonly',
       },
     },
   },
-  // background.js only uses require() in the Jest CommonJS harness.
+  {
+    files: ['benchmark-page.js'],
+    languageOptions: {
+      globals: { KokoroBenchmark: 'readonly' },
+    },
+  },
+  // background.js uses require only in its Jest CommonJS harness.
   {
     files: ['background.js'],
     languageOptions: { globals: { require: 'readonly' } },
