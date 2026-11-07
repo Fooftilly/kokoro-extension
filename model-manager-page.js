@@ -140,7 +140,7 @@ async function testEngine(entry, ui) {
                 ? await engine.synthesize(text)
                 : await engine.synthesizePhonemes(ipa);
             const elapsed = performance.now() - started;
-            runs.push({ kind: 'warm', firstAudioMs: elapsed, synthesisMs: elapsed,
+            runs.push({ kind: 'warm', firstAudioMs: null, synthesisMs: elapsed,
                 audioDurationSec: last.samples.length / last.sampleRateHz });
         }
         const metrics = window.KokoroBenchmark.summarizeRuns(runs);
@@ -150,10 +150,11 @@ async function testEngine(entry, ui) {
         lastAudioUrl.set(entry.key, audioUrl);
         ui.audio.src = audioUrl;
         ui.audio.hidden = false;
-        setMessage(ui.status, 'Real local inference, warm (3 runs). First audio p50: ' +
-            metrics.firstAudioP50Ms.toFixed(0) + ' ms, p95: ' +
-            metrics.firstAudioP95Ms.toFixed(0) + ' ms; RTF p50: ' +
-            metrics.realTimeFactorP50.toFixed(2) + '. Listen before choosing.');
+        setMessage(ui.status, 'Real local inference, warm (3 runs). Full-clip synthesis p50: ' +
+            metrics.synthesisP50Ms.toFixed(0) + ' ms, p95: ' +
+            metrics.synthesisP95Ms.toFixed(0) + ' ms; RTF p50: ' +
+            metrics.realTimeFactorP50.toFixed(2) +
+            '. Streaming time-to-first-audio was not measured. Listen before choosing.');
         // The ONNX probe only accepts IPA, not plain text, so it cannot yet serve
         // article/EPUB requests. Never offer it as a functioning text backend.
         if (entry.provider === 'mediapipe') ui.choose.disabled = false;

@@ -96,6 +96,23 @@ describe('Browser backend preflight (#53)', () => {
             firstAudioP95Ms: 190,
             realTimeFactorP50: 0.15,
         });
+        expect(result.synthesisP50Ms).toBe(300);
+        expect(result.synthesisP95Ms).toBe(350);
+        const unary = summarizeRuns([
+            { kind: 'warm', firstAudioMs: null, synthesisMs: 250, audioDurationSec: 2 },
+            { kind: 'warm', firstAudioMs: null, synthesisMs: 300, audioDurationSec: 2 },
+            { kind: 'warm', firstAudioMs: null, synthesisMs: 350, audioDurationSec: 2 },
+        ]);
+        expect(unary).toMatchObject({
+            firstAudioP50Ms: null, firstAudioP95Ms: null,
+            synthesisP50Ms: 300, synthesisP95Ms: 350,
+            realTimeFactorP50: 0.15,
+        });
+        expect(() => summarizeRuns([
+            { kind: 'warm', firstAudioMs: null, synthesisMs: 1, audioDurationSec: 1 },
+            { kind: 'warm', firstAudioMs: 1, synthesisMs: 1, audioDurationSec: 1 },
+            { kind: 'warm', firstAudioMs: null, synthesisMs: 1, audioDurationSec: 1 },
+        ])).toThrow(/Invalid, mixed/);
         expect(() => summarizeRuns([
             { kind: 'warm', firstAudioMs: 1, synthesisMs: 1, audioDurationSec: 1 },
             { kind: 'cold', firstAudioMs: 1, synthesisMs: 1, audioDurationSec: 1 },
