@@ -8,6 +8,30 @@ const ALLOWED_PROVIDERS = Object.freeze(['mediapipe', 'onnx']);
 const INTEGRITY_PATTERN = /^sha256-[A-Za-z0-9+/]{43}=$/;
 const SHA_PATTERN = /^[a-f0-9]{40}$/;
 const PATH_PATTERN = /^[a-zA-Z0-9._/-]+$/;
+const DATA_EXTENSIONS = Object.freeze([
+    '.onnx', '.bin', '.json', '.litertlm', '.txt', '.model', '.vocab',
+    '.dat', '.fst', '.tflite', '.weights', '.npy',
+]);
+const OFFICIAL_REPOSITORIES = Object.freeze({
+    mediapipe: 'litert-community/Kokoro-82M',
+    onnx: 'onnx-community/Kokoro-82M-v1.0-ONNX',
+});
+
+function officialAssetUrl(manifest, asset) {
+    let url;
+    try {
+        url = new URL(asset.url);
+    } catch {
+        throw new TypeError('Model data URL must be a valid pinned HTTPS URL');
+    }
+    const expectedPath = '/' + OFFICIAL_REPOSITORIES[manifest.provider] +
+        '/resolve/' + manifest.revision + '/' + asset.path;
+    if (url.protocol !== 'https:' || url.hostname !== 'huggingface.co' ||
+        url.username || url.password || url.search || url.hash || url.port ||
+        url.pathname !== expectedPath) {
+        throw new TypeError('Model data must match its pinned official repository and asset path');
+    }
+}
 
 export function validateModelManifest(manifest) {
     if (!manifest || !ALLOWED_PROVIDERS.includes(manifest.provider) ||
@@ -24,15 +48,11 @@ export function validateModelManifest(manifest) {
             asset.path.startsWith('/') || asset.path.split('/').includes('..') ||
             seen.has(asset.path) ||
             !Number.isSafeInteger(asset.bytes) || asset.bytes <= 0 ||
-            !INTEGRITY_PATTERN.test(asset.integrity || '')) {
-            throw new TypeError('Invalid or duplicate model asset');
+            !INTEGRITY_PATTERN.test(asset.integrity || '') ||
+            !DATA_EXTENSIONS.some(extension => asset.path.endsWith(extension))) {
+            throw new TypeError('Invalid, non-data, or duplicate model asset');
         }
-        const url = new URL(asset.url);
-        // The supplied, pinned official Kokoro model repos both use this host.
-        if (url.protocol !== 'https:' || url.hostname !== 'huggingface.co' ||
-            !url.pathname.includes('/resolve/' + manifest.revision + '/')) {
-            throw new TypeError('Model data must come from a pinned official Hugging Face revision');
-        }
+        officialAssetUrl(manifest, asset);
         total += asset.bytes;
         if (!Number.isSafeInteger(total)) {
             throw new RangeError('Model size exceeds safe integer range');
