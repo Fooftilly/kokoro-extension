@@ -12,8 +12,9 @@ import subprocess
 import tempfile
 import threading
 import time
-import urllib.request
+from urllib.parse import urlsplit
 
+import urllib3
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
@@ -34,18 +35,33 @@ def pinned_manifest():
 
 def verified_assets(manifest, directory):
     files = {}
+    http = urllib3.PoolManager()
     for asset in manifest["assets"]:
         name = asset["path"]
+        # Allow only the exact pinned official ONNX repository asset. The
+        # browser-side manifest validator applies the corresponding restriction.
+        url = urlsplit(asset["url"])
+        expected = (f"/onnx-community/Kokoro-82M-v1.0-ONNX/"
+                    f"resolve/{manifest['revision']}/{name}")
+        if (url.scheme != "https" or url.netloc != "huggingface.co" or
+                url.path != expected or url.query or url.fragment):
+            raise ValueError("Untrusted or unpinned model asset URL")
         digest_bytes = __import__("base64").b64decode(asset["integrity"][7:])
         digest = digest_bytes.hex()
         filename = directory / digest
-        with urllib.request.urlopen(asset["url"], timeout=90) as source, open(filename, "wb") as target:
+        with http.request("GET", asset["url"], preload_content=False,
+                          timeout=urllib3.Timeout(connect=15, read=90)) as source, \
+                open(filename, "wb") as target:
+            if source.status != 200:
+                raise RuntimeError(f"Official model download returned HTTP {source.status}")
             hasher = hashlib.sha256()
             size = 0
             while block := source.read(1024 * 1024):
+                size += len(block)
+                if size > asset["bytes"]:
+                    raise ValueError("Official model asset exceeds the pinned size")
                 target.write(block)
                 hasher.update(block)
-                size += len(block)
         if size != asset["bytes"] or hasher.digest() != digest_bytes:
             raise ValueError("Unverified model data " + name)
         files[digest] = filename
