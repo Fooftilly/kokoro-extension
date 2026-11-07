@@ -97,7 +97,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
     test('an English G2P error leaves the valid IPA audio available', async () => {
         engine.synthesize.mockRejectedValueOnce(new Error('Unknown English word'));
         const { row, message } = await runProbe();
-        expect(message).toContain('English text synthesis failed: Error: Unknown English word');
+        expect(message).toContain('English text synthesis failed: Unknown English word');
         expect(message).toContain('Playing the IPA probe instead');
         expect(row.querySelector('audio').src).toBe('blob:test-audio');
         expect(row.querySelector('.model-choose').disabled).toBe(true);
