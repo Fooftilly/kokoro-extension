@@ -144,7 +144,7 @@ export default [
     },
   },
   {
-    files: ['build.js', 'jest.config.js'],
+    files: ['build.js', 'jest.config.js', 'scripts/**/*.mjs'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'commonjs',
