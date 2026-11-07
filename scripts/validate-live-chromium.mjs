@@ -23,6 +23,7 @@ const resultsDir = path.resolve('dist/runtime-acceptance');
 await mkdir(sourceDir, { recursive: true });
 await mkdir(resultsDir, { recursive: true });
 const local = new Map();
+const byFilename = new Map();
 for (const manifest of variants) for (const asset of manifest.assets) {
     const expected = Buffer.from(asset.integrity.slice(7), 'base64').toString('hex');
     if (local.has(expected)) continue;
@@ -37,6 +38,7 @@ for (const manifest of variants) for (const asset of manifest.assets) {
         throw Error('Model byte count or SHA-256 mismatch: ' + asset.path);
     }
     local.set(expected, file);
+    byFilename.set(path.posix.basename(asset.path), file);
     console.log('Verified official model data', asset.path, length);
 }
 let extensionOrigin = null;
@@ -51,7 +53,7 @@ const server = createServer((req, res) => {
         res.end();
         return;
     }
-    const file = local.get(url.pathname.slice(1));
+    const file = local.get(url.pathname.slice(1)) || byFilename.get(url.pathname.slice(1));
     if (!file) { res.writeHead(404); res.end(); return; }
     res.writeHead(200, {
         'Access-Control-Allow-Origin': extensionOrigin,
@@ -133,6 +135,33 @@ try {
         }, { provider: manifest.provider, variant: manifest.variant });
         await page.waitForFunction(() => window.__kokoroProbe?.done === true, null, { timeout: 240000 });
         const result = await page.evaluate(() => window.__kokoroProbe);
+        // Diagnose whether the upstream task requires the original .litertlm
+        // filename instead of a Blob URL, without changing production behavior.
+        // This probe has no text/network fallback beyond our authenticated loopback model server.
+        if (!result.success && manifest.provider === 'mediapipe') {
+            const diagnostic = await page.evaluate(async ({ port, transferToken }) => {
+                let task;
+                try {
+                    const sdk = await import('./runtimes/mediapipe/audio_bundle.mjs');
+                    const files = await sdk.FilesetResolver.forAudioTasks(
+                        chrome.runtime.getURL('runtimes/mediapipe/wasm'));
+                    const modelAssetPath = 'http://127.0.0.1:' + port +
+                        '/kokoro_int8_fp16.litertlm?token=' + transferToken;
+                    task = await sdk.TextToSpeech.createFromOptions(files, {
+                        baseOptions: { modelAssetPath, delegate: 'CPU' },
+                        defaultVoiceId: 'af_heart', speakingRate: 1,
+                        cacheDirectory: ':nocache',
+                    });
+                    const audio = await task.synthesize('Hello from local Kokoro.');
+                    return { success: audio.samples instanceof Float32Array,
+                        sampleRateHz: audio.sampleRateHz, samples: audio.samples?.length };
+                } catch (error) {
+                    return { success: false, error: String(error) };
+                } finally { try { await task?.close(); } catch { /* diagnostics only */ } }
+            }, { port: server.address().port, transferToken });
+            result.originalFilenameDiagnostic = diagnostic;
+            console.log('MEDIAPIPE ORIGINAL FILE NAME DIAGNOSTIC', diagnostic);
+        }
         console.log(result.success ? 'REAL MODEL INFERENCE' : 'MODEL INFERENCE FAILURE', result);
         results.push({ provider: manifest.provider, variant: manifest.variant, ...result });
         await writeFile(path.join(resultsDir, 'report.json'), JSON.stringify({
