@@ -1,6 +1,8 @@
-"""Real ONNX phoneme synthesis inside an unsigned temporary Firefox MV3 extension.
+"""Real, opt-in Kokoro model inference inside a temporary Firefox MV3 extension.
 
-Runs only from the opt-in live acceptance workflow. No model weights are committed.
+Default: ONNX q8 + dictionary. KOKORO_FIREFOX_PROVIDER=mediapipe tests official
+MediaPipe CPU separately, so large runtimes never share one Firefox renderer.
+No model weights are committed; locally pinned models are rehashed before reuse.
 """
 import hashlib
 import http.server
@@ -20,18 +22,21 @@ from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 
 
-def pinned_manifest():
-    # Read the fixed in-repository catalog as ESM, without writing source code
-    # into an executable file path or letting data control a filesystem path.
+def pinned_manifest(provider):
+    # Read the fixed in-repository catalog as ESM without trusting external
+    # paths. Keep the default ONNX+dictionary acceptance unchanged.
     code = (
         "import {readFile} from 'node:fs/promises'; "
         "const catalog = await readFile('model-catalog.js'); "
         "const source = 'data:text/javascript;base64,' + catalog.toString('base64'); "
         "const {manifestForVariant,dictionaryManifest} = await import(source); "
-        "console.log(JSON.stringify([manifestForVariant('onnx', 'q8'), dictionaryManifest()]));"
+        "const provider = process.argv[1]; "
+        "console.log(JSON.stringify(provider === 'mediapipe' "
+        " ? [manifestForVariant('mediapipe', 'cpu')] "
+        " : [manifestForVariant('onnx', 'q8'), dictionaryManifest()]));"
     )
     result = subprocess.run(
-        ["node", "--input-type=module", "-e", code],
+        ["node", "--input-type=module", "-e", code, provider],
         check=True, capture_output=True, text=True,
     )
     return json.loads(result.stdout)
@@ -47,16 +52,38 @@ def verified_assets(manifest, directory):
         if manifest["provider"] == "dictionary":
             host = "raw.githubusercontent.com"
             expected = f"/cmusphinx/cmudict/{manifest['revision']}/cmudict.dict"
-        else:
+        elif manifest["provider"] == "mediapipe":
+            host = "huggingface.co"
+            expected = (f"/litert-community/Kokoro-82M/"
+                        f"resolve/{manifest['revision']}/{name}")
+        elif manifest["provider"] == "onnx":
             host = "huggingface.co"
             expected = (f"/onnx-community/Kokoro-82M-v1.0-ONNX/"
                         f"resolve/{manifest['revision']}/{name}")
+        else:
+            raise ValueError("Unsupported model provider")
         if (url.scheme != "https" or url.netloc != host or
                 url.path != expected or url.query or url.fragment):
             raise ValueError("Untrusted or unpinned model/dictionary asset URL")
         digest_bytes = __import__("base64").b64decode(asset["integrity"][7:])
         digest = digest_bytes.hex()
         filename = directory / digest
+        reused = Path(tempfile.gettempdir()) / "kokoro-live-models" / digest
+
+        def matches_pinned_file(candidate):
+            if not candidate.is_file() or candidate.stat().st_size != asset["bytes"]:
+                return False
+            hasher = hashlib.sha256()
+            with candidate.open("rb") as source:
+                while block := source.read(1024 * 1024):
+                    hasher.update(block)
+            return hasher.digest() == digest_bytes
+
+        if matches_pinned_file(reused):
+            files[digest] = reused
+            print("Reused checksum-verified local model data", name, asset["bytes"], flush=True)
+            continue
+
         with http.request("GET", asset["url"], preload_content=False,
                           timeout=urllib3.Timeout(connect=15, read=90)) as source, \
                 open(filename, "wb") as target:
@@ -73,13 +100,16 @@ def verified_assets(manifest, directory):
         if size != asset["bytes"] or hasher.digest() != digest_bytes:
             raise ValueError("Unverified model data " + name)
         files[digest] = filename
-        print("Verified official model data", name, size, flush=True)
+        print("Downloaded and verified official model data", name, size, flush=True)
     return files
 
 
 def main():
     if os.environ.get("KOKORO_LIVE_DOWNLOAD") != "1":
         raise RuntimeError("Explicit model download opt-in is required")
+    provider = os.environ.get("KOKORO_FIREFOX_PROVIDER", "onnx")
+    if provider not in ("onnx", "mediapipe"):
+        raise ValueError("KOKORO_FIREFOX_PROVIDER must be onnx or mediapipe")
     output = Path("dist/runtime-acceptance/firefox.json")
     output.parent.mkdir(parents=True, exist_ok=True)
     result = {"status": "started", "browser": "Firefox MV3"}
@@ -88,7 +118,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="kokoro-firefox-") as tmp:
         root = Path(tmp)
         try:
-            manifests = pinned_manifest()
+            manifests = pinned_manifest(provider)
             files = {}
             for manifest in manifests:
                 files.update(verified_assets(manifest, root))
@@ -184,12 +214,17 @@ def main():
             if not cache_result.get("success"):
                 raise RuntimeError("Firefox extension cache preload failed: " + str(cache_result))
             metrics = driver.execute_async_script("""
+                const provider=arguments[0];
                 const done=arguments[arguments.length-1];
                 (async()=>{
                     let engine;
                     try{
-                        const {OnnxKokoroProvider}=await import('./onnx-provider.js');
-                        engine=new OnnxKokoroProvider({variant:'q8'});
+                        const sdk=provider==='mediapipe'
+                            ? await import('./mediapipe-provider.js')
+                            : await import('./onnx-provider.js');
+                        engine=provider==='mediapipe'
+                            ? new sdk.MediaPipeKokoroProvider({variant:'cpu'})
+                            : new sdk.OnnxKokoroProvider({variant:'q8'});
                         const start=performance.now();
                         await engine.initialize();
                         const initMs=performance.now()-start;
@@ -197,36 +232,43 @@ def main():
                         let audio;
                         for(let i=0;i<3;i++){
                             const t=performance.now();
-                            audio=await engine.synthesizePhonemes('hɛˈloʊ.');
+                            audio=provider==='mediapipe'
+                                ? await engine.synthesize('Hello from Kokoro running on this device.')
+                                : await engine.synthesizePhonemes('hɛˈloʊ.');
                             samples.push(performance.now()-t);
                         }
-                        // Validate the separately implemented dictionary text path,
-                        // not merely prewritten IPA phonemes.
-                        const words=await engine.synthesize('Hello world.');
-                        const englishRms=Math.sqrt(words.samples.reduce(
-                            (s,v)=>s+v*v,0)/words.samples.length);
-                        if(!(englishRms>0.0001)||words.sampleRateHz!==24000||
-                            !words.samples.every(Number.isFinite))
-                            throw Error('Invalid ONNX English dictionary PCM');
+                        let englishText=null;
+                        if(provider==='onnx'){
+                            // Keep the dictionary-text check separate from IPA timings.
+                            const words=await engine.synthesize('Hello world.');
+                            const englishRms=Math.sqrt(words.samples.reduce(
+                                (s,v)=>s+v*v,0)/words.samples.length);
+                            if(!(englishRms>0.0001)||words.sampleRateHz!==24000||
+                                !words.samples.every(Number.isFinite))
+                                throw Error('Invalid ONNX English dictionary PCM');
+                            englishText={input:'Hello world.',rms:englishRms,
+                                durationSec:words.samples.length/words.sampleRateHz};
+                        }
                         const rms=Math.sqrt(audio.samples.reduce((s,v)=>s+v*v,0)/audio.samples.length);
+                        const durationSec=audio.samples.length/audio.sampleRateHz;
                         if(!(rms>0.0001)||audio.sampleRateHz!==24000||
-                            !audio.samples.every(Number.isFinite))throw Error('Invalid or silent PCM');
-                        done({success:true,initMs,warmSynthesisMs:samples,
-                            durationSec:audio.samples.length/audio.sampleRateHz,
-                            sampleRateHz:audio.sampleRateHz,rms,
-                            englishText:{input:'Hello world.',rms:englishRms,
-                                durationSec:words.samples.length/words.sampleRateHz}});
-                    }catch(e){done({success:false,error:String(e),stack:String(e.stack||'')});}
+                            !audio.samples.every(Number.isFinite)||
+                            !(durationSec>=0.2 && durationSec<=30))
+                            throw Error('Invalid or silent PCM');
+                        done({success:true,provider,initMs,warmSynthesisMs:samples,
+                            durationSec,sampleRateHz:audio.sampleRateHz,rms,englishText});
+                    }catch(e){done({success:false,provider,error:String(e),stack:String(e.stack||'')});}
                     finally{try{await engine?.close()}catch{}}
-                })().catch(e=>done({success:false,error:String(e)}));
-            """)
+                })().catch(e=>done({success:false,provider,error:String(e)}));
+            """, provider)
             result = {"status": "passed" if metrics.get("success") else "failed",
                 "browser": driver.capabilities.get("browserVersion"), "extensionId": addon_id,
-                "preflight": preflight, "onnx": metrics,
-                "scope": "Firefox/Linux MV3 real ONNX q8 IPA and limited CMUdict English text inference; not complete G2P, MediaPipe or audio-quality acceptance"}
+                "preflight": preflight, "provider": provider, provider: metrics,
+                "scope": "Firefox/Linux MV3 real " + provider +
+                         " CPU synthesis; no subjective audio-quality or long-form acceptance"}
             print("FIREFOX REAL INFERENCE", json.dumps(result), flush=True)
             if not metrics.get("success"):
-                raise RuntimeError("Firefox model-backed ONNX inference failed")
+                raise RuntimeError("Firefox model-backed " + provider + " inference failed")
         except Exception as exc:
             result["status"] = "failed"
             result["error"] = str(exc)
