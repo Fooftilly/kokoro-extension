@@ -161,6 +161,38 @@ try {
             }, { port: server.address().port, transferToken });
             result.originalFilenameDiagnostic = diagnostic;
             console.log('MEDIAPIPE ORIGINAL FILE NAME DIAGNOSTIC', diagnostic);
+            // Google AI Edge documents modelAssetBuffer for cached model data.
+            // Independently test that path before claiming the .litertlm
+            // model is incompatible with this packaged MediaPipe SDK.
+            const bufferedDiagnostic = await page.evaluate(async ({ manifest }) => {
+                let task;
+                try {
+                    const { ModelDataStore } = await import('./model-data-store.js');
+                    const store = new ModelDataStore({
+                        origin: chrome.runtime.getURL('/'), cacheStorage: caches,
+                        fetchImpl: fetch, responseClass: Response, streamClass: TransformStream,
+                    });
+                    const cache = await caches.open('kokoro-model-data-v1');
+                    const cached = await cache.match(store.key(manifest, manifest.assets[0]));
+                    if (!store.isCurrent(cached, manifest.assets[0])) throw Error('Model data missing from cache');
+                    const modelAssetBuffer = new Uint8Array(await cached.arrayBuffer());
+                    const sdk = await import('./runtimes/mediapipe/audio_bundle.mjs');
+                    const files = await sdk.FilesetResolver.forAudioTasks(
+                        chrome.runtime.getURL('runtimes/mediapipe/wasm'));
+                    task = await sdk.TextToSpeech.createFromOptions(files, {
+                        baseOptions: { modelAssetBuffer, delegate: 'CPU' },
+                        defaultVoiceId: 'af_heart', speakingRate: 1,
+                        cacheDirectory: ':nocache',
+                    });
+                    const audio = await task.synthesize('Hello from local Kokoro.');
+                    return { success: audio.samples instanceof Float32Array,
+                        sampleRateHz: audio.sampleRateHz, samples: audio.samples?.length };
+                } catch (error) {
+                    return { success: false, error: String(error) };
+                } finally { try { await task?.close(); } catch { /* diagnostics only */ } }
+            }, { manifest });
+            result.bufferedModelDiagnostic = bufferedDiagnostic;
+            console.log('MEDIAPIPE MODEL BUFFER DIAGNOSTIC', bufferedDiagnostic);
         }
         console.log(result.success ? 'REAL MODEL INFERENCE' : 'MODEL INFERENCE FAILURE', result);
         results.push({ provider: manifest.provider, variant: manifest.variant, ...result });
