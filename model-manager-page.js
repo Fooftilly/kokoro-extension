@@ -48,6 +48,11 @@ function createModelRow(entry) {
     const status = document.createElement('p');
     status.className = 'model-status';
     status.setAttribute('role', 'status');
+    const progress = document.createElement('progress');
+    progress.className = 'model-download-progress';
+    progress.max = 100;
+    progress.hidden = true;
+    progress.setAttribute('aria-label', entry.label + ' download progress');
     const actions = document.createElement('div');
     actions.className = 'model-actions';
     const download = document.createElement('button');
@@ -76,8 +81,8 @@ function createModelRow(entry) {
     const audio = document.createElement('audio');
     audio.controls = true;
     audio.hidden = true;
-    row.append(title, status, actions, audio);
-    return { row, status, download, remove, test, choose, audio };
+    row.append(title, status, progress, actions, audio);
+    return { row, status, progress, download, remove, test, choose, audio };
 }
 
 async function refresh(entry, ui) {
@@ -98,6 +103,11 @@ async function doDownload(entry, ui) {
     // Request only the selected asset host, before the first await so
     // Firefox preserves the user gesture. Neither host is granted by default.
     const manifest = entryManifest(entry);
+    ui.progress.hidden = false;
+    // Browser Subresource Integrity may buffer an entire response before
+    // exposing its stream. Keep the bar indeterminate until bytes are observed.
+    ui.progress.removeAttribute('value');
+    setMessage(ui.status, 'Waiting for model download permission…');
     const hostOrigin = new URL(manifest.assets[0].url).origin;
     let permissionPromise;
     try {
@@ -105,6 +115,7 @@ async function doDownload(entry, ui) {
             origins: [hostOrigin + '/*'],
         });
     } catch (error) {
+        ui.progress.hidden = true;
         setMessage(ui.status, 'Cannot request model download permission: ' + String(error.message || error));
         return;
     }
@@ -113,12 +124,14 @@ async function doDownload(entry, ui) {
     try {
         allowed = await permissionPromise;
     } catch (error) {
+        ui.progress.hidden = true;
         setMessage(ui.status, 'Model download permission failed: ' + String(error.message || error));
         ui.download.disabled = false;
         return;
     }
     if (!allowed) {
-        setMessage(ui.status, 'Official Hugging Face model host permission was denied.');
+        ui.progress.hidden = true;
+        setMessage(ui.status, 'Model download host permission was denied.');
         ui.download.disabled = false;
         return;
     }
@@ -126,17 +139,24 @@ async function doDownload(entry, ui) {
     inFlightDownloads.set(entry.key, controller);
     ui.download.disabled = false;
     ui.download.textContent = 'Cancel download';
+    setMessage(ui.status, 'Connecting to the official model source (integrity checking may delay progress)…');
     let downloadError = null;
     try {
         await cacheStore().install(manifest, {
             signal: controller.signal,
             onProgress: ({ completedBytes, totalBytes }) => {
-                setMessage(ui.status, 'Verified ' + formatModelSize(completedBytes) + ' / ' +
-                    formatModelSize(totalBytes) + ' (integrity checking may buffer progress)');
+                // Downloaded bytes are not yet committed to the cache. Do not
+                // display a full bar until install() resolves successfully.
+                const percent = Math.floor(100 * completedBytes / totalBytes);
+                ui.progress.value = Math.min(99, Math.max(0, percent));
+                setMessage(ui.status, 'Received ' + formatModelSize(completedBytes) + ' / ' +
+                    formatModelSize(totalBytes) + ' (' + percent +
+                    '%); validating and storing model data…');
             },
         });
     } catch (error) {
-        downloadError = 'Download failed: ' + String(error.message || error);
+        downloadError = controller.signal.aborted ? 'Download cancelled.' :
+            'Download failed: ' + String(error.message || error);
     } finally {
         inFlightDownloads.delete(entry.key);
         ui.download.textContent = 'Download ' + formatModelSize(entry.totalBytes);
@@ -147,7 +167,12 @@ async function doDownload(entry, ui) {
             if (!downloadError) downloadError = 'Cannot inspect model cache: ' + String(error.message || error);
         }
         // The model status refresh must not erase the actual download failure.
-        if (downloadError) setMessage(ui.status, downloadError);
+        if (downloadError) {
+            ui.progress.hidden = true;
+            setMessage(ui.status, downloadError);
+        } else {
+            ui.progress.value = 100;
+        }
     }
 }
 
@@ -249,6 +274,7 @@ function registerModel(entry) {
                 engineByKey.delete(entry.key);
             }
             await cacheStore().remove(entryManifest(entry));
+            ui.progress.hidden = true;
             if (entry.provider === 'dictionary') {
                 // Invalidate in-memory lexicons after explicit removal.
                 for (const [key, provider] of engineByKey.entries()) {
