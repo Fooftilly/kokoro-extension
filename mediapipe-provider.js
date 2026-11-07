@@ -54,8 +54,11 @@ export class MediaPipeKokoroProvider {
         const cache = await this.cacheStorage.open('kokoro-model-data-v1');
         const response = await cache.match(store.key(this.manifest, asset));
         if (!store.isCurrent(response, asset)) throw new Error('MediaPipe model cache entry is unavailable');
-        const model = new Uint8Array(await response.arrayBuffer());
-        if (model.byteLength !== asset.bytes) throw new Error('MediaPipe model cache entry length mismatch');
+        // Keep the model as a Blob from Cache Storage. Converting ~295 MB into
+        // a Uint8Array and then wrapping it in a new Blob duplicates large
+        // buffers before the MediaPipe SDK even initializes.
+        const modelBlob = await response.blob();
+        if (modelBlob.size !== asset.bytes) throw new Error('MediaPipe model cache entry length mismatch');
 
         const sdk = await this.loadSDK();
         if (typeof sdk.FilesetResolver?.forAudioTasks !== 'function' ||
@@ -66,7 +69,7 @@ export class MediaPipeKokoroProvider {
             this.browserApi.runtime.getURL('runtimes/mediapipe/wasm'));
         // The upstream browser API documents modelAssetPath for .litertlm bundles.
         // Keep this URL alive until close() in case the SDK lazily accesses assets.
-        const modelUrl = URL.createObjectURL(new Blob([model], { type: 'application/octet-stream' }));
+        const modelUrl = URL.createObjectURL(modelBlob);
         try {
             this.engine = await sdk.TextToSpeech.createFromOptions(files, {
                 baseOptions: {
@@ -74,6 +77,8 @@ export class MediaPipeKokoroProvider {
                     delegate: this.variant === 'gpu' ? 'GPU' : 'CPU',
                 },
                 defaultVoiceId: 'af_heart', speakingRate: 1,
+                // The browser's MediaPipe virtual filesystem is ephemeral.
+                cacheDirectory: ':nocache',
             });
             this.modelUrl = modelUrl;
         } catch (error) {
