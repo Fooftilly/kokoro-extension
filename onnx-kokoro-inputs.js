@@ -6,7 +6,8 @@ const VOICE_DIMENSION = 256;
 const BYTES_PER_STYLE = VOICE_DIMENSION * Float32Array.BYTES_PER_ELEMENT;
 
 function assertPhonemes(ids) {
-    if (!Array.isArray(ids) && !ArrayBuffer.isView(ids)) {
+    if (!Array.isArray(ids) &&
+        !(ArrayBuffer.isView(ids) && !(ids instanceof DataView))) {
         throw new TypeError('Kokoro expects an array of phoneme token IDs');
     }
     if (ids.length < 1 || ids.length > MAX_PHONEMES) {
@@ -41,6 +42,9 @@ export function styleForLength(voiceBinary, tokenCount) {
     const view = new DataView(bytes.buffer, bytes.byteOffset + start, BYTES_PER_STYLE);
     for (let i = 0; i < VOICE_DIMENSION; i++) {
         style[i] = view.getFloat32(i * Float32Array.BYTES_PER_ELEMENT, true);
+        if (!Number.isFinite(style[i])) {
+            throw new TypeError('Voice style contains a non-finite float');
+        }
     }
     return style;
 }
