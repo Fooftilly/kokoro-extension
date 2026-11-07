@@ -36,7 +36,7 @@ export class OnnxKokoroProvider {
 
     async initialize() {
         if (this.session) return;
-        if (this.loading) return this.loading;
+        if (this.loading !== null) return this.loading;
         this.loading = this.loadEngine();
         try {
             await this.loading;
