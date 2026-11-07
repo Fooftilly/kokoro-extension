@@ -167,7 +167,7 @@ PW_MODULE="$(find /tmp -type f -path '*/node_modules/playwright/index.mjs' -prin
 KOKORO_LIVE_DOWNLOAD=1 PLAYWRIGHT_MODULE_PATH="$PW_MODULE" node scripts/validate-live-chromium.mjs
 ```
 
-The test reuses local pinned model data after checksum validation; the script exits with an error if either actual ONNX or MediaPipe synthesis fails, and writes `dist/runtime-acceptance/report.json`. Model/voice and text must stay local with no silent fallback to FastAPI. The script logs its selected runtime path and reports `dist/runtime-acceptance/mediapipe-plain-web.json`; each run overwrites that file.
+The test reuses local pinned model data after checksum validation; the script exits with an error if either actual ONNX or MediaPipe synthesis fails, and writes `dist/runtime-acceptance/report.json`. Model/voice and text must stay local with no silent fallback to FastAPI. The Chrome MV3 harness writes `dist/runtime-acceptance/report.json`; the separate plain-web diagnostic writes `dist/runtime-acceptance/mediapipe-plain-web.json`. Do not use a stale plain-web report as proof of current extension-origin acceptance.
 
 ## Chromium extension crash after pinned prerelease update (7 November 2026)
 
