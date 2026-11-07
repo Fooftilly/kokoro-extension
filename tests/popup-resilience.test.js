@@ -143,7 +143,30 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(browser.storage.sync.set).not.toHaveBeenCalledWith(expect.objectContaining({
             ttsBackend: 'mediapipe',
         }));
-        expect(document.getElementById('status').textContent).toMatch(/Test the installed model first/i);
+        const stored = browser.storage.sync.set.mock.calls.at(-1)[0];
+        expect(stored).toHaveProperty('defaultSpeed');
+        expect(stored).not.toHaveProperty('ttsBackend');
+        expect(document.getElementById('status').textContent).toMatch(/MediaPipe was not activated/i);
+    });
+
+    test('failed MediaPipe retest does not block other settings from being saved', async () => {
+        browser.storage.sync.get.mockImplementation(async defaults => ({
+            ...defaults, ttsBackend: 'mediapipe', mediaPipeVariant: 'cpu',
+            apiUrl: '', voice: 'af_sarah', mode: 'stream', theme: 'light',
+        }));
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        browser.storage.sync.set.mockClear();
+
+        document.getElementById('defaultSpeed').value = '1.5';
+        document.getElementById('defaultSpeed').dispatchEvent(new Event('change'));
+        await flushAsync();
+
+        const saved = browser.storage.sync.set.mock.calls.at(-1)[0];
+        expect(saved).toEqual(expect.objectContaining({ defaultSpeed: '1.5' }));
+        expect(saved).not.toHaveProperty('ttsBackend');
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('mediapipe');
+        expect(document.getElementById('status').textContent).toMatch(/MediaPipe was not activated/i);
     });
 
     test('invalid backend Save does not request a server permission or probe', async () => {

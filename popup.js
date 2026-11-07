@@ -594,10 +594,19 @@ const saveOptions = async (isDebounced = false, options = {}) => {
     };
 
     try {
+        let localValidationError = null;
         if (ttsBackend === 'mediapipe') {
-            await validateSelectedMediaPipe();
+            try {
+                await validateSelectedMediaPipe();
+            } catch (error) {
+                // An untested radio must never activate MediaPipe, but invalidated
+                // validation must not prevent saving unrelated options either.
+                delete settings.ttsBackend;
+                localValidationError = error;
+            }
         }
-        // 1. Persist immediately even if permission is pending/denied
+        // 1. Persist settings while retaining the previously saved backend when
+        // the local model is unavailable (no silent FastAPI fallback).
         await browser.storage.sync.set(settings);
         await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, autoplayReader, showFloatingButton, normalizationOptions, theme });
 
@@ -626,11 +635,16 @@ const saveOptions = async (isDebounced = false, options = {}) => {
 
         // Show generic saving toast
         const status = document.getElementById('status');
-        status.textContent = "Settings saved.";
-        status.style.color = "var(--status-success)";
+        status.textContent = localValidationError
+            ? 'Other settings saved, but MediaPipe was not activated: ' +
+                String(localValidationError.message || localValidationError)
+            : 'Settings saved.';
+        status.style.color = localValidationError ? 'var(--status-error)' : 'var(--status-success)';
         status.style.display = 'block';
-        setTimeout(() => { status.style.display = 'none'; }, 1500);
-        return { ok: true, permissionDenied: false };
+        if (!localValidationError) {
+            setTimeout(() => { status.style.display = 'none'; }, 1500);
+        }
+        return { ok: true, permissionDenied: false, backendUnavailable: !!localValidationError };
     } catch (e) {
         console.error("Error saving options", e);
         const status = document.getElementById('status');
