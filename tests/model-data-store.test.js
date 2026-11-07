@@ -30,7 +30,8 @@ function setup() {
             const data = await response.arrayBuffer();
             entries.set(key, new Response(data, { headers: response.headers }));
         }),
-        delete: jest.fn(async key => entries.delete(key)),
+        delete: jest.fn(async key => entries.delete(typeof key === 'string' ? key : key.url)),
+        keys: jest.fn(async () => [...entries.keys()].map(url => new Request(url))),
     };
     const cacheStorage = { open: jest.fn(async () => cache) };
     const fetchImpl = jest.fn(async () => new Response(sample, { status: 200 }));
@@ -74,6 +75,16 @@ describe('opt-in cached model data (#55)', () => {
         executable.assets[0].url = executable.assets[0].url.replace(
             'onnx/model_quantized.onnx', 'remote-executable.wasm');
         expect(() => validateModelManifest(executable)).toThrow(/non-data/);
+        const aliases = manifest();
+        const alias = { ...aliases.assets[0], path: 'onnx/./model_quantized.onnx' };
+        alias.url = alias.url.replace('onnx/model_quantized.onnx', alias.path);
+        aliases.assets.push(alias);
+        expect(() => validateModelManifest(aliases)).toThrow(/duplicate model asset/);
+        const repeatedSlash = manifest();
+        repeatedSlash.assets[0].path = 'onnx//model_quantized.onnx';
+        repeatedSlash.assets[0].url = repeatedSlash.assets[0].url.replace(
+            'onnx/model_quantized.onnx', 'onnx//model_quantized.onnx');
+        expect(() => validateModelManifest(repeatedSlash)).toThrow(/duplicate model asset/);
     });
 
     test('downloads only when explicitly installed, verifies response size and reuses cached result', async () => {
@@ -96,6 +107,35 @@ describe('opt-in cached model data (#55)', () => {
         expect(cacheStorage.open).toHaveBeenCalled();
         await store.remove(data);
         expect((await store.status(data)).ready).toBe(false);
+    });
+
+    test('explicit revision cleanup deletes only unreferenced model data and keeps other engines', async () => {
+        const { store, entries, cache, fetchImpl } = setup();
+        const old = manifest();
+        const newer = manifest();
+        newer.revision = 'b'.repeat(40);
+        newer.assets[0].url = newer.assets[0].url.replace(old.revision, newer.revision);
+        const mediapipe = {
+            provider: 'mediapipe', revision: old.revision, variant: 'cpu',
+            assets: [{
+                path: 'models/kokoro.litertlm',
+                url: 'https://huggingface.co/litert-community/Kokoro-82M/resolve/' +
+                    old.revision + '/models/kokoro.litertlm',
+                bytes: sample.byteLength, integrity,
+            }],
+        };
+        await store.install(old);
+        await store.install(newer);
+        await store.install(mediapipe);
+        expect(entries.size).toBe(3);
+        expect(await store.removeUnreferenced([newer, mediapipe])).toBe(1);
+        expect(entries.size).toBe(2);
+        expect((await store.status(newer)).ready).toBe(true);
+        expect((await store.status(mediapipe)).ready).toBe(true);
+        expect((await store.status(old)).ready).toBe(false);
+        expect(fetchImpl).toHaveBeenCalledTimes(3);
+        expect(cache.keys).toHaveBeenCalledTimes(1);
+        expect(() => store.removeUnreferenced(null)).rejects.toThrow();
     });
 
     test('rejects incorrect byte count and discards partial cache entries', async () => {
