@@ -529,6 +529,8 @@ const saveOptions = async (isDebounced = false, options = {}) => {
     document.getElementById('apiUrl').value = apiUrl;
     const voice = serializeVoiceString(currentVoices);
     const mode = document.querySelector('input[name="mode"]:checked').value;
+    const ttsBackend = document.querySelector('input[name="ttsBackend"]:checked')?.value;
+    if (!ttsBackend) throw new Error('Choose a valid TTS backend before saving');
     const defaultSpeed = document.getElementById('defaultSpeed').value;
     const defaultVolume = document.getElementById('defaultVolume').value;
     const autoScroll = document.getElementById('autoScroll').checked;
@@ -546,7 +548,7 @@ const saveOptions = async (isDebounced = false, options = {}) => {
     };
 
     const theme = document.documentElement.classList.contains('dark-theme') ? 'dark' : 'light';
-    const settings = { apiUrl, voice, mode, defaultSpeed, defaultVolume, autoScroll, autoplayReader, showFloatingButton, normalizationOptions, theme };
+    const settings = { apiUrl, voice, mode, ttsBackend, defaultSpeed, defaultVolume, autoScroll, autoplayReader, showFloatingButton, normalizationOptions, theme };
 
     const showPermissionDeniedToast = () => {
         const status = document.getElementById('status');
@@ -567,7 +569,7 @@ const saveOptions = async (isDebounced = false, options = {}) => {
 
         // 2. Host permission for non-local URL (never call request() here after awaits)
         const { origin, invalidUrl } = hostPermissionOriginInfo(apiUrl);
-        if (!invalidUrl && origin) {
+        if (ttsBackend === 'fastapi' && !invalidUrl && origin) {
             let hasPerm = false;
             if (permissionRequestPromise) {
                 try {
@@ -609,6 +611,7 @@ const restoreOptions = async () => {
     try {
         const items = await browser.storage.sync.get({
             apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'fastapi',
             voice: 'af_sarah(0.5)+af_nicole(0.3)+af_sky(0.2)',
             mode: 'stream',
             defaultSpeed: '1.0',
@@ -637,13 +640,24 @@ const restoreOptions = async () => {
         }
 
         document.getElementById('apiUrl').value = items.apiUrl;
+        for (const radio of document.querySelectorAll('input[name="ttsBackend"]')) {
+            radio.checked = radio.value === items.ttsBackend;
+        }
+        const backendExplanation = document.getElementById('backendExplanation');
+        if (items.ttsBackend === 'mediapipe') {
+            backendExplanation.textContent = 'MediaPipe runs locally after installing and testing a model. Use the TTS test page to manage downloads.';
+        } else if (items.ttsBackend === 'onnx') {
+            backendExplanation.textContent = 'ONNX is an experimental phoneme-only engine. Plain-text TTS is blocked until G2P is implemented; no server fallback.';
+        } else if (items.ttsBackend !== 'fastapi') {
+            backendExplanation.textContent = 'Unknown saved backend. Select one explicitly; no server requests will run.';
+        }
 
         currentVoices = parseVoiceString(items.voice);
         renderVoiceMixer();
 
         // Probe connection + voices on open (no aggressive polling).
         // Settings above are already rendered from storage — backend loss cannot blank the UI.
-        refreshBackendStatus(items.apiUrl);
+        if (items.ttsBackend === 'fastapi') refreshBackendStatus(items.apiUrl);
 
         if (items.mode === 'stream') {
             document.getElementById('modeStream').checked = true;
@@ -759,13 +773,34 @@ document.addEventListener('DOMContentLoaded', () => {
     // Setup Autosave Listeners
     const inputs = document.querySelectorAll('input, select');
     inputs.forEach(input => {
-        if (input.id === 'voiceSearch' || input.id === 'apiUrl') return;
+        if (input.id === 'voiceSearch' || input.id === 'apiUrl' || input.name === 'ttsBackend') return;
 
         const eventType = (input.type === 'text' || input.type === 'number') ? 'input' : 'change';
         input.addEventListener(eventType, () => {
             saveOptions(input.type === 'text');
         });
     });
+
+    for (const radio of document.querySelectorAll('input[name="ttsBackend"]')) {
+        radio.addEventListener('change', async () => {
+            if (!radio.checked) return;
+            await browser.storage.sync.set({ ttsBackend: radio.value });
+            const explanation = document.getElementById('backendExplanation');
+            if (radio.value === 'fastapi') {
+                explanation.textContent = 'Using the configured Kokoro server; text is sent to this endpoint.';
+                await refreshBackendStatus(document.getElementById('apiUrl').value);
+            } else {
+                // Cancel any in-flight remote status/voice fetch when switching to local.
+                refreshGeneration++;
+                if (activeRefreshAbort) activeRefreshAbort.abort();
+                explanation.textContent = radio.value === 'mediapipe'
+                    ? 'Local MediaPipe requires a downloaded model. Manage and test it on the TTS test page.'
+                    : 'Local ONNX supports only an IPA probe for now. Plain-text generation is not installed.';
+                const status = document.getElementById('apiStatusRow');
+                if (status) status.style.display = 'none';
+            }
+        });
+    }
 
     // Manual API URL Save — start host-permission request synchronously (Firefox
     // user-gesture), then persist + re-probe. Skip probe if permission denied.
