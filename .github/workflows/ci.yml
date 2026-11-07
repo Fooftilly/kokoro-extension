@@ -39,6 +39,9 @@ jobs:
       - name: Package (build + Chrome/Firefox zips via pinned web-ext)
         run: npm run package:ci
 
+      - name: Verify bundled official runtime entrypoints and WASM assets
+        run: node scripts/verify-runtime-package.mjs
+
       - name: Verify Chrome and Firefox manifests
         run: |
           set -euo pipefail
