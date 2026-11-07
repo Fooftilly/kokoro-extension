@@ -3,24 +3,24 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Kokoro — Browser TTS preflight</title>
+    <title>Kokoro — Browser speech tests</title>
     <link rel="stylesheet" href="benchmark.css">
 </head>
 <body>
     <main>
-        <h1>Browser TTS preflight</h1>
-        <p>This first-stage diagnostic checks browser prerequisites only. It does <strong>not</strong> load a Kokoro model, run inference, or measure speech speed. No model or data is downloaded.</p>
+        <h1>Browser speech tests</h1>
+        <p>Test local Kokoro synthesis with models you explicitly download below. The separate browser support check at the bottom only inspects prerequisites; it does not download data, load models, or generate speech.</p>
         <section>
-            <h2>Three planned backends</h2>
+            <h2>Available backend modes</h2>
             <table>
-                <thead><tr><th>Backend</th><th>Current test status</th></tr></thead>
+                <thead><tr><th>Backend</th><th>What you can test on this page</th></tr></thead>
                 <tbody>
-                    <tr><td>Kokoro-FastAPI (Docker/server)</td><td>Existing extension mode; not tested on this page</td></tr>
-                    <tr><td>MediaPipe Kokoro (on-device)</td><td>Model integration pending</td></tr>
-                    <tr><td>ONNX Runtime Web (on-device)</td><td>Model integration pending</td></tr>
+                    <tr><td>Kokoro-FastAPI (Docker/server)</td><td>Optional live test using your configured server</td></tr>
+                    <tr><td>MediaPipe Kokoro (on-device)</td><td>Real CPU speech synthesis; GPU testing requires an available WebGPU adapter</td></tr>
+                    <tr><td>ONNX Runtime Web (on-device)</td><td>Real local IPA synthesis; limited dictionary-backed English sample</td></tr>
                 </tbody>
             </table>
-            <p>WebAssembly or WebGPU support alone does not prove either Kokoro backend works. Later versions will require actual synthesized samples before showing speed rankings.</p>
+            <p>Use the individual model tests below to verify synthesis in this browser. A capability check alone does not establish inference or voice quality; timings from different test inputs are not directly comparable.</p>
         </section>
         <section>
             <h2>Real TTS tests and model downloads</h2>
