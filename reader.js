@@ -12,13 +12,20 @@ let currentChapterBlocks = []; // For tracking progress
 let currentToc = []; // For resolving chapter titles
 let currentActiveHref = null; // To avoid redundant updates
 let flatToc = []; // Flattened list for Prev/Next navigation
+let chapterRequestId = 0; // invalidates superseded chapter extraction
+let playerWriteTail = Promise.resolve(); // prevents out-of-order storage writes
 
 const prevChapterBtn = document.getElementById('prevChapter');
 const nextChapterBtn = document.getElementById('nextChapter');
 
 
-// Clear stale storage on load to prevent ghost audio
-browser.storage.local.remove(['pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle']).catch(console.error);
+// Clear stale storage before the first chapter write. An unawaited remove
+// could otherwise finish after a fast first-chapter set and delete its data.
+const initialPlayerCleanup = browser.storage.local.remove([
+    'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
+]).catch(error => {
+    console.warn('Cannot clear previous reader audio data', error);
+});
 
 const dropZone = document.getElementById('dropZone');
 const fileNameDisplay = document.getElementById('file-name-display');
@@ -333,7 +340,10 @@ function updateNavButtons() {
 }
 
 async function loadEpubChapter(href, title) {
-    const spine = book.spine;
+    const requestId = ++chapterRequestId;
+    const requestedBook = book;
+    if (!requestedBook) return;
+    const spine = requestedBook.spine;
     const [baseHref, fragment] = href.split('#');
     const startSection = spine.get(baseHref);
     if (!startSection) return;
@@ -347,7 +357,7 @@ async function loadEpubChapter(href, title) {
             collectHrefs(children);
         });
     };
-    collectHrefs(book.navigation.toc);
+    collectHrefs(requestedBook.navigation.toc);
 
     const sectionsToLoad = [startSection];
     let nextIdx = startSection.index + 1;
@@ -361,9 +371,11 @@ async function loadEpubChapter(href, title) {
 
     const allBlocks = [];
     for (const sec of sectionsToLoad) {
-        const doc = await sec.load(book.load.bind(book));
+        const doc = await sec.load(requestedBook.load.bind(requestedBook));
+        if (requestId !== chapterRequestId || book !== requestedBook) return;
         const body = doc.body || (doc.documentElement ? doc.documentElement : doc);
-        const blocks = await extractBlocks(sec, body);
+        const blocks = await extractBlocks(sec, body, requestedBook);
+        if (requestId !== chapterRequestId || book !== requestedBook) return;
         allBlocks.push(...blocks);
     }
 
@@ -391,6 +403,7 @@ async function loadEpubChapter(href, title) {
         mergedBlocks.push(b);
     }
 
+    if (requestId !== chapterRequestId || book !== requestedBook) return;
     currentChapterBlocks = mergedBlocks;
 
     // baseHref and fragment are already defined at the start of the function
@@ -410,12 +423,13 @@ async function loadEpubChapter(href, title) {
     }
 
     const fullText = mergedBlocks.map(b => b.content).join(' ');
-    await sendToPlayer(mergedBlocks, title || "Chapter", fullText.substring(0, 100), startIndex);
+    await sendToPlayer(mergedBlocks, title || "Chapter", fullText.substring(0, 100), startIndex,
+        requestId, requestedBook);
 }
 
 // --- Content Processing & Extraction ---
 
-async function extractBlocks(section, bodyElement) {
+async function extractBlocks(section, bodyElement, sourceBook = book) {
     if (!bodyElement) return [];
 
     // 1. Resolve images
@@ -423,12 +437,12 @@ async function extractBlocks(section, bodyElement) {
         const images = bodyElement.querySelectorAll('img');
         for (const img of images) {
             const src = img.getAttribute('src');
-            if (src && book) {
+            if (src && sourceBook) {
                 try {
-                    // Resolve relative path within the EPUB
+                    // Resolve relative path within the selected EPUB
                     const baseUrl = new URL(section.url || section.href, "http://temp/").href;
                     const absolutePath = new URL(src, baseUrl).pathname;
-                    const url = await book.archive.createUrl(absolutePath);
+                    const url = await sourceBook.archive.createUrl(absolutePath);
                     img.src = url;
                 } catch (e) {
                     console.warn("Failed to resolve image", src, e);
@@ -582,26 +596,40 @@ function updateActiveChapter(blockIndex) {
     }
 }
 
-async function sendToPlayer(content, title, textPreview, startIndex = 0) {
-    const settings = await browser.storage.sync.get(['voice', 'normalizationOptions', 'customPronunciations', 'apiUrl', 'autoplayReader', 'ttsBackend', 'mediaPipeVariant', 'localVoice']);
-    const apiUrl = settings.apiUrl || 'http://127.0.0.1:8880/v1/';
+async function sendToPlayer(content, title, textPreview, startIndex, requestId, requestedBook) {
+    const settings = await browser.storage.sync.get([
+        'voice', 'normalizationOptions', 'customPronunciations', 'apiUrl',
+        'autoplayReader', 'ttsBackend', 'mediaPipeVariant', 'localVoice',
+    ]);
+    if (requestId !== chapterRequestId || requestedBook !== book) return;
 
-    await browser.storage.local.set({
-        pendingText: textPreview || "Structured Content",
+    const apiUrl = settings.apiUrl || 'http://127.0.0.1:8880/v1/';
+    const pending = {
+        pendingText: textPreview || 'Structured Content',
         pendingContent: content,
         pendingVoice: settings.voice,
         pendingApiUrl: apiUrl,
         pendingTtsBackend: settings.ttsBackend === undefined ? 'fastapi' : settings.ttsBackend,
         pendingMediaPipeVariant: settings.mediaPipeVariant || 'cpu',
         pendingLocalVoice: settings.localVoice || 'af_heart',
-        pendingTitle: title || "Document",
+        pendingTitle: title || 'Document',
         pendingNormalizationOptions: settings.normalizationOptions,
         pendingCustomPronunciations: settings.customPronunciations,
         pendingStartIndex: startIndex,
-        pendingAutoplay: settings.autoplayReader === undefined ? false : settings.autoplayReader
+        pendingAutoplay: settings.autoplayReader === undefined ? false : settings.autoplayReader,
+    };
+    // Storage updates can finish out of order even when chapter extraction
+    // completed in the desired order. Serialize writes; ignore stale requests
+    // both before and after awaiting the operation.
+    const operation = playerWriteTail.catch(() => {}).then(async () => {
+        await initialPlayerCleanup;
+        if (requestId !== chapterRequestId || requestedBook !== book) return;
+        await browser.storage.local.set(pending);
+        if (requestId !== chapterRequestId || requestedBook !== book) return;
+        playerFrame.contentWindow.postMessage('RELOAD_DATA', '*');
     });
-
-    playerFrame.contentWindow.postMessage('RELOAD_DATA', '*');
+    playerWriteTail = operation.catch(() => {});
+    return operation;
 }
 
 window.addEventListener('message', (event) => {
