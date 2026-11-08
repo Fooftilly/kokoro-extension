@@ -267,6 +267,87 @@ describe('content.js parseArticle', () => {
         expect(targetEl.scrollIntoView).toHaveBeenCalled();
     });
 
+    test('auto-scroll matches unnormalized source text across inline DOM nodes', () => {
+        document.body.innerHTML = `
+            <div id="kokoro-overlay-container"><iframe id="kokoro-player-frame"></iframe></div>
+            <article>
+                <p id="other">The sample weighed 5 kg in a different batch.</p>
+                <p id="target">On Nov 8, the parcel weighed <strong>5 kg</strong>,
+                    and the inspector logged it.</p>
+            </article>`;
+        const iframe = document.getElementById('kokoro-player-frame');
+        iframe.src = browser.runtime.getURL('overlay.html');
+        const target = document.getElementById('target');
+        const other = document.getElementById('other');
+        target.scrollIntoView = jest.fn();
+        other.scrollIntoView = jest.fn();
+        target.getBoundingClientRect = jest.fn(() => ({ top: -120, bottom: -50 }));
+        other.getBoundingClientRect = jest.fn(() => ({ top: -120, bottom: -50 }));
+
+        postFromOverlayIframe(iframe, {
+            action: 'KOKORO_SCROLL_TO_BLOCK',
+            text: 'On Nov 8, the parcel weighed 5 kg, and the inspector logged it.',
+            blockText: 'On Nov 8, the parcel weighed 5 kg, and the inspector logged it.'
+        });
+        expect(target.scrollIntoView).toHaveBeenCalledTimes(1);
+        expect(other.scrollIntoView).not.toHaveBeenCalled();
+
+        // A speech-normalized phrase should not be used to search the page.
+        postFromOverlayIframe(iframe, {
+            action: 'KOKORO_SCROLL_TO_BLOCK',
+            text: 'On November eighth, the parcel weighed five kilograms',
+            blockText: 'On November eighth, the parcel weighed five kilograms'
+        });
+        expect(target.scrollIntoView).toHaveBeenCalledTimes(1);
+    });
+
+    test('auto-scroll disambiguates short repeated phrases using paragraph context', () => {
+        document.body.innerHTML = `
+            <div id="kokoro-overlay-container"><iframe id="kokoro-player-frame"></iframe></div>
+            <p id="wrong">This container weighed 5 kg yesterday.</p>
+            <p id="right">The second container weighed 5 kg today.</p>`;
+        const iframe = document.getElementById('kokoro-player-frame');
+        iframe.src = browser.runtime.getURL('overlay.html');
+        const wrong = document.getElementById('wrong');
+        const right = document.getElementById('right');
+        wrong.scrollIntoView = jest.fn();
+        right.scrollIntoView = jest.fn();
+        right.getBoundingClientRect = jest.fn(() => ({ top: -120, bottom: -50 }));
+        postFromOverlayIframe(iframe, {
+            action: 'KOKORO_SCROLL_TO_BLOCK',
+            text: '5 kg',
+            blockText: 'The second container weighed 5 kg today.'
+        });
+        expect(right.scrollIntoView).toHaveBeenCalledTimes(1);
+        expect(wrong.scrollIntoView).not.toHaveBeenCalled();
+    });
+
+    test('auto-scroll skips ambiguous copies and short substring false positives', () => {
+        document.body.innerHTML = `
+            <div id="kokoro-overlay-container"><iframe id="kokoro-player-frame"></iframe></div>
+            <p id="first">The parcel weighed 5 kg.</p>
+            <p id="second">The parcel weighed 5 kg.</p>
+            <p id="unrelated">Yesterday went well.</p>`;
+        const iframe = document.getElementById('kokoro-player-frame');
+        iframe.src = browser.runtime.getURL('overlay.html');
+        for (const id of ['first', 'second', 'unrelated']) {
+            const element = document.getElementById(id);
+            element.scrollIntoView = jest.fn();
+            element.getBoundingClientRect = jest.fn(() => ({ top: -150, bottom: -80 }));
+        }
+        postFromOverlayIframe(iframe, {
+            action: 'KOKORO_SCROLL_TO_BLOCK',
+            text: 'The parcel weighed 5 kg.',
+            blockText: 'The parcel weighed 5 kg.'
+        });
+        postFromOverlayIframe(iframe, {
+            action: 'KOKORO_SCROLL_TO_BLOCK', text: 'Yes'
+        });
+        for (const id of ['first', 'second', 'unrelated']) {
+            expect(document.getElementById(id).scrollIntoView).not.toHaveBeenCalled();
+        }
+    });
+
     test('drag move deltas preserve offset from nonzero top-right position', () => {
         const { posApi, container, iframe } = mountOverlayPlayerFixture();
         const defaultPos = posApi.defaultOverlayPosition({
