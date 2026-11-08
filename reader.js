@@ -7,6 +7,9 @@ import {
 
 const fileInput = document.getElementById('fileInput');
 const filePickerOverlay = document.getElementById('filePickerOverlay');
+const openAnotherDocumentButton = document.getElementById('openAnotherDocument');
+const cancelDocumentPickerButton = document.getElementById('cancelDocumentPicker');
+const scanDocumentHeadings = document.getElementById('scanDocumentHeadings');
 const chapterList = document.getElementById('chapterList');
 const errorMsg = document.getElementById('errorMsg');
 const chapterErrorMsg = document.getElementById('chapterError');
@@ -48,6 +51,45 @@ const dropZone = document.getElementById('dropZone');
 const fileNameDisplay = document.getElementById('file-name-display');
 
 // --- Event Listeners ---
+
+function hasOpenDocument() {
+    return Boolean(book || textDocument);
+}
+
+function resetPickerState() {
+    fileInput.value = '';
+    if (fileNameDisplay) fileNameDisplay.textContent = 'No file selected.';
+    errorMsg.style.display = 'none';
+    errorMsg.textContent = '';
+    loadingStatus.style.display = 'none';
+    cancelDocumentPickerButton.hidden = !hasOpenDocument();
+}
+
+function openDocumentPicker() {
+    resetPickerState();
+    filePickerOverlay.style.display = 'flex';
+}
+
+function cancelDocumentPicker() {
+    if (!hasOpenDocument()) return; // never leave the first-load reader empty
+    // Cancel an in-flight file read or EPUB open/TOC scan without altering
+    // the already committed chapter/player, even if old promises settle later.
+    ++fileRequestId;
+    if (activeFileReader && activeFileReader.readyState === FileReader.LOADING &&
+        typeof activeFileReader.abort === 'function') {
+        activeFileReader.abort();
+    }
+    resetPickerState();
+    filePickerOverlay.style.display = 'none';
+}
+
+openAnotherDocumentButton.addEventListener('click', openDocumentPicker);
+cancelDocumentPickerButton.addEventListener('click', cancelDocumentPicker);
+window.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && filePickerOverlay.style.display !== 'none') {
+        cancelDocumentPicker();
+    }
+});
 
 fileInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
@@ -97,7 +139,10 @@ async function handleFile(file) {
         if (format === 'epub') await loadEpub(file, requestId);
         else await loadTextDocument(file, format, requestId);
         // Only a successfully parsed and current document may hide the picker.
-        if (requestId === fileRequestId) filePickerOverlay.style.display = 'none';
+        if (requestId === fileRequestId) {
+            filePickerOverlay.style.display = 'none';
+            cancelDocumentPickerButton.hidden = !hasOpenDocument();
+        }
     } catch (err) {
         if (requestId !== fileRequestId) return;
         console.error('Document loading failed:', err);
@@ -158,9 +203,16 @@ async function loadEpub(file, requestId) {
         await candidate.ready;
         if (requestId !== fileRequestId) return;
 
-        loadingStatus.textContent = 'Scanning for chapters...';
-        const toc = await getEnrichedToc(candidate, () => requestId === fileRequestId);
+        const publisherToc = candidate.navigation?.toc || [];
+        // The EPUB's own navigation is authoritative. Heading scanning is an
+        // opt-in alternative, except for books without a publisher TOC.
+        const scan = scanDocumentHeadings.checked || publisherToc.length === 0;
+        if (scan) loadingStatus.textContent = 'Scanning for chapters...';
+        const toc = scan
+            ? await getEnrichedToc(candidate, () => requestId === fileRequestId)
+            : publisherToc;
         if (requestId !== fileRequestId) return;
+        if (!toc.length) throw new Error('EPUB contains no readable chapters');
 
         // Retain the old book until the new chapter reaches the player:
         // current audio/image blob URLs may still refer to its archive.
@@ -603,9 +655,12 @@ async function loadEpubChapter(href, title) {
             startIndex = idx;
             console.log("Found fragment at block index:", idx);
         } else {
-            console.warn("Fragment not found in merged blocks:", fragment);
-            const allAvailableIds = mergedBlocks.flatMap(b => b.ids || []);
-            console.log("Available IDs in merged blocks:", allAvailableIds);
+            console.warn('Fragment not found in chapter:', fragment);
+            // This is a fallback to the start of the chapter, not a successful
+            // anchor navigation. Report it in the reader, not the hidden picker.
+            chapterErrorMsg.textContent =
+                'The requested chapter anchor could not be found. Playback starts at the chapter beginning.';
+            chapterErrorMsg.hidden = false;
         }
     }
 
