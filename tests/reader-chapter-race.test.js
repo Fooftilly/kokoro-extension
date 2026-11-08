@@ -13,6 +13,9 @@ function readerDOM() {
         <div id="dropZone"></div>
         <input type="file" id="fileInput">
         <div id="file-name-display"></div>
+        <input id="scanDocumentHeadings" type="checkbox">
+        <button id="openAnotherDocument" type="button"></button>
+        <button id="cancelDocumentPicker" type="button" hidden></button>
         <div id="errorMsg"></div>
         <div id="chapterError" role="alert" hidden></div>
         <div id="loadingStatus"></div>
@@ -43,6 +46,9 @@ describe('EPUB chapter loading and storage ordering', () => {
         jest.resetModules();
         jest.clearAllMocks();
         readerDOM();
+        // Preserve this suite's scan-before-extraction ordering, while the
+        // normal reader defaults to the publisher-provided TOC.
+        document.getElementById('scanDocumentHeadings').checked = true;
         chapterA = deferred();
         chapterB = deferred();
         removePending = deferred();
