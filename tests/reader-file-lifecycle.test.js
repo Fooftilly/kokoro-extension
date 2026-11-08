@@ -202,6 +202,7 @@ describe('EPUB file read/parse lifecycle', () => {
 
         window.dispatchEvent(new MessageEvent('message', {
             data: 'CLOSE_KOKORO_PLAYER', source: frame.contentWindow,
+            origin: window.location.origin,
         }));
         expect(frame.contentWindow.postMessage)
             .toHaveBeenCalledWith('PAUSE_KOKORO_PLAYER', window.location.origin);
@@ -233,6 +234,7 @@ describe('EPUB file read/parse lifecycle', () => {
         const frame = document.getElementById('playerFrame');
         window.dispatchEvent(new MessageEvent('message', {
             data: 'CLOSE_KOKORO_PLAYER', source: frame.contentWindow,
+            origin: window.location.origin,
         }));
         pendingChapter.resolve(documentWithText('Delayed chapter.'));
         for (let i = 0; i < 30 &&
