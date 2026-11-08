@@ -1003,6 +1003,7 @@ window.addEventListener('message', (event) => {
     // picker without discarding the current book or leaving audio playing.
     // Ignore messages from other frames or unrelated page scripts.
     if (event.source === playerFrame.contentWindow &&
+        event.origin === window.location.origin &&
         event.data === 'CLOSE_KOKORO_PLAYER') {
         readerPausedForPicker = true;
         playerFrame.contentWindow.postMessage('PAUSE_KOKORO_PLAYER', window.location.origin);
