@@ -70,6 +70,41 @@ describe('bounded DOCX extraction through the packaged JSZip engine', () => {
                 'Normal following paragraph.']);
     });
 
+    test('selects only modern Word textbox compatibility content, not its duplicate fallback', async () => {
+        const archive = await docx(
+            '<w:p><w:r><w:t>Outer paragraph.</w:t></w:r>' +
+            '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">' +
+            '<mc:Choice Requires="wps"><w:txbxContent><w:p><w:r><w:t>Modern textbox.</w:t></w:r></w:p></w:txbxContent></mc:Choice>' +
+            '<mc:Fallback><w:txbxContent><w:p><w:r><w:t>Duplicate fallback.</w:t></w:r></w:p></w:txbxContent></mc:Fallback>' +
+            '</mc:AlternateContent></w:p>' +
+            '<w:p><w:r><w:t>Following paragraph.</w:t></w:r></w:p>');
+        expect((await parseDocxDocument(archive, JSZip)).map(block => block.content))
+            .toEqual(['Outer paragraph.', 'Modern textbox.', 'Following paragraph.']);
+    });
+
+    test('uses compatibility fallback when choice does not contain readable Word text', async () => {
+        const archive = await docx(
+            '<w:p><w:r><w:t>Before.</w:t></w:r></w:p>' +
+            '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">' +
+            '<mc:Choice Requires="unavailable"><shape xmlns="urn:unknown"/></mc:Choice>' +
+            '<mc:Fallback><w:txbxContent><w:p><w:r><w:t>Fallback paragraph.</w:t></w:r></w:p></w:txbxContent></mc:Fallback>' +
+            '</mc:AlternateContent>');
+        expect((await parseDocxDocument(archive, JSZip)).map(block => block.content))
+            .toEqual(['Before.', 'Fallback paragraph.']);
+    });
+
+    test('selects only one inline compatibility branch inside a normal paragraph', async () => {
+        const archive = await docx(
+            '<w:p><w:r><w:t xml:space="preserve">Before </w:t></w:r>' +
+            '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">' +
+            '<mc:Choice Requires="wps"><w:r><w:t>chosen</w:t></w:r></mc:Choice>' +
+            '<mc:Fallback><w:r><w:t>duplicate</w:t></w:r></mc:Fallback>' +
+            '</mc:AlternateContent>' +
+            '<w:r><w:t xml:space="preserve"> after.</w:t></w:r></w:p>');
+        expect((await parseDocxDocument(archive, JSZip)).map(block => block.content))
+            .toEqual(['Before chosen after.']);
+    });
+
     test('does not fetch relationships or embedded media', async () => {
         const archive = new JSZip();
         archive.file('[Content_Types].xml', typesXml);
