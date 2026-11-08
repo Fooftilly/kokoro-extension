@@ -14,6 +14,8 @@ let currentActiveHref = null; // To avoid redundant updates
 let flatToc = []; // Flattened list for Prev/Next navigation
 let chapterRequestId = 0; // invalidates superseded chapter extraction
 let playerWriteTail = Promise.resolve(); // prevents out-of-order storage writes
+let fileRequestId = 0; // only the latest EPUB selection may replace the book
+let activeFileReader = null; // abort abandoned disk reads when a new file is selected
 
 const prevChapterBtn = document.getElementById('prevChapter');
 const nextChapterBtn = document.getElementById('nextChapter');
@@ -62,30 +64,33 @@ dropZone.addEventListener('drop', (e) => {
 });
 
 async function handleFile(file) {
+    const requestId = ++fileRequestId;
+    // Aborting abandoned reads prevents large EPUB buffers from accumulating
+    // when a second file is selected before the first read completes.
+    if (activeFileReader?.readyState === FileReader.LOADING) {
+        activeFileReader.abort();
+    }
     errorMsg.style.display = 'none';
+    loadingStatus.textContent = 'Loading EPUB...';
     loadingStatus.style.display = 'block';
 
-    // Update file name display
-    if (fileNameDisplay) {
-        fileNameDisplay.textContent = file.name;
-    }
+    if (fileNameDisplay) fileNameDisplay.textContent = file.name;
 
     try {
-        if (file.type === 'application/epub+zip' || file.name.endsWith('.epub')) {
-            await loadEpub(file);
-        } else {
+        if (file.type !== 'application/epub+zip' && !file.name.toLowerCase().endsWith('.epub')) {
             throw new Error('Unsupported file type. Please select EPUB.');
         }
-
-        // Check if loading was successful before hiding overlay
-        filePickerOverlay.style.display = 'none';
-
+        await loadEpub(file, requestId);
+        // Only a completely parsed and scanned *current* EPUB may close the
+        // file picker. A delayed success from an old selection cannot do so.
+        if (requestId === fileRequestId) filePickerOverlay.style.display = 'none';
     } catch (err) {
-        console.error(err);
-        errorMsg.textContent = err.message;
+        if (requestId !== fileRequestId) return;
+        console.error('EPUB loading failed:', err);
+        errorMsg.textContent = 'Failed to load EPUB: ' + String(err.message || err);
         errorMsg.style.display = 'block';
     } finally {
-        loadingStatus.style.display = 'none';
+        if (requestId === fileRequestId) loadingStatus.style.display = 'none';
     }
 }
 
@@ -101,41 +106,55 @@ document.getElementById('showSidebarBtn').addEventListener('click', () => {
 
 // --- EPUB Logic ---
 
-async function loadEpub(file) {
+async function loadEpub(file, requestId) {
     const reader = new FileReader();
-    reader.onload = async (e) => {
-        const bookData = e.target.result;
-        book = ePub(bookData);
+    activeFileReader = reader;
+    let bookData;
+    try {
+        // FileReader uses event callbacks, not a promise. Await the actual
+        // read so invalid ZIPs/read failures cannot be reported as success.
+        bookData = await new Promise((resolve, reject) => {
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error || new Error('Cannot read EPUB file'));
+            reader.onabort = () => reject(new DOMException('File read cancelled', 'AbortError'));
+            try {
+                reader.readAsArrayBuffer(file);
+            } catch (error) {
+                reject(error);
+            }
+        });
+    } finally {
+        if (activeFileReader === reader) activeFileReader = null;
+    }
+    if (requestId !== fileRequestId) return;
+    if (!(bookData instanceof ArrayBuffer)) {
+        throw new Error('EPUB file did not contain binary data');
+    }
 
-        try {
-            await book.ready;
+    // Keep the existing book and player intact until the replacement has
+    // parsed successfully. Failed selections must not destroy a working book.
+    const candidate = ePub(bookData);
+    await candidate.ready;
+    if (requestId !== fileRequestId) return;
 
-            loadingStatus.textContent = "Scanning for chapters...";
-            loadingStatus.style.display = 'block';
+    loadingStatus.textContent = 'Scanning for chapters...';
+    const toc = await getEnrichedToc(candidate, () => requestId === fileRequestId);
+    if (requestId !== fileRequestId) return;
 
-            // Try to enrich TOC with hidden subchapters from spine
-            const toc = await getEnrichedToc(book);
-            currentToc = toc; // Store globally
-            renderChapterList(toc);
-
-            // Check if loading was successful before hiding overlay
-            filePickerOverlay.style.display = 'none';
-
-        } catch (err) {
-            console.error("EPUB Loading Error:", err);
-            errorMsg.textContent = "Failed to load EPUB: " + err.message;
-            errorMsg.style.display = 'block';
-        } finally {
-            loadingStatus.style.display = 'none';
-        }
-    };
-    reader.readAsArrayBuffer(file);
+    // Commit the new book atomically. Invalidate any outstanding chapter
+    // extraction on the old book before the first chapter of the new TOC loads.
+    chapterRequestId++;
+    book = candidate;
+    currentChapterBlocks = [];
+    currentActiveHref = null;
+    currentToc = toc;
+    renderChapterList(toc);
 }
 
 /**
  * Scans the spine for sections not in the TOC and attempts to discover subchapters by parsing headings.
  */
-async function getEnrichedToc(book) {
+async function getEnrichedToc(book, isCurrent = () => true) {
     const originalToc = book.navigation.toc;
     const spine = book.spine;
 
@@ -157,11 +176,13 @@ async function getEnrichedToc(book) {
     let currentMain = null;
 
     for (let i = 0; i < spine.length; i++) {
+        if (!isCurrent()) return [];
         const section = spine.get(i);
         const href = section.href;
 
         try {
             const doc = await section.load(book.load.bind(book));
+            if (!isCurrent()) return [];
             const headings = doc.querySelectorAll('h1, h2, h3');
 
             if (headings.length === 0) {
@@ -218,6 +239,7 @@ async function getEnrichedToc(book) {
                 }
             }
         } catch (e) {
+            if (!isCurrent()) return [];
             console.warn("Failed to scan section", href, e);
             if (tocMap.has(href)) {
                 const label = tocMap.get(href);
