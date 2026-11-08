@@ -199,6 +199,76 @@ describe('overlay.js logic', () => {
         expect(audio.play).toHaveBeenCalled();
     });
 
+    test('blocked EPUB autoplay explains the required Play gesture and recovers after Play', async () => {
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const previousUrl = window.location.pathname + window.location.search;
+        try {
+            window.history.replaceState({}, '', '/overlay.html?waitForData=true');
+            const audio = document.getElementById('audio');
+            const denied = Object.assign(new Error('Autoplay denied'), { name: 'NotAllowedError' });
+            audio.play = jest.fn().mockRejectedValueOnce(denied).mockResolvedValue();
+            browser.storage.local.get.mockResolvedValueOnce({
+                pendingText: 'Opening chapter',
+                pendingContent: [{ type: 'text', content: 'Opening chapter' }],
+                pendingTitle: 'EPUB chapter',
+                pendingAutoplay: true,
+                pendingReaderReloadRevision: 301,
+            });
+            window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
+            await new Promise(resolve => setTimeout(resolve, 0));
+            expect(audio.play).toHaveBeenCalledTimes(1);
+            expect(document.getElementById('playPause').textContent).toBe('Play');
+            expect(document.getElementById('status').textContent).toBe(
+                'Browser blocked autoplay. Click Play to start.');
+
+            document.getElementById('playPause').click();
+            await new Promise(resolve => setTimeout(resolve, 0));
+            expect(audio.play).toHaveBeenCalledTimes(2);
+            expect(document.getElementById('playPause').textContent).toBe('Pause');
+            expect(document.getElementById('status').textContent)
+                .toContain('Playing sentence');
+        } finally {
+            window.history.replaceState({}, '', previousUrl);
+        }
+    });
+
+    test('EPUB autoplay disabled loads paused without attempting browser playback', async () => {
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const previousUrl = window.location.pathname + window.location.search;
+        try {
+            window.history.replaceState({}, '', '/overlay.html?waitForData=true');
+            const audio = document.getElementById('audio');
+            audio.play = jest.fn().mockResolvedValue();
+            browser.storage.local.get.mockResolvedValueOnce({
+                pendingText: 'Paused chapter',
+                pendingContent: [{ type: 'text', content: 'Paused chapter' }],
+                pendingAutoplay: false,
+                pendingReaderReloadRevision: 302,
+            });
+            window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
+            await new Promise(resolve => setTimeout(resolve, 0));
+            expect(audio.play).not.toHaveBeenCalled();
+            expect(document.getElementById('playPause').textContent).toBe('Play');
+            expect(document.getElementById('status').textContent)
+                .not.toContain('blocked autoplay');
+        } finally {
+            window.history.replaceState({}, '', previousUrl);
+        }
+    });
+
+    test('a blocked manual Play action also has a visible retry explanation', async () => {
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const audio = document.getElementById('audio');
+        Object.defineProperty(audio, 'paused', { configurable: true, value: true });
+        audio.play = jest.fn().mockRejectedValueOnce(
+            Object.assign(new Error('Browser denied play'), { name: 'NotAllowedError' }));
+        document.getElementById('playPause').click();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(document.getElementById('playPause').textContent).toBe('Play');
+        expect(document.getElementById('status').textContent)
+            .toBe('Browser blocked autoplay. Click Play to start.');
+    });
+
     test('an obsolete storage read cannot restore a previous EPUB chapter', async () => {
         await new Promise(resolve => setTimeout(resolve, 100));
         const { AudioManager } = require('../audio-manager.js');
