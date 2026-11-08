@@ -20,6 +20,8 @@ let currentIndex = 0;
 let navigationRequestId = 0; // ignores obsolete results even when an index is revisited
 let initializationRequestId = 0; // ignores stale asynchronous EPUB reloads
 let readerPauseRequested = false; // Close persists across asynchronous reader reloads
+let continuousReaderEnabled = false; // only true for an opted-in EPUB iframe
+let activeReaderRevision = null; // which acknowledged chapter is playing
 let isPaused = false;
 let ignoreNextPause = false;
 let overlayCollapsed = false;
@@ -249,6 +251,11 @@ window.addEventListener('message', (event) => {
     } else if (event.source === window.parent && event.origin === window.location.origin &&
         event.data === 'RESUME_READER_AUTOPLAY') {
         readerPauseRequested = false;
+    } else if (event.source === window.parent &&
+        event.origin === window.location.origin &&
+        event.data?.type === 'KOKORO_READER_LAST_CHAPTER' &&
+        event.data.revision === activeReaderRevision) {
+        statusEl.textContent = 'Done';
     } else if (event.data === 'RELOAD_DATA') {
         window.hasReceivedData = true;
         initialize();
@@ -293,7 +300,18 @@ audioEl.addEventListener('ended', () => {
     // A manual skip during the gap must cancel this obsolete automatic step.
     const endedRequestId = navigationRequestId;
     setTimeout(() => {
-        if (endedRequestId === navigationRequestId) navigate(currentIndex + 1);
+        if (endedRequestId !== navigationRequestId) return;
+        if (continuousReaderEnabled && !readerPauseRequested && !isPaused &&
+            currentIndex === sentences.length - 1 &&
+            Number.isSafeInteger(activeReaderRevision)) {
+            statusEl.textContent = 'Loading next chapter...';
+            postToHostPage({
+                type: 'KOKORO_READER_CHAPTER_ENDED',
+                revision: activeReaderRevision,
+            });
+        } else {
+            navigate(currentIndex + 1);
+        }
     }, 50);
 });
 
@@ -340,10 +358,12 @@ async function initialize() {
     navigationRequestId++;
     sentences = [];
     currentIndex = 0;
+    continuousReaderEnabled = false;
+    activeReaderRevision = null;
     audioManager.clear();
     textDisplay.textContent = '';
 
-    const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'defaultSpeed', 'defaultVolume', 'autoScroll', 'pendingCustomPronunciations', 'theme', 'pendingStartIndex', 'pendingAutoplay', 'pendingReaderReloadRevision']);
+    const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'defaultSpeed', 'defaultVolume', 'autoScroll', 'pendingCustomPronunciations', 'theme', 'pendingStartIndex', 'pendingAutoplay', 'pendingContinuousReader', 'pendingReaderReloadRevision']);
     // A newer chapter can finish loading while an earlier storage read is
     // still pending. Never paint or start playback from a superseded read.
     if (loadId !== initializationRequestId) return;
@@ -357,6 +377,14 @@ async function initialize() {
         statusEl.textContent = "Waiting for document...";
         return;
     }
+    // Only the extension's own EPUB reader iframe may request another TOC
+    // entry; ordinary webpage overlays never emit chapter-advance messages.
+    continuousReaderEnabled = urlParams.get('waitForData') === 'true' &&
+        data.pendingContinuousReader === true;
+    activeReaderRevision = continuousReaderEnabled &&
+        Number.isSafeInteger(data.pendingReaderReloadRevision) &&
+        data.pendingReaderReloadRevision > 0
+        ? data.pendingReaderReloadRevision : null;
 
     if (!data.pendingText) {
         statusEl.textContent = "Extracting article...";
