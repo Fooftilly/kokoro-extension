@@ -136,6 +136,40 @@ describe('overlay.js logic', () => {
         expect(audio.play).toHaveBeenCalled();
     });
 
+    test('an obsolete storage read cannot restore a previous EPUB chapter', async () => {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const { AudioManager } = require('../audio-manager.js');
+        const manager = AudioManager.mock.results[0].value;
+        let resolveOld;
+        browser.storage.local.get.mockImplementationOnce(() =>
+            new Promise(resolve => { resolveOld = resolve; }))
+            .mockResolvedValueOnce({
+                pendingText: 'Fresh chapter',
+                pendingContent: [{ type: 'text', content: 'Fresh chapter' }],
+                pendingTitle: 'Chapter B',
+                pendingAutoplay: false,
+            });
+
+        window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
+        await Promise.resolve();
+        expect(typeof resolveOld).toBe('function');
+        window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        expect(document.getElementById('pageTitle').textContent).toBe('Chapter B');
+        const synthesisCount = manager.getAudio.mock.calls.length;
+        resolveOld({
+            pendingText: 'Stale chapter',
+            pendingContent: [{ type: 'text', content: 'Stale chapter' }],
+            pendingTitle: 'Chapter A',
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(document.getElementById('pageTitle').textContent).toBe('Chapter B');
+        expect(manager.getAudio).toHaveBeenCalledTimes(synthesisCount);
+        expect(document.getElementById('status').textContent)
+            .toContain('Playing sentence');
+    });
+
     test('download filename retains the sentence selected before asynchronous synthesis', async () => {
         await new Promise(resolve => setTimeout(resolve, 100));
         const { AudioManager } = require('../audio-manager.js');
