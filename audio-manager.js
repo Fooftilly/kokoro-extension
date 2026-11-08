@@ -83,11 +83,14 @@ export class AudioManager {
         if (this.audioCache.get(index) !== entry) return;
         this.audioCache.delete(index);
         entry.evicted = true;
-        // Pending synthesis may still settle; revoke only URLs that *this*
-        // manager created, never remote MP3 Data URLs or a replacement entry.
-        void entry.promise.then(url => {
+        // Reclaim an already-resolved URL immediately so memory is bounded
+        // after a navigation. A pending entry may still settle later; then
+        // revoke only manager-owned blob URLs, never server MP3 Data URLs.
+        const revoke = url => {
             if (this.objectUrls.delete(url)) URL.revokeObjectURL(url);
-        }, () => {});
+        };
+        if (entry.url) revoke(entry.url);
+        else void entry.promise.then(revoke, () => {});
     }
 
     // Save/download leases outlive a reading-session reset. They are independent
