@@ -21,7 +21,17 @@ export class AudioManager {
         for (const url of this.objectUrls) URL.revokeObjectURL(url);
         this.objectUrls.clear();
         if (this.localProvider) {
-            void this.localProvider.cancel().catch(error => console.warn('Local TTS cancellation failed', error));
+            // Cancellation is best-effort but can still be in flight after the
+            // previous synthesize() promise settles. Join both operations before
+            // allowing a new session to reuse or replace the WASM provider.
+            const provider = this.localProvider;
+            const cancellation = Promise.resolve().then(() => provider.cancel()).catch(error => {
+                console.warn('Local TTS cancellation failed', error);
+            });
+            this.localInferenceQueue = Promise.all([
+                this.localInferenceQueue.catch(() => {}),
+                cancellation,
+            ]).then(() => {});
         }
         this.audioCache.clear();
         this.sentences = [];
