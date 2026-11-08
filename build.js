@@ -41,6 +41,7 @@ const SRC_FILES = [
     'theme-init.js',
     'reader.html',
     'reader.js',
+    'document-formats.js',
     'reader.css'
 ];
 
@@ -156,7 +157,7 @@ function createManifest(browser) {
                 resources: ["overlay.html", "overlay.css", "overlay.js", "overlay-position.js", "text-processor.js", "audio-manager.js", "dom-utils.js", "browser-polyfill.min.js",
                     "compromise.js", "compromise-dates.min.js", "compromise-numbers.min.js",
                     "transliteration-lite.js", "purify.js", "theme-init.js",
-                    "reader.html", "reader.js", "reader.css",
+                    "reader.html", "reader.js", "reader.css", "document-formats.js",
                     "epub.min.js", "jszip.min.js"],
                 matches: ["<all_urls>"]
             }
