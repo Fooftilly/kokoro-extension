@@ -988,8 +988,13 @@ window.addEventListener('message', (event) => {
         lastPublishedReload = null;
         releaseRetiredBooks();
     }
-    if (event.data === 'CLOSE_KOKORO_PLAYER') {
-        console.log("Player requested close");
+    // The reader owns its embedded player: Close returns to the document
+    // picker without discarding the current book or leaving audio playing.
+    // Ignore messages from other frames or unrelated page scripts.
+    if (event.source === playerFrame.contentWindow &&
+        event.data === 'CLOSE_KOKORO_PLAYER') {
+        playerFrame.contentWindow.postMessage('PAUSE_KOKORO_PLAYER', window.location.origin);
+        openDocumentPicker();
     }
 });
 
