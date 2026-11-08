@@ -606,6 +606,98 @@ describe('overlay.js logic', () => {
         expect(audio.play).toHaveBeenCalledTimes(1);
     });
 
+    test('opt-in reader requests the next chapter after the final spoken sentence', async () => {
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const previousUrl = window.location.pathname + window.location.search;
+        try {
+            window.history.replaceState({}, '', '/overlay.html?waitForData=true');
+            const audio = document.getElementById('audio');
+            audio.play = jest.fn().mockResolvedValue();
+            browser.storage.local.get.mockResolvedValueOnce({
+                pendingText: 'Current chapter',
+                pendingContent: [{ type: 'text', content: 'Current chapter' }],
+                pendingTitle: 'Chapter 1',
+                pendingAutoplay: true,
+                pendingContinuousReader: true,
+                pendingReaderReloadRevision: 47,
+            });
+            window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
+            await new Promise(resolve => setTimeout(resolve, 0));
+            window.dispatchEvent(new MessageEvent('message', { data: 'NAV_NEXT' }));
+            await new Promise(resolve => setTimeout(resolve, 0));
+            window.parent.postMessage.mockClear();
+            audio.dispatchEvent(new Event('ended'));
+            await new Promise(resolve => setTimeout(resolve, 75));
+            expect(window.parent.postMessage).toHaveBeenCalledWith({
+                type: 'KOKORO_READER_CHAPTER_ENDED', revision: 47,
+            }, '*');
+            expect(document.getElementById('status').textContent)
+                .toBe('Loading next chapter...');
+
+            window.dispatchEvent(new MessageEvent('message', {
+                data: { type: 'KOKORO_READER_LAST_CHAPTER', revision: 47 },
+                source: window.parent, origin: window.location.origin,
+            }));
+            expect(document.getElementById('status').textContent).toBe('Done');
+        } finally {
+            window.history.replaceState({}, '', previousUrl);
+        }
+    });
+
+    test('continuous mode is off by default and Close cancels a delayed completion', async () => {
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const previousUrl = window.location.pathname + window.location.search;
+        try {
+            window.history.replaceState({}, '', '/overlay.html?waitForData=true');
+            const audio = document.getElementById('audio');
+            audio.play = jest.fn().mockResolvedValue();
+            browser.storage.local.get.mockResolvedValueOnce({
+                pendingText: 'Current chapter',
+                pendingContent: [{ type: 'text', content: 'Current chapter' }],
+                pendingAutoplay: true,
+                pendingContinuousReader: true,
+                pendingReaderReloadRevision: 73,
+            });
+            window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
+            await new Promise(resolve => setTimeout(resolve, 0));
+            window.dispatchEvent(new MessageEvent('message', { data: 'NAV_NEXT' }));
+            await new Promise(resolve => setTimeout(resolve, 0));
+            window.parent.postMessage.mockClear();
+
+            audio.dispatchEvent(new Event('ended'));
+            window.dispatchEvent(new MessageEvent('message', {
+                data: 'PAUSE_KOKORO_PLAYER', source: window.parent,
+                origin: window.location.origin,
+            }));
+            await new Promise(resolve => setTimeout(resolve, 75));
+            expect(window.parent.postMessage.mock.calls.some(([message]) =>
+                message?.type === 'KOKORO_READER_CHAPTER_ENDED')).toBe(false);
+
+            browser.storage.local.get.mockResolvedValueOnce({
+                pendingText: 'No continuous setting',
+                pendingContent: [{ type: 'text', content: 'No continuous setting' }],
+                pendingAutoplay: true,
+                pendingReaderReloadRevision: 74,
+            });
+            window.dispatchEvent(new MessageEvent('message', {
+                data: 'RESUME_READER_AUTOPLAY', source: window.parent,
+                origin: window.location.origin,
+            }));
+            window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
+            await new Promise(resolve => setTimeout(resolve, 0));
+            window.dispatchEvent(new MessageEvent('message', { data: 'NAV_NEXT' }));
+            await new Promise(resolve => setTimeout(resolve, 0));
+            window.parent.postMessage.mockClear();
+            audio.dispatchEvent(new Event('ended'));
+            await new Promise(resolve => setTimeout(resolve, 75));
+            expect(window.parent.postMessage.mock.calls.some(([message]) =>
+                message?.type === 'KOKORO_READER_CHAPTER_ENDED')).toBe(false);
+            expect(document.getElementById('status').textContent).toBe('Done');
+        } finally {
+            window.history.replaceState({}, '', previousUrl);
+        }
+    });
+
     test('Close still posts CLOSE_KOKORO_PLAYER', async () => {
         await new Promise(r => setTimeout(r, 100));
         window.parent.postMessage.mockClear();
