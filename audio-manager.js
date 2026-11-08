@@ -3,7 +3,9 @@ import { pcmToWavBlob } from './pcm-wav.js';
 
 export class AudioManager {
     constructor() {
-        this.audioCache = new Map(); // index -> Promise<BlobUrl>
+        this.audioCache = new Map(); // index -> { promise, evicted }
+        this.cacheWindow = null; // bounded recent sentences after playback advances
+        this.audioPins = new Map(); // downloads keep their source URL valid until finished
         this.sentences = [];
         this.abortController = new AbortController();
         this.requestQueue = Promise.resolve(); // For sequential processing
@@ -18,6 +20,9 @@ export class AudioManager {
 
     clear() {
         this.generation++;
+        for (const entry of this.audioCache.values()) entry.evicted = true;
+        this.cacheWindow = null;
+        this.audioPins.clear();
         for (const url of this.objectUrls) URL.revokeObjectURL(url);
         this.objectUrls.clear();
         if (this.localProvider) {
@@ -44,20 +49,73 @@ export class AudioManager {
         this.sentences = sentences;
     }
 
+    // Called only after the new playback source has replaced the old one.
+    // Retain two sentences behind for Prev/retry and two ahead for prefetch.
+    retainWindow(center, behind = 2, ahead = 2) {
+        if (!Number.isInteger(center) || center < 0 || center >= this.sentences.length ||
+            !Number.isInteger(behind) || behind < 0 ||
+            !Number.isInteger(ahead) || ahead < 0) {
+            throw new RangeError('Invalid audio cache window');
+        }
+        this.cacheWindow = { first: center - behind, last: center + ahead };
+        for (const [index, entry] of this.audioCache) {
+            if (this.isOutsideWindow(index) && !this.audioPins.has(index)) {
+                this.evictAudio(index, entry);
+            }
+        }
+    }
+
+    isOutsideWindow(index) {
+        return this.cacheWindow !== null &&
+            (index < this.cacheWindow.first || index > this.cacheWindow.last);
+    }
+
+    evictAudio(index, entry) {
+        if (this.audioCache.get(index) !== entry) return;
+        this.audioCache.delete(index);
+        entry.evicted = true;
+        // Pending synthesis may still settle; revoke only URLs that *this*
+        // manager created, never remote MP3 Data URLs or a replacement entry.
+        void entry.promise.then(url => {
+            if (this.objectUrls.delete(url)) URL.revokeObjectURL(url);
+        }, () => {});
+    }
+
+    // Hold the exact sentence's generated URL while its download is pending.
+    // The release callback is idempotent and cannot alter a newer session.
+    pinAudio(index) {
+        const generation = this.generation;
+        this.audioPins.set(index, (this.audioPins.get(index) || 0) + 1);
+        let released = false;
+        return () => {
+            if (released || generation !== this.generation) return;
+            released = true;
+            const remaining = (this.audioPins.get(index) || 1) - 1;
+            if (remaining > 0) this.audioPins.set(index, remaining);
+            else {
+                this.audioPins.delete(index);
+                const entry = this.audioCache.get(index);
+                if (entry && this.isOutsideWindow(index)) this.evictAudio(index, entry);
+            }
+        };
+    }
+
     async getAudio(index) {
-        if (index >= this.sentences.length) return null;
+        if (!Number.isInteger(index) || index < 0 || index >= this.sentences.length) return null;
 
         if (this.audioCache.has(index)) {
-            return this.audioCache.get(index);
+            return this.audioCache.get(index).promise;
         }
 
         const generation = this.generation;
-        const promise = this.fetchAudio(this.sentences[index].text, generation);
-        this.audioCache.set(index, promise);
-        // A missing model or a transient server error must not permanently
-        // poison this sentence's cache. Do not delete a newer generation's entry.
+        const entry = { promise: null, evicted: false };
+        const promise = this.fetchAudio(this.sentences[index].text, generation, entry);
+        entry.promise = promise;
+        this.audioCache.set(index, entry);
+        // A missing model or transient server error must not poison retries.
+        // Do not remove a newer request for the same sentence.
         void promise.catch(() => {
-            if (this.generation === generation && this.audioCache.get(index) === promise) {
+            if (this.generation === generation && this.audioCache.get(index) === entry) {
                 this.audioCache.delete(index);
             }
         });
@@ -72,14 +130,14 @@ export class AudioManager {
         }
     }
 
-    async localAudio(text, data) {
+    async localAudio(text, data, isStale = () => false) {
         // Local PCM synthesis runs only in the extension-owned playback page.
         // A clear() starts a new session, but the previous WASM synthesis may
         // still be running even after cancel() returns. Serialize local jobs
         // across sessions; never concurrently invoke the same engine.
         const generation = this.generation;
         const work = this.localInferenceQueue.catch(() => {}).then(async () => {
-            if (generation !== this.generation) {
+            if (generation !== this.generation || isStale()) {
                 throw new DOMException('Local generation cancelled', 'AbortError');
             }
             const variant = data.pendingMediaPipeVariant || 'cpu';
@@ -105,7 +163,7 @@ export class AudioManager {
                 }
                 throw error;
             }
-            if (generation !== this.generation) {
+            if (generation !== this.generation || isStale()) {
                 throw new DOMException('Local generation cancelled', 'AbortError');
             }
             const url = URL.createObjectURL(pcmToWavBlob(result.samples, result.sampleRateHz));
@@ -139,31 +197,33 @@ export class AudioManager {
         return result.dataUrl;
     }
 
-    async routeAudio(text, data) {
+    async routeAudio(text, data, isStale = () => false) {
         const backend = data.pendingTtsBackend === undefined ? 'fastapi' : data.pendingTtsBackend;
-        if (backend === 'mediapipe') return this.localAudio(text, data);
+        if (backend === 'mediapipe') return this.localAudio(text, data, isStale);
         if (backend === 'fastapi') return this.remoteAudio(text, data);
         throw new Error('Local TTS backend ONNX plain-text synthesis is not yet available. No text was sent to Kokoro-FastAPI.');
     }
 
-    async fetchAudio(text, generation = this.generation) {
+    async fetchAudio(text, generation = this.generation, entry = null) {
+        const isStale = () => generation !== this.generation || entry?.evicted === true;
         const data = await browser.storage.local.get([
             'pendingVoice', 'pendingApiUrl', 'pendingNormalizationOptions',
             'pendingTtsBackend', 'pendingMediaPipeVariant', 'pendingLocalVoice',
         ]);
-        if (generation !== this.generation) {
+        if (isStale()) {
             throw new DOMException('Audio request cancelled', 'AbortError');
         }
         // Preserve serialized generation and recover the queue after earlier errors.
         // Recheck inside the queue: clear() may run while this request is waiting
         // behind another synthesis, or while remote synthesis is in progress.
         this.requestQueue = this.requestQueue.catch(() => {}).then(async () => {
-            if (generation !== this.generation) {
+            if (isStale()) {
                 throw new DOMException('Audio request cancelled', 'AbortError');
             }
             try {
-                const audio = await this.routeAudio(text, data);
-                if (generation !== this.generation) {
+                const audio = await this.routeAudio(text, data, isStale);
+                if (isStale()) {
+                    if (this.objectUrls.delete(audio)) URL.revokeObjectURL(audio);
                     throw new DOMException('Audio request cancelled', 'AbortError');
                 }
                 return audio;
