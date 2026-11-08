@@ -139,9 +139,25 @@ function htmlBlocks(text) {
     const results = [];
     const ignored = new Set([
         'script', 'style', 'noscript', 'template', 'svg', 'iframe',
-        'object', 'embed', 'head', 'canvas',
+        'object', 'embed', 'head', 'canvas', 'link', 'meta',
     ]);
     const meaningful = new Set(['p', 'li', 'blockquote', 'pre', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
+    const boundaries = new Set([
+        'p', 'div', 'section', 'article', 'blockquote', 'li', 'pre',
+        'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'tr', 'td',
+    ]);
+
+    // Never use raw textContent on a recognized paragraph: its descendants
+    // can contain scripts/styles, and <br>/nested paragraphs need separators.
+    function safeText(node) {
+        if (node.nodeType === 3) return node.textContent || '';
+        if (node.nodeType !== 1) return '';
+        const name = node.tagName.toLowerCase();
+        if (ignored.has(name) || name === 'br' || name === 'hr') return ' ';
+        const content = Array.from(node.childNodes, safeText).join('');
+        return boundaries.has(name) ? ' ' + content + ' ' : content;
+    }
+
     function visit(node) {
         if (node.nodeType === 3) {
             const entry = block('text', node.textContent || '');
@@ -152,7 +168,7 @@ function htmlBlocks(text) {
         const name = node.tagName.toLowerCase();
         if (ignored.has(name)) return;
         if (meaningful.has(name)) {
-            const entry = block(/^h[1-6]$/.test(name) ? name : 'text', node.textContent || '');
+            const entry = block(/^h[1-6]$/.test(name) ? name : 'text', safeText(node));
             if (entry) results.push(entry);
             return;
         }
