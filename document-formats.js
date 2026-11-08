@@ -158,23 +158,47 @@ function htmlBlocks(text) {
         return boundaries.has(name) ? ' ' + content + ' ' : content;
     }
 
-    function visit(node) {
-        if (node.nodeType === 3) {
-            const entry = block('text', node.textContent || '');
+    const containers = new Set([
+        'div', 'section', 'article', 'main', 'header', 'footer',
+        'ul', 'ol', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th',
+    ]);
+
+    function visitChildren(container) {
+        // Inline descendants belong to the same sentence: splitting a
+        // <div>Read<em>er</em>.</div> at every text node loses "er" and ".".
+        let inlineText = '';
+        const flush = () => {
+            const entry = block('text', inlineText);
             if (entry) results.push(entry);
-            return;
+            inlineText = '';
+        };
+        for (const node of container.childNodes) {
+            if (node.nodeType === 3) {
+                inlineText += node.textContent || '';
+                continue;
+            }
+            if (node.nodeType !== 1) continue;
+            const name = node.tagName.toLowerCase();
+            if (ignored.has(name) || name === 'br') {
+                inlineText += ' ';
+            } else if (name === 'hr') {
+                flush();
+            } else if (meaningful.has(name)) {
+                flush();
+                const entry = block(/^h[1-6]$/.test(name) ? name : 'text', safeText(node));
+                if (entry) results.push(entry);
+            } else if (containers.has(name)) {
+                flush();
+                visitChildren(node);
+            } else {
+                // Inline HTML (em/strong/span/a/etc.) stays with its neighbors.
+                inlineText += safeText(node);
+            }
         }
-        if (node.nodeType !== 1) return;
-        const name = node.tagName.toLowerCase();
-        if (ignored.has(name)) return;
-        if (meaningful.has(name)) {
-            const entry = block(/^h[1-6]$/.test(name) ? name : 'text', safeText(node));
-            if (entry) results.push(entry);
-            return;
-        }
-        for (const child of node.childNodes) visit(child);
+        flush();
     }
-    for (const child of template.content.childNodes) visit(child);
+
+    visitChildren(template.content);
     return results;
 }
 
