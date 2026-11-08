@@ -86,6 +86,59 @@ describe('navigation priority over speculative local synthesis (#57)', () => {
             .toEqual(['Sentence 0', 'Sentence 1']);
     });
 
+    test('advancing onto an already executing prefetch reuses it without duplicate synthesis', async () => {
+        const started = deferred();
+        const finish = deferred();
+        const original = await manager.getAudio(0);
+        expect(original).toBe('blob:nav-1');
+        provider.synthesize.mockImplementationOnce(() => {
+            started.resolve();
+            return finish.promise;
+        });
+        manager.prefetch(1);
+        await started.promise;
+        const inFlight = manager.audioCache.get(1);
+        expect(inFlight.speculative).toBe(true);
+        expect(inFlight.executing).toBe(true);
+
+        manager.prioritizeNavigation(1);
+        const selected = manager.getAudio(1);
+        // Advancing during real WASM synthesis must preserve the same request.
+        expect(manager.audioCache.get(1)).toBe(inFlight);
+        expect(provider.synthesize.mock.calls.map(([text]) => text))
+            .toEqual(['Sentence 0', 'Sentence 1']);
+
+        finish.resolve(pcm());
+        await expect(selected).resolves.toBe('blob:nav-2');
+        expect(provider.synthesize.mock.calls.map(([text]) => text))
+            .toEqual(['Sentence 0', 'Sentence 1']);
+        expect(manager.objectUrls.has('blob:nav-2')).toBe(true);
+        expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
+    });
+
+    test('an executing prefetch for an abandoned sentence remains discardable', async () => {
+        const started = deferred();
+        const finish = deferred();
+        await manager.getAudio(0);
+        provider.synthesize.mockImplementationOnce(() => {
+            started.resolve();
+            return finish.promise;
+        }).mockResolvedValue(pcm());
+
+        manager.prefetch(1);
+        const abandoned = manager.getAudio(1);
+        await started.promise;
+        manager.prioritizeNavigation(9);
+        const target = manager.getAudio(9);
+
+        finish.resolve(pcm());
+        await expect(abandoned).rejects.toMatchObject({ name: 'AbortError' });
+        await expect(target).resolves.toBe('blob:nav-2');
+        expect(provider.synthesize.mock.calls.map(([text]) => text))
+            .toEqual(['Sentence 0', 'Sentence 1', 'Sentence 9']);
+        expect(URL.createObjectURL).toHaveBeenCalledTimes(2);
+    });
+
     test('pinned exports are not discarded by a navigation jump', async () => {
         const started = deferred();
         const slow = deferred();
