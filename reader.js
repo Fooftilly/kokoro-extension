@@ -267,10 +267,14 @@ async function loadEpub(file, requestId) {
             ? await getEnrichedToc(candidate, () => requestId === fileRequestId)
             : publisherToc;
         if (requestId !== fileRequestId) return;
-        // A scan may return the publisher tree unchanged if no heading was
-        // found. Normalize both paths so opt-in scanning cannot reintroduce
-        // navigation-relative links that Spine.get() cannot resolve.
-        const toc = normalizePublisherToc(discovered, candidate);
+        // Heading-scan links come from Section.href and are already relative
+        // to the OPF. Do not resolve them against the nav document again:
+        // same-name chapters in different directories would be conflated.
+        // If no headings were found, the scanner returns the original
+        // publisher array by identity; those raw links still need resolving.
+        const toc = scan && discovered !== publisherToc
+            ? discovered
+            : normalizePublisherToc(discovered, candidate);
         if (!hasPlayableTocEntry(toc)) throw new Error('EPUB contains no readable chapters');
 
         // Retain the old book until the new chapter reaches the player:
