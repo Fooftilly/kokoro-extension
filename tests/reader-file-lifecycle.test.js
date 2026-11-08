@@ -344,6 +344,51 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(browser.storage.local.set).toHaveBeenCalledTimes(written);
     });
 
+    test('adjacent TOC anchors in one XHTML file do not replay the following subsection', async () => {
+        browser.storage.sync.get.mockResolvedValue({
+            ttsBackend: 'mediapipe', autoplayReader: false, continuousReader: true,
+        });
+        const source = createMockBook('Sections');
+        source.navigation.toc = [
+            { href: 'start.xhtml', label: 'First section' },
+            { href: 'start.xhtml#second', label: 'Second subsection' },
+            { href: 'next.xhtml', label: 'Next file' },
+        ];
+        source.sections[0].load.mockResolvedValue(new DOMParser().parseFromString(
+            '<body><h1 id="first">First part.</h1><p>First body.</p>' +
+            '<h2 id="second">Second part.</h2><p>Second body.</p></body>',
+            'text/html',
+        ));
+        books.push(source);
+        selectFile('sections.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) {
+            await tick();
+        }
+        const first = browser.storage.local.set.mock.lastCall[0];
+        expect(first.pendingTitle).toBe('First section');
+        expect(first.pendingContent.map(b => b.content).join(' ')).toContain('First body.');
+        expect(first.pendingContent.map(b => b.content).join(' ')).not.toContain('Second part.');
+        acknowledgeCurrentChapter();
+
+        const frame = document.getElementById('playerFrame');
+        window.dispatchEvent(new MessageEvent('message', {
+            data: {
+                type: 'KOKORO_READER_CHAPTER_ENDED',
+                revision: first.pendingReaderReloadRevision,
+            },
+            source: frame.contentWindow,
+            origin: window.location.origin,
+        }));
+        for (let i = 0; i < 30 && !browser.storage.local.set.mock.calls
+            .some(([value]) => value.pendingTitle === 'Second subsection'); i++) await tick();
+        const second = browser.storage.local.set.mock.calls
+            .map(([value]) => value)
+            .find(value => value.pendingTitle === 'Second subsection');
+        expect(second.pendingStartIndex).toBeGreaterThan(0);
+        expect(second.pendingContent.map(b => b.content).join(' ')).toContain('Second body.');
+        expect(second.pendingAutoplay).toBe(true);
+    });
+
     test('continuous handoff ignores disabled setting and pending manual chapter changes', async () => {
         const source = createMockBook('Book A');
         books.push(source);
