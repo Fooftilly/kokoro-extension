@@ -2,6 +2,7 @@ const fileInput = document.getElementById('fileInput');
 const filePickerOverlay = document.getElementById('filePickerOverlay');
 const chapterList = document.getElementById('chapterList');
 const errorMsg = document.getElementById('errorMsg');
+const chapterErrorMsg = document.getElementById('chapterError');
 const loadingStatus = document.getElementById('loadingStatus');
 const playerFrame = document.getElementById('playerFrame');
 const sidebar = document.getElementById('sidebar');
@@ -389,7 +390,12 @@ function updateNavButtons() {
 // is selected. Track chapter work so Book.destroy() waits for those readers.
 function startChapterLoad(href, title) {
     const source = book;
+    // The file picker is hidden after successful EPUB loading; chapter errors
+    // must be shown in the reader, not in the hidden file picker.
+    chapterErrorMsg.hidden = true;
+    chapterErrorMsg.textContent = '';
     const task = loadEpubChapter(href, title);
+    const requestId = chapterRequestId;
     let tasks = chapterTasks.get(source);
     if (!tasks) {
         tasks = new Set();
@@ -397,10 +403,10 @@ function startChapterLoad(href, title) {
     }
     tasks.add(task);
     void task.catch(error => {
-        if (book !== source) return; // ignored obsolete read on a retired book
+        if (book !== source || requestId !== chapterRequestId) return;
         console.error('EPUB chapter could not be loaded:', error);
-        errorMsg.textContent = 'Failed to load chapter: ' + String(error.message || error);
-        errorMsg.style.display = 'block';
+        chapterErrorMsg.textContent = 'Failed to load chapter: ' + String(error.message || error);
+        chapterErrorMsg.hidden = false;
     }).finally(() => {
         tasks.delete(task);
         if (tasks.size === 0) chapterTasks.delete(source);
