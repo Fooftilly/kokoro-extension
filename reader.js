@@ -67,7 +67,8 @@ async function handleFile(file) {
     const requestId = ++fileRequestId;
     // Aborting abandoned reads prevents large EPUB buffers from accumulating
     // when a second file is selected before the first read completes.
-    if (activeFileReader?.readyState === FileReader.LOADING) {
+    if (activeFileReader && activeFileReader.readyState === FileReader.LOADING &&
+        typeof activeFileReader.abort === 'function') {
         activeFileReader.abort();
     }
     errorMsg.style.display = 'none';
