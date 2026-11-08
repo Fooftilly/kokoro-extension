@@ -4,6 +4,7 @@ import {
     decodeTextDocument,
     parseTextDocument,
 } from './document-formats.js';
+import { MAX_DOCX_ARCHIVE_BYTES, parseDocxDocument } from './docx-reader.js';
 
 const fileInput = document.getElementById('fileInput');
 const filePickerOverlay = document.getElementById('filePickerOverlay');
@@ -308,16 +309,20 @@ async function loadEpub(file, requestId) {
     }
 }
 
-// Non-EPUB formats use a single synthetic chapter and the same
+// Non-EPUB formats, including DOCX, use a single synthetic chapter and the same
 // sendToPlayer() storage/iframe path as EPUB. No fake EPUB.js Book is created.
 async function loadTextDocument(file, format, requestId) {
-    if (Number.isFinite(file.size) && file.size > MAX_TEXT_DOCUMENT_BYTES) {
-        throw new Error('Text documents larger than 4 MiB are not supported');
+    const sizeLimit = format === 'docx' ? MAX_DOCX_ARCHIVE_BYTES : MAX_TEXT_DOCUMENT_BYTES;
+    if (Number.isFinite(file.size) && file.size > sizeLimit) {
+        throw new Error(format === 'docx'
+            ? 'DOCX files larger than 24 MiB are not supported'
+            : 'Text documents larger than 4 MiB are not supported');
     }
     const bytes = await readDocumentBuffer(file);
     if (requestId !== fileRequestId) return;
-    const text = decodeTextDocument(bytes);
-    const blocks = parseTextDocument(format, text);
+    const blocks = format === 'docx'
+        ? await parseDocxDocument(bytes)
+        : parseTextDocument(format, decodeTextDocument(bytes));
     if (requestId !== fileRequestId) return;
 
     // Preserve the existing EPUB if reading/parsing fails, and hand its image
