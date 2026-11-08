@@ -644,6 +644,37 @@ describe('overlay.js logic', () => {
         }
     });
 
+    test('explicit Play after Close notifies the reader that playback resumed', async () => {
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const previousUrl = window.location.pathname + window.location.search;
+        try {
+            window.history.replaceState({}, '', '/overlay.html?waitForData=true');
+            browser.storage.local.get.mockResolvedValueOnce({
+                pendingText: 'Still reading',
+                pendingContent: [{ type: 'text', content: 'Still reading' }],
+                pendingAutoplay: false,
+                pendingContinuousReader: true,
+                pendingReaderReloadRevision: 99,
+            });
+            window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
+            await new Promise(resolve => setTimeout(resolve, 0));
+            const audio = document.getElementById('audio');
+            audio.play = jest.fn().mockResolvedValue();
+            window.parent.postMessage.mockClear();
+            window.dispatchEvent(new MessageEvent('message', {
+                data: 'PAUSE_KOKORO_PLAYER', source: window.parent,
+                origin: window.location.origin,
+            }));
+            document.getElementById('playPause').click();
+            expect(window.parent.postMessage).toHaveBeenCalledWith({
+                type: 'KOKORO_READER_RESUMED', revision: 99,
+            }, '*');
+            expect(audio.play).toHaveBeenCalledTimes(1);
+        } finally {
+            window.history.replaceState({}, '', previousUrl);
+        }
+    });
+
     test('continuous mode is off by default and Close cancels a delayed completion', async () => {
         await new Promise(resolve => setTimeout(resolve, 0));
         const previousUrl = window.location.pathname + window.location.search;
