@@ -344,6 +344,89 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(browser.storage.local.set).toHaveBeenCalledTimes(written);
     });
 
+    test('continuous mode advances past repeated fragment IDs in different XHTML files', async () => {
+        browser.storage.sync.get.mockResolvedValue({
+            ttsBackend: 'mediapipe', autoplayReader: false, continuousReader: true,
+        });
+        const source = createMockBook('Repeated IDs');
+        const names = ['a.xhtml', 'b.xhtml', 'c.xhtml'];
+        source.sections[0].href = names[0];
+        source.sections[0].url = names[0];
+        source.sections[1].href = names[1];
+        source.sections[1].url = names[1];
+        source.sections.push({
+            href: names[2], url: names[2], index: 2,
+            load: jest.fn(async () => documentWithText('Third chapter text.')),
+            unload: jest.fn(),
+        });
+        source.spine.length = 3;
+        source.sections.forEach((section, i) => {
+            section.load.mockResolvedValue(new DOMParser().parseFromString(
+                '<body><h1 id="title">Chapter ' + (i + 1) + '.</h1>' +
+                '<p>Content ' + (i + 1) + '.</p></body>', 'text/html'));
+        });
+        source.navigation.toc = names.map((name, i) => ({
+            href: name + '#title', label: 'Chapter ' + (i + 1),
+        }));
+        books.push(source);
+        selectFile('repeated.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
+        const first = browser.storage.local.set.mock.lastCall[0];
+        expect(first.pendingTitle).toBe('Chapter 1');
+        acknowledgeCurrentChapter();
+        const frame = document.getElementById('playerFrame');
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'KOKORO_READER_CHAPTER_ENDED',
+                revision: first.pendingReaderReloadRevision },
+            source: frame.contentWindow, origin: window.location.origin,
+        }));
+        for (let i = 0; i < 30 && !browser.storage.local.set.mock.calls
+            .some(([v]) => v.pendingTitle === 'Chapter 2'); i++) await tick();
+        const second = browser.storage.local.set.mock.calls
+            .map(([value]) => value).find(v => v.pendingTitle === 'Chapter 2');
+        expect(second).toBeDefined();
+        acknowledgeCurrentChapter();
+
+        // Both files contain id="title". Progress in B must never
+        // activate A's identically named fragment in the sidebar.
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'KOKORO_READING_PROGRESS', blockIndex: 0 },
+            source: frame.contentWindow, origin: window.location.origin,
+        }));
+        expect(document.querySelector('.playable-chapter.active').dataset.href)
+            .toBe('b.xhtml#title');
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'KOKORO_READER_CHAPTER_ENDED',
+                revision: second.pendingReaderReloadRevision },
+            source: frame.contentWindow, origin: window.location.origin,
+        }));
+        for (let i = 0; i < 30 && !browser.storage.local.set.mock.calls
+            .some(([v]) => v.pendingTitle === 'Chapter 3'); i++) await tick();
+        const third = browser.storage.local.set.mock.calls
+            .map(([value]) => value).find(v => v.pendingTitle === 'Chapter 3');
+        expect(third).toBeDefined();
+        expect(second.pendingAutoplay).toBe(true);
+        expect(third.pendingAutoplay).toBe(true);
+        expect(source.sections[1].load).toHaveBeenCalledTimes(1);
+        expect(source.sections[2].load).toHaveBeenCalledTimes(1);
+        expect(document.querySelector('.playable-chapter.active').dataset.href)
+            .toBe('c.xhtml#title');
+        acknowledgeCurrentChapter();
+        const count = browser.storage.local.set.mock.calls.length;
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'KOKORO_READER_CHAPTER_ENDED',
+                revision: third.pendingReaderReloadRevision },
+            source: frame.contentWindow, origin: window.location.origin,
+        }));
+        expect(browser.storage.local.set).toHaveBeenCalledTimes(count);
+        expect(messages).toContainEqual({
+            type: 'KOKORO_READER_LAST_CHAPTER',
+            revision: third.pendingReaderReloadRevision,
+        });
+    });
+
     test('adjacent TOC anchors in one XHTML file do not replay the following subsection', async () => {
         browser.storage.sync.get.mockResolvedValue({
             ttsBackend: 'mediapipe', autoplayReader: false, continuousReader: true,
