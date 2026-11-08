@@ -239,6 +239,8 @@ window.addEventListener('message', (event) => {
         navigate(currentIndex + 1);
     } else if (event.data === 'NAV_PREV') {
         navigate(currentIndex - 1);
+    } else if (event.data === 'PAUSE_KOKORO_PLAYER') {
+        pause();
     } else if (event.data === 'RELOAD_DATA') {
         window.hasReceivedData = true;
         initialize();
