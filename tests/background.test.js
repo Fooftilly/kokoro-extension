@@ -203,6 +203,43 @@ describe('background.js logic', () => {
         }
     );
 
+    test('capability discovery is read-only and never probes FastAPI or local models', async () => {
+        const listener = browser.runtime.onMessage.addListener.mock.calls[0][0];
+        fetch.mockClear();
+        browser.storage.sync.get.mockClear();
+        const result = await listener({ action: 'GET_TTS_BACKEND_CAPABILITIES' }, {});
+        expect(result.success).toBe(true);
+        expect(result.capabilities.map(entry => entry.id))
+            .toEqual(['fastapi', 'mediapipe', 'onnx']);
+        expect(result.capabilities[1]).toEqual(expect.objectContaining({
+            execution: 'on-device',
+            modelStatus: 'not-checked',
+            readiness: 'requires-runtime-check',
+        }));
+        expect(result.capabilities[2].phonemeSynthesis).toBe('diagnostic-only');
+        expect(fetch).not.toHaveBeenCalled();
+        expect(browser.storage.sync.get).not.toHaveBeenCalled();
+        expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
+    });
+
+    test('capabilities can be queried for one backend without falling back to server', async () => {
+        const listener = browser.runtime.onMessage.addListener.mock.calls[0][0];
+        fetch.mockClear();
+        expect(await listener({
+            action: 'GET_TTS_BACKEND_CAPABILITIES', backend: 'onnx',
+        }, {})).toEqual({
+            success: true, capabilities: [expect.objectContaining({
+                id: 'onnx', execution: 'on-device', textSynthesis: 'experimental',
+            })],
+        });
+        expect(await listener({
+            action: 'GET_TTS_BACKEND_CAPABILITIES', backend: 'untrusted',
+        }, {})).toEqual(expect.objectContaining({
+            success: false, kind: 'invalid-backend',
+        }));
+        expect(fetch).not.toHaveBeenCalled();
+    });
+
     test('local fetch messages cannot fall through to FastAPI HTTP', async () => {
         browser.storage.sync.get.mockResolvedValue({ ttsBackend: 'mediapipe' });
         const handler = browser.runtime.onMessage.addListener.mock.calls[0][0];
