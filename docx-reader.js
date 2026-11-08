@@ -86,7 +86,8 @@ function paragraphType(paragraph) {
     if (match) return 'h' + match[1];
     const outline = Array.from(pPr.children).find(child =>
         child.namespaceURI === WORD_NS && child.localName === 'outlineLvl');
-    const level = Number(outline?.getAttributeNS(WORD_NS, 'val'));
+    const rawLevel = outline?.getAttributeNS(WORD_NS, 'val');
+    const level = rawLevel == null || rawLevel.trim() === '' ? NaN : Number(rawLevel);
     return outline && Number.isInteger(level) && level >= 0 && level <= 5
         ? 'h' + (level + 1) : 'text';
 }
