@@ -4,6 +4,7 @@ export const MAX_DOCX_ARCHIVE_BYTES = 24 * 1024 * 1024;
 export const MAX_DOCX_XML_BYTES = 8 * 1024 * 1024;
 const MAX_CONTENT_TYPES_BYTES = 128 * 1024;
 const WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+const MC_NS = 'http://schemas.openxmlformats.org/markup-compatibility/2006';
 const DOCX_MAIN_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml';
 
 function escapeSpeechText(text) {
@@ -90,17 +91,58 @@ function paragraphType(paragraph) {
         ? 'h' + (level + 1) : 'text';
 }
 
+// A DOCX can supply two compatible representations of the same text box:
+// one inside mc:Choice and a VML mc:Fallback. Extract one branch only, both
+// while collecting paragraphs and while reading inline text.
+function selectedCompatibilityBranch(node) {
+    const children = Array.from(node.children);
+    const choices = children.filter(child =>
+        child.namespaceURI === MC_NS && child.localName === 'Choice');
+    const fallback = children.find(child =>
+        child.namespaceURI === MC_NS && child.localName === 'Fallback');
+    // We can extract Word text/paragraphs even inside a drawing wrapper.
+    // Prefer a Choice containing readable Word content; otherwise use the
+    // fallback. Never visit both representations.
+    return choices.find(choice =>
+        choice.getElementsByTagNameNS(WORD_NS, 'p').length > 0 ||
+        choice.getElementsByTagNameNS(WORD_NS, 't').length > 0) ||
+        fallback || choices[0] || null;
+}
+
+function collectWordParagraphs(container, collected) {
+    for (const child of container.childNodes) {
+        if (child.nodeType !== 1) continue;
+        if (child.namespaceURI === WORD_NS &&
+            (child.localName === 'del' || child.localName === 'moveFrom')) continue;
+        if (child.namespaceURI === MC_NS && child.localName === 'AlternateContent') {
+            const branch = selectedCompatibilityBranch(child);
+            if (branch) collectWordParagraphs(branch, collected);
+            continue;
+        }
+        if (child.namespaceURI === WORD_NS && child.localName === 'p') {
+            collected.push(child);
+        }
+        collectWordParagraphs(child, collected);
+    }
+}
+
 function paragraphText(paragraph) {
     let result = '';
     const excluded = new Set(['del', 'moveFrom', 'instrText']);
     const walk = node => {
-        if (node.nodeType !== 1 || node.namespaceURI !== WORD_NS) {
-            if (node.nodeType === 1) for (const child of node.childNodes) walk(child);
+        if (node.nodeType !== 1) return;
+        if (node.namespaceURI === MC_NS && node.localName === 'AlternateContent') {
+            const branch = selectedCompatibilityBranch(node);
+            if (branch) walk(branch);
+            return;
+        }
+        if (node.namespaceURI !== WORD_NS) {
+            for (const child of node.childNodes) walk(child);
             return;
         }
         if (excluded.has(node.localName)) return;
         // Word text boxes embed complete w:p paragraphs inside a normal
-        // w:p. Those paragraphs are emitted separately by the body iterator;
+        // w:p. Those paragraphs are emitted separately by the filtered collector;
         // including them in their outer paragraph repeats the spoken text.
         if (node.localName === 'p' && node !== paragraph) return;
         if (node.localName === 't') {
@@ -161,21 +203,13 @@ export async function parseDocxDocument(buffer, jszip = window.JSZip) {
     if (!body) throw new Error('DOCX is missing its document body');
 
     const blocks = [];
-    // Descendant paragraphs include tables and text boxes in document order.
-    // Deleted/moved-from paragraphs can be nested in revision containers, so
-    // filtering only text descendants within each paragraph is insufficient.
-    // Do not follow relationships or load images, templates, or links.
-    for (const paragraph of body.getElementsByTagNameNS(WORD_NS, 'p')) {
-        let excluded = false;
-        for (let parent = paragraph.parentElement; parent && parent !== body;
-            parent = parent.parentElement) {
-            if (parent.namespaceURI === WORD_NS &&
-                (parent.localName === 'del' || parent.localName === 'moveFrom')) {
-                excluded = true;
-                break;
-            }
-        }
-        if (excluded) continue;
+    // Recursively select *one* compatibility branch and prune deleted/moved
+    // source paragraphs. A document-wide getElementsByTagNameNS would include
+    // both mc:Choice and mc:Fallback, duplicating spoken text-box content.
+    // Preserve document order, including table and chosen text-box paragraphs.
+    const paragraphs = [];
+    collectWordParagraphs(body, paragraphs);
+    for (const paragraph of paragraphs) {
         const text = paragraphText(paragraph);
         if (!text) continue;
         blocks.push({
