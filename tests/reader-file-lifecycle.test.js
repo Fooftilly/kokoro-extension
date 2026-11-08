@@ -1,4 +1,7 @@
 /** @jest-environment jsdom */
+import { TextDecoder } from 'util';
+
+global.TextDecoder = TextDecoder;
 
 function deferred() {
     let resolve;
