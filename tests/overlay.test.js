@@ -109,12 +109,36 @@ function setupDOM() {
 }
 
 describe('overlay.js logic', () => {
+    let overlayWindowListeners = [];
+
     beforeEach(() => {
+        // jest.resetModules() does not detach event handlers installed by an
+        // earlier overlay.js instance. Preserve only this test's listeners so
+        // RELOAD_DATA is delivered once, as it is in a real extension iframe.
+        for (const { type, listener, options } of overlayWindowListeners) {
+            window.removeEventListener(type, listener, options);
+        }
+        overlayWindowListeners = [];
         jest.resetModules();
         jest.clearAllMocks();
         setupDOM();
-        // Require the script AFTER DOM is setup
-        require('../overlay.js');
+        const addListener = window.addEventListener;
+        window.addEventListener = function (type, listener, options) {
+            overlayWindowListeners.push({ type, listener, options });
+            return addListener.call(this, type, listener, options);
+        };
+        try {
+            require('../overlay.js');
+        } finally {
+            window.addEventListener = addListener;
+        }
+    });
+
+    afterAll(() => {
+        for (const { type, listener, options } of overlayWindowListeners) {
+            window.removeEventListener(type, listener, options);
+        }
+        overlayWindowListeners = [];
     });
 
     test('Initializes correctly', async () => {
