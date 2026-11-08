@@ -722,8 +722,16 @@ async function loadEpubChapter(href, title) {
     let startIndex = 0;
 
     if (fragment) {
-        console.log("Searching for fragment:", fragment);
-        const idx = mergedBlocks.findIndex(b => b.ids && b.ids.includes(fragment));
+        // Publisher navigation fragments may be percent-encoded while DOM IDs
+        // are decoded Unicode strings. Decode only for ID comparison; keep
+        // malformed escapes intact rather than failing the chapter load.
+        let targetId = fragment;
+        try {
+            targetId = decodeURIComponent(fragment);
+        } catch (error) {
+            console.warn('Invalid EPUB chapter fragment encoding', fragment, error);
+        }
+        const idx = mergedBlocks.findIndex(b => b.ids && b.ids.includes(targetId));
         if (idx !== -1) {
             startIndex = idx;
             console.log("Found fragment at block index:", idx);
