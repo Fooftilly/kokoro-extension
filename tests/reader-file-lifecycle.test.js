@@ -425,6 +425,48 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(browser.storage.local.set.mock.lastCall[0].pendingTitle).toBe('Chapter Two');
     });
 
+    test('navigation-relative link wins when an identical root-level filename also exists', async () => {
+        const candidate = createMockBook('Publisher');
+        candidate.packaging = { navPath: 'Nav/nav.xhtml' };
+        candidate.sections[0].href = 'chapter.xhtml';
+        candidate.sections[0].url = 'chapter.xhtml';
+        candidate.sections[1].href = 'Nav/chapter.xhtml';
+        candidate.sections[1].url = 'Nav/chapter.xhtml';
+        candidate.navigation.toc = [{ href: 'chapter.xhtml', label: 'Navigation chapter' }];
+        books.push(candidate);
+        selectFile('colliding-names.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
+
+        expect(document.querySelector('.playable-chapter').dataset.href)
+            .toBe('Nav/chapter.xhtml');
+        expect(candidate.sections[0].load).not.toHaveBeenCalled();
+        expect(candidate.sections[1].load).toHaveBeenCalledTimes(1);
+        expect(browser.storage.local.set.mock.lastCall[0].pendingContent[0].content)
+            .toContain('Nav/chapter.xhtml');
+    });
+
+    test('fragment-only TOC link plays the navigation document when it belongs to the spine', async () => {
+        const candidate = createMockBook('Publisher');
+        candidate.packaging = { navPath: 'Nav/nav.xhtml' };
+        candidate.sections[0].href = 'Nav/nav.xhtml';
+        candidate.sections[0].url = 'Nav/nav.xhtml';
+        candidate.sections[0].load.mockResolvedValue(
+            new DOMParser().parseFromString(
+                '<body><h1 id="chapter1">Chapter in navigation document</h1></body>',
+                'text/html'));
+        candidate.navigation.toc = [{ href: '#chapter1', label: 'Navigation chapter' }];
+        books.push(candidate);
+        selectFile('fragment-nav.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
+
+        expect(document.querySelector('.playable-chapter').dataset.href)
+            .toBe('Nav/nav.xhtml#chapter1');
+        expect(browser.storage.local.set.mock.lastCall[0].pendingTitle)
+            .toBe('Navigation chapter');
+        expect(browser.storage.local.set.mock.lastCall[0].pendingStartIndex).toBe(0);
+        expect(document.getElementById('chapterError').hidden).toBe(true);
+    });
+
     test('heading scan without discovered headings still resolves publisher navigation-relative paths', async () => {
         const candidate = createMockBook('Publisher');
         candidate.packaging = { navPath: 'Nav/nav.xhtml' };
