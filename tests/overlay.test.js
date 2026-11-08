@@ -61,6 +61,7 @@ jest.mock('../audio-manager.js', () => ({
         getAudio: jest.fn().mockResolvedValue('blob:url'),
         pinAudio: jest.fn(() => jest.fn()),
         retainWindow: jest.fn(),
+        prioritizeNavigation: jest.fn(),
         prefetch: jest.fn(),
         on: jest.fn()
     }))
@@ -153,6 +154,61 @@ describe('overlay.js logic', () => {
             url: 'blob:the-original-sentence',
             filename: expect.stringMatching(/-sentence-1\.mp3$/),
         }));
+    });
+
+    test('rapid navigation does not let a stale rejection overwrite newer playback', async () => {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const { AudioManager } = require('../audio-manager.js');
+        const manager = AudioManager.mock.results[0].value;
+        let rejectOld;
+        manager.getAudio.mockReset();
+        manager.getAudio
+            .mockImplementationOnce(() => new Promise((_, reject) => { rejectOld = reject; }))
+            .mockResolvedValueOnce('blob:fresh-selection');
+        const logger = jest.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+            document.getElementById('seekFwd').click();
+            await Promise.resolve();
+            document.getElementById('seekBack').click();
+            await new Promise(resolve => setTimeout(resolve, 0));
+            expect(document.getElementById('audio').getAttribute('src'))
+                .toBe('blob:fresh-selection');
+            rejectOld(new Error('Obsolete synth failed'));
+            await new Promise(resolve => setTimeout(resolve, 0));
+
+            expect(document.getElementById('status').textContent)
+                .toContain('Playing sentence 1/2');
+            expect(document.getElementById('loadingSpinner').style.display).toBe('none');
+            expect(logger).not.toHaveBeenCalledWith(
+                'Playback error', expect.objectContaining({ message: 'Obsolete synth failed' }));
+            expect(manager.prioritizeNavigation).toHaveBeenCalledWith(1);
+            expect(manager.prioritizeNavigation).toHaveBeenCalledWith(0);
+        } finally {
+            logger.mockRestore();
+        }
+    });
+
+    test('stale success cannot replace playback after navigating back to the same index', async () => {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const { AudioManager } = require('../audio-manager.js');
+        const manager = AudioManager.mock.results[0].value;
+        let resolveOld;
+        manager.getAudio.mockReset();
+        manager.getAudio
+            .mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }))
+            .mockResolvedValueOnce('blob:latest-request');
+
+        const spans = document.querySelectorAll('.sentence');
+        spans[0].click();
+        await Promise.resolve();
+        spans[0].click();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        resolveOld('blob:stale-request');
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        expect(document.getElementById('audio').getAttribute('src'))
+            .toBe('blob:latest-request');
+        expect(manager.retainWindow).toHaveBeenCalledWith(0);
     });
 
     test('pins a local audio URL until Chrome/Firefox reports download completion', async () => {
