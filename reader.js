@@ -321,25 +321,6 @@ function renderChapterList(toc) {
 
     toc.forEach(item => createItem(item));
 
-    // Navigation Button Listeners
-    prevChapterBtn.addEventListener('click', () => {
-        const currentIndex = flatToc.findIndex(item => item.href === currentActiveHref);
-        if (currentIndex > 0) {
-            const prevItem = flatToc[currentIndex - 1];
-            const el = document.querySelector(`.chapter-item[data-href="${prevItem.href}"]`);
-            if (el) el.click();
-        }
-    });
-
-    nextChapterBtn.addEventListener('click', () => {
-        const currentIndex = flatToc.findIndex(item => item.href === currentActiveHref);
-        if (currentIndex !== -1 && currentIndex < flatToc.length - 1) {
-            const nextItem = flatToc[currentIndex + 1];
-            const el = document.querySelector(`.chapter-item[data-href="${nextItem.href}"]`);
-            if (el) el.click();
-        }
-    });
-
     updateNavButtons();
 
     // Auto-select first item
@@ -354,6 +335,27 @@ function renderChapterList(toc) {
         }
     }
 }
+
+// Register chapter navigation exactly once. Re-rendering a TOC for another
+// EPUB must not accumulate handlers (which would trigger duplicate loads).
+prevChapterBtn.addEventListener('click', () => {
+    const index = flatToc.findIndex(item => item.href === currentActiveHref);
+    if (index > 0) {
+        const item = flatToc[index - 1];
+        const el = [...document.querySelectorAll('.chapter-item')]
+            .find(node => node.dataset.href === item.href);
+        el?.click();
+    }
+});
+nextChapterBtn.addEventListener('click', () => {
+    const index = flatToc.findIndex(item => item.href === currentActiveHref);
+    if (index !== -1 && index < flatToc.length - 1) {
+        const item = flatToc[index + 1];
+        const el = [...document.querySelectorAll('.chapter-item')]
+            .find(node => node.dataset.href === item.href);
+        el?.click();
+    }
+});
 
 function updateNavButtons() {
     const currentIndex = flatToc.findIndex(item => item.href === currentActiveHref);
