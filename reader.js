@@ -791,20 +791,6 @@ async function loadEpubChapter(href, title, continuePlaying = false) {
         }
     }
 
-    // Distinct TOC anchors can share one XHTML spine section. Stop the
-    // current chapter before the next anchor rather than reading its content
-    // now and repeating it after continuous chapter handoff.
-    const tocIndex = flatToc.findIndex(item => item.href === href);
-    const nextHref = tocIndex >= 0 ? flatToc[tocIndex + 1]?.href : null;
-    if (nextHref) {
-        const [nextBase, nextFragment] = nextHref.split('#');
-        if (nextBase === baseHref && nextFragment) {
-            const nextId = decodedChapterId(nextFragment);
-            const nextBlockIndex = mergedBlocks.findIndex(b => b.ids?.includes(nextId));
-            if (nextBlockIndex > startIndex) mergedBlocks.splice(nextBlockIndex);
-        }
-    }
-
     const fullText = mergedBlocks.map(b => b.content).join(' ');
     await sendToPlayer(mergedBlocks, title || "Chapter", fullText.substring(0, 100), startIndex,
         requestId, requestedBook, continuePlaying);
@@ -990,9 +976,29 @@ async function sendToPlayer(content, title, textPreview, startIndex, requestId, 
     if (requestId !== chapterRequestId || requestedBook !== book) return;
 
     const apiUrl = settings.apiUrl || 'http://127.0.0.1:8880/v1/';
+
+    // In continuous mode, an XHTML file with multiple TOC anchors needs a
+    // playback boundary at the next anchor. Other reader modes retain their
+    // original complete-section content and progress matching behavior.
+    let chapterContent = content;
+    if (requestedBook && settings.continuousReader === true) {
+        const tocIndex = flatToc.findIndex(item => item.href === currentActiveHref);
+        const currentHref = flatToc[tocIndex]?.href;
+        const nextHref = flatToc[tocIndex + 1]?.href;
+        if (currentHref && nextHref) {
+            const [currentBase] = currentHref.split('#');
+            const [nextBase, nextFragment] = nextHref.split('#');
+            if (currentBase === nextBase && nextFragment) {
+                const boundaryId = decodedChapterId(nextFragment);
+                const boundary = content.findIndex(b => b.ids?.includes(boundaryId));
+                if (boundary > startIndex) chapterContent = content.slice(0, boundary);
+            }
+        }
+    }
+    if (requestedBook) currentChapterBlocks = chapterContent;
     const pending = {
         pendingText: textPreview || 'Structured Content',
-        pendingContent: content,
+        pendingContent: chapterContent,
         pendingVoice: settings.voice,
         pendingApiUrl: apiUrl,
         pendingTtsBackend: settings.ttsBackend === undefined ? 'fastapi' : settings.ttsBackend,
