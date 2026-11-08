@@ -134,7 +134,11 @@ async function loadEpub(file, requestId) {
 
     // Keep the existing book and player intact until the replacement has
     // parsed successfully. Failed selections must not destroy a working book.
-    const candidate = ePub(bookData);
+    // EPUB.js constructor-triggered open failures emit "openFailed" without
+    // rejecting book.ready. Construct an unopened book and await open() itself:
+    // invalid ZIP/container/package errors then reject into handleFile().
+    const candidate = ePub();
+    await candidate.open(bookData);
     await candidate.ready;
     if (requestId !== fileRequestId) return;
 
