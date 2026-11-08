@@ -558,6 +558,7 @@ describe('overlay.js logic', () => {
         window.parent.postMessage.mockClear();
         window.dispatchEvent(new MessageEvent('message', {
             data: 'PAUSE_KOKORO_PLAYER', source: window.parent,
+            origin: window.location.origin,
         }));
         expect(audio.pause).toHaveBeenCalledTimes(1);
         expect(document.getElementById('playPause').textContent).toBe('Play');
@@ -579,6 +580,7 @@ describe('overlay.js logic', () => {
 
         window.dispatchEvent(new MessageEvent('message', {
             data: 'PAUSE_KOKORO_PLAYER', source: window.parent,
+            origin: window.location.origin,
         }));
         releaseStorage({
             pendingText: 'Delayed chapter',
@@ -597,6 +599,7 @@ describe('overlay.js logic', () => {
         });
         window.dispatchEvent(new MessageEvent('message', {
             data: 'RESUME_READER_AUTOPLAY', source: window.parent,
+            origin: window.location.origin,
         }));
         window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
         await new Promise(resolve => setTimeout(resolve, 0));
