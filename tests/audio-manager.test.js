@@ -45,6 +45,20 @@ describe('AudioManager', () => {
         expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
     });
 
+    test('unknown explicit backend fails closed rather than contacting FastAPI', async () => {
+        browser.storage.local.get.mockResolvedValue({
+            pendingTtsBackend: 'unknown', pendingApiUrl: 'http://localhost:8880',
+        });
+        audioManager.setSentences([{ text: 'Confidential text' }]);
+        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+            await expect(audioManager.getAudio(0)).rejects.toThrow(/Unknown Kokoro TTS backend/);
+            expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
+        } finally {
+            errorSpy.mockRestore();
+        }
+    });
+
     test('clear rejects a request whose settings were still loading without dispatching it', async () => {
         let releaseSettings;
         browser.storage.local.get.mockImplementation(() => new Promise(resolve => {
