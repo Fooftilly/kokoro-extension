@@ -20,6 +20,8 @@ let activeFileReader = null; // abort abandoned disk reads when a new file is se
 const chapterTasks = new Map(); // book -> async chapter extractions still in progress
 const retiringBooks = new Set(); // retain archives until new chapter data reaches player
 const sectionUsers = new WeakMap(); // concurrent readers must not unload each other's DOM
+let playerReloadRevision = 0; // correlate EPUB reloads with committed iframe content
+let lastPublishedReload = null; // { revision, sourceBook }; only iframe acknowledgement releases archives
 
 const prevChapterBtn = document.getElementById('prevChapter');
 const nextChapterBtn = document.getElementById('nextChapter');
@@ -166,7 +168,7 @@ async function loadEpub(file, requestId) {
     } finally {
         // A failed/superseded candidate must not retain its ZIP and section
         // documents. Only the successfully committed book remains owned here.
-        if (!committed) candidate.destroy?.();
+        if (!committed) disposeBook(candidate);
     }
 }
 
@@ -413,13 +415,32 @@ function startChapterLoad(href, title) {
     });
 }
 
+// EPUB.js 0.3.93 Archive.destroy() revokes the cache *keys* (EPUB paths),
+// rather than the cached blob URL values. Explicitly release the real URLs
+// before destroying a retired archive, without touching data: resources.
+function disposeBook(sourceBook) {
+    if (!sourceBook) return;
+    const cache = sourceBook.archive?.urlCache;
+    if (cache && typeof URL.revokeObjectURL === 'function') {
+        for (const url of new Set(Object.values(cache))) {
+            if (typeof url !== 'string' || !url.startsWith('blob:')) continue;
+            try {
+                URL.revokeObjectURL(url);
+            } catch (error) {
+                console.warn('Unable to revoke EPUB image URL', error);
+            }
+        }
+    }
+    sourceBook.destroy?.();
+}
+
 function releaseRetiredBooks() {
     for (const previous of retiringBooks) {
         retiringBooks.delete(previous);
         const tasks = [...(chapterTasks.get(previous) || [])];
         void Promise.allSettled(tasks).then(() => {
             try {
-                previous.destroy?.();
+                disposeBook(previous);
             } catch (error) {
                 console.warn('Unable to release previous EPUB archive', error);
             }
@@ -732,18 +753,31 @@ async function sendToPlayer(content, title, textPreview, startIndex, requestId, 
     const operation = playerWriteTail.catch(() => {}).then(async () => {
         await initialPlayerCleanup;
         if (requestId !== chapterRequestId || requestedBook !== book) return;
-        await browser.storage.local.set(pending);
+        // The token travels in the same atomic storage update as the chapter.
+        // The iframe acknowledges it after rendering, never merely on postMessage.
+        const revision = ++playerReloadRevision;
+        await browser.storage.local.set({
+            ...pending, pendingReaderReloadRevision: revision,
+        });
         if (requestId !== chapterRequestId || requestedBook !== book) return;
+        lastPublishedReload = { revision, sourceBook: requestedBook };
         playerFrame.contentWindow.postMessage('RELOAD_DATA', '*');
-        // The new content is now handed to the player. Old book ZIPs/objects
-        // can be released once their in-flight chapter readers have settled.
-        releaseRetiredBooks();
     });
     playerWriteTail = operation.catch(() => {});
     return operation;
 }
 
 window.addEventListener('message', (event) => {
+    // Accept a successful reload only from our own extension iframe and
+    // only for the latest published chapter of the currently selected book.
+    // Earlier acknowledgements must not free images still in use by the player.
+    if (event.source === playerFrame.contentWindow &&
+        event.data?.type === 'KOKORO_READER_RELOAD_READY' &&
+        lastPublishedReload?.revision === event.data.revision &&
+        lastPublishedReload.sourceBook === book) {
+        lastPublishedReload = null;
+        releaseRetiredBooks();
+    }
     if (event.data === 'CLOSE_KOKORO_PLAYER') {
         console.log("Player requested close");
     }
