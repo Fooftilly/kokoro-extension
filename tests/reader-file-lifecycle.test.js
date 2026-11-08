@@ -1119,6 +1119,39 @@ describe('EPUB file read/parse lifecycle', () => {
             v.pendingTitle === 'Chapter 1')).toHaveLength(1);
     });
 
+    test('hiding and restoring the sidebar transfers keyboard focus to a visible control', async () => {
+        const source = createMockBook('Navigation');
+        books.push(source);
+        selectFile('navigation.epub').succeed();
+        await expectLoaded('Navigation');
+
+        const hide = document.getElementById('toggleSidebar');
+        const show = document.getElementById('showSidebarBtn');
+        hide.focus();
+        expect(document.activeElement).toBe(hide);
+        hide.click();
+        expect(document.querySelector('.app-container').classList.contains('sidebar-hidden'))
+            .toBe(true);
+        expect(show.style.display).toBe('block');
+        expect(document.activeElement).toBe(show);
+
+        show.click();
+        expect(document.querySelector('.app-container').classList.contains('sidebar-hidden'))
+            .toBe(false);
+        expect(show.style.display).toBe('none');
+        expect(document.activeElement).toBe(hide);
+    });
+
+    test('the custom Browse control retains a keyboard-accessible native input', () => {
+        const fs = require('fs');
+        const path = require('path');
+        const source = fs.readFileSync(path.join(__dirname, '..', 'reader.css'), 'utf8');
+        const inputRule = source.match(/#fileInput\s*\{([^}]+)\}/);
+        expect(inputRule).not.toBeNull();
+        expect(inputRule[1]).not.toMatch(/display\s*:\s*none/);
+        expect(source).toMatch(/\.file-input-wrapper:focus-within\s+\.custom-file-label/);
+    });
+
     test('reader controls and file-loading status expose accessible labels and announcements', () => {
         const fs = require('fs');
         const path = require('path');
