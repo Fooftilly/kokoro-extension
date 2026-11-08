@@ -14,6 +14,16 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 function documentWithText(text) {
     return new DOMParser().parseFromString('<html><body><p>' + text + '</p></body></html>', 'text/html');
 }
+async function createDocxBuffer(paragraphs = '<w:p><w:r><w:t>Read this DOCX.</w:t></w:r></w:p>') {
+    const JSZip = require('jszip');
+    const zip = new JSZip();
+    const mainType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml';
+    const wordNs = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+    zip.file('[Content_Types].xml', '<Types><Override PartName="/word/document.xml" ContentType="' + mainType + '"/></Types>');
+    zip.file('word/document.xml', '<w:document xmlns:w="' + wordNs + '"><w:body>' +
+        paragraphs + '</w:body></w:document>');
+    return zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
+}
 function createMockBook(label, ready = Promise.resolve()) {
     const names = ['start.xhtml', 'next.xhtml'];
     const sections = names.map((href, index) => ({
@@ -112,6 +122,7 @@ describe('EPUB file read/parse lifecycle', () => {
                 this.onerror?.();
             }
         };
+        global.JSZip = require('jszip');
         global.ePub = jest.fn(() => {
             const book = books.shift();
             if (!book) throw new Error('Missing test EPUB instance');
@@ -224,6 +235,86 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(document.getElementById('errorMsg').textContent).toContain('binary');
         expect(browser.storage.local.set.mock.calls.map(([value]) => value.pendingTitle))
             .toEqual(['unicode.text']);
+    });
+
+    test('opens DOCX headings, paragraphs and table cells using the same speech player', async () => {
+        const buffer = await createDocxBuffer(
+            '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Office document</w:t></w:r></w:p>' +
+            '<w:p><w:r><w:t>Safe &amp; readable text.</w:t></w:r></w:p>' +
+            '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Table cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>');
+        selectFile('report.docx',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document').succeed(buffer);
+        const pending = await expectPlainDocument('report.docx', 'Safe & readable text.');
+        expect(pending.pendingContent.map(block => block.type))
+            .toEqual(['h1', 'text', 'text']);
+        expect(pending.pendingContent.map(block => block.content))
+            .toEqual(['Office document', 'Safe & readable text.', 'Table cell']);
+        expect(pending.pendingContent[1].html).toBe('Safe &amp; readable text.');
+        expect(pending.pendingTtsBackend).toBe('mediapipe');
+        expect(ePub).not.toHaveBeenCalled();
+    });
+
+    test('corrupt DOCX keeps picker open and preserves the previously playable book', async () => {
+        const previous = createMockBook('Book A');
+        books.push(previous);
+        selectFile('book.epub').succeed();
+        await expectLoaded('Book A');
+        const previousWriteCount = browser.storage.local.set.mock.calls.length;
+
+        document.getElementById('openAnotherDocument').click();
+        selectFile('broken.docx').succeed(new Uint8Array([1, 2, 3]).buffer);
+        for (let i = 0; i < 30 &&
+            document.getElementById('errorMsg').style.display !== 'block'; i++) await tick();
+
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('flex');
+        expect(document.getElementById('errorMsg').textContent).toContain('Unable to open DOCX');
+        expect(document.querySelector('.chapter-label').textContent).toBe('Book A 1');
+        expect(previous.destroy).not.toHaveBeenCalled();
+        expect(browser.storage.local.set).toHaveBeenCalledTimes(previousWriteCount);
+        document.getElementById('cancelDocumentPicker').click();
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+    });
+
+    test('DOCX stays uncommitted until async ZIP parsing finishes and Cancel can invalidate it', async () => {
+        const previous = createMockBook('Book A');
+        books.push(previous);
+        selectFile('book.epub').succeed();
+        await expectLoaded('Book A');
+        const previousWrites = browser.storage.local.set.mock.calls.length;
+
+        const waiting = deferred();
+        const JSZip = require('jszip');
+        global.JSZip = { loadAsync: jest.fn(() => waiting.promise) };
+        document.getElementById('openAnotherDocument').click();
+        selectFile('slow.docx').succeed(await createDocxBuffer());
+        for (let i = 0; i < 30 && !global.JSZip.loadAsync.mock.calls.length; i++) await tick();
+
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('flex');
+        document.getElementById('cancelDocumentPicker').click();
+        const parsedZip = await JSZip.loadAsync(await createDocxBuffer());
+        waiting.resolve(parsedZip);
+        await tick();
+        await tick();
+
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+        expect(document.querySelector('.chapter-label').textContent).toBe('Book A 1');
+        expect(browser.storage.local.set).toHaveBeenCalledTimes(previousWrites);
+        expect(previous.destroy).not.toHaveBeenCalled();
+    });
+
+    test('switching EPUB to DOCX keeps archive until the iframe acknowledges the new chapter', async () => {
+        const previous = createMockBook('Book A');
+        books.push(previous);
+        selectFile('old.epub').succeed();
+        await expectLoaded('Book A');
+        messages.length = 0;
+
+        selectFile('new.docx').succeed(await createDocxBuffer());
+        await expectPlainDocument('new.docx', 'Read this DOCX.');
+        expect(previous.destroy).not.toHaveBeenCalled();
+        acknowledgeCurrentChapter();
+        for (let i = 0; i < 30 && previous.destroy.mock.calls.length === 0; i++) await tick();
+        expect(previous.destroy).toHaveBeenCalledTimes(1);
     });
 
     test('rejects unknown document extensions before reading bytes', async () => {

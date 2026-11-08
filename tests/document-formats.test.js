@@ -17,6 +17,8 @@ const utf8 = text => new TextEncoder().encode(text).buffer;
 describe('document formats accepted by reader (#13)', () => {
     test.each([
         ['book.epub', '', 'epub'],
+        ['report.DOCX', '', 'docx'],
+        ['no-extension', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'docx'],
         ['notes.txt', '', 'text'],
         ['notes.text', '', 'text'],
         ['README.MD', '', 'markdown'],
@@ -32,10 +34,10 @@ describe('document formats accepted by reader (#13)', () => {
         expect(detectDocumentFormat({ name, type })).toBe(expected);
     });
 
-    test('rejects PDF and misleading unknown extensions explicitly', () => {
+    test('rejects PDF, legacy DOC, and misleading unknown extensions explicitly', () => {
         expect(() => detectDocumentFormat({ name: 'book.pdf', type: 'application/pdf' }))
             .toThrow(/Unsupported format/);
-        expect(() => detectDocumentFormat({ name: 'archive.docx', type: '' }))
+        expect(() => detectDocumentFormat({ name: 'archive.doc', type: '' }))
             .toThrow(/Unsupported format/);
     });
 });
