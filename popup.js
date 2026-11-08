@@ -593,6 +593,7 @@ const saveOptions = async (isDebounced = false, options = {}) => {
     const defaultVolume = document.getElementById('defaultVolume').value;
     const autoScroll = document.getElementById('autoScroll').checked;
     const autoplayReader = document.getElementById('autoplayReader').checked;
+    const continuousReader = document.getElementById('continuousReader').checked;
     const showFloatingButton = document.getElementById('showFloatingButton').checked;
 
     const normalizationOptions = {
@@ -606,7 +607,7 @@ const saveOptions = async (isDebounced = false, options = {}) => {
     };
 
     const theme = document.documentElement.classList.contains('dark-theme') ? 'dark' : 'light';
-    const settings = { apiUrl, voice, mode, ttsBackend, defaultSpeed, defaultVolume, autoScroll, autoplayReader, showFloatingButton, normalizationOptions, theme };
+    const settings = { apiUrl, voice, mode, ttsBackend, defaultSpeed, defaultVolume, autoScroll, autoplayReader, continuousReader, showFloatingButton, normalizationOptions, theme };
 
     const showPermissionDeniedToast = () => {
         const status = document.getElementById('status');
@@ -635,7 +636,7 @@ const saveOptions = async (isDebounced = false, options = {}) => {
         // 1. Persist settings while retaining the previously saved backend when
         // the local model is unavailable (no silent FastAPI fallback).
         await persistPopupSettings(settings, ttsBackend, selectionVersion);
-        await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, autoplayReader, showFloatingButton, normalizationOptions, theme });
+        await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, autoplayReader, continuousReader, showFloatingButton, normalizationOptions, theme });
 
         // 2. Host permission for non-local URL (never call request() here after awaits)
         const { origin, invalidUrl } = hostPermissionOriginInfo(apiUrl);
@@ -693,6 +694,7 @@ const restoreOptions = async () => {
             defaultVolume: '1.0',
             autoScroll: false,
             autoplayReader: false,
+            continuousReader: false,
             showFloatingButton: true,
             normalizationOptions: {
                 normalize: true,
@@ -747,6 +749,7 @@ const restoreOptions = async () => {
         document.getElementById('defaultVolume').value = items.defaultVolume;
         document.getElementById('autoScroll').checked = items.autoScroll;
         document.getElementById('autoplayReader').checked = items.autoplayReader;
+        document.getElementById('continuousReader').checked = items.continuousReader === true;
         document.getElementById('showFloatingButton').checked = items.showFloatingButton;
 
         const norm = items.normalizationOptions;
