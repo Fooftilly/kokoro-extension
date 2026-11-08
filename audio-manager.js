@@ -1,3 +1,4 @@
+import './tts-providers.js';
 import { MediaPipeKokoroProvider } from './mediapipe-provider.js';
 import { pcmToWavBlob } from './pcm-wav.js';
 
