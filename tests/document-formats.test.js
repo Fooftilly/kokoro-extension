@@ -1,4 +1,9 @@
 /** @jest-environment jsdom */
+import { TextEncoder, TextDecoder } from 'util';
+
+global.TextEncoder = TextEncoder;
+global.TextDecoder = TextDecoder;
+
 import {
     MAX_TEXT_DOCUMENT_BYTES,
     detectDocumentFormat,
