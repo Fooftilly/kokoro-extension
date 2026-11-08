@@ -140,12 +140,35 @@ body {
     background-color: var(--hover-color);
 }
 
+/* The row is a layout container; chapter selection and expansion use
+   separate native buttons with visible keyboard focus. */
+.chapter-select {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.chapter-select:focus-visible,
+.chapter-toggle:focus-visible {
+    outline: 2px solid var(--accent-color);
+    outline-offset: 2px;
+}
+
 .chapter-item.active {
     background-color: var(--accent-color);
     color: white;
 }
 
 .chapter-toggle {
+    border: 0;
+    background: transparent;
+    padding: 0;
     width: 20px;
     height: 20px;
     display: flex;
