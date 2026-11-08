@@ -20,6 +20,7 @@ let currentIndex = 0;
 let navigationRequestId = 0; // ignores obsolete results even when an index is revisited
 let initializationRequestId = 0; // ignores stale asynchronous EPUB reloads
 let readerPauseRequested = false; // Close persists across asynchronous reader reloads
+let autoScrollChangeRevision = 0; // a late reload must not undo a live toggle
 let continuousReaderEnabled = false; // only true for an opted-in EPUB iframe
 let activeReaderRevision = null; // which acknowledged chapter is playing
 let isPaused = false;
@@ -355,6 +356,7 @@ window.addEventListener('message', (event) => {
 
 async function initialize() {
     const loadId = ++initializationRequestId;
+    const scrollRevisionAtStart = autoScrollChangeRevision;
     window.focus();
     retryBtn.style.display = 'none';
     statusEl.textContent = "Initializing...";
@@ -373,8 +375,9 @@ async function initialize() {
     // still pending. Never paint or start playback from a superseded read.
     if (loadId !== initializationRequestId) return;
 
-    const autoScroll = data.autoScroll || false;
-    window.kokoroAutoScroll = autoScroll;
+    if (autoScrollChangeRevision === scrollRevisionAtStart) {
+        window.kokoroAutoScroll = data.autoScroll === true;
+    }
 
     // Check for URL params
     const urlParams = new URLSearchParams(window.location.search);
@@ -740,10 +743,15 @@ async function navigate(index, forcePlay = null) {
     currentSentence.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
     // Scroll origin page if enabled
-    if (window.kokoroAutoScroll && currentSentence.text) {
+    // EPUB/other document readers have no matching origin-page DOM.
+    // Preserve source spelling and block context across the iframe boundary;
+    // normalized TTS text is not necessarily present on the source page.
+    if (window.kokoroAutoScroll && currentSentence.sourceText &&
+        new URLSearchParams(window.location.search).get('waitForData') !== 'true') {
         postToHostPage({
             action: 'KOKORO_SCROLL_TO_BLOCK',
-            text: currentSentence.text
+            text: currentSentence.sourceText,
+            blockText: currentSentence.sourceBlockText,
         });
     }
 
@@ -826,6 +834,10 @@ async function navigate(index, forcePlay = null) {
 
 // Handle theme changes in real-time
 browser.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === 'local' && changes.autoScroll) {
+        autoScrollChangeRevision++;
+        window.kokoroAutoScroll = changes.autoScroll.newValue === true;
+    }
     if (areaName === 'local' && changes.theme) {
         if (changes.theme.newValue === 'dark') {
             document.documentElement.classList.add('dark-theme');
