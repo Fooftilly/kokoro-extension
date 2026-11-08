@@ -75,6 +75,7 @@ export default [
       'overlay.js',
       'reader.js',
       'document-formats.js',
+      'docx-reader.js',
       'audio-manager.js',
       'model-data-store.js',
       'onnx-kokoro-inputs.js',
