@@ -191,12 +191,15 @@ async function handleFile(file) {
 
 document.getElementById('toggleSidebar').addEventListener('click', () => {
     appContainer.classList.add('sidebar-hidden');
-    document.getElementById('showSidebarBtn').style.display = 'block';
+    const showButton = document.getElementById('showSidebarBtn');
+    showButton.style.display = 'block';
+    showButton.focus();
 });
 
 document.getElementById('showSidebarBtn').addEventListener('click', () => {
     appContainer.classList.remove('sidebar-hidden');
     document.getElementById('showSidebarBtn').style.display = 'none';
+    document.getElementById('toggleSidebar').focus();
 });
 
 // EPUB.js preserves raw navigation hrefs, which are relative to the
