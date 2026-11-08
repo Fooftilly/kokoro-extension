@@ -14,6 +14,16 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 function documentWithText(text) {
     return new DOMParser().parseFromString('<html><body><p>' + text + '</p></body></html>', 'text/html');
 }
+async function createDocxBuffer(paragraphs = '<w:p><w:r><w:t>Read this DOCX.</w:t></w:r></w:p>') {
+    const JSZip = require('jszip');
+    const zip = new JSZip();
+    const mainType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml';
+    const wordNs = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+    zip.file('[Content_Types].xml', '<Types><Override PartName="/word/document.xml" ContentType="' + mainType + '"/></Types>');
+    zip.file('word/document.xml', '<w:document xmlns:w="' + wordNs + '"><w:body>' +
+        paragraphs + '</w:body></w:document>');
+    return zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
+}
 function createMockBook(label, ready = Promise.resolve()) {
     const names = ['start.xhtml', 'next.xhtml'];
     const sections = names.map((href, index) => ({
@@ -112,6 +122,7 @@ describe('EPUB file read/parse lifecycle', () => {
                 this.onerror?.();
             }
         };
+        global.JSZip = require('jszip');
         global.ePub = jest.fn(() => {
             const book = books.shift();
             if (!book) throw new Error('Missing test EPUB instance');
