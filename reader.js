@@ -34,7 +34,13 @@ const chapterTasks = new Map(); // book -> async chapter extractions still in pr
 const retiringBooks = new Set(); // retain archives until new chapter data reaches player
 const sectionUsers = new WeakMap(); // concurrent readers must not unload each other's DOM
 let playerReloadRevision = 0; // correlate EPUB reloads with committed iframe content
-let lastPublishedReload = null; // { revision, sourceBook }; only iframe acknowledgement releases archives
+let lastPublishedReload = null; // { revision, sourceBook, requestId }; only iframe acknowledgement releases archives
+let renderedChapterRevision = null; // acknowledged by the embedded player
+let renderedChapterHref = null; // exact TOC entry loaded for the acknowledged revision
+let renderedChapterRequestId = null;
+let renderedChapterContinuous = false;
+let lastContinuedRevision = null; // an ended chapter may advance only once
+let deferredChapterEndRevision = null; // do not advance behind the open file picker
 let readerPausedForPicker = false; // Close must suppress pending chapter autoplay
 
 const prevChapterBtn = document.getElementById('prevChapter');
@@ -108,6 +114,9 @@ function cancelDocumentPicker() {
     }
     resetPickerState();
     filePickerOverlay.style.display = 'none';
+    if (deferredChapterEndRevision !== null) {
+        continueAfterChapter(deferredChapterEndRevision);
+    }
 }
 
 openAnotherDocumentButton.addEventListener('click', openDocumentPicker);
@@ -320,6 +329,7 @@ async function loadEpub(file, requestId) {
         chapterRequestId++;
         book = candidate;
         textDocument = null;
+        deferredChapterEndRevision = null;
         committed = true;
         if (oldBook) retiringBooks.add(oldBook);
         currentChapterBlocks = [];
@@ -356,6 +366,7 @@ async function loadTextDocument(file, format, requestId) {
     chapterRequestId++;
     book = null;
     textDocument = { blocks, title: file.name };
+    deferredChapterEndRevision = null;
     if (oldBook) retiringBooks.add(oldBook);
     currentChapterBlocks = blocks;
     currentActiveHref = null;
@@ -539,18 +550,7 @@ function renderChapterList(toc) {
         itemEl.appendChild(label);
 
         if (playable) itemEl.addEventListener('click', () => {
-            document.querySelectorAll('.chapter-item').forEach(d => d.classList.remove('active'));
-            itemEl.classList.add('active');
-            currentActiveHref = item.href;
-            updateNavButtons();
-            if (book) {
-                startChapterLoad(item.href, item.label);
-            } else if (textDocument) {
-                activeTextChapterWrite = startTextChapterLoad(item.label);
-                // Subsequent manual selections have no awaiting file handler.
-                // The reader alert carries errors; avoid unhandled rejections.
-                void activeTextChapterWrite.catch(() => {});
-            }
+            activateChapter(item, itemEl);
         });
 
         container.appendChild(itemEl);
@@ -589,6 +589,20 @@ function renderChapterList(toc) {
     }
 }
 
+function activateChapter(item, itemEl, continuePlaying = false) {
+    document.querySelectorAll('.chapter-item').forEach(el => el.classList.remove('active'));
+    itemEl.classList.add('active');
+    currentActiveHref = item.href;
+    updateNavButtons();
+    if (book) {
+        startChapterLoad(item.href, item.label, continuePlaying);
+    } else if (textDocument) {
+        activeTextChapterWrite = startTextChapterLoad(item.label);
+        // The reader alert carries errors; avoid unhandled rejections.
+        void activeTextChapterWrite.catch(() => {});
+    }
+}
+
 // Register chapter navigation exactly once. Re-rendering a TOC for another
 // EPUB must not accumulate handlers (which would trigger duplicate loads).
 prevChapterBtn.addEventListener('click', () => {
@@ -618,13 +632,13 @@ function updateNavButtons() {
 
 // A prior book may still have section.load() in progress when its successor
 // is selected. Track chapter work so Book.destroy() waits for those readers.
-function startChapterLoad(href, title) {
+function startChapterLoad(href, title, continuePlaying = false) {
     const source = book;
     // The file picker is hidden after successful EPUB loading; chapter errors
     // must be shown in the reader, not in the hidden file picker.
     chapterErrorMsg.hidden = true;
     chapterErrorMsg.textContent = '';
-    const task = loadEpubChapter(href, title);
+    const task = loadEpubChapter(href, title, continuePlaying);
     const requestId = chapterRequestId;
     let tasks = chapterTasks.get(source);
     if (!tasks) {
@@ -693,7 +707,7 @@ async function consumeSection(section, source, callback) {
     }
 }
 
-async function loadEpubChapter(href, title) {
+async function loadEpubChapter(href, title, continuePlaying = false) {
     const requestId = ++chapterRequestId;
     const requestedBook = book;
     if (!requestedBook) return;
@@ -786,7 +800,7 @@ async function loadEpubChapter(href, title) {
 
     const fullText = mergedBlocks.map(b => b.content).join(' ');
     await sendToPlayer(mergedBlocks, title || "Chapter", fullText.substring(0, 100), startIndex,
-        requestId, requestedBook);
+        requestId, requestedBook, continuePlaying, href);
 }
 
 // --- Content Processing & Extraction ---
@@ -898,6 +912,11 @@ function updateActiveChapter(blockIndex) {
     const block = currentChapterBlocks[blockIndex];
     if (!block.ids || block.ids.length === 0) return;
 
+    // Fragment IDs are unique within an XHTML file, not across the EPUB.
+    // A heading in b.xhtml#title must not activate a.xhtml#title.
+    const playbackHref = renderedChapterRequestId === chapterRequestId
+        ? renderedChapterHref : currentActiveHref;
+    const playbackBase = playbackHref?.split('#')[0];
     // Find if any of these IDs correspond to a TOC item
     // We need to flatten the TOC to search it efficiently or just search recursively
     let bestMatch = null;
@@ -911,7 +930,8 @@ function updateActiveChapter(blockIndex) {
             // Use the same decoding as initial chapter selection. Otherwise
             // #caf%C3%A9 can navigate correctly but never update the sidebar
             // when playback reaches <h2 id="café">.
-            if (itemHash && block.ids.includes(decodedChapterId(itemHash))) {
+            if (itemHash && item.href.split('#')[0] === playbackBase &&
+                block.ids.includes(decodedChapterId(itemHash))) {
                 return item;
             }
             // If item has no hash, it points to the start of the file. 
@@ -961,17 +981,38 @@ function updateActiveChapter(blockIndex) {
     }
 }
 
-async function sendToPlayer(content, title, textPreview, startIndex, requestId, requestedBook) {
+async function sendToPlayer(content, title, textPreview, startIndex, requestId, requestedBook,
+    continuePlaying = false, sourceHref = null) {
     const settings = await browser.storage.sync.get([
         'voice', 'normalizationOptions', 'customPronunciations', 'apiUrl',
-        'autoplayReader', 'ttsBackend', 'mediaPipeVariant', 'localVoice',
+        'autoplayReader', 'continuousReader', 'ttsBackend', 'mediaPipeVariant', 'localVoice',
     ]);
     if (requestId !== chapterRequestId || requestedBook !== book) return;
 
     const apiUrl = settings.apiUrl || 'http://127.0.0.1:8880/v1/';
+
+    // In continuous mode, an XHTML file with multiple TOC anchors needs a
+    // playback boundary at the next anchor. Other reader modes retain their
+    // original complete-section content and progress matching behavior.
+    let chapterContent = content;
+    if (requestedBook && settings.continuousReader === true) {
+        const tocIndex = flatToc.findIndex(item => item.href === currentActiveHref);
+        const currentHref = flatToc[tocIndex]?.href;
+        const nextHref = flatToc[tocIndex + 1]?.href;
+        if (currentHref && nextHref) {
+            const [currentBase] = currentHref.split('#');
+            const [nextBase, nextFragment] = nextHref.split('#');
+            if (currentBase === nextBase && nextFragment) {
+                const boundaryId = decodedChapterId(nextFragment);
+                const boundary = content.findIndex(b => b.ids?.includes(boundaryId));
+                if (boundary > startIndex) chapterContent = content.slice(0, boundary);
+            }
+        }
+    }
+    if (requestedBook) currentChapterBlocks = chapterContent;
     const pending = {
         pendingText: textPreview || 'Structured Content',
-        pendingContent: content,
+        pendingContent: chapterContent,
         pendingVoice: settings.voice,
         pendingApiUrl: apiUrl,
         pendingTtsBackend: settings.ttsBackend === undefined ? 'fastapi' : settings.ttsBackend,
@@ -981,7 +1022,8 @@ async function sendToPlayer(content, title, textPreview, startIndex, requestId, 
         pendingNormalizationOptions: settings.normalizationOptions,
         pendingCustomPronunciations: settings.customPronunciations,
         pendingStartIndex: startIndex,
-        pendingAutoplay: settings.autoplayReader === undefined ? false : settings.autoplayReader,
+        pendingAutoplay: continuePlaying || settings.autoplayReader === true,
+        pendingContinuousReader: Boolean(requestedBook && settings.continuousReader === true),
     };
     // Storage updates can finish out of order even when chapter extraction
     // completed in the desired order. Serialize writes; ignore stale requests
@@ -998,11 +1040,44 @@ async function sendToPlayer(content, title, textPreview, startIndex, requestId, 
             pendingReaderReloadRevision: revision,
         });
         if (requestId !== chapterRequestId || requestedBook !== book) return;
-        lastPublishedReload = { revision, sourceBook: requestedBook };
+        lastPublishedReload = {
+            revision, sourceBook: requestedBook, requestId,
+            continuousReader: pending.pendingContinuousReader,
+            chapterHref: sourceHref,
+        };
         playerFrame.contentWindow.postMessage('RELOAD_DATA', '*');
     });
     playerWriteTail = operation.catch(() => {});
     return operation;
+}
+
+function continueAfterChapter(revision) {
+    if (!book || !renderedChapterContinuous || readerPausedForPicker ||
+        revision !== renderedChapterRevision ||
+        renderedChapterRequestId !== chapterRequestId ||
+        lastContinuedRevision === revision) {
+        deferredChapterEndRevision = null;
+        return;
+    }
+    if (filePickerOverlay.style.display !== 'none') {
+        deferredChapterEndRevision = revision;
+        return;
+    }
+    deferredChapterEndRevision = null;
+    lastContinuedRevision = revision;
+    // Visual progress may select a nested TOC heading; continuation follows
+    // the file-qualified chapter actually delivered to the player.
+    const index = flatToc.findIndex(item => item.href === renderedChapterHref);
+    const next = index < 0 ? null : flatToc[index + 1];
+    const nextEl = next && [...chapterList.querySelectorAll('.playable-chapter')]
+        .find(el => el.dataset.href === next.href);
+    if (!nextEl) {
+        playerFrame.contentWindow.postMessage({
+            type: 'KOKORO_READER_LAST_CHAPTER', revision,
+        }, window.location.origin);
+        return;
+    }
+    activateChapter(next, nextEl, true);
 }
 
 window.addEventListener('message', (event) => {
@@ -1013,8 +1088,33 @@ window.addEventListener('message', (event) => {
         event.data?.type === 'KOKORO_READER_RELOAD_READY' &&
         lastPublishedReload?.revision === event.data.revision &&
         lastPublishedReload.sourceBook === book) {
+        if (lastPublishedReload.requestId === chapterRequestId) {
+            renderedChapterRevision = event.data.revision;
+            renderedChapterRequestId = chapterRequestId;
+            renderedChapterContinuous = lastPublishedReload.continuousReader;
+            renderedChapterHref = lastPublishedReload.chapterHref;
+        }
         lastPublishedReload = null;
         releaseRetiredBooks();
+    }
+    // Only the current EPUB iframe can request continuity; preserve valid
+    // completions while a replacement picker is open, then handle them on
+    // Cancel. A successful replacement discards the previous completion.
+    if (event.source === playerFrame.contentWindow &&
+        event.origin === window.location.origin &&
+        event.data?.type === 'KOKORO_READER_CHAPTER_ENDED') {
+        continueAfterChapter(event.data.revision);
+    }
+    // Explicit Play after Close/Cancel resumes the existing document and
+    // re-enables continuous handoff. Never clear the latch for an unknown
+    // frame, a different chapter revision, or while the picker is visible.
+    if (event.source === playerFrame.contentWindow &&
+        event.origin === window.location.origin &&
+        event.data?.type === 'KOKORO_READER_RESUMED' &&
+        event.data.revision === renderedChapterRevision &&
+        renderedChapterRequestId === chapterRequestId &&
+        hasOpenDocument() && filePickerOverlay.style.display === 'none') {
+        readerPausedForPicker = false;
     }
     // The reader owns its embedded player: Close returns to the document
     // picker without discarding the current book or leaving audio playing.
@@ -1023,6 +1123,7 @@ window.addEventListener('message', (event) => {
         event.origin === window.location.origin &&
         event.data === 'CLOSE_KOKORO_PLAYER') {
         readerPausedForPicker = true;
+        deferredChapterEndRevision = null;
         playerFrame.contentWindow.postMessage('PAUSE_KOKORO_PLAYER', window.location.origin);
         openDocumentPicker();
     }
