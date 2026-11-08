@@ -73,6 +73,7 @@ function openDocumentPicker() {
 }
 
 function resumeAutoplayForNewDocument() {
+    if (!readerPausedForPicker) return;
     readerPausedForPicker = false;
     // An explicit successful document replacement restores its autoplay preference.
     playerFrame.contentWindow.postMessage('RESUME_READER_AUTOPLAY', window.location.origin);
