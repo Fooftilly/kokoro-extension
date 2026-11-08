@@ -389,6 +389,55 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(second.pendingAutoplay).toBe(true);
     });
 
+    test('Close, Cancel and explicit Play re-enable continuous handoff without changing documents', async () => {
+        browser.storage.sync.get.mockResolvedValue({
+            ttsBackend: 'mediapipe', autoplayReader: false, continuousReader: true,
+        });
+        const source = createMockBook('Book A');
+        books.push(source);
+        selectFile('book.epub').succeed();
+        await expectLoaded('Book A');
+        acknowledgeCurrentChapter();
+        const frame = document.getElementById('playerFrame');
+        const revision = browser.storage.local.set.mock.lastCall[0].pendingReaderReloadRevision;
+        window.dispatchEvent(new MessageEvent('message', {
+            data: 'CLOSE_KOKORO_PLAYER',
+            source: frame.contentWindow, origin: window.location.origin,
+        }));
+        document.getElementById('cancelDocumentPicker').click();
+        const ended = { type: 'KOKORO_READER_CHAPTER_ENDED', revision };
+        window.dispatchEvent(new MessageEvent('message', {
+            data: ended, source: frame.contentWindow, origin: window.location.origin,
+        }));
+        expect(source.sections[1].load).not.toHaveBeenCalled();
+
+        // A different origin or revision must never undo Close.
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'KOKORO_READER_RESUMED', revision },
+            source: frame.contentWindow, origin: 'https://unknown.invalid',
+        }));
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'KOKORO_READER_RESUMED', revision: revision + 1 },
+            source: frame.contentWindow, origin: window.location.origin,
+        }));
+        window.dispatchEvent(new MessageEvent('message', {
+            data: ended, source: frame.contentWindow, origin: window.location.origin,
+        }));
+        expect(source.sections[1].load).not.toHaveBeenCalled();
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'KOKORO_READER_RESUMED', revision },
+            source: frame.contentWindow, origin: window.location.origin,
+        }));
+        window.dispatchEvent(new MessageEvent('message', {
+            data: ended, source: frame.contentWindow, origin: window.location.origin,
+        }));
+        for (let i = 0; i < 30 && source.sections[1].load.mock.calls.length === 0; i++) {
+            await tick();
+        }
+        expect(source.sections[1].load).toHaveBeenCalledTimes(1);
+    });
+
     test('continuous handoff ignores disabled setting and pending manual chapter changes', async () => {
         const source = createMockBook('Book A');
         books.push(source);
