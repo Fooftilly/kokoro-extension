@@ -35,6 +35,15 @@ describe('bounded DOCX extraction through the packaged JSZip engine', () => {
         ]);
     });
 
+    test('treats outline levels missing a numeric value as ordinary paragraphs', async () => {
+        const archive = await docx(
+            '<w:p><w:pPr><w:outlineLvl/></w:pPr><w:r><w:t>Missing level.</w:t></w:r></w:p>' +
+            '<w:p><w:pPr><w:outlineLvl w:val=""/></w:pPr><w:r><w:t>Empty level.</w:t></w:r></w:p>' +
+            '<w:p><w:pPr><w:outlineLvl w:val=" "/></w:pPr><w:r><w:t>Whitespace level.</w:t></w:r></w:p>' +
+            '<w:p><w:pPr><w:outlineLvl w:val="2"/></w:pPr><w:r><w:t>Valid heading.</w:t></w:r></w:p>');
+        expect((await parseDocxDocument(archive, JSZip)).map(block => block.type))
+            .toEqual(['text', 'text', 'text', 'h3']);
+    });
     test('does not speak deleted revisions, field instructions, or untrusted markup', async () => {
         const archive = await docx(
           '<w:p><w:r><w:t>New &amp; &lt;private&gt;</w:t></w:r>' +
