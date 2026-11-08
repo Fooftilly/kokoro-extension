@@ -16,10 +16,12 @@ function createMockBook(label, ready = Promise.resolve()) {
     const sections = names.map((href, index) => ({
         href, url: href, index,
         load: jest.fn(async () => documentWithText(label + ' ' + href)),
+        unload: jest.fn(),
     }));
     return {
         ready,
         open: jest.fn(async () => {}),
+        destroy: jest.fn(),
         navigation: { toc: names.map((href, i) => ({
             label: label + ' ' + (i + 1), href,
         })) },
@@ -40,6 +42,7 @@ function mountReaderDOM() {
         <input id="fileInput" type="file">
         <div id="file-name-display"></div>
         <div id="errorMsg" style="display:none"></div>
+        <div id="chapterError" role="alert" hidden></div>
         <div id="loadingStatus" style="display:none"></div>
         <div id="chapterList"></div>
         <iframe id="playerFrame"></iframe>
@@ -229,6 +232,140 @@ describe('EPUB file read/parse lifecycle', () => {
             value.pendingTitle.startsWith('Book B'))).toBe(true);
         expect(document.getElementById('file-name-display').textContent).toBe('b.epub');
         expect(messages).toEqual(['RELOAD_DATA']);
+    });
+
+    test('scanning all spine sections and playing one chapter unloads their DOMs', async () => {
+        const a = createMockBook('Book A');
+        books.push(a);
+        selectFile('book.epub').succeed();
+        await expectLoaded('Book A');
+        // TOC scans both sections, then the automatically selected first
+        // chapter reloads section 0 for its content. Neither DOM is retained.
+        expect(a.sections[0].load).toHaveBeenCalledTimes(2);
+        expect(a.sections[1].load).toHaveBeenCalledTimes(1);
+        expect(a.sections[0].unload).toHaveBeenCalledTimes(2);
+        expect(a.sections[1].unload).toHaveBeenCalledTimes(1);
+        expect(a.destroy).not.toHaveBeenCalled();
+    });
+
+    test('old archive is destroyed only after replacement chapter reaches player', async () => {
+        const a = createMockBook('Book A');
+        const b = createMockBook('Book B');
+        const nextReady = deferred();
+        b.sections[0].load.mockImplementationOnce(async () =>
+            documentWithText('TOC B')).mockImplementationOnce(() => nextReady.promise);
+        books.push(a, b);
+        selectFile('book-a.epub').succeed();
+        await expectLoaded('Book A');
+        messages.length = 0;
+        selectFile('book-b.epub').succeed();
+        // New B book/TOC commits, but its first chapter is still loading.
+        for (let n = 0; n < 30 && document.querySelector('.chapter-label')?.textContent !== 'Book B 1'; n++) {
+            await tick();
+        }
+        expect(document.querySelector('.chapter-label').textContent).toBe('Book B 1');
+        expect(a.destroy).not.toHaveBeenCalled();
+        nextReady.resolve(documentWithText('First B chapter'));
+        for (let n = 0; n < 30 && a.destroy.mock.calls.length === 0; n++) await tick();
+        expect(messages).toEqual(['RELOAD_DATA']);
+        expect(a.destroy).toHaveBeenCalledTimes(1);
+        expect(b.destroy).not.toHaveBeenCalled();
+    });
+
+    test('abandoned and failed EPUB candidates release their archives', async () => {
+        const firstOpen = deferred();
+        const abandoned = createMockBook('Abandoned');
+        abandoned.open.mockImplementation(() => firstOpen.promise);
+        const current = createMockBook('Current');
+        const broken = createMockBook('Broken');
+        broken.open.mockRejectedValue(new Error('Corrupt archive'));
+        books.push(abandoned, current, broken);
+
+        selectFile('abandoned.epub').succeed();
+        await tick(); // its open() has begun
+        selectFile('current.epub').succeed();
+        await expectLoaded('Current');
+        firstOpen.resolve();
+        await tick();
+        expect(abandoned.destroy).toHaveBeenCalledTimes(1);
+        expect(current.destroy).not.toHaveBeenCalled();
+
+        // A subsequent corrupt replacement must not release the active book.
+        selectFile('corrupt.epub').succeed();
+        await tick();
+        expect(broken.destroy).toHaveBeenCalledTimes(1);
+        expect(current.destroy).not.toHaveBeenCalled();
+        expect(document.querySelector('.chapter-label').textContent).toBe('Current 1');
+    });
+
+    test('retired book waits for an in-progress chapter before releasing archive', async () => {
+        const a = createMockBook('Book A');
+        const b = createMockBook('Book B');
+        books.push(a, b);
+        selectFile('a.epub').succeed();
+        await expectLoaded('Book A');
+        const oldChapter = deferred();
+        a.sections[1].load.mockImplementationOnce(() => oldChapter.promise);
+        document.getElementById('nextChapter').click();
+        await tick();
+        selectFile('b.epub').succeed();
+        for (let n = 0; n < 30 &&
+            !messages.some((_, index) => index >= 1); n++) await tick();
+        expect(document.querySelector('.chapter-label').textContent).toBe('Book B 1');
+        expect(a.destroy).not.toHaveBeenCalled();
+        oldChapter.resolve(documentWithText('Old chapter finish'));
+        for (let n = 0; n < 30 && a.destroy.mock.calls.length === 0; n++) await tick();
+        expect(a.destroy).toHaveBeenCalledTimes(1);
+        // The now-stale old chapter never reloads its text into the player.
+        expect(browser.storage.local.set.mock.calls.every(([value]) =>
+            !value.pendingTitle.startsWith('Book A 2'))).toBe(true);
+    });
+
+    test('chapter-load failure is visible after the file picker has been dismissed', async () => {
+        const a = createMockBook('Book A');
+        books.push(a);
+        selectFile('a.epub').succeed();
+        await expectLoaded('Book A');
+
+        const chapterError = document.getElementById('chapterError');
+        const picker = document.getElementById('filePickerOverlay');
+        expect(picker.style.display).toBe('none');
+        expect(chapterError.hidden).toBe(true);
+        expect(chapterError.getAttribute('role')).toBe('alert');
+        a.sections[1].load.mockRejectedValueOnce(new Error('Unable to read chapter section'));
+        document.getElementById('nextChapter').click();
+        for (let i = 0; i < 30 && chapterError.hidden; i++) await tick();
+        expect(chapterError.hidden).toBe(false);
+        expect(chapterError.textContent).toContain('Unable to read chapter section');
+        // Loading a new chapter clears the reader-side alert; the picker is
+        // never reopened to report normal chapter navigation errors.
+        document.getElementById('prevChapter').click();
+        expect(chapterError.hidden).toBe(true);
+        expect(chapterError.textContent).toBe('');
+        expect(picker.style.display).toBe('none');
+    });
+
+    test('late failures from abandoned chapter navigation cannot overwrite current alert', async () => {
+        const a = createMockBook('Book A');
+        books.push(a);
+        selectFile('a.epub').succeed();
+        await expectLoaded('Book A');
+        const oldSection = deferred();
+        a.sections[1].load.mockImplementationOnce(() => oldSection.promise);
+        document.getElementById('nextChapter').click();
+        await tick();
+        document.getElementById('prevChapter').click();
+        await tick();
+        oldSection.reject(new Error('Old chapter failure'));
+        await tick();
+        await tick();
+
+        const alert = document.getElementById('chapterError');
+        expect(alert.hidden).toBe(true);
+        expect(alert.textContent).toBe('');
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+        expect(browser.storage.local.set.mock.calls.every(([value]) =>
+            !value.pendingTitle.startsWith('Book A 2'))).toBe(true);
     });
 
     test('reopening books does not multiply Previous/Next click handlers', async () => {

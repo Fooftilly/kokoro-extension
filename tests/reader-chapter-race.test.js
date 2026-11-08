@@ -14,6 +14,7 @@ function readerDOM() {
         <input type="file" id="fileInput">
         <div id="file-name-display"></div>
         <div id="errorMsg"></div>
+        <div id="chapterError" role="alert" hidden></div>
         <div id="loadingStatus"></div>
         <div id="chapterList"></div>
         <iframe id="playerFrame"></iframe>

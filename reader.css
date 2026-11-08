@@ -156,6 +156,19 @@ body {
     flex-direction: column;
 }
 
+/* Chapter errors must remain visible after the file picker is dismissed. */
+.chapter-error {
+    margin: 0;
+    padding: 10px 15px;
+    color: #a80000;
+    background: var(--sidebar-bg);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.dark-theme .chapter-error {
+    color: #f87171;
+}
+
 #playerFrame {
     flex: 1;
     border: none;

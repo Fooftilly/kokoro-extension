@@ -2,6 +2,7 @@ const fileInput = document.getElementById('fileInput');
 const filePickerOverlay = document.getElementById('filePickerOverlay');
 const chapterList = document.getElementById('chapterList');
 const errorMsg = document.getElementById('errorMsg');
+const chapterErrorMsg = document.getElementById('chapterError');
 const loadingStatus = document.getElementById('loadingStatus');
 const playerFrame = document.getElementById('playerFrame');
 const sidebar = document.getElementById('sidebar');
@@ -16,6 +17,9 @@ let chapterRequestId = 0; // invalidates superseded chapter extraction
 let playerWriteTail = Promise.resolve(); // prevents out-of-order storage writes
 let fileRequestId = 0; // only the latest EPUB selection may replace the book
 let activeFileReader = null; // abort abandoned disk reads when a new file is selected
+const chapterTasks = new Map(); // book -> async chapter extractions still in progress
+const retiringBooks = new Set(); // retain archives until new chapter data reaches player
+const sectionUsers = new WeakMap(); // concurrent readers must not unload each other's DOM
 
 const prevChapterBtn = document.getElementById('prevChapter');
 const nextChapterBtn = document.getElementById('nextChapter');
@@ -138,22 +142,32 @@ async function loadEpub(file, requestId) {
     // rejecting book.ready. Construct an unopened book and await open() itself:
     // invalid ZIP/container/package errors then reject into handleFile().
     const candidate = ePub();
-    await candidate.open(bookData);
-    await candidate.ready;
-    if (requestId !== fileRequestId) return;
+    let committed = false;
+    try {
+        await candidate.open(bookData);
+        await candidate.ready;
+        if (requestId !== fileRequestId) return;
 
-    loadingStatus.textContent = 'Scanning for chapters...';
-    const toc = await getEnrichedToc(candidate, () => requestId === fileRequestId);
-    if (requestId !== fileRequestId) return;
+        loadingStatus.textContent = 'Scanning for chapters...';
+        const toc = await getEnrichedToc(candidate, () => requestId === fileRequestId);
+        if (requestId !== fileRequestId) return;
 
-    // Commit the new book atomically. Invalidate any outstanding chapter
-    // extraction on the old book before the first chapter of the new TOC loads.
-    chapterRequestId++;
-    book = candidate;
-    currentChapterBlocks = [];
-    currentActiveHref = null;
-    currentToc = toc;
-    renderChapterList(toc);
+        // Retain the old book until the new chapter reaches the player:
+        // current audio/image blob URLs may still refer to its archive.
+        const oldBook = book;
+        chapterRequestId++;
+        book = candidate;
+        committed = true;
+        if (oldBook) retiringBooks.add(oldBook);
+        currentChapterBlocks = [];
+        currentActiveHref = null;
+        currentToc = toc;
+        renderChapterList(toc);
+    } finally {
+        // A failed/superseded candidate must not retain its ZIP and section
+        // documents. Only the successfully committed book remains owned here.
+        if (!committed) candidate.destroy?.();
+    }
 }
 
 /**
@@ -253,6 +267,10 @@ async function getEnrichedToc(book, isCurrent = () => true) {
                     enriched.push(currentMain);
                 }
             }
+        } finally {
+            // TOC scanning visits every spine section. EPUB.js retains each
+            // parsed document until Section.unload() is called.
+            section.unload?.();
         }
     }
 
@@ -304,7 +322,7 @@ function renderChapterList(toc) {
             currentActiveHref = item.href;
             updateNavButtons();
             if (book) {
-                loadEpubChapter(item.href, item.label);
+                startChapterLoad(item.href, item.label);
             }
         });
 
@@ -368,6 +386,64 @@ function updateNavButtons() {
     nextChapterBtn.disabled = currentIndex === -1 || currentIndex >= flatToc.length - 1;
 }
 
+// A prior book may still have section.load() in progress when its successor
+// is selected. Track chapter work so Book.destroy() waits for those readers.
+function startChapterLoad(href, title) {
+    const source = book;
+    // The file picker is hidden after successful EPUB loading; chapter errors
+    // must be shown in the reader, not in the hidden file picker.
+    chapterErrorMsg.hidden = true;
+    chapterErrorMsg.textContent = '';
+    const task = loadEpubChapter(href, title);
+    const requestId = chapterRequestId;
+    let tasks = chapterTasks.get(source);
+    if (!tasks) {
+        tasks = new Set();
+        chapterTasks.set(source, tasks);
+    }
+    tasks.add(task);
+    void task.catch(error => {
+        if (book !== source || requestId !== chapterRequestId) return;
+        console.error('EPUB chapter could not be loaded:', error);
+        chapterErrorMsg.textContent = 'Failed to load chapter: ' + String(error.message || error);
+        chapterErrorMsg.hidden = false;
+    }).finally(() => {
+        tasks.delete(task);
+        if (tasks.size === 0) chapterTasks.delete(source);
+    });
+}
+
+function releaseRetiredBooks() {
+    for (const previous of retiringBooks) {
+        retiringBooks.delete(previous);
+        const tasks = [...(chapterTasks.get(previous) || [])];
+        void Promise.allSettled(tasks).then(() => {
+            try {
+                previous.destroy?.();
+            } catch (error) {
+                console.warn('Unable to release previous EPUB archive', error);
+            }
+        });
+    }
+}
+
+// Section.load() caches the DOM. Different overlapping chapter selections can
+// share one Section, so unload it only after the last reader completes.
+async function consumeSection(section, source, callback) {
+    sectionUsers.set(section, (sectionUsers.get(section) || 0) + 1);
+    try {
+        const doc = await section.load(source.load.bind(source));
+        return await callback(doc);
+    } finally {
+        const remaining = (sectionUsers.get(section) || 1) - 1;
+        if (remaining > 0) sectionUsers.set(section, remaining);
+        else {
+            sectionUsers.delete(section);
+            section.unload?.();
+        }
+    }
+}
+
 async function loadEpubChapter(href, title) {
     const requestId = ++chapterRequestId;
     const requestedBook = book;
@@ -400,11 +476,14 @@ async function loadEpubChapter(href, title) {
 
     const allBlocks = [];
     for (const sec of sectionsToLoad) {
-        const doc = await sec.load(requestedBook.load.bind(requestedBook));
-        if (requestId !== chapterRequestId || book !== requestedBook) return;
-        const body = doc.body || (doc.documentElement ? doc.documentElement : doc);
-        const blocks = await extractBlocks(sec, body, requestedBook);
-        if (requestId !== chapterRequestId || book !== requestedBook) return;
+        const blocks = await consumeSection(sec, requestedBook, async doc => {
+            if (requestId !== chapterRequestId || book !== requestedBook) return null;
+            const body = doc.body || (doc.documentElement ? doc.documentElement : doc);
+            const result = await extractBlocks(sec, body, requestedBook);
+            if (requestId !== chapterRequestId || book !== requestedBook) return null;
+            return result;
+        });
+        if (!blocks) return; // superseded chapter; section already unloaded
         allBlocks.push(...blocks);
     }
 
@@ -656,6 +735,9 @@ async function sendToPlayer(content, title, textPreview, startIndex, requestId, 
         await browser.storage.local.set(pending);
         if (requestId !== chapterRequestId || requestedBook !== book) return;
         playerFrame.contentWindow.postMessage('RELOAD_DATA', '*');
+        // The new content is now handed to the player. Old book ZIPs/objects
+        // can be released once their in-flight chapter readers have settled.
+        releaseRetiredBooks();
     });
     playerWriteTail = operation.catch(() => {});
     return operation;
