@@ -48,6 +48,28 @@ describe('bounded DOCX extraction through the packaged JSZip engine', () => {
         ]);
     });
 
+    test('skips entire moved-from and deleted paragraphs but reads the new destination', async () => {
+        const archive = await docx(
+            '<w:p><w:r><w:t>Before.</w:t></w:r></w:p>' +
+            '<w:moveFrom><w:p><w:r><w:t>OLD moved paragraph.</w:t></w:r></w:p></w:moveFrom>' +
+            '<w:del><w:p><w:r><w:t>OLD deleted paragraph.</w:t></w:r></w:p></w:del>' +
+            '<w:moveTo><w:p><w:r><w:t>New destination.</w:t></w:r></w:p></w:moveTo>' +
+            '<w:p><w:r><w:t>After.</w:t></w:r></w:p>');
+        expect((await parseDocxDocument(archive, JSZip)).map(block => block.content))
+            .toEqual(['Before.', 'New destination.', 'After.']);
+    });
+
+    test('speaks nested textbox paragraphs only once without merging them into the parent', async () => {
+        const archive = await docx(
+            '<w:p><w:r><w:t>Surrounding sentence.</w:t>' +
+            '<w:drawing><w:txbxContent><w:p><w:r><w:t>Textbox text.</w:t></w:r></w:p></w:txbxContent></w:drawing>' +
+            '<w:t> After textbox.</w:t></w:r></w:p>' +
+            '<w:p><w:r><w:t>Normal following paragraph.</w:t></w:r></w:p>');
+        expect((await parseDocxDocument(archive, JSZip)).map(block => block.content))
+            .toEqual(['Surrounding sentence. After textbox.', 'Textbox text.',
+                'Normal following paragraph.']);
+    });
+
     test('does not fetch relationships or embedded media', async () => {
         const archive = new JSZip();
         archive.file('[Content_Types].xml', typesXml);
