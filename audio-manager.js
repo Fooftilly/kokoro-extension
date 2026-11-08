@@ -227,9 +227,12 @@ export class AudioManager {
         return work;
     }
 
-    async remoteAudio(text, data) {
+    async remoteAudio(text, data, onRequestStart = () => {}) {
         if (!data.pendingApiUrl) throw new Error('Missing API URL');
         const endpoint = new URL('audio/speech', data.pendingApiUrl).href;
+        // A server prefetch that already reached the background request is
+        // useful if its sentence becomes active. Avoid issuing it twice.
+        onRequestStart();
         const result = await browser.runtime.sendMessage({
             action: 'FETCH_TTS_AUDIO',
             backend: 'fastapi',
@@ -252,7 +255,7 @@ export class AudioManager {
     async routeAudio(text, data, isStale = () => false, onSynthesisStart = () => {}) {
         const backend = data.pendingTtsBackend === undefined ? 'fastapi' : data.pendingTtsBackend;
         if (backend === 'mediapipe') return this.localAudio(text, data, isStale, onSynthesisStart);
-        if (backend === 'fastapi') return this.remoteAudio(text, data);
+        if (backend === 'fastapi') return this.remoteAudio(text, data, onSynthesisStart);
         throw new Error('Local TTS backend ONNX plain-text synthesis is not yet available. No text was sent to Kokoro-FastAPI.');
     }
 
