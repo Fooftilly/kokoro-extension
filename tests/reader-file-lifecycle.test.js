@@ -44,6 +44,9 @@ function mountReaderDOM() {
         <div id="dropZone"></div>
         <input id="fileInput" type="file">
         <div id="file-name-display"></div>
+        <input id="scanDocumentHeadings" type="checkbox">
+        <button id="openAnotherDocument" type="button"></button>
+        <button id="cancelDocumentPicker" type="button" hidden></button>
         <div id="errorMsg" style="display:none"></div>
         <div id="chapterError" role="alert" hidden></div>
         <div id="loadingStatus" style="display:none"></div>
