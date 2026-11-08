@@ -348,6 +348,55 @@ describe('content.js parseArticle', () => {
         }
     });
 
+    test('auto-scroll reuses its text index across sentences and refreshes after DOM changes', () => {
+        document.body.innerHTML = `
+            <div id="kokoro-overlay-container"><iframe id="kokoro-player-frame"></iframe></div>
+            <article><p id="first">The first parcel weighed 5 kg.</p>
+            <p id="second">The second parcel weighed 7 kg.</p></article>`;
+        const frame = document.getElementById('kokoro-player-frame');
+        frame.src = browser.runtime.getURL('overlay.html');
+        const first = document.getElementById('first');
+        const second = document.getElementById('second');
+        first.scrollIntoView = jest.fn();
+        second.scrollIntoView = jest.fn();
+        first.getBoundingClientRect = jest.fn(() => ({ top: -100, bottom: -50 }));
+        second.getBoundingClientRect = jest.fn(() => ({ top: -100, bottom: -50 }));
+
+        const query = jest.spyOn(document, 'querySelectorAll');
+        try {
+            const scrollTo = (text) => postFromOverlayIframe(frame, {
+                action: 'KOKORO_SCROLL_TO_BLOCK',
+                text,
+                blockText: text,
+            });
+            scrollTo('The first parcel weighed 5 kg.');
+            const initialQueries = query.mock.calls.length;
+            expect(initialQueries).toBeGreaterThan(0);
+            scrollTo('The second parcel weighed 7 kg.');
+            expect(query).toHaveBeenCalledTimes(initialQueries);
+            expect(first.scrollIntoView).toHaveBeenCalledTimes(1);
+            expect(second.scrollIntoView).toHaveBeenCalledTimes(1);
+
+            // The extension's own player DOM changes must not trigger a
+            // whole-page text index rebuild.
+            const overlay = document.getElementById('kokoro-overlay-container');
+            overlay.appendChild(document.createElement('span'));
+            scrollTo('The first parcel weighed 5 kg.');
+            expect(query).toHaveBeenCalledTimes(initialQueries);
+
+            // Dynamic article text does invalidate the index, including
+            // changes occurring immediately before the next scroll message.
+            second.textContent = 'The second parcel weighed 8 kg.';
+            scrollTo('The second parcel weighed 8 kg.');
+            expect(query).toHaveBeenCalledTimes(initialQueries + 1);
+            expect(second.scrollIntoView).toHaveBeenCalledTimes(2);
+            scrollTo('The second parcel weighed 7 kg.');
+            expect(second.scrollIntoView).toHaveBeenCalledTimes(2);
+        } finally {
+            query.mockRestore();
+        }
+    });
+
     test('drag move deltas preserve offset from nonzero top-right position', () => {
         const { posApi, container, iframe } = mountOverlayPlayerFixture();
         const defaultPos = posApi.defaultOverlayPosition({
