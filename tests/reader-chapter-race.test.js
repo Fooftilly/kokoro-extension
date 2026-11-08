@@ -93,6 +93,7 @@ describe('EPUB chapter loading and storage ordering', () => {
             load: jest.fn(),
             archive: { createUrl: jest.fn(async name => name) },
         };
+        mockBook.open = jest.fn(async () => mockBook);
         global.ePub = jest.fn(() => mockBook);
         global.FileReader = class {
             readAsArrayBuffer() {
