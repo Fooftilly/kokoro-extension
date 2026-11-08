@@ -19,6 +19,7 @@ let sentences = [];
 let currentIndex = 0;
 let navigationRequestId = 0; // ignores obsolete results even when an index is revisited
 let initializationRequestId = 0; // ignores stale asynchronous EPUB reloads
+let readerPauseRequested = false; // Close persists across asynchronous reader reloads
 let isPaused = false;
 let ignoreNextPause = false;
 let overlayCollapsed = false;
@@ -239,6 +240,15 @@ window.addEventListener('message', (event) => {
         navigate(currentIndex + 1);
     } else if (event.data === 'NAV_PREV') {
         navigate(currentIndex - 1);
+    } else if (event.source === window.parent && event.origin === window.location.origin &&
+        event.data === 'PAUSE_KOKORO_PLAYER') {
+        readerPauseRequested = true;
+        // Invalidate an in-flight getAudio so a delayed result cannot start playing.
+        navigationRequestId++;
+        pause();
+    } else if (event.source === window.parent && event.origin === window.location.origin &&
+        event.data === 'RESUME_READER_AUTOPLAY') {
+        readerPauseRequested = false;
     } else if (event.data === 'RELOAD_DATA') {
         window.hasReceivedData = true;
         initialize();
@@ -249,6 +259,7 @@ window.addEventListener('message', (event) => {
 
 playPauseBtn.addEventListener('click', () => {
     if (audioEl.paused) {
+        readerPauseRequested = false; // explicit user Play can resume after Close
         resume();
     } else {
         pause();
@@ -404,7 +415,7 @@ async function initialize() {
 
     // Default to true for regular websites (where pendingAutoplay is missing), 
     // but respect the EPUB reader's preference if provided.
-    const shouldAutoplay = data.pendingAutoplay !== false;
+    const shouldAutoplay = data.pendingAutoplay !== false && !readerPauseRequested;
     navigate(initialIndex, shouldAutoplay);
 
     postToHostPage('KOKORO_PLAYER_READY');

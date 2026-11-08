@@ -552,6 +552,60 @@ describe('overlay.js logic', () => {
         expect(document.getElementById('audio')).toBe(audio);
     });
 
+    test('reader pause message stops audio without closing the embedded player', () => {
+        const audio = document.getElementById('audio');
+        audio.pause = jest.fn();
+        window.parent.postMessage.mockClear();
+        window.dispatchEvent(new MessageEvent('message', {
+            data: 'PAUSE_KOKORO_PLAYER', source: window.parent,
+            origin: window.location.origin,
+        }));
+        expect(audio.pause).toHaveBeenCalledTimes(1);
+        expect(document.getElementById('playPause').textContent).toBe('Play');
+        expect(window.parent.postMessage).not.toHaveBeenCalledWith('CLOSE_KOKORO_PLAYER', '*');
+    });
+
+    test('Close keeps a late autoplay reload paused until user resumes or opens a new document', async () => {
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const audio = document.getElementById('audio');
+        audio.pause = jest.fn();
+        audio.play = jest.fn().mockResolvedValue();
+
+        let releaseStorage;
+        browser.storage.local.get.mockImplementationOnce(() =>
+            new Promise(resolve => { releaseStorage = resolve; }));
+        window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
+        await Promise.resolve();
+        expect(typeof releaseStorage).toBe('function');
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: 'PAUSE_KOKORO_PLAYER', source: window.parent,
+            origin: window.location.origin,
+        }));
+        releaseStorage({
+            pendingText: 'Delayed chapter',
+            pendingContent: [{ type: 'text', content: 'Delayed chapter' }],
+            pendingTitle: 'Delayed chapter', pendingAutoplay: true,
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(audio.pause).toHaveBeenCalled();
+        expect(audio.play).not.toHaveBeenCalled();
+        expect(document.getElementById('playPause').textContent).toBe('Play');
+
+        browser.storage.local.get.mockResolvedValueOnce({
+            pendingText: 'New document',
+            pendingContent: [{ type: 'text', content: 'New document' }],
+            pendingTitle: 'New document', pendingAutoplay: true,
+        });
+        window.dispatchEvent(new MessageEvent('message', {
+            data: 'RESUME_READER_AUTOPLAY', source: window.parent,
+            origin: window.location.origin,
+        }));
+        window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(audio.play).toHaveBeenCalledTimes(1);
+    });
+
     test('Close still posts CLOSE_KOKORO_PLAYER', async () => {
         await new Promise(r => setTimeout(r, 100));
         window.parent.postMessage.mockClear();

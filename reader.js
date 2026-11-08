@@ -35,6 +35,7 @@ const retiringBooks = new Set(); // retain archives until new chapter data reach
 const sectionUsers = new WeakMap(); // concurrent readers must not unload each other's DOM
 let playerReloadRevision = 0; // correlate EPUB reloads with committed iframe content
 let lastPublishedReload = null; // { revision, sourceBook }; only iframe acknowledgement releases archives
+let readerPausedForPicker = false; // Close must suppress pending chapter autoplay
 
 const prevChapterBtn = document.getElementById('prevChapter');
 const nextChapterBtn = document.getElementById('nextChapter');
@@ -69,6 +70,13 @@ function resetPickerState() {
 function openDocumentPicker() {
     resetPickerState();
     filePickerOverlay.style.display = 'flex';
+}
+
+function resumeAutoplayForNewDocument() {
+    if (!readerPausedForPicker) return;
+    readerPausedForPicker = false;
+    // An explicit successful document replacement restores its autoplay preference.
+    playerFrame.contentWindow.postMessage('RESUME_READER_AUTOPLAY', window.location.origin);
 }
 
 function cancelDocumentPicker() {
@@ -301,6 +309,7 @@ async function loadEpub(file, requestId) {
         currentChapterBlocks = [];
         currentActiveHref = null;
         currentToc = toc;
+        resumeAutoplayForNewDocument();
         renderChapterList(toc);
     } finally {
         // A failed/superseded candidate must not retain its ZIP and section
@@ -335,6 +344,7 @@ async function loadTextDocument(file, format, requestId) {
     currentChapterBlocks = blocks;
     currentActiveHref = null;
     currentToc = [{ href: 'document:0', label: file.name }];
+    resumeAutoplayForNewDocument();
     renderChapterList(currentToc);
     // Parsing and rendering the chapter list commit the replacement. The
     // async player write must *not* keep Cancel visible after this point.
@@ -967,7 +977,9 @@ async function sendToPlayer(content, title, textPreview, startIndex, requestId, 
         // The iframe acknowledges it after rendering, never merely on postMessage.
         const revision = ++playerReloadRevision;
         await browser.storage.local.set({
-            ...pending, pendingReaderReloadRevision: revision,
+            ...pending,
+            pendingAutoplay: pending.pendingAutoplay && !readerPausedForPicker,
+            pendingReaderReloadRevision: revision,
         });
         if (requestId !== chapterRequestId || requestedBook !== book) return;
         lastPublishedReload = { revision, sourceBook: requestedBook };
@@ -988,8 +1000,15 @@ window.addEventListener('message', (event) => {
         lastPublishedReload = null;
         releaseRetiredBooks();
     }
-    if (event.data === 'CLOSE_KOKORO_PLAYER') {
-        console.log("Player requested close");
+    // The reader owns its embedded player: Close returns to the document
+    // picker without discarding the current book or leaving audio playing.
+    // Ignore messages from other frames or unrelated page scripts.
+    if (event.source === playerFrame.contentWindow &&
+        event.origin === window.location.origin &&
+        event.data === 'CLOSE_KOKORO_PLAYER') {
+        readerPausedForPicker = true;
+        playerFrame.contentWindow.postMessage('PAUSE_KOKORO_PLAYER', window.location.origin);
+        openDocumentPicker();
     }
 });
 
