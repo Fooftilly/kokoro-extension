@@ -121,7 +121,22 @@ export class AudioManager {
         };
     }
 
-    async getAudio(index) {
+    // Drop obsolete queued syntheses before placing the actively selected
+    // sentence on the serialized inference lane. Keep already-generated URLs
+    // until the player replaces its audio source; never cancel a pinned export.
+    prioritizeNavigation(index) {
+        if (!Number.isInteger(index) || index < 0 || index >= this.sentences.length) {
+            throw new RangeError('Invalid requested sentence index');
+        }
+        for (const [cachedIndex, entry] of this.audioCache) {
+            if (entry.pending && !this.isPinned(cachedIndex) &&
+                (cachedIndex !== index || entry.speculative)) {
+                this.evictAudio(cachedIndex, entry);
+            }
+        }
+    }
+
+    async getAudio(index, { speculative = false } = {}) {
         if (!Number.isInteger(index) || index < 0 || index >= this.sentences.length) return null;
 
         if (this.audioCache.has(index)) {
@@ -129,11 +144,12 @@ export class AudioManager {
         }
 
         const generation = this.generation;
-        const entry = { promise: null, evicted: false, url: null };
+        const entry = { promise: null, evicted: false, url: null, pending: true, speculative };
         const promise = this.fetchAudio(this.sentences[index].text, generation, entry);
         entry.promise = promise;
         this.audioCache.set(index, entry);
         void promise.then(url => {
+            entry.pending = false;
             entry.url = url;
             for (const pin of this.audioPins) {
                 if (pin.index === index && pin.generation === generation) pin.url = url;
@@ -142,6 +158,7 @@ export class AudioManager {
         // A missing model or transient server error must not poison retries.
         // Do not remove a newer request for the same sentence.
         void promise.catch(() => {
+            entry.pending = false;
             if (this.generation === generation && this.audioCache.get(index) === entry) {
                 this.audioCache.delete(index);
             }
@@ -150,8 +167,9 @@ export class AudioManager {
     }
 
     prefetch(index) {
-        if (index < this.sentences.length && !this.audioCache.has(index)) {
-            void this.getAudio(index).catch(error => {
+        if (Number.isInteger(index) && index >= 0 &&
+            index < this.sentences.length && !this.audioCache.has(index)) {
+            void this.getAudio(index, { speculative: true }).catch(error => {
                 if (error.name !== 'AbortError') console.warn('Kokoro prefetch failed:', error);
             });
         }
