@@ -527,6 +527,33 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(document.getElementById('nextChapter').disabled).toBe(true);
     });
 
+    test('percent-encoded publisher anchor selects the Unicode DOM ID rather than the first block', async () => {
+        const candidate = createMockBook('Book A');
+        candidate.navigation.toc[0].href = 'start.xhtml#caf%C3%A9';
+        candidate.sections[0].load.mockResolvedValue(
+            new DOMParser().parseFromString(
+                '<body><p>Prelude sentence.</p><h2 id="café">Café chapter.</h2></body>',
+                'text/html'));
+        books.push(candidate);
+        selectFile('encoded-anchor.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
+        expect(browser.storage.local.set.mock.lastCall[0].pendingStartIndex).toBe(1);
+        expect(document.getElementById('chapterError').hidden).toBe(true);
+    });
+
+    test('malformed publisher anchor escapes warn and fall back without aborting playback', async () => {
+        const candidate = createMockBook('Book A');
+        candidate.navigation.toc[0].href = 'start.xhtml#bad%ZZ';
+        books.push(candidate);
+        selectFile('malformed-anchor.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
+        expect(browser.storage.local.set.mock.lastCall[0].pendingStartIndex).toBe(0);
+        expect(document.getElementById('chapterError').hidden).toBe(false);
+        expect(document.getElementById('chapterError').textContent)
+            .toContain('requested chapter anchor could not be found');
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+    });
+
     test('missing EPUB TOC anchor warns visibly and falls back to chapter start', async () => {
         const candidate = createMockBook('Book A');
         candidate.navigation.toc[0].href = 'start.xhtml#absent';
