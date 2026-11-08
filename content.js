@@ -640,27 +640,35 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         } else if (event.data && event.data.action === 'KOKORO_SET_COLLAPSED') {
             setOverlayCollapsed(!!event.data.collapsed);
         } else if (event.data && event.data.action === 'KOKORO_SCROLL_TO_BLOCK') {
-            const searchText = event.data.text;
-            if (!searchText) return;
+            const normalize = value => typeof value === 'string'
+                ? value.replace(/\s+/g, ' ').trim() : '';
+            const sourceText = normalize(event.data.text);
+            const blockText = normalize(event.data.blockText);
+            if (!sourceText) return;
 
-            // Try to find the element on the page that contains this text
-            // We look for the smallest element that contains the text
-            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-            let node;
-            let bestMatch = null;
-
-            while ((node = walker.nextNode())) {
-                if (node.textContent.includes(searchText)) {
-                    const parent = node.parentElement;
-                    // Avoid scrolling to our own overlay
-                    if (parent.closest('#kokoro-overlay-container')) continue;
-
-                    // We want the most specific element (e.g. the P or LI, not the BODY)
-                    if (!bestMatch || bestMatch.contains(parent)) {
-                        bestMatch = parent;
-                    }
-                }
+            // Source sentences may span inline text nodes, while an article's
+            // block text identifies the right paragraph when phrases repeat.
+            // Never pick an arbitrary first match for ambiguous content.
+            const candidates = [...document.querySelectorAll(
+                'p, li, h1, h2, h3, h4, h5, h6, td, th, blockquote, div, section, article, main'
+            )].filter(el => !el.closest('#kokoro-overlay-container'));
+            const matches = (needle, exact = false) => {
+                if (!needle) return [];
+                const possible = candidates.filter(el => {
+                    const content = normalize(el.textContent);
+                    return exact ? content === needle : content.includes(needle);
+                });
+                // Keep the smallest matching content element, not its ancestor.
+                return possible.filter(el => !possible.some(other =>
+                    other !== el && el.contains(other)));
+            };
+            let options = blockText ? matches(blockText) : [];
+            if (options.length !== 1) {
+                // Short phrases must match an entire element, not an unrelated
+                // substring ("The", "Yes", etc.) anywhere on the page.
+                options = matches(sourceText, sourceText.length < 20);
             }
+            const bestMatch = options.length === 1 ? options[0] : null;
 
             if (bestMatch) {
                 // Refined scrolling logic: only scroll if the element is not comfortably in view
