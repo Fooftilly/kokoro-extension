@@ -95,8 +95,8 @@ describe('EPUB file read/parse lifecycle', () => {
                 this.readyState = 2;
                 this.onabort?.();
             }
-            succeed() {
-                this.result = new ArrayBuffer(8);
+            succeed(buffer = new ArrayBuffer(8)) {
+                this.result = buffer;
                 this.readyState = 2;
                 this.onload?.({ target: this });
             }
@@ -130,6 +130,23 @@ describe('EPUB file read/parse lifecycle', () => {
         }));
     }
 
+    async function expectPlainDocument(filename, expectedText) {
+        for (let i = 0; i < 30 &&
+            !browser.storage.local.set.mock.calls.some(([value]) => value.pendingTitle === filename);
+            i++) await tick();
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+        expect(document.getElementById('loadingStatus').style.display).toBe('none');
+        expect(document.querySelectorAll('.chapter-item')).toHaveLength(1);
+        expect(document.querySelector('.chapter-label').textContent).toBe(filename);
+        const stored = browser.storage.local.set.mock.calls
+            .map(([value]) => value)
+            .find(value => value.pendingTitle === filename);
+        expect(stored.pendingContent.map(block => block.content).join(' '))
+            .toContain(expectedText);
+        expect(messages).toContain('RELOAD_DATA');
+        return stored;
+    }
+
     function selectFile(name, type = 'application/epub+zip') {
         const input = document.getElementById('fileInput');
         Object.defineProperty(input, 'files', {
@@ -149,6 +166,99 @@ describe('EPUB file read/parse lifecycle', () => {
             expect.objectContaining({ pendingTitle: label + ' 1' }));
         expect(messages).toContain('RELOAD_DATA');
     }
+
+    test('reads TXT into one reader chapter with escaped markup and intact local backend settings', async () => {
+        const { TextEncoder } = require('util');
+        const bytes = new TextEncoder().encode('Hello <world> & friends.\n\nSecond paragraph.');
+        selectFile('notes.txt', 'text/plain').succeed(bytes.buffer);
+        const stored = await expectPlainDocument('notes.txt', 'Hello <world> & friends.');
+        expect(ePub).not.toHaveBeenCalled();
+        expect(stored.pendingContent).toHaveLength(2);
+        expect(stored.pendingContent[0].html).toContain('&lt;world&gt;');
+        expect(stored.pendingTtsBackend).toBe('mediapipe');
+        expect(stored.pendingMediaPipeVariant).toBe('cpu');
+    });
+
+    test('reads Markdown headings and words without treating markup as active HTML', async () => {
+        const { TextEncoder } = require('util');
+        selectFile('README.md', 'text/markdown').succeed(
+            new TextEncoder().encode('# Main heading\n\n**Bold** and [docs](https://example.org).').buffer);
+        const stored = await expectPlainDocument('README.md', 'Main heading');
+        expect(stored.pendingContent.map(entry => entry.type)).toEqual(['h1', 'text']);
+        expect(stored.pendingContent[1].content).toBe('Bold and docs.');
+        expect(stored.pendingContent[1].html).not.toContain('https://example.org');
+    });
+
+    test('reads HTML paragraphs without importing scripts, links, or external markup', async () => {
+        const { TextEncoder } = require('util');
+        const markup = '<h2>A chapter</h2><p>Hello <b>reader</b>.</p>' +
+            '<script>fetch("https://example.org/secrets")</script>' +
+            '<p onclick="bad()">Last &amp; final.</p>';
+        selectFile('book.html', 'text/html').succeed(
+            new TextEncoder().encode(markup).buffer);
+        const stored = await expectPlainDocument('book.html', 'Hello reader.');
+        expect(stored.pendingContent.map(entry => entry.type)).toEqual(['h2', 'text', 'text']);
+        expect(JSON.stringify(stored.pendingContent)).not.toContain('https://example.org');
+        expect(JSON.stringify(stored.pendingContent)).not.toContain('onclick');
+    });
+
+    test('supports UTF-16-BOM plain text and reports binary files without closing picker', async () => {
+        selectFile('unicode.text', 'text/plain').succeed(
+            Uint8Array.from([0xff, 0xfe, 72, 0, 105, 0]).buffer);
+        await expectPlainDocument('unicode.text', 'Hi');
+
+        selectFile('garbled.txt', 'text/plain').succeed(
+            Uint8Array.from([65, 0, 66]).buffer);
+        await tick();
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+        // The user must explicitly reopen the picker to replace a document;
+        // a failed replacement never silently erases the working chapter.
+        expect(document.getElementById('errorMsg').style.display).toBe('block');
+        expect(document.getElementById('errorMsg').textContent).toContain('binary');
+        expect(browser.storage.local.set.mock.calls.map(([value]) => value.pendingTitle))
+            .toEqual(['unicode.text']);
+    });
+
+    test('rejects unknown document extensions before reading bytes', async () => {
+        selectFile('notes.pdf', 'application/pdf');
+        await tick();
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('block');
+        expect(document.getElementById('errorMsg').textContent).toContain('Unsupported format');
+        expect(document.getElementById('errorMsg').style.display).toBe('block');
+        expect(ePub).not.toHaveBeenCalled();
+        expect(readers).toHaveLength(0);
+    });
+
+    test('stale text-file reads are aborted and cannot supersede a newer EPUB', async () => {
+        const bookA = createMockBook('Book B');
+        books.push(bookA);
+        const oldReader = selectFile('older.md', 'text/markdown');
+        const currentReader = selectFile('newer.epub', 'application/epub+zip');
+        expect(oldReader.readyState).toBe(2);
+        currentReader.succeed();
+        await expectLoaded('Book B');
+        expect(browser.storage.local.set.mock.calls.map(([value]) => value.pendingTitle))
+            .toEqual(['Book B 1']);
+        expect(document.getElementById('file-name-display').textContent).toBe('newer.epub');
+    });
+
+    test('switching from EPUB to TXT retains old archive until player acknowledges new text', async () => {
+        const bookA = createMockBook('Book A');
+        books.push(bookA);
+        selectFile('old.epub').succeed();
+        await expectLoaded('Book A');
+        messages.length = 0;
+
+        const { TextEncoder } = require('util');
+        selectFile('new.txt', 'text/plain').succeed(
+            new TextEncoder().encode('Fresh new document.').buffer);
+        await expectPlainDocument('new.txt', 'Fresh new document.');
+        expect(bookA.destroy).not.toHaveBeenCalled();
+        acknowledgeCurrentChapter();
+        for (let i = 0; i < 30 && bookA.destroy.mock.calls.length === 0; i++) await tick();
+        expect(bookA.destroy).toHaveBeenCalledTimes(1);
+        expect(ePub).toHaveBeenCalledTimes(1);
+    });
 
     test('does not dismiss picker until both file read and EPUB ready/TOC scan finish', async () => {
         const ready = deferred();
