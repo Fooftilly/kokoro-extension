@@ -128,6 +128,19 @@ describe('text and markup conversion is inert and speech-safe', () => {
         ]);
     });
 
+    test('preserves inline word fragments and punctuation inside non-paragraph containers', () => {
+        const blocks = parseTextDocument('html',
+            '<div>Read<em>er</em>.</div>' +
+            'Bare <strong>body</strong> text.' +
+            '<section>Introduction <span>to</span> text.' +
+            '<p>Separate paragraph.</p>Following <i>text</i>.</section>');
+        expect(blocks.map(b => b.content)).toEqual([
+            'Reader.', 'Bare body text.', 'Introduction to text.',
+            'Separate paragraph.', 'Following text.',
+        ]);
+        expect(blocks.every(b => b.html === b.content)).toBe(true);
+    });
+
     test('empty HTML body fails rather than sending a blank chapter', () => {
         expect(() => parseTextDocument('html',
             '<script>onlyScript()</script><style>body{display:none}</style>'))
