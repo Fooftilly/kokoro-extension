@@ -19,6 +19,7 @@ function createMockBook(label, ready = Promise.resolve()) {
     }));
     return {
         ready,
+        open: jest.fn(async () => {}),
         navigation: { toc: names.map((href, i) => ({
             label: label + ' ' + (i + 1), href,
         })) },
@@ -162,16 +163,37 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(messages).toEqual([]);
     });
 
-    test('invalid EPUB parsing is shown as a load failure', async () => {
-        const failed = deferred();
-        books.push(createMockBook('Invalid', failed.promise));
+    test('invalid EPUB open() failure propagates even when ready never settles', async () => {
+        const neverReady = deferred();
+        const badBook = createMockBook('Invalid', neverReady.promise);
+        badBook.open.mockRejectedValueOnce(new Error('Invalid ZIP or missing container'));
+        books.push(badBook);
         const reader = selectFile('corrupt.epub');
         reader.succeed();
         await tick();
-        failed.reject(new Error('Invalid EPUB archive'));
+        await tick();
+        expect(ePub).toHaveBeenCalledWith();
+        expect(badBook.open).toHaveBeenCalledWith(expect.any(ArrayBuffer));
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('block');
+        expect(document.getElementById('errorMsg').textContent)
+            .toContain('Invalid ZIP or missing container');
+        expect(document.getElementById('loadingStatus').style.display).toBe('none');
+        expect(document.querySelectorAll('.chapter-item')).toHaveLength(0);
+    });
+
+    test('rejection of ready after successful open also reports the failure', async () => {
+        const failed = deferred();
+        const badBook = createMockBook('Invalid', failed.promise);
+        books.push(badBook);
+        const reader = selectFile('corrupt.epub');
+        reader.succeed();
+        await tick();
+        expect(badBook.open).toHaveBeenCalledTimes(1);
+        failed.reject(new Error('Invalid EPUB metadata'));
         await tick();
         expect(document.getElementById('filePickerOverlay').style.display).toBe('block');
-        expect(document.getElementById('errorMsg').textContent).toContain('Invalid EPUB archive');
+        expect(document.getElementById('errorMsg').textContent)
+            .toContain('Invalid EPUB metadata');
         expect(document.getElementById('loadingStatus').style.display).toBe('none');
         expect(document.querySelectorAll('.chapter-item')).toHaveLength(0);
     });
