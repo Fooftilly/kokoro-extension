@@ -332,7 +332,7 @@ async function initialize() {
     audioManager.clear();
     textDisplay.textContent = '';
 
-    const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'defaultSpeed', 'defaultVolume', 'autoScroll', 'pendingCustomPronunciations', 'theme', 'pendingStartIndex', 'pendingAutoplay']);
+    const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'defaultSpeed', 'defaultVolume', 'autoScroll', 'pendingCustomPronunciations', 'theme', 'pendingStartIndex', 'pendingAutoplay', 'pendingReaderReloadRevision']);
     // A newer chapter can finish loading while an earlier storage read is
     // still pending. Never paint or start playback from a superseded read.
     if (loadId !== initializationRequestId) return;
@@ -408,6 +408,17 @@ async function initialize() {
     navigate(initialIndex, shouldAutoplay);
 
     postToHostPage('KOKORO_PLAYER_READY');
+    // Reader owns previous-book archive URLs. A RELOAD_DATA post is not a
+    // render-completion signal; acknowledge the specific chapter revision
+    // only after its content has replaced the previous reader DOM.
+    if (urlParams.get('waitForData') === 'true' &&
+        Number.isSafeInteger(data.pendingReaderReloadRevision) &&
+        data.pendingReaderReloadRevision > 0) {
+        postToHostPage({
+            type: 'KOKORO_READER_RELOAD_READY',
+            revision: data.pendingReaderReloadRevision,
+        });
+    }
 }
 
 function renderText() {

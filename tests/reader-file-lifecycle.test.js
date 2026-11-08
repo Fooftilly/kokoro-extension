@@ -31,7 +31,7 @@ function createMockBook(label, ready = Promise.resolve()) {
                 ? sections[id] : sections.find(s => s.href === id)),
         },
         load: jest.fn(),
-        archive: { createUrl: jest.fn(async src => src) },
+        archive: { createUrl: jest.fn(async src => src), urlCache: {} },
         sections,
     };
 }
@@ -66,6 +66,7 @@ describe('EPUB file read/parse lifecycle', () => {
         readers = [];
         books = [];
         messages = [];
+        URL.revokeObjectURL = jest.fn();
         global.browser = {
             storage: {
                 local: {
@@ -114,6 +115,20 @@ describe('EPUB file read/parse lifecycle', () => {
             jest.fn(value => messages.push(value));
         require('../reader.js');
     });
+
+    function acknowledgeCurrentChapter({ revision, source } = {}) {
+        const writes = browser.storage.local.set.mock.calls;
+        const latestRevision = writes[writes.length - 1]?.[0]?.pendingReaderReloadRevision;
+        expect(Number.isSafeInteger(latestRevision)).toBe(true);
+        const frame = document.getElementById('playerFrame');
+        window.dispatchEvent(new MessageEvent('message', {
+            data: {
+                type: 'KOKORO_READER_RELOAD_READY',
+                revision: revision ?? latestRevision,
+            },
+            source: source === undefined ? frame.contentWindow : source,
+        }));
+    }
 
     function selectFile(name, type = 'application/epub+zip') {
         const input = document.getElementById('fileInput');
@@ -266,8 +281,12 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(document.querySelector('.chapter-label').textContent).toBe('Book B 1');
         expect(a.destroy).not.toHaveBeenCalled();
         nextReady.resolve(documentWithText('First B chapter'));
-        for (let n = 0; n < 30 && a.destroy.mock.calls.length === 0; n++) await tick();
+        for (let n = 0; n < 30 && messages.length === 0; n++) await tick();
         expect(messages).toEqual(['RELOAD_DATA']);
+        // Merely posting RELOAD_DATA is not proof the iframe is finished.
+        expect(a.destroy).not.toHaveBeenCalled();
+        acknowledgeCurrentChapter();
+        for (let n = 0; n < 30 && a.destroy.mock.calls.length === 0; n++) await tick();
         expect(a.destroy).toHaveBeenCalledTimes(1);
         expect(b.destroy).not.toHaveBeenCalled();
     });
@@ -312,6 +331,9 @@ describe('EPUB file read/parse lifecycle', () => {
         for (let n = 0; n < 30 &&
             !messages.some((_, index) => index >= 1); n++) await tick();
         expect(document.querySelector('.chapter-label').textContent).toBe('Book B 1');
+        expect(a.destroy).not.toHaveBeenCalled();
+        acknowledgeCurrentChapter();
+        // The iframe acknowledged B, but A still has a section.load() in flight.
         expect(a.destroy).not.toHaveBeenCalled();
         oldChapter.resolve(documentWithText('Old chapter finish'));
         for (let n = 0; n < 30 && a.destroy.mock.calls.length === 0; n++) await tick();
@@ -366,6 +388,80 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
         expect(browser.storage.local.set.mock.calls.every(([value]) =>
             !value.pendingTitle.startsWith('Book A 2'))).toBe(true);
+    });
+
+    test('old EPUB image blob URLs are revoked by value only after iframe acknowledgment', async () => {
+        const a = createMockBook('Book A');
+        const b = createMockBook('Book B');
+        a.archive.urlCache = {
+            'images/cover.png': 'blob:old-cover',
+            'images/thumb.png': 'blob:old-cover',
+            'images/chapter.png': 'blob:old-chapter',
+            'styles/style.css': 'data:text/css;base64,YQ==',
+        };
+        b.archive.urlCache = { 'images/new.png': 'blob:new-cover' };
+        books.push(a, b);
+        selectFile('a.epub').succeed();
+        await expectLoaded('Book A');
+
+        messages.length = 0;
+        selectFile('b.epub').succeed();
+        for (let i = 0; i < 30 && messages.length === 0; i++) await tick();
+        expect(messages).toEqual(['RELOAD_DATA']);
+        expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+        expect(a.destroy).not.toHaveBeenCalled();
+
+        // An untrusted/unrelated frame must not release any archive.
+        acknowledgeCurrentChapter({ source: null });
+        await tick();
+        expect(a.destroy).not.toHaveBeenCalled();
+
+        acknowledgeCurrentChapter();
+        for (let i = 0; i < 30 && a.destroy.mock.calls.length === 0; i++) await tick();
+        expect(a.destroy).toHaveBeenCalledTimes(1);
+        expect(URL.revokeObjectURL.mock.calls.map(([url]) => url).sort())
+            .toEqual(['blob:old-chapter', 'blob:old-cover']);
+        expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:new-cover');
+        expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('images/cover.png');
+
+        // Duplicate acknowledgments cannot dispose already-released resources.
+        acknowledgeCurrentChapter();
+        await tick();
+        expect(a.destroy).toHaveBeenCalledTimes(1);
+        expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+    });
+
+    test('a stale reload acknowledgment never destroys the old archive', async () => {
+        const a = createMockBook('Book A');
+        const b = createMockBook('Book B');
+        books.push(a, b);
+        selectFile('a.epub').succeed();
+        await expectLoaded('Book A');
+        const priorRevision = browser.storage.local.set.mock.lastCall[0].pendingReaderReloadRevision;
+
+        messages.length = 0;
+        selectFile('b.epub').succeed();
+        for (let i = 0; i < 30 && messages.length === 0; i++) await tick();
+        expect(messages).toEqual(['RELOAD_DATA']);
+        acknowledgeCurrentChapter({ revision: priorRevision });
+        await tick();
+        expect(a.destroy).not.toHaveBeenCalled();
+
+        acknowledgeCurrentChapter();
+        for (let i = 0; i < 30 && a.destroy.mock.calls.length === 0; i++) await tick();
+        expect(a.destroy).toHaveBeenCalledTimes(1);
+    });
+
+    test('abandoned candidate image blobs are revoked before book disposal', async () => {
+        const abandoned = createMockBook('Broken');
+        abandoned.archive.urlCache = { 'cover.png': 'blob:abandoned-cover' };
+        abandoned.open.mockRejectedValueOnce(new Error('EPUB opening failed'));
+        books.push(abandoned);
+        selectFile('broken.epub').succeed();
+        await tick();
+        expect(abandoned.destroy).toHaveBeenCalledTimes(1);
+        expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:abandoned-cover');
+        expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('cover.png');
     });
 
     test('reopening books does not multiply Previous/Next click handlers', async () => {
