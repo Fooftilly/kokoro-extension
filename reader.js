@@ -218,6 +218,18 @@ function hasPlayableTocEntry(items) {
         hasPlayableTocEntry(item.subitems || item.items || []));
 }
 
+// EPUB publisher TOC fragments may be URI-encoded even though the extracted
+// DOM element IDs are Unicode strings. Keep malformed escapes as literals so
+// a corrupt anchor cannot crash either chapter loading or progress syncing.
+function decodedChapterId(fragment) {
+    try {
+        return decodeURIComponent(fragment);
+    } catch (error) {
+        console.warn('Invalid EPUB chapter fragment encoding', fragment, error);
+        return fragment;
+    }
+}
+
 // --- EPUB Logic ---
 
 async function readDocumentBuffer(file) {
@@ -726,15 +738,7 @@ async function loadEpubChapter(href, title) {
     let startIndex = 0;
 
     if (fragment) {
-        // Publisher navigation fragments may be percent-encoded while DOM IDs
-        // are decoded Unicode strings. Decode only for ID comparison; keep
-        // malformed escapes intact rather than failing the chapter load.
-        let targetId = fragment;
-        try {
-            targetId = decodeURIComponent(fragment);
-        } catch (error) {
-            console.warn('Invalid EPUB chapter fragment encoding', fragment, error);
-        }
+        const targetId = decodedChapterId(fragment);
         const idx = mergedBlocks.findIndex(b => b.ids && b.ids.includes(targetId));
         if (idx !== -1) {
             startIndex = idx;
@@ -873,8 +877,10 @@ function updateActiveChapter(blockIndex) {
             // item.href is like "chapter.xhtml#someId" or just "chapter.xhtml"
             const itemHash = item.href.split('#')[1];
 
-            // If item has a hash, check if it matches one of the block's IDs
-            if (itemHash && block.ids.includes(itemHash)) {
+            // Use the same decoding as initial chapter selection. Otherwise
+            // #caf%C3%A9 can navigate correctly but never update the sidebar
+            // when playback reaches <h2 id="café">.
+            if (itemHash && block.ids.includes(decodedChapterId(itemHash))) {
                 return item;
             }
             // If item has no hash, it points to the start of the file. 
@@ -896,7 +902,8 @@ function updateActiveChapter(blockIndex) {
 
         // 1. Update Sidebar
         document.querySelectorAll('.chapter-item').forEach(d => d.classList.remove('active'));
-        const activeItem = document.querySelector(`.chapter-item[data-href="${bestMatch.href}"]`);
+        const activeItem = [...document.querySelectorAll('.playable-chapter')]
+            .find(node => node.dataset.href === bestMatch.href);
         if (activeItem) {
             activeItem.classList.add('active');
             // Ensure parent groups are expanded
