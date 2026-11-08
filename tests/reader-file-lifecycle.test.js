@@ -267,6 +267,105 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(ePub).toHaveBeenCalledTimes(1);
     });
 
+    test('Open another and Cancel preserve active book, chapter and player', async () => {
+        books.push(createMockBook('Book A'));
+        selectFile('book-a.epub').succeed();
+        await expectLoaded('Book A');
+        const written = browser.storage.local.set.mock.calls.length;
+        const sent = messages.length;
+
+        document.getElementById('openAnotherDocument').click();
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('flex');
+        expect(document.getElementById('cancelDocumentPicker').hidden).toBe(false);
+        expect(document.getElementById('file-name-display').textContent).toBe('No file selected.');
+        document.getElementById('cancelDocumentPicker').click();
+
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+        expect(document.querySelector('.chapter-label').textContent).toBe('Book A 1');
+        expect(browser.storage.local.set).toHaveBeenCalledTimes(written);
+        expect(messages).toHaveLength(sent);
+    });
+
+    test('cancel while a replacement file is reading aborts it and keeps the active document', async () => {
+        books.push(createMockBook('Book A'));
+        selectFile('a.epub').succeed();
+        await expectLoaded('Book A');
+        document.getElementById('openAnotherDocument').click();
+        const pending = selectFile('replacement.epub');
+        expect(pending.readyState).toBe(FileReader.LOADING);
+        document.getElementById('cancelDocumentPicker').click();
+        expect(pending.readyState).toBe(2);
+        await tick();
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+        expect(document.querySelector('.chapter-label').textContent).toBe('Book A 1');
+        expect(document.getElementById('errorMsg').style.display).toBe('none');
+        expect(ePub).toHaveBeenCalledTimes(1);
+    });
+
+    test('cancel during EPUB open leaves active book unchanged and destroys old candidate', async () => {
+        const candidateOpened = deferred();
+        const existing = createMockBook('Book A');
+        const candidate = createMockBook('Cancelled');
+        candidate.open.mockImplementationOnce(() => candidateOpened.promise);
+        books.push(existing, candidate);
+        selectFile('a.epub').succeed();
+        await expectLoaded('Book A');
+        document.getElementById('openAnotherDocument').click();
+        selectFile('replacement.epub').succeed();
+        for (let i = 0; i < 30 && candidate.open.mock.calls.length === 0; i++) await tick();
+        expect(candidate.open).toHaveBeenCalledTimes(1);
+        document.getElementById('cancelDocumentPicker').click();
+        candidateOpened.resolve();
+        await tick();
+        await tick();
+        expect(candidate.destroy).toHaveBeenCalledTimes(1);
+        expect(existing.destroy).not.toHaveBeenCalled();
+        expect(document.querySelector('.chapter-label').textContent).toBe('Book A 1');
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+    });
+
+    test('publisher TOC stays authoritative until heading scan is explicitly selected', async () => {
+        const publisher = createMockBook('Publisher');
+        const heading = createMockBook('Publisher');
+        const headingDoc = (title) => new DOMParser().parseFromString(
+            '<html><body><h1 id="heading">' + title + '</h1><p>Body text.</p></body></html>',
+            'text/html');
+        publisher.sections[0].load.mockImplementation(async () => headingDoc('Scanned Title A'));
+        heading.sections[0].load.mockImplementation(async () => headingDoc('Scanned Title A'));
+        heading.sections[1].load.mockImplementation(async () => headingDoc('Scanned Title B'));
+        books.push(publisher, heading);
+        selectFile('default.epub').succeed();
+        await expectLoaded('Publisher');
+        expect(Array.from(document.querySelectorAll('.chapter-label'), node => node.textContent))
+            .toEqual(['Publisher 1', 'Publisher 2']);
+        expect(publisher.sections[0].load).toHaveBeenCalledTimes(1);
+        expect(publisher.sections[1].load).not.toHaveBeenCalled();
+
+        document.getElementById('openAnotherDocument').click();
+        document.getElementById('scanDocumentHeadings').checked = true;
+        selectFile('scanned.epub').succeed();
+        for (let i = 0; i < 30 &&
+            document.querySelector('.chapter-label')?.textContent !== 'Scanned Title A'; i++) await tick();
+        expect(Array.from(document.querySelectorAll('.chapter-label'), node => node.textContent))
+            .toEqual(['Scanned Title A', 'Scanned Title B']);
+        expect(heading.sections[1].load).toHaveBeenCalledTimes(1);
+    });
+
+    test('missing EPUB TOC anchor warns visibly and falls back to chapter start', async () => {
+        const candidate = createMockBook('Book A');
+        candidate.navigation.toc[0].href = 'start.xhtml#absent';
+        books.push(candidate);
+        selectFile('book-a.epub').succeed();
+        await expectLoaded('Book A');
+        expect(document.getElementById('chapterError').hidden).toBe(false);
+        expect(document.getElementById('chapterError').textContent)
+            .toContain('requested chapter anchor could not be found');
+        const lastWrite = browser.storage.local.set.mock.lastCall[0];
+        expect(lastWrite.pendingStartIndex).toBe(0);
+        document.getElementById('nextChapter').click();
+        expect(document.getElementById('chapterError').hidden).toBe(true);
+    });
+
     test('does not dismiss picker until both file read and EPUB ready/TOC scan finish', async () => {
         const ready = deferred();
         books.push(createMockBook('Book A', ready.promise));
