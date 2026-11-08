@@ -1072,6 +1072,17 @@ window.addEventListener('message', (event) => {
         }
         activateChapter(next, nextEl, true);
     }
+    // Explicit Play after Close/Cancel resumes the existing document and
+    // re-enables continuous handoff. Never clear the latch for an unknown
+    // frame, a different chapter revision, or while the picker is visible.
+    if (event.source === playerFrame.contentWindow &&
+        event.origin === window.location.origin &&
+        event.data?.type === 'KOKORO_READER_RESUMED' &&
+        event.data.revision === renderedChapterRevision &&
+        renderedChapterRequestId === chapterRequestId &&
+        hasOpenDocument() && filePickerOverlay.style.display === 'none') {
+        readerPausedForPicker = false;
+    }
     // The reader owns its embedded player: Close returns to the document
     // picker without discarding the current book or leaving audio playing.
     // Ignore messages from other frames or unrelated page scripts.
