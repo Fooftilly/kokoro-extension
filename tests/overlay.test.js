@@ -147,6 +147,45 @@ describe('overlay.js logic', () => {
         expect(textDisplay.textContent).toContain('Hello');
     });
 
+    test('EPUB iframe acknowledges chapter revision only after its content is rendered', async () => {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const previousUrl = window.location.pathname + window.location.search;
+        try {
+            window.history.replaceState({}, '', '/overlay.html?waitForData=true');
+            window.parent.postMessage.mockClear();
+            browser.storage.local.get.mockResolvedValueOnce({
+                pendingText: 'Fresh EPUB chapter',
+                pendingContent: [{ type: 'text', content: 'Fresh EPUB chapter' }],
+                pendingTitle: 'Book B',
+                pendingAutoplay: false,
+                pendingReaderReloadRevision: 42,
+            });
+            window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
+            await new Promise(resolve => setTimeout(resolve, 0));
+            expect(document.getElementById('pageTitle').textContent).toBe('Book B');
+            expect(document.getElementById('text-display').textContent).toContain('Hello');
+            expect(window.parent.postMessage.mock.calls.some(([message]) =>
+                message?.type === 'KOKORO_READER_RELOAD_READY' &&
+                message.revision === 42)).toBe(true);
+
+            // Invalid revisions are never acknowledged as a successful read.
+            window.parent.postMessage.mockClear();
+            browser.storage.local.get.mockResolvedValueOnce({
+                pendingText: 'Another EPUB chapter',
+                pendingContent: [{ type: 'text', content: 'Another EPUB chapter' }],
+                pendingTitle: 'Book C',
+                pendingAutoplay: false,
+                pendingReaderReloadRevision: '42',
+            });
+            window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
+            await new Promise(resolve => setTimeout(resolve, 0));
+            expect(window.parent.postMessage.mock.calls.some(([message]) =>
+                message?.type === 'KOKORO_READER_RELOAD_READY')).toBe(false);
+        } finally {
+            window.history.replaceState({}, '', previousUrl);
+        }
+    });
+
     test('Handles play/pause button', async () => {
         await new Promise(r => setTimeout(r, 100));
         const audio = document.getElementById('audio');
