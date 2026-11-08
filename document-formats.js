@@ -46,14 +46,17 @@ export function decodeTextDocument(buffer) {
 
     let text;
     try {
-        text = new TextDecoder(encoding, { fatal: true }).decode(bytes.subarray(offset));
+        text = new window.TextDecoder(encoding, { fatal: true }).decode(bytes.subarray(offset));
     } catch {
         throw new Error('Cannot decode document: use UTF-8 or BOM-marked UTF-16 text');
     }
     // Strict UTF-8 does not by itself reject binary files composed of ASCII
     // bytes. Control/null characters are a strong indicator of non-text input.
-    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(text)) {
-        throw new Error('Document contains binary or unsupported control characters');
+    for (const character of text) {
+        const code = character.charCodeAt(0);
+        if (code < 32 && code !== 9 && code !== 10 && code !== 13) {
+            throw new Error('Document contains binary or unsupported control characters');
+        }
     }
     if (!text.trim()) throw new Error('The document contains no readable text');
     return text;
@@ -126,7 +129,7 @@ function cleanMarkdownInline(text) {
 }
 
 function htmlBlocks(text) {
-    const doc = new DOMParser().parseFromString(text, 'text/html');
+    const doc = new window.DOMParser().parseFromString(text, 'text/html');
     const results = [];
     const ignored = new Set([
         'script', 'style', 'noscript', 'template', 'svg', 'iframe',
