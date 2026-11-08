@@ -324,6 +324,49 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
     });
 
+    test('a committed text replacement closes Cancel even while player storage is pending', async () => {
+        const existing = createMockBook('Book A');
+        books.push(existing);
+        selectFile('old.epub').succeed();
+        await expectLoaded('Book A');
+
+        const stalledWrite = deferred();
+        browser.storage.local.set.mockImplementationOnce(() => stalledWrite.promise);
+        document.getElementById('openAnotherDocument').click();
+        const bytes = new (require('util').TextEncoder)().encode('The next document is ready.');
+        selectFile('new.txt', 'text/plain').succeed(bytes.buffer);
+        for (let i = 0; i < 30 &&
+            document.getElementById('filePickerOverlay').style.display !== 'none'; i++) await tick();
+
+        // The file has committed; the old archive remains until iframe ACK.
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+        expect(document.querySelector('.chapter-label').textContent).toBe('new.txt');
+        expect(existing.destroy).not.toHaveBeenCalled();
+        document.getElementById('cancelDocumentPicker').click();
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+        expect(document.querySelector('.chapter-label').textContent).toBe('new.txt');
+
+        stalledWrite.resolve();
+        for (let i = 0; i < 30 &&
+            !browser.storage.local.set.mock.calls.some(([value]) => value.pendingTitle === 'new.txt');
+            i++) await tick();
+        await tick();
+        expect(browser.storage.local.set.mock.lastCall[0].pendingTitle).toBe('new.txt');
+        expect(messages.at(-1)).toBe('RELOAD_DATA');
+    });
+
+    test('text playback storage failure is visible after picker closes', async () => {
+        browser.storage.local.set.mockRejectedValueOnce(new Error('Storage quota exceeded'));
+        const bytes = new (require('util').TextEncoder)().encode('Readable text.');
+        selectFile('text.txt', 'text/plain').succeed(bytes.buffer);
+        for (let i = 0; i < 30 &&
+            document.getElementById('chapterError').hidden; i++) await tick();
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+        expect(document.getElementById('chapterError').textContent)
+            .toContain('Storage quota exceeded');
+        expect(document.getElementById('chapterError').hidden).toBe(false);
+    });
+
     test('publisher TOC stays authoritative until heading scan is explicitly selected', async () => {
         const publisher = createMockBook('Publisher');
         const heading = createMockBook('Publisher');
