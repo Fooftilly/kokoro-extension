@@ -565,7 +565,6 @@ function renderChapterList(toc) {
             toggle.dataset.label = (item.label || 'Untitled').trim();
             toggle.setAttribute('aria-controls', subList.id);
             itemEl.appendChild(toggle);
-            setChapterGroupExpanded(container, false);
             toggle.addEventListener('click', () => {
                 setChapterGroupExpanded(container, !container.classList.contains('expanded'));
             });
@@ -596,6 +595,7 @@ function renderChapterList(toc) {
 
         container.appendChild(itemEl);
         chapterList.appendChild(container);
+        if (subList) setChapterGroupExpanded(container, false);
 
         if (subList) {
             children.forEach(sub => subList.appendChild(createItem(sub, level + 1)));
