@@ -180,21 +180,29 @@ function normalizePublisherToc(items, sourceBook) {
             const hash = raw.indexOf('#');
             const path = hash < 0 ? raw : raw.slice(0, hash);
             const fragment = hash < 0 ? '' : raw.slice(hash);
-            if (path) {
-                let section = sourceBook.spine.get(path);
-                if (!section && base) {
-                    try {
-                        const resolved = new URL(path, base);
-                        if (resolved.origin === base.origin) {
-                            section = sourceBook.spine.get(
-                                decodeURIComponent(resolved.pathname.slice(1)));
-                        }
-                    } catch (error) {
-                        console.warn('Ignoring invalid publisher TOC path', path, error);
+            // Interpret hrefs relative to the EPUB navigation document first.
+            // Otherwise "chapter.xhtml" can wrongly select a root-level
+            // chapter instead of "Nav/chapter.xhtml". A fragment-only href
+            // targets the nav document itself when that file is in the spine.
+            let section = null;
+            if (base) {
+                try {
+                    const resolved = new URL(path || '', base);
+                    if (resolved.origin === base.origin) {
+                        section = sourceBook.spine.get(
+                            decodeURIComponent(resolved.pathname.slice(1)));
                     }
+                } catch (error) {
+                    console.warn('Ignoring invalid publisher TOC path', path, error);
                 }
-                if (section) href = section.href + fragment;
             }
+            // Some EPUB manifests use already-OPF-relative links; accept
+            // those when the navigation-relative target is not a spine item.
+            if (!section && path && !/^[a-z][a-z0-9+.-]*:/i.test(path) &&
+                !path.startsWith('//')) {
+                section = sourceBook.spine.get(path);
+            }
+            if (section) href = section.href + fragment;
         }
         return {
             ...item,
