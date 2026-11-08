@@ -791,6 +791,20 @@ async function loadEpubChapter(href, title, continuePlaying = false) {
         }
     }
 
+    // Distinct TOC anchors can share one XHTML spine section. Stop the
+    // current chapter before the next anchor rather than reading its content
+    // now and repeating it after continuous chapter handoff.
+    const tocIndex = flatToc.findIndex(item => item.href === href);
+    const nextHref = tocIndex >= 0 ? flatToc[tocIndex + 1]?.href : null;
+    if (nextHref) {
+        const [nextBase, nextFragment] = nextHref.split('#');
+        if (nextBase === baseHref && nextFragment) {
+            const nextId = decodedChapterId(nextFragment);
+            const nextBlockIndex = mergedBlocks.findIndex(b => b.ids?.includes(nextId));
+            if (nextBlockIndex > startIndex) mergedBlocks.splice(nextBlockIndex);
+        }
+    }
+
     const fullText = mergedBlocks.map(b => b.content).join(' ');
     await sendToPlayer(mergedBlocks, title || "Chapter", fullText.substring(0, 100), startIndex,
         requestId, requestedBook, continuePlaying);
