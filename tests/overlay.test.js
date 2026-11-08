@@ -59,6 +59,8 @@ jest.mock('../audio-manager.js', () => ({
         setNormalizationOptions: jest.fn(),
         setCustomPronunciations: jest.fn(),
         getAudio: jest.fn().mockResolvedValue('blob:url'),
+        pinAudio: jest.fn(() => jest.fn()),
+        retainWindow: jest.fn(),
         prefetch: jest.fn(),
         on: jest.fn()
     }))
@@ -151,6 +153,52 @@ describe('overlay.js logic', () => {
             url: 'blob:the-original-sentence',
             filename: expect.stringMatching(/-sentence-1\.mp3$/),
         }));
+    });
+
+    test('pins a local audio URL until Chrome/Firefox reports download completion', async () => {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const { AudioManager } = require('../audio-manager.js');
+        const manager = AudioManager.mock.results[0].value;
+        const release = jest.fn();
+        manager.pinAudio.mockReturnValue(release);
+        const listeners = new Set();
+        browser.downloads.onChanged = {
+            addListener: jest.fn(fn => listeners.add(fn)),
+            removeListener: jest.fn(fn => listeners.delete(fn)),
+        };
+        browser.downloads.download.mockResolvedValue(17);
+
+        document.getElementById('saveAudio').click();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(manager.pinAudio).toHaveBeenCalledWith(0);
+        expect(release).not.toHaveBeenCalled();
+        expect(listeners.size).toBe(1);
+        for (const fn of [...listeners]) fn({ id: 18, state: { current: 'complete' } });
+        expect(release).not.toHaveBeenCalled();
+        for (const fn of [...listeners]) fn({ id: 17, state: { current: 'complete' } });
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(listeners.size).toBe(0);
+        delete browser.downloads.onChanged;
+    });
+
+    test('failed browser download releases the pinned audio URL', async () => {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const { AudioManager } = require('../audio-manager.js');
+        const manager = AudioManager.mock.results[0].value;
+        const release = jest.fn();
+        manager.pinAudio.mockReturnValue(release);
+        const listeners = new Set();
+        browser.downloads.onChanged = {
+            addListener: jest.fn(fn => listeners.add(fn)),
+            removeListener: jest.fn(fn => listeners.delete(fn)),
+        };
+        browser.downloads.download.mockRejectedValueOnce(new Error('Download rejected'));
+        document.getElementById('saveAudio').click();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(listeners.size).toBe(0);
+        expect(document.getElementById('status').textContent).toContain('Could not save audio');
+        delete browser.downloads.onChanged;
     });
 
     test('local ONNX sentence downloads retain WAV format', async () => {

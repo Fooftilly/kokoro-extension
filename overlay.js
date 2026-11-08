@@ -152,28 +152,72 @@ if (dragHandle) {
     });
 }
 
+// Keep the source audio blob pinned until the browser reports a terminal
+// download state. downloads.download() resolves when the download starts, not
+// when the browser finishes reading the blob URL.
+async function downloadPinnedSentence(url, filename, release) {
+    const events = browser.downloads.onChanged;
+    if (!events?.addListener || !events?.removeListener) {
+        // Older/mocked browser API: release at the only available completion
+        // signal. Chrome and Firefox support downloads.onChanged normally.
+        try {
+            return await browser.downloads.download({ url, filename, saveAs: true });
+        } finally {
+            release();
+        }
+    }
+    let downloadId = null;
+    let finished = false;
+    const earlyTerminals = new Set();
+    const finish = () => {
+        if (finished) return;
+        finished = true;
+        events.removeListener(onChanged);
+        release();
+    };
+    const onChanged = delta => {
+        if (!['complete', 'interrupted'].includes(delta.state?.current)) return;
+        if (downloadId === null) earlyTerminals.add(delta.id);
+        else if (delta.id === downloadId) finish();
+    };
+    try {
+        events.addListener(onChanged);
+        downloadId = await browser.downloads.download({ url, filename, saveAs: true });
+        if (earlyTerminals.has(downloadId)) finish();
+        return downloadId;
+    } catch (error) {
+        finish();
+        throw error;
+    }
+}
+
 // Save exactly the current sentence. Local model data never leaves this browser.
 if (saveAudioBtn) {
     saveAudioBtn.addEventListener('click', async () => {
         saveAudioBtn.disabled = true;
+        let release = null;
+        let handedOff = false;
         try {
             const sentenceIndex = currentIndex;
             if (!sentences[sentenceIndex]) throw new Error('No selected sentence');
+            release = audioManager.pinAudio(sentenceIndex);
             const audioUrl = await audioManager.getAudio(sentenceIndex);
             if (!audioUrl) throw new Error('No generated audio to save');
             const settings = await browser.storage.local.get(['pendingTtsBackend']);
             const extension = ['mediapipe', 'onnx'].includes(settings.pendingTtsBackend) ? 'wav' : 'mp3';
             const safeTitle = (titleEl.textContent || 'kokoro')
                 .replace(/[^a-zA-Z0-9 _-]/g, '_').trim().slice(0, 90) || 'kokoro';
-            await browser.downloads.download({
-                url: audioUrl,
-                filename: safeTitle + '-sentence-' + (sentenceIndex + 1) + '.' + extension,
-                saveAs: true,
-            });
-            statusEl.textContent = 'Audio saved';
+            // The download helper now owns the lease, including error cleanup.
+            // Do not release it again in this handler's finally block.
+            handedOff = true;
+            await downloadPinnedSentence(audioUrl,
+                safeTitle + '-sentence-' + (sentenceIndex + 1) + '.' + extension,
+                release);
+            statusEl.textContent = 'Download started';
         } catch (error) {
             statusEl.textContent = 'Could not save audio: ' + String(error.message || error);
         } finally {
+            if (!handedOff) release?.();
             saveAudioBtn.disabled = false;
         }
     });
@@ -665,6 +709,9 @@ async function navigate(index, forcePlay = null) {
         if (currentIndex !== index) return; // Stale request
 
         audioEl.src = blobUrl;
+        // Only prune old cached URLs after replacing the active source.
+        // Back/forward navigation and the next two prefetched sentences remain.
+        audioManager.retainWindow(currentIndex);
 
         if (!isPaused) {
             audioEl.play().catch(e => {
