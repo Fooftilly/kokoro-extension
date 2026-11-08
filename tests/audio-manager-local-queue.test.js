@@ -70,6 +70,72 @@ describe('local Kokoro synthesis is serialized across reading-session resets (#5
         expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
     });
 
+    test('does not launch the next session while cancellation is still pending', async () => {
+        const firstAudio = deferred();
+        const started = deferred();
+        const finishCancellation = deferred();
+        provider.synthesize.mockImplementationOnce(() => {
+            started.resolve();
+            return firstAudio.promise;
+        }).mockResolvedValueOnce(pcm());
+        provider.cancel.mockImplementationOnce(() => finishCancellation.promise);
+
+        manager.setSentences([{ text: 'old sentence' }]);
+        const first = manager.getAudio(0);
+        await started.promise;
+        manager.clear();
+        manager.setSentences([{ text: 'new sentence' }]);
+        const second = manager.getAudio(0);
+
+        // The prior WASM call is no longer running, but its cancellation is
+        // not finished: the next synthesis must still remain blocked.
+        firstAudio.resolve(pcm());
+        await expect(first).rejects.toMatchObject({ name: 'AbortError' });
+        await nextTick();
+        expect(provider.cancel).toHaveBeenCalledTimes(1);
+        expect(provider.synthesize).toHaveBeenCalledTimes(1);
+        expect(URL.createObjectURL).not.toHaveBeenCalled();
+
+        finishCancellation.resolve();
+        await expect(second).resolves.toBe('blob:next');
+        expect(provider.synthesize.mock.calls.map(call => call[0])).toEqual([
+            'old sentence', 'new sentence',
+        ]);
+        expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
+    });
+
+    test('failed cancellation is logged and cannot poison the local queue', async () => {
+        const firstAudio = deferred();
+        const started = deferred();
+        const finishCancellation = deferred();
+        provider.synthesize.mockImplementationOnce(() => {
+            started.resolve();
+            return firstAudio.promise;
+        }).mockResolvedValueOnce(pcm());
+        provider.cancel.mockImplementationOnce(() => finishCancellation.promise);
+        const warning = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+            manager.setSentences([{ text: 'old request' }]);
+            const first = manager.getAudio(0);
+            await started.promise;
+            manager.clear();
+            manager.setSentences([{ text: 'fresh request' }]);
+            const second = manager.getAudio(0);
+
+            firstAudio.resolve(pcm());
+            await expect(first).rejects.toMatchObject({ name: 'AbortError' });
+            await nextTick();
+            expect(provider.synthesize).toHaveBeenCalledTimes(1);
+            finishCancellation.reject(new Error('SDK cancel failed'));
+            await expect(second).resolves.toBe('blob:next');
+            expect(warning).toHaveBeenCalledWith(
+                'Local TTS cancellation failed', expect.any(Error));
+            expect(provider.synthesize).toHaveBeenCalledTimes(2);
+        } finally {
+            warning.mockRestore();
+        }
+    });
+
     test('queued request from another cleared generation never reaches WASM', async () => {
         const firstAudio = deferred();
         const started = deferred();
