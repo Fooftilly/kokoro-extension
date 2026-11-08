@@ -68,8 +68,10 @@ jest.mock('../audio-manager.js', () => ({
 }));
 
 const mockSentences = [
-    { index: 0, text: 'Hello', html: 'Hello' },
-    { index: 1, text: 'Next sentence', html: 'Next sentence' },
+    { index: 0, text: 'Hello', html: 'Hello',
+        sourceText: 'Original 5 kg.', sourceBlockText: 'Original 5 kg. Context.' },
+    { index: 1, text: 'Next sentence', html: 'Next sentence',
+        sourceText: 'Next original sentence.', sourceBlockText: 'Next original sentence.' },
 ];
 jest.mock('../text-processor.js', () => ({
     processContent: jest.fn(() => ({
@@ -267,6 +269,66 @@ describe('overlay.js logic', () => {
         expect(document.getElementById('playPause').textContent).toBe('Play');
         expect(document.getElementById('status').textContent)
             .toBe('Browser blocked autoplay. Click Play to start.');
+    });
+
+    test('Auto-scroll toggles apply on the next sentence without recreating the player', async () => {
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const listener = browser.storage.onChanged.addListener.mock.calls.at(-1)[0];
+        window.parent.postMessage.mockClear();
+        listener({ autoScroll: { oldValue: false, newValue: true } }, 'local');
+        document.querySelectorAll('.sentence')[1].click();
+        expect(window.parent.postMessage).toHaveBeenCalledWith({
+            action: 'KOKORO_SCROLL_TO_BLOCK',
+            text: 'Next original sentence.',
+            blockText: 'Next original sentence.',
+        }, '*');
+
+        listener({ autoScroll: { oldValue: true, newValue: false } }, 'local');
+        window.parent.postMessage.mockClear();
+        document.querySelectorAll('.sentence')[0].click();
+        expect(window.parent.postMessage.mock.calls.some(([data]) =>
+            data?.action === 'KOKORO_SCROLL_TO_BLOCK')).toBe(false);
+    });
+
+    test('a late chapter reload cannot revert a newer live Auto-scroll toggle', async () => {
+        await new Promise(resolve => setTimeout(resolve, 0));
+        let resolveStorage;
+        browser.storage.local.get.mockImplementationOnce(() => new Promise(resolve => {
+            resolveStorage = resolve;
+        }));
+        window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
+        await Promise.resolve();
+        expect(typeof resolveStorage).toBe('function');
+
+        const listener = browser.storage.onChanged.addListener.mock.calls.at(-1)[0];
+        listener({ autoScroll: { oldValue: false, newValue: true } }, 'local');
+        resolveStorage({
+            pendingText: 'Delayed original article',
+            pendingContent: [{ type: 'text', content: 'Delayed original article' }],
+            autoScroll: false,
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(window.kokoroAutoScroll).toBe(true);
+        window.parent.postMessage.mockClear();
+        document.querySelectorAll('.sentence')[0].click();
+        expect(window.parent.postMessage.mock.calls.some(([data]) =>
+            data?.action === 'KOKORO_SCROLL_TO_BLOCK')).toBe(true);
+    });
+
+    test('document-reader iframe does not send origin-page auto-scroll requests', async () => {
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const url = window.location.pathname + window.location.search;
+        try {
+            window.history.replaceState({}, '', '/overlay.html?waitForData=true');
+            const listener = browser.storage.onChanged.addListener.mock.calls.at(-1)[0];
+            listener({ autoScroll: { newValue: true } }, 'local');
+            window.parent.postMessage.mockClear();
+            document.querySelectorAll('.sentence')[0].click();
+            expect(window.parent.postMessage.mock.calls.some(([data]) =>
+                data?.action === 'KOKORO_SCROLL_TO_BLOCK')).toBe(false);
+        } finally {
+            window.history.replaceState({}, '', url);
+        }
     });
 
     test('an obsolete storage read cannot restore a previous EPUB chapter', async () => {

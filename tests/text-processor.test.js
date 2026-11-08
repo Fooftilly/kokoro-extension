@@ -59,6 +59,26 @@ describe('processContent Regressions', () => {
         return result.sentences.map(s => s.text).join(' ');
     };
 
+    test('preserves source-page wording separately from normalized spoken words', () => {
+        const source = 'The parcel weighed 5 kg on Nov 8.';
+        const result = processContent([{ type: 'text', content: source }], segmenter);
+        expect(result.sentences).toHaveLength(1);
+        const sentence = result.sentences[0];
+        expect(sentence.sourceText).toBe(source);
+        expect(sentence.sourceBlockText).toBe(source);
+        expect(sentence.blockIndex).toBe(0);
+        expect(sentence.text).not.toBe(source);
+    });
+
+    test('provides the entire original paragraph as disambiguation context', () => {
+        const source = 'The sample weighed 5 kg. This was recorded on Nov 8.';
+        const result = processContent([{ type: 'text', content: source }], segmenter);
+        for (const sentence of result.sentences) {
+            expect(sentence.sourceBlockText).toBe(source);
+            expect(source).toContain(sentence.sourceText);
+        }
+    });
+
     test('Regression: Chemical formulas (CO2)', () => {
         const output = runProcessor('Levels of CO2 are rising.');
         expect(output).toMatch(/carbon dioxide/i);

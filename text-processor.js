@@ -909,6 +909,10 @@ export function processContent(blocks, segmenter) {
                 const sentenceObj = {
                     index: globalIndex++,
                     text: spokenText,
+                    // Scroll matching must use source-page wording, not TTS
+                    // normalization (e.g. "5 kg" -> "five kilograms").
+                    sourceText: segText.trim(),
+                    sourceBlockText: plainText.trim(),
                     html: htmlFragment,
                     blockIndex: blockIndex
                 };

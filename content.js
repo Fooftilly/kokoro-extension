@@ -617,6 +617,50 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
 
     window.addEventListener('resize', clampFloatingOverlayToViewport);
 
+    // One source-page text snapshot per DOM revision. Reader navigation can
+    // emit hundreds of sentences: rescanning entire article ancestors for
+    // every sentence is both unnecessary and increasingly expensive.
+    const scrollTextSelector = 'p, li, h1, h2, h3, h4, h5, h6, td, th, blockquote, div, section, article, main';
+    const scrollNormalize = value => typeof value === 'string'
+        ? value.replace(/\s+/g, ' ').trim() : '';
+    let scrollTextIndex = null;
+    let scrollTextObserver = null;
+
+    function pageScrollTextIndex() {
+        if (!scrollTextObserver) {
+            scrollTextObserver = new MutationObserver(records => {
+                if (records.some(record => {
+                    const parent = record.target.nodeType === Node.ELEMENT_NODE
+                        ? record.target : record.target.parentElement;
+                    return !parent?.closest('#kokoro-overlay-container');
+                })) scrollTextIndex = null;
+            });
+            scrollTextObserver.observe(document.body, {
+                childList: true, characterData: true, subtree: true,
+            });
+        }
+
+        // MutationObserver callbacks are asynchronous. A message may arrive
+        // before their delivery, so account for changes already queued.
+        const pending = scrollTextObserver.takeRecords();
+        if (pending.some(record => {
+            const parent = record.target.nodeType === Node.ELEMENT_NODE
+                ? record.target : record.target.parentElement;
+            return !parent?.closest('#kokoro-overlay-container');
+        })) scrollTextIndex = null;
+
+        if (!scrollTextIndex) {
+            scrollTextIndex = [...document.querySelectorAll(scrollTextSelector)]
+                .filter(el => !el.closest('#kokoro-overlay-container') &&
+                    // Skip large article/wrapper ancestors that include a
+                    // smaller searchable paragraph or text-bearing element.
+                    !el.querySelector(scrollTextSelector))
+                .map(el => ({ element: el, text: scrollNormalize(el.textContent) }))
+                .filter(entry => entry.text);
+        }
+        return scrollTextIndex;
+    }
+
     window.addEventListener('message', (event) => {
         if (!isTrustedOverlayIframeMessage(event)) {
             return;
@@ -640,27 +684,22 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         } else if (event.data && event.data.action === 'KOKORO_SET_COLLAPSED') {
             setOverlayCollapsed(!!event.data.collapsed);
         } else if (event.data && event.data.action === 'KOKORO_SCROLL_TO_BLOCK') {
-            const searchText = event.data.text;
-            if (!searchText) return;
+            const sourceText = scrollNormalize(event.data.text);
+            const blockText = scrollNormalize(event.data.blockText);
+            if (!sourceText) return;
 
-            // Try to find the element on the page that contains this text
-            // We look for the smallest element that contains the text
-            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-            let node;
-            let bestMatch = null;
-
-            while ((node = walker.nextNode())) {
-                if (node.textContent.includes(searchText)) {
-                    const parent = node.parentElement;
-                    // Avoid scrolling to our own overlay
-                    if (parent.closest('#kokoro-overlay-container')) continue;
-
-                    // We want the most specific element (e.g. the P or LI, not the BODY)
-                    if (!bestMatch || bestMatch.contains(parent)) {
-                        bestMatch = parent;
-                    }
-                }
+            // Snapshot only the smallest text-bearing elements. Paragraph
+            // context disambiguates short sentences, and all later sentences
+            // reuse the same normalized text until the source page changes.
+            const entries = pageScrollTextIndex();
+            const matches = (needle, exact = false) => entries.filter(({ text }) =>
+                exact ? text === needle : text.includes(needle));
+            let options = blockText ? matches(blockText) : [];
+            if (options.length !== 1) {
+                // Never guess which short or duplicated phrase is being read.
+                options = matches(sourceText, sourceText.length < 20);
             }
+            const bestMatch = options.length === 1 ? options[0].element : null;
 
             if (bestMatch) {
                 // Refined scrolling logic: only scroll if the element is not comfortably in view
