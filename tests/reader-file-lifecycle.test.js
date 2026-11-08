@@ -432,6 +432,8 @@ describe('EPUB file read/parse lifecycle', () => {
         candidate.sections[0].url = 'chapter.xhtml';
         candidate.sections[1].href = 'Nav/chapter.xhtml';
         candidate.sections[1].url = 'Nav/chapter.xhtml';
+        candidate.sections[0].load.mockResolvedValue(documentWithText('Wrong root-level chapter.'));
+        candidate.sections[1].load.mockResolvedValue(documentWithText('Correct navigation chapter.'));
         candidate.navigation.toc = [{ href: 'chapter.xhtml', label: 'Navigation chapter' }];
         books.push(candidate);
         selectFile('colliding-names.epub').succeed();
@@ -442,7 +444,7 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(candidate.sections[0].load).not.toHaveBeenCalled();
         expect(candidate.sections[1].load).toHaveBeenCalledTimes(1);
         expect(browser.storage.local.set.mock.lastCall[0].pendingContent[0].content)
-            .toContain('Nav/chapter.xhtml');
+            .toContain('Correct navigation chapter.');
     });
 
     test('fragment-only TOC link plays the navigation document when it belongs to the spine', async () => {
