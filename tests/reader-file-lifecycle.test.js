@@ -567,6 +567,60 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(document.getElementById('chapterError').hidden).toBe(true);
     });
 
+    test('playback progress matches encoded publisher anchors and updates the reader title', async () => {
+        const candidate = createMockBook('Book A');
+        candidate.navigation.toc = [
+            { href: 'start.xhtml', label: 'Chapter beginning' },
+            { href: 'start.xhtml#caf%C3%A9', label: 'Café subsection' },
+        ];
+        candidate.sections[0].load.mockResolvedValue(
+            new DOMParser().parseFromString(
+                '<body><p>Prelude sentence.</p><h2 id="café">Café chapter.</h2></body>',
+                'text/html'));
+        books.push(candidate);
+        selectFile('encoded-progress.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
+        expect(document.querySelector('.playable-chapter.active').dataset.href).toBe('start.xhtml');
+        const next = document.querySelector('[data-href="start.xhtml#caf%C3%A9"]');
+        next.scrollIntoView = jest.fn();
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'KOKORO_READING_PROGRESS', blockIndex: 1 },
+        }));
+
+        expect(document.querySelector('.playable-chapter.active')).toBe(next);
+        expect(document.getElementById('prevChapter').disabled).toBe(false);
+        expect(document.getElementById('nextChapter').disabled).toBe(true);
+        expect(messages).toContainEqual({ type: 'UPDATE_TITLE', title: 'Café subsection' });
+        expect(next.scrollIntoView).toHaveBeenCalledTimes(1);
+    });
+
+    test('malformed publisher fragments cannot block progress matching later valid anchors', async () => {
+        const candidate = createMockBook('Book A');
+        candidate.navigation.toc = [
+            { href: 'start.xhtml', label: 'Chapter beginning' },
+            { href: 'start.xhtml#bad%ZZ', label: 'Malformed anchor' },
+            { href: 'start.xhtml#caf%C3%A9', label: 'Correct anchor' },
+        ];
+        candidate.sections[0].load.mockResolvedValue(
+            new DOMParser().parseFromString(
+                '<body><p>Prelude sentence.</p><h2 id="café">Café chapter.</h2></body>',
+                'text/html'));
+        books.push(candidate);
+        selectFile('malformed-progress.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
+        const validItem = document.querySelector('[data-href="start.xhtml#caf%C3%A9"]');
+        validItem.scrollIntoView = jest.fn();
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'KOKORO_READING_PROGRESS', blockIndex: 1 },
+        }));
+
+        expect(document.querySelector('.playable-chapter.active')).toBe(validItem);
+        expect(messages).toContainEqual({ type: 'UPDATE_TITLE', title: 'Correct anchor' });
+        expect(browser.storage.local.set).toHaveBeenCalledTimes(1);
+    });
+
     test('malformed publisher anchor escapes warn and fall back without aborting playback', async () => {
         const candidate = createMockBook('Book A');
         candidate.navigation.toc[0].href = 'start.xhtml#bad%ZZ';
