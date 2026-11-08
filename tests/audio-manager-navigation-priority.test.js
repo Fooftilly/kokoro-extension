@@ -139,6 +139,74 @@ describe('navigation priority over speculative local synthesis (#57)', () => {
         expect(URL.createObjectURL).toHaveBeenCalledTimes(2);
     });
 
+    test('selecting an executing FastAPI prefetch reuses its background request', async () => {
+        browser.storage.local.get.mockResolvedValue({
+            pendingTtsBackend: 'fastapi',
+            pendingApiUrl: 'http://127.0.0.1:8880/v1/',
+            pendingVoice: 'af_heart',
+        });
+        const remoteStarted = deferred();
+        const finishRemote = deferred();
+        browser.runtime.sendMessage
+            .mockResolvedValueOnce({
+                success: true, dataUrl: 'data:audio/mpeg;base64,sentence0',
+            })
+            .mockImplementationOnce(() => {
+                remoteStarted.resolve();
+                return finishRemote.promise;
+            });
+
+        await expect(manager.getAudio(0)).resolves.toBe('data:audio/mpeg;base64,sentence0');
+        manager.prefetch(1);
+        await remoteStarted.promise;
+        const inFlight = manager.audioCache.get(1);
+        expect(inFlight.pending).toBe(true);
+        expect(inFlight.executing).toBe(true);
+        manager.prioritizeNavigation(1);
+        const selected = manager.getAudio(1);
+        expect(manager.audioCache.get(1)).toBe(inFlight);
+
+        finishRemote.resolve({
+            success: true, dataUrl: 'data:audio/mpeg;base64,sentence1',
+        });
+        await expect(selected).resolves.toBe('data:audio/mpeg;base64,sentence1');
+        expect(browser.runtime.sendMessage.mock.calls.map(([request]) => request.payload.input))
+            .toEqual(['Sentence 0', 'Sentence 1']);
+        expect(provider.synthesize).not.toHaveBeenCalled();
+    });
+
+    test('obsolete queued FastAPI prefetch is skipped after a distant jump', async () => {
+        browser.storage.local.get.mockResolvedValue({
+            pendingTtsBackend: 'fastapi',
+            pendingApiUrl: 'http://127.0.0.1:8880/v1/',
+            pendingVoice: 'af_heart',
+        });
+        const started = deferred();
+        const finishRemote = deferred();
+        browser.runtime.sendMessage.mockImplementationOnce(() => {
+            started.resolve();
+            return finishRemote.promise;
+        }).mockResolvedValue({
+            success: true, dataUrl: 'data:audio/mpeg;base64,jump',
+        });
+
+        const first = manager.getAudio(0);
+        await started.promise;
+        manager.prefetch(1);
+        manager.prefetch(2);
+        await nextTick();
+        manager.prioritizeNavigation(9);
+        const selected = manager.getAudio(9);
+        finishRemote.resolve({
+            success: true, dataUrl: 'data:audio/mpeg;base64,obsolete',
+        });
+        await expect(first).rejects.toMatchObject({ name: 'AbortError' });
+        await expect(selected).resolves.toBe('data:audio/mpeg;base64,jump');
+        expect(browser.runtime.sendMessage.mock.calls.map(([request]) => request.payload.input))
+            .toEqual(['Sentence 0', 'Sentence 9']);
+        expect(provider.synthesize).not.toHaveBeenCalled();
+    });
+
     test('pinned exports are not discarded by a navigation jump', async () => {
         const started = deferred();
         const slow = deferred();
