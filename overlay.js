@@ -17,6 +17,7 @@ const saveAudioBtn = document.getElementById('saveAudio');
 
 let sentences = [];
 let currentIndex = 0;
+let navigationRequestId = 0; // ignores obsolete results even when an index is revisited
 let isPaused = false;
 let ignoreNextPause = false;
 let overlayCollapsed = false;
@@ -277,10 +278,11 @@ retryBtn.addEventListener('click', () => {
 });
 
 audioEl.addEventListener('ended', () => {
-    // create small gap
+    // A manual skip during the gap must cancel this obsolete automatic step.
+    const endedRequestId = navigationRequestId;
     setTimeout(() => {
-        navigate(currentIndex + 1);
-    }, 50); // 50ms pause between sentences
+        if (endedRequestId === navigationRequestId) navigate(currentIndex + 1);
+    }, 50);
 });
 
 audioEl.addEventListener('play', () => {
@@ -321,7 +323,8 @@ async function initialize() {
     retryBtn.style.display = 'none';
     statusEl.textContent = "Initializing...";
 
-    // Clear state
+    // Clear state and invalidate outstanding playback from the previous document.
+    navigationRequestId++;
     sentences = [];
     currentIndex = 0;
     audioManager.clear();
@@ -633,6 +636,7 @@ async function navigate(index, forcePlay = null) {
         statusEl.textContent = "Done";
         return;
     }
+    const requestId = ++navigationRequestId;
 
     // Capture current intention before we pause (which clobbers isPaused)
     const intendedPausedState = forcePlay !== null ? !forcePlay : isPaused;
@@ -703,10 +707,14 @@ async function navigate(index, forcePlay = null) {
     statusEl.textContent = `Playing sentence ${currentIndex + 1}/${sentences.length}`;
 
     try {
-        spinnerEl.style.display = 'block'; // Show spinner
+        // Suppress obsolete queued prefetch and navigation work *before* the
+        // new request enters the local WASM lane. Keep the active audio source
+        // until the replacement is ready for retainWindow() to reclaim it.
+        audioManager.prioritizeNavigation(currentIndex);
+        spinnerEl.style.display = 'block';
         const blobUrl = await audioManager.getAudio(currentIndex);
-        spinnerEl.style.display = 'none'; // Hide spinner
-        if (currentIndex !== index) return; // Stale request
+        if (requestId !== navigationRequestId) return; // Stale result
+        spinnerEl.style.display = 'none';
 
         audioEl.src = blobUrl;
         // Only prune old cached URLs after replacing the active source.
@@ -736,7 +744,9 @@ async function navigate(index, forcePlay = null) {
         audioManager.prefetch(currentIndex + 2);
 
     } catch (e) {
-        spinnerEl.style.display = 'none'; // Ensure spinner hidden on error
+        if (requestId !== navigationRequestId) return; // Do not overwrite newer status.
+        spinnerEl.style.display = 'none';
+        if (e.name === 'AbortError') return;
         console.error("Playback error", e);
         statusEl.textContent = "Error playing audio.";
     }

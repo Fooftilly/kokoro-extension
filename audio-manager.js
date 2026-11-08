@@ -121,7 +121,23 @@ export class AudioManager {
         };
     }
 
-    async getAudio(index) {
+    // Drop obsolete queued syntheses before placing the actively selected
+    // sentence on the serialized inference lane. If this sentence already
+    // entered the model, reuse that in-flight work instead of running it twice.
+    // Keep generated URLs until the player replaces the old audio source.
+    prioritizeNavigation(index) {
+        if (!Number.isInteger(index) || index < 0 || index >= this.sentences.length) {
+            throw new RangeError('Invalid requested sentence index');
+        }
+        for (const [cachedIndex, entry] of this.audioCache) {
+            if (entry.pending && !this.isPinned(cachedIndex) &&
+                (cachedIndex !== index || (entry.speculative && !entry.executing))) {
+                this.evictAudio(cachedIndex, entry);
+            }
+        }
+    }
+
+    async getAudio(index, { speculative = false } = {}) {
         if (!Number.isInteger(index) || index < 0 || index >= this.sentences.length) return null;
 
         if (this.audioCache.has(index)) {
@@ -129,11 +145,15 @@ export class AudioManager {
         }
 
         const generation = this.generation;
-        const entry = { promise: null, evicted: false, url: null };
+        const entry = {
+            promise: null, evicted: false, url: null,
+            pending: true, speculative, executing: false,
+        };
         const promise = this.fetchAudio(this.sentences[index].text, generation, entry);
         entry.promise = promise;
         this.audioCache.set(index, entry);
         void promise.then(url => {
+            entry.pending = false;
             entry.url = url;
             for (const pin of this.audioPins) {
                 if (pin.index === index && pin.generation === generation) pin.url = url;
@@ -142,6 +162,7 @@ export class AudioManager {
         // A missing model or transient server error must not poison retries.
         // Do not remove a newer request for the same sentence.
         void promise.catch(() => {
+            entry.pending = false;
             if (this.generation === generation && this.audioCache.get(index) === entry) {
                 this.audioCache.delete(index);
             }
@@ -150,14 +171,15 @@ export class AudioManager {
     }
 
     prefetch(index) {
-        if (index < this.sentences.length && !this.audioCache.has(index)) {
-            void this.getAudio(index).catch(error => {
+        if (Number.isInteger(index) && index >= 0 &&
+            index < this.sentences.length && !this.audioCache.has(index)) {
+            void this.getAudio(index, { speculative: true }).catch(error => {
                 if (error.name !== 'AbortError') console.warn('Kokoro prefetch failed:', error);
             });
         }
     }
 
-    async localAudio(text, data, isStale = () => false) {
+    async localAudio(text, data, isStale = () => false, onSynthesisStart = () => {}) {
         // Local PCM synthesis runs only in the extension-owned playback page.
         // A clear() starts a new session, but the previous WASM synthesis may
         // still be running even after cancel() returns. Serialize local jobs
@@ -178,6 +200,9 @@ export class AudioManager {
             }
             let result;
             try {
+                // Mark the request only when it actually reaches the official
+                // engine, not while waiting behind prior queued work.
+                onSynthesisStart();
                 result = await this.localProvider.synthesize(text, {
                     voiceId: data.pendingLocalVoice || 'af_heart',
                 });
@@ -202,9 +227,12 @@ export class AudioManager {
         return work;
     }
 
-    async remoteAudio(text, data) {
+    async remoteAudio(text, data, onRequestStart = () => {}) {
         if (!data.pendingApiUrl) throw new Error('Missing API URL');
         const endpoint = new URL('audio/speech', data.pendingApiUrl).href;
+        // A server prefetch that already reached the background request is
+        // useful if its sentence becomes active. Avoid issuing it twice.
+        onRequestStart();
         const result = await browser.runtime.sendMessage({
             action: 'FETCH_TTS_AUDIO',
             backend: 'fastapi',
@@ -224,10 +252,10 @@ export class AudioManager {
         return result.dataUrl;
     }
 
-    async routeAudio(text, data, isStale = () => false) {
+    async routeAudio(text, data, isStale = () => false, onSynthesisStart = () => {}) {
         const backend = data.pendingTtsBackend === undefined ? 'fastapi' : data.pendingTtsBackend;
-        if (backend === 'mediapipe') return this.localAudio(text, data, isStale);
-        if (backend === 'fastapi') return this.remoteAudio(text, data);
+        if (backend === 'mediapipe') return this.localAudio(text, data, isStale, onSynthesisStart);
+        if (backend === 'fastapi') return this.remoteAudio(text, data, onSynthesisStart);
         throw new Error('Local TTS backend ONNX plain-text synthesis is not yet available. No text was sent to Kokoro-FastAPI.');
     }
 
@@ -248,7 +276,9 @@ export class AudioManager {
                 throw new DOMException('Audio request cancelled', 'AbortError');
             }
             try {
-                const audio = await this.routeAudio(text, data, isStale);
+                const audio = await this.routeAudio(text, data, isStale, () => {
+                    if (entry) entry.executing = true;
+                });
                 if (isStale()) {
                     if (this.objectUrls.delete(audio)) URL.revokeObjectURL(audio);
                     throw new DOMException('Audio request cancelled', 'AbortError');
