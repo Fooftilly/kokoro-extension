@@ -83,7 +83,10 @@ describe('text and markup conversion is inert and speech-safe', () => {
         expect(blocks.map(b => b.content)).toEqual([
             'Chapter One', 'A bold link.', 'First item Second item',
         ]);
-        expect(blocks.every(b => !b.html.includes('https://example.test'))).toBe(true);
+        expect(blocks[1]).toEqual({
+            type: 'text', content: 'A bold link.',
+            html: 'A bold link.', ids: [],
+        });
     });
 
     test('HTML extracts readable paragraphs without scripts, styles, external elements or raw markup', () => {
@@ -96,9 +99,33 @@ describe('text and markup conversion is inert and speech-safe', () => {
             'Title & Friends', 'Safe text link.', 'Another <paragraph>.',
         ]);
         expect(blocks.map(b => b.type)).toEqual(['h1', 'text', 'text']);
-        expect(blocks.every(b => !b.html.includes('<script') &&
-            !b.html.includes('onclick') && !b.html.includes('https://bad'))).toBe(true);
-        expect(blocks[2].html).toContain('&lt;paragraph&gt;');
+        expect(blocks[2]).toEqual({
+            type: 'text', content: 'Another <paragraph>.',
+            html: 'Another &lt;paragraph&gt;.', ids: [],
+        });
+        expect(blocks[1].html).toBe('Safe text link.');
+    });
+
+    test('nested HTML scripts and styles are discarded before text extraction', () => {
+        const blocks = parseTextDocument('html',
+            '<p>Hello<script>sendCredentials()</script> reader' +
+            '<style>privateCSS()</style> again.</p>' +
+            '<blockquote>Opening <iframe src="https://external.invalid">hidden fallback</iframe>end.</blockquote>');
+        expect(blocks.map(b => b.content)).toEqual([
+            'Hello reader again.', 'Opening end.',
+        ]);
+        expect(blocks.map(b => b.html)).toEqual([
+            'Hello reader again.', 'Opening end.',
+        ]);
+    });
+
+    test('line breaks and nested paragraphs keep word boundaries', () => {
+        const blocks = parseTextDocument('html',
+            '<p>First line<br>Second line</p>' +
+            '<blockquote><p>First paragraph.</p><p>Second paragraph.</p></blockquote>');
+        expect(blocks.map(b => b.content)).toEqual([
+            'First line Second line', 'First paragraph. Second paragraph.',
+        ]);
     });
 
     test('empty HTML body fails rather than sending a blank chapter', () => {
