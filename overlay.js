@@ -240,12 +240,14 @@ window.addEventListener('message', (event) => {
         navigate(currentIndex + 1);
     } else if (event.data === 'NAV_PREV') {
         navigate(currentIndex - 1);
-    } else if (event.source === window.parent && event.data === 'PAUSE_KOKORO_PLAYER') {
+    } else if (event.source === window.parent && event.origin === window.location.origin &&
+        event.data === 'PAUSE_KOKORO_PLAYER') {
         readerPauseRequested = true;
         // Invalidate an in-flight getAudio so a delayed result cannot start playing.
         navigationRequestId++;
         pause();
-    } else if (event.source === window.parent && event.data === 'RESUME_READER_AUTOPLAY') {
+    } else if (event.source === window.parent && event.origin === window.location.origin &&
+        event.data === 'RESUME_READER_AUTOPLAY') {
         readerPauseRequested = false;
     } else if (event.data === 'RELOAD_DATA') {
         window.hasReceivedData = true;
