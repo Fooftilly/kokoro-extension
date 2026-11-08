@@ -321,6 +321,53 @@ describe('EPUB file read/parse lifecycle', () => {
             !value.pendingTitle.startsWith('Book A 2'))).toBe(true);
     });
 
+    test('chapter-load failure is visible after the file picker has been dismissed', async () => {
+        const a = createMockBook('Book A');
+        books.push(a);
+        selectFile('a.epub').succeed();
+        await expectLoaded('Book A');
+
+        const chapterError = document.getElementById('chapterError');
+        const picker = document.getElementById('filePickerOverlay');
+        expect(picker.style.display).toBe('none');
+        expect(chapterError.hidden).toBe(true);
+        expect(chapterError.getAttribute('role')).toBe('alert');
+        a.sections[1].load.mockRejectedValueOnce(new Error('Unable to read chapter section'));
+        document.getElementById('nextChapter').click();
+        for (let i = 0; i < 30 && chapterError.hidden; i++) await tick();
+        expect(chapterError.hidden).toBe(false);
+        expect(chapterError.textContent).toContain('Unable to read chapter section');
+        // Loading a new chapter clears the reader-side alert; the picker is
+        // never reopened to report normal chapter navigation errors.
+        document.getElementById('prevChapter').click();
+        expect(chapterError.hidden).toBe(true);
+        expect(chapterError.textContent).toBe('');
+        expect(picker.style.display).toBe('none');
+    });
+
+    test('late failures from abandoned chapter navigation cannot overwrite current alert', async () => {
+        const a = createMockBook('Book A');
+        books.push(a);
+        selectFile('a.epub').succeed();
+        await expectLoaded('Book A');
+        const oldSection = deferred();
+        a.sections[1].load.mockImplementationOnce(() => oldSection.promise);
+        document.getElementById('nextChapter').click();
+        await tick();
+        document.getElementById('prevChapter').click();
+        await tick();
+        oldSection.reject(new Error('Old chapter failure'));
+        await tick();
+        await tick();
+
+        const alert = document.getElementById('chapterError');
+        expect(alert.hidden).toBe(true);
+        expect(alert.textContent).toBe('');
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+        expect(browser.storage.local.set.mock.calls.every(([value]) =>
+            !value.pendingTitle.startsWith('Book A 2'))).toBe(true);
+    });
+
     test('reopening books does not multiply Previous/Next click handlers', async () => {
         const a = createMockBook('Book A');
         const b = createMockBook('Book B');
