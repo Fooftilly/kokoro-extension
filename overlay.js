@@ -18,6 +18,7 @@ const saveAudioBtn = document.getElementById('saveAudio');
 let sentences = [];
 let currentIndex = 0;
 let navigationRequestId = 0; // ignores obsolete results even when an index is revisited
+let initializationRequestId = 0; // ignores stale asynchronous EPUB reloads
 let isPaused = false;
 let ignoreNextPause = false;
 let overlayCollapsed = false;
@@ -319,6 +320,7 @@ window.addEventListener('message', (event) => {
 });
 
 async function initialize() {
+    const loadId = ++initializationRequestId;
     window.focus();
     retryBtn.style.display = 'none';
     statusEl.textContent = "Initializing...";
@@ -331,6 +333,9 @@ async function initialize() {
     textDisplay.textContent = '';
 
     const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'defaultSpeed', 'defaultVolume', 'autoScroll', 'pendingCustomPronunciations', 'theme', 'pendingStartIndex', 'pendingAutoplay']);
+    // A newer chapter can finish loading while an earlier storage read is
+    // still pending. Never paint or start playback from a superseded read.
+    if (loadId !== initializationRequestId) return;
 
     const autoScroll = data.autoScroll || false;
     window.kokoroAutoScroll = autoScroll;
