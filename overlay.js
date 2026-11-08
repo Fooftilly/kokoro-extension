@@ -671,6 +671,12 @@ function renderText() {
     });
 }
 
+function showBlockedPlayback() {
+    isPaused = true;
+    playPauseBtn.textContent = "Play";
+    statusEl.textContent = "Browser blocked autoplay. Click Play to start.";
+}
+
 function pause() {
     isPaused = true;
     audioEl.pause();
@@ -679,10 +685,17 @@ function pause() {
 
 function resume() {
     isPaused = false;
-    audioEl.play().catch(e => {
+    const requestId = navigationRequestId;
+    audioEl.play().then(() => {
+        // A successful user gesture clears the earlier autoplay-blocked text,
+        // without changing status from a newer chapter/navigation request.
+        if (requestId === navigationRequestId && !isPaused) {
+            statusEl.textContent = `Playing sentence ${currentIndex + 1}/${sentences.length}`;
+        }
+    }).catch(e => {
+        if (requestId !== navigationRequestId || isPaused) return;
         if (e.name === 'NotAllowedError') {
-            isPaused = true;
-            playPauseBtn.textContent = "Play";
+            showBlockedPlayback();
             return;
         }
         console.warn("Resume failed", e);
@@ -786,8 +799,7 @@ async function navigate(index, forcePlay = null) {
                 // Ignore expected interruptions during rapid navigation
                 if (e.name === 'AbortError' || e.message.includes('interrupted')) return;
                 if (e.name === 'NotAllowedError') {
-                    isPaused = true;
-                    playPauseBtn.textContent = "Play";
+                    if (requestId === navigationRequestId && !isPaused) showBlockedPlayback();
                     return;
                 }
                 console.warn("Play failed", e, e.name);

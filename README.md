@@ -51,7 +51,7 @@ Verified against the current source (not aspirational):
 - **Text normalization** (toggleable) — contractions, transliteration of non-Latin scripts, dates/numbers, units, URLs, emails, phones, and related pronunciation prep in `text-processor.js`.
 - **Overlay playback** — play/pause, previous/next sentence, speed & volume, Spacebar play/pause; optional auto-scroll on the origin page with a “comfort zone” to reduce jumpiness. Compact mode is **draggable** with a persisted, viewport-clamped position, and **collapsible** (including full→floating) without stopping audio; Close still tears down the player.
 - **Floating mic button** — optional on-page control (can be disabled in settings).
-- **EPUB reader** — open documents in `reader.html` (epub.js); optional autoplay.
+- **Document reader** — open EPUB, DOCX, TXT, Markdown, or HTML from the popup; optional EPUB autoplay and continuous chapter playback.
 - **Themes** — light/dark toggle in the popup.
 - **Keyboard shortcuts** — e.g. read article, next/previous sentence, close overlay; EPUB open shortcut is suggested on Firefox (Chrome has a tighter default-shortcut limit).
 - **Connection status icon** — toolbar icon reflects API reachability.
@@ -117,7 +117,9 @@ Other commands:
 2. **Highlighted text:** select text → right-click → **Send to Kokoro TTS**.
 3. **Whole article:** right-click the page → **Read Article with Kokoro TTS** (or use the read-article shortcut).
 4. Choose **Stream** or **Download** in settings; adjust voice mixer, speed, volume, and normalization as needed.
-5. Optional: open the EPUB reader from the popup or the configured shortcut.
+5. **Open a document:** click **Open Document** in the extension popup. Supported formats include EPUB, DOCX, TXT, Markdown, and HTML.
+6. **Reader autoplay:** enable **Autoplay in EPUB** in the popup if desired. Browsers may block automatic sound; the player then explains that you must click **Play**. When autoplay is off, chapters start paused. **Continue to next EPUB chapter** is a separate, opt-in setting.
+7. **Reader keyboard shortcut:** Firefox suggests **Alt+M**. Chrome does not assign a default shortcut for opening the reader because its extension manifest allows only four suggested shortcut keys. On Chrome, use **Open Document** in the popup or assign a shortcut manually at `chrome://extensions/shortcuts`. Reader sentence navigation uses **Alt+,** and **Alt+.** where assigned.
 
 ## Development
 
