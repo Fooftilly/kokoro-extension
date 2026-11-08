@@ -469,6 +469,32 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(document.getElementById('chapterError').hidden).toBe(true);
     });
 
+    test('heading-scanned paths are not redirected by a same-name navigation-relative chapter', async () => {
+        const candidate = createMockBook('Publisher');
+        candidate.packaging = { navPath: 'Nav/nav.xhtml' };
+        candidate.sections[0].href = 'chapter.xhtml';
+        candidate.sections[0].url = 'chapter.xhtml';
+        candidate.sections[1].href = 'Nav/chapter.xhtml';
+        candidate.sections[1].url = 'Nav/chapter.xhtml';
+        candidate.sections[0].load.mockResolvedValue(new DOMParser().parseFromString(
+            '<body><h1 id="root">The root chapter.</h1></body>', 'text/html'));
+        candidate.sections[1].load.mockResolvedValue(new DOMParser().parseFromString(
+            '<body><h1 id="nav">The navigation chapter.</h1></body>', 'text/html'));
+        candidate.navigation.toc = [{ href: 'chapter.xhtml', label: 'Publisher item' }];
+        document.getElementById('scanDocumentHeadings').checked = true;
+        books.push(candidate);
+        selectFile('scan-collision.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
+
+        expect(Array.from(document.querySelectorAll('.playable-chapter'), el => el.dataset.href))
+            .toEqual(['chapter.xhtml#root', 'Nav/chapter.xhtml#nav']);
+        expect(browser.storage.local.set.mock.lastCall[0].pendingTitle)
+            .toBe('The root chapter.');
+        expect(browser.storage.local.set.mock.lastCall[0].pendingContent[0].content)
+            .toBe('The root chapter.');
+        expect(document.getElementById('chapterError').hidden).toBe(true);
+    });
+
     test('heading scan without discovered headings still resolves publisher navigation-relative paths', async () => {
         const candidate = createMockBook('Publisher');
         candidate.packaging = { navPath: 'Nav/nav.xhtml' };
