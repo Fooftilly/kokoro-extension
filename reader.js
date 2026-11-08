@@ -172,7 +172,7 @@ document.getElementById('showSidebarBtn').addEventListener('click', () => {
 function normalizePublisherToc(items, sourceBook) {
     const navPath = sourceBook.packaging?.navPath || sourceBook.packaging?.ncxPath;
     const origin = 'https://epub.invalid/';
-    const base = navPath ? new URL(navPath.replace(/^\\/+/, ''), origin) : null;
+    const base = navPath ? new URL(navPath.replace(/^\/+/, ''), origin) : null;
     const normalize = item => {
         let href = '';
         if (typeof item.href === 'string' && item.href.trim()) {
