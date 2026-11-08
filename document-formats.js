@@ -25,7 +25,9 @@ export function detectDocumentFormat(file) {
 }
 
 export function decodeTextDocument(buffer) {
-    if (!(buffer instanceof ArrayBuffer)) {
+    // FileReader buffers can cross extension/iframe realms; instanceof
+    // ArrayBuffer compares constructors and rejects otherwise valid bytes.
+    if (Object.prototype.toString.call(buffer) !== '[object ArrayBuffer]') {
         throw new Error('The selected document has no readable binary data');
     }
     if (buffer.byteLength > MAX_TEXT_DOCUMENT_BYTES) {
