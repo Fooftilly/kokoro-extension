@@ -267,6 +267,11 @@ window.addEventListener('message', (event) => {
 playPauseBtn.addEventListener('click', () => {
     if (audioEl.paused) {
         readerPauseRequested = false; // explicit user Play can resume after Close
+        if (new URLSearchParams(window.location.search).get('waitForData') === 'true') {
+            postToHostPage({
+                type: 'KOKORO_READER_RESUMED', revision: activeReaderRevision,
+            });
+        }
         resume();
     } else {
         pause();
