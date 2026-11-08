@@ -37,6 +37,7 @@ let playerReloadRevision = 0; // correlate EPUB reloads with committed iframe co
 let lastPublishedReload = null; // { revision, sourceBook, requestId }; only iframe acknowledgement releases archives
 let renderedChapterRevision = null; // acknowledged by the embedded player
 let renderedChapterRequestId = null;
+let renderedChapterContinuous = false;
 let lastContinuedRevision = null; // an ended chapter may advance only once
 let readerPausedForPicker = false; // Close must suppress pending chapter autoplay
 
@@ -1005,7 +1006,10 @@ async function sendToPlayer(content, title, textPreview, startIndex, requestId, 
             pendingReaderReloadRevision: revision,
         });
         if (requestId !== chapterRequestId || requestedBook !== book) return;
-        lastPublishedReload = { revision, sourceBook: requestedBook, requestId };
+        lastPublishedReload = {
+            revision, sourceBook: requestedBook, requestId,
+            continuousReader: pending.pendingContinuousReader,
+        };
         playerFrame.contentWindow.postMessage('RELOAD_DATA', '*');
     });
     playerWriteTail = operation.catch(() => {});
@@ -1023,6 +1027,7 @@ window.addEventListener('message', (event) => {
         if (lastPublishedReload.requestId === chapterRequestId) {
             renderedChapterRevision = event.data.revision;
             renderedChapterRequestId = chapterRequestId;
+            renderedChapterContinuous = lastPublishedReload.continuousReader;
         }
         lastPublishedReload = null;
         releaseRetiredBooks();
@@ -1034,7 +1039,7 @@ window.addEventListener('message', (event) => {
         event.origin === window.location.origin &&
         event.data?.type === 'KOKORO_READER_CHAPTER_ENDED') {
         const revision = event.data.revision;
-        if (!book || readerPausedForPicker ||
+        if (!book || !renderedChapterContinuous || readerPausedForPicker ||
             filePickerOverlay.style.display !== 'none' ||
             revision !== renderedChapterRevision ||
             renderedChapterRequestId !== chapterRequestId ||
