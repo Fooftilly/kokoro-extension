@@ -71,7 +71,9 @@ function openDocumentPicker() {
 }
 
 function cancelDocumentPicker() {
-    if (!hasOpenDocument()) return; // never leave the first-load reader empty
+    if (filePickerOverlay.style.display === 'none' || !hasOpenDocument()) return;
+    // Never leave the first-load reader empty; once a new text chapter commits
+    // and closes the picker, Cancel can no longer roll it back.
     // Cancel an in-flight file read or EPUB open/TOC scan without altering
     // the already committed chapter/player, even if old promises settle later.
     ++fileRequestId;
@@ -256,7 +258,10 @@ async function loadTextDocument(file, format, requestId) {
     currentActiveHref = null;
     currentToc = [{ href: 'document:0', label: file.name }];
     renderChapterList(currentToc);
-    await activeTextChapterWrite;
+    // Parsing and rendering the chapter list commit the replacement. The
+    // async player write must *not* keep Cancel visible after this point.
+    // Subsequent storage failures are reported by startTextChapterLoad() in
+    // the reader's visible alert, without rolling back a committed document.
 }
 
 async function startTextChapterLoad(title) {
