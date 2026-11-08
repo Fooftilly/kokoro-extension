@@ -212,6 +212,49 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
     });
 
+    test('Close during chapter extraction prevents late autoplay; new document restores preference', async () => {
+        browser.storage.sync.get.mockResolvedValue({
+            ttsBackend: 'mediapipe', mediaPipeVariant: 'cpu',
+            localVoice: 'af_heart', autoplayReader: true,
+        });
+        const previous = createMockBook('Book A');
+        const pendingChapter = deferred();
+        previous.sections[1].load.mockImplementationOnce(() => pendingChapter.promise);
+        books.push(previous);
+        selectFile('book.epub').succeed();
+        await expectLoaded('Book A');
+
+        document.getElementById('nextChapter').click();
+        for (let i = 0; i < 30 && previous.sections[1].load.mock.calls.length === 0; i++) {
+            await tick();
+        }
+        expect(previous.sections[1].load).toHaveBeenCalledTimes(1);
+
+        const frame = document.getElementById('playerFrame');
+        window.dispatchEvent(new MessageEvent('message', {
+            data: 'CLOSE_KOKORO_PLAYER', source: frame.contentWindow,
+        }));
+        pendingChapter.resolve(documentWithText('Delayed chapter.'));
+        for (let i = 0; i < 30 &&
+            !browser.storage.local.set.mock.calls.some(([entry]) => entry.pendingTitle === 'Book A 2');
+            i++) await tick();
+        const lateWrite = browser.storage.local.set.mock.calls
+            .map(([value]) => value).find(value => value.pendingTitle === 'Book A 2');
+        expect(lateWrite.pendingAutoplay).toBe(false);
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('flex');
+        expect(previous.destroy).not.toHaveBeenCalled();
+
+        const bytes = new (require('util').TextEncoder)().encode('Replacement document.');
+        selectFile('replacement.txt', 'text/plain').succeed(bytes.buffer);
+        for (let i = 0; i < 30 &&
+            !browser.storage.local.set.mock.calls.some(([entry]) => entry.pendingTitle === 'replacement.txt');
+            i++) await tick();
+        const nextWrite = browser.storage.local.set.mock.calls
+            .map(([value]) => value).find(value => value.pendingTitle === 'replacement.txt');
+        expect(nextWrite.pendingAutoplay).toBe(true);
+        expect(messages).toContain('RESUME_READER_AUTOPLAY');
+    });
+
     test('reads TXT into one reader chapter with escaped markup and intact local backend settings', async () => {
         const { TextEncoder } = require('util');
         const bytes = new TextEncoder().encode('Hello <world> & friends.\n\nSecond paragraph.');
