@@ -7,6 +7,9 @@ export class AudioManager {
         this.sentences = [];
         this.abortController = new AbortController();
         this.requestQueue = Promise.resolve(); // For sequential processing
+        // Unlike remote HTTP requests, local inference cannot safely overlap
+        // with another invocation on the same WASM engine after clear().
+        this.localInferenceQueue = Promise.resolve();
         this.localProvider = null;
         this.localVariant = null;
         this.objectUrls = new Set();
@@ -18,7 +21,17 @@ export class AudioManager {
         for (const url of this.objectUrls) URL.revokeObjectURL(url);
         this.objectUrls.clear();
         if (this.localProvider) {
-            void this.localProvider.cancel().catch(error => console.warn('Local TTS cancellation failed', error));
+            // Cancellation is best-effort but can still be in flight after the
+            // previous synthesize() promise settles. Join both operations before
+            // allowing a new session to reuse or replace the WASM provider.
+            const provider = this.localProvider;
+            const cancellation = Promise.resolve().then(() => provider.cancel()).catch(error => {
+                console.warn('Local TTS cancellation failed', error);
+            });
+            this.localInferenceQueue = Promise.all([
+                this.localInferenceQueue.catch(() => {}),
+                cancellation,
+            ]).then(() => {});
         }
         this.audioCache.clear();
         this.sentences = [];
@@ -60,24 +73,48 @@ export class AudioManager {
     }
 
     async localAudio(text, data) {
-        // Local PCM synthesis runs in the extension-owned playback page.
-        // Never call runtime.sendMessage or a remote endpoint from this path.
-        const variant = data.pendingMediaPipeVariant || 'cpu';
-        if (!this.localProvider || this.localVariant !== variant) {
-            if (this.localProvider) await this.localProvider.close();
-            this.localProvider = new MediaPipeKokoroProvider({ variant });
-            this.localVariant = variant;
-        }
+        // Local PCM synthesis runs only in the extension-owned playback page.
+        // A clear() starts a new session, but the previous WASM synthesis may
+        // still be running even after cancel() returns. Serialize local jobs
+        // across sessions; never concurrently invoke the same engine.
         const generation = this.generation;
-        const result = await this.localProvider.synthesize(text, {
-            voiceId: data.pendingLocalVoice || 'af_heart',
+        const work = this.localInferenceQueue.catch(() => {}).then(async () => {
+            if (generation !== this.generation) {
+                throw new DOMException('Local generation cancelled', 'AbortError');
+            }
+            const variant = data.pendingMediaPipeVariant || 'cpu';
+            if (!this.localProvider || this.localVariant !== variant) {
+                if (this.localProvider) await this.localProvider.close();
+                if (generation !== this.generation) {
+                    throw new DOMException('Local generation cancelled', 'AbortError');
+                }
+                this.localProvider = new MediaPipeKokoroProvider({ variant });
+                this.localVariant = variant;
+            }
+            let result;
+            try {
+                result = await this.localProvider.synthesize(text, {
+                    voiceId: data.pendingLocalVoice || 'af_heart',
+                });
+            } catch (error) {
+                // A best-effort cancel() may make the SDK throw its own error.
+                // The caller requested cancellation; never misreport the stale
+                // session as a fresh inference failure or synthesize a fallback.
+                if (generation !== this.generation) {
+                    throw new DOMException('Local generation cancelled', 'AbortError');
+                }
+                throw error;
+            }
+            if (generation !== this.generation) {
+                throw new DOMException('Local generation cancelled', 'AbortError');
+            }
+            const url = URL.createObjectURL(pcmToWavBlob(result.samples, result.sampleRateHz));
+            this.objectUrls.add(url);
+            return url;
         });
-        if (generation !== this.generation) {
-            throw new DOMException('Local generation cancelled', 'AbortError');
-        }
-        const url = URL.createObjectURL(pcmToWavBlob(result.samples, result.sampleRateHz));
-        this.objectUrls.add(url);
-        return url;
+        // A rejected or cancelled previous generation cannot poison the lane.
+        this.localInferenceQueue = work.catch(() => {});
+        return work;
     }
 
     async remoteAudio(text, data) {
