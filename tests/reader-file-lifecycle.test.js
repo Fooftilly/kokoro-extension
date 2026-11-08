@@ -44,6 +44,9 @@ function mountReaderDOM() {
         <div id="dropZone"></div>
         <input id="fileInput" type="file">
         <div id="file-name-display"></div>
+        <input id="scanDocumentHeadings" type="checkbox">
+        <button id="openAnotherDocument" type="button"></button>
+        <button id="cancelDocumentPicker" type="button" hidden></button>
         <div id="errorMsg" style="display:none"></div>
         <div id="chapterError" role="alert" hidden></div>
         <div id="loadingStatus" style="display:none"></div>
@@ -264,6 +267,388 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(ePub).toHaveBeenCalledTimes(1);
     });
 
+    test('Open another and Cancel preserve active book, chapter and player', async () => {
+        books.push(createMockBook('Book A'));
+        selectFile('book-a.epub').succeed();
+        await expectLoaded('Book A');
+        const written = browser.storage.local.set.mock.calls.length;
+        const sent = messages.length;
+
+        document.getElementById('openAnotherDocument').click();
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('flex');
+        expect(document.getElementById('cancelDocumentPicker').hidden).toBe(false);
+        expect(document.getElementById('file-name-display').textContent).toBe('No file selected.');
+        document.getElementById('cancelDocumentPicker').click();
+
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+        expect(document.querySelector('.chapter-label').textContent).toBe('Book A 1');
+        expect(browser.storage.local.set).toHaveBeenCalledTimes(written);
+        expect(messages).toHaveLength(sent);
+    });
+
+    test('cancel while a replacement file is reading aborts it and keeps the active document', async () => {
+        books.push(createMockBook('Book A'));
+        selectFile('a.epub').succeed();
+        await expectLoaded('Book A');
+        document.getElementById('openAnotherDocument').click();
+        const pending = selectFile('replacement.epub');
+        expect(pending.readyState).toBe(FileReader.LOADING);
+        document.getElementById('cancelDocumentPicker').click();
+        expect(pending.readyState).toBe(2);
+        await tick();
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+        expect(document.querySelector('.chapter-label').textContent).toBe('Book A 1');
+        expect(document.getElementById('errorMsg').style.display).toBe('none');
+        expect(ePub).toHaveBeenCalledTimes(1);
+    });
+
+    test('cancel during EPUB open leaves active book unchanged and destroys old candidate', async () => {
+        const candidateOpened = deferred();
+        const existing = createMockBook('Book A');
+        const candidate = createMockBook('Cancelled');
+        candidate.open.mockImplementationOnce(() => candidateOpened.promise);
+        books.push(existing, candidate);
+        selectFile('a.epub').succeed();
+        await expectLoaded('Book A');
+        document.getElementById('openAnotherDocument').click();
+        selectFile('replacement.epub').succeed();
+        for (let i = 0; i < 30 && candidate.open.mock.calls.length === 0; i++) await tick();
+        expect(candidate.open).toHaveBeenCalledTimes(1);
+        document.getElementById('cancelDocumentPicker').click();
+        candidateOpened.resolve();
+        await tick();
+        await tick();
+        expect(candidate.destroy).toHaveBeenCalledTimes(1);
+        expect(existing.destroy).not.toHaveBeenCalled();
+        expect(document.querySelector('.chapter-label').textContent).toBe('Book A 1');
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+    });
+
+    test('a committed text replacement closes Cancel even while player storage is pending', async () => {
+        const existing = createMockBook('Book A');
+        books.push(existing);
+        selectFile('old.epub').succeed();
+        await expectLoaded('Book A');
+
+        const stalledWrite = deferred();
+        browser.storage.local.set.mockImplementationOnce(() => stalledWrite.promise);
+        document.getElementById('openAnotherDocument').click();
+        const bytes = new (require('util').TextEncoder)().encode('The next document is ready.');
+        selectFile('new.txt', 'text/plain').succeed(bytes.buffer);
+        for (let i = 0; i < 30 &&
+            document.getElementById('filePickerOverlay').style.display !== 'none'; i++) await tick();
+
+        // The file has committed; the old archive remains until iframe ACK.
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+        expect(document.querySelector('.chapter-label').textContent).toBe('new.txt');
+        expect(existing.destroy).not.toHaveBeenCalled();
+        document.getElementById('cancelDocumentPicker').click();
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+        expect(document.querySelector('.chapter-label').textContent).toBe('new.txt');
+
+        stalledWrite.resolve();
+        for (let i = 0; i < 30 &&
+            !browser.storage.local.set.mock.calls.some(([value]) => value.pendingTitle === 'new.txt');
+            i++) await tick();
+        await tick();
+        expect(browser.storage.local.set.mock.lastCall[0].pendingTitle).toBe('new.txt');
+        expect(messages.at(-1)).toBe('RELOAD_DATA');
+    });
+
+    test('text playback storage failure is visible after picker closes', async () => {
+        browser.storage.local.set.mockRejectedValueOnce(new Error('Storage quota exceeded'));
+        const bytes = new (require('util').TextEncoder)().encode('Readable text.');
+        selectFile('text.txt', 'text/plain').succeed(bytes.buffer);
+        for (let i = 0; i < 30 &&
+            document.getElementById('chapterError').hidden; i++) await tick();
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+        expect(document.getElementById('chapterError').textContent)
+            .toContain('Storage quota exceeded');
+        expect(document.getElementById('chapterError').hidden).toBe(false);
+    });
+
+    test('publisher TOC stays authoritative until heading scan is explicitly selected', async () => {
+        const publisher = createMockBook('Publisher');
+        const heading = createMockBook('Publisher');
+        const headingDoc = (title) => new DOMParser().parseFromString(
+            '<html><body><h1 id="heading">' + title + '</h1><p>Body text.</p></body></html>',
+            'text/html');
+        publisher.sections[0].load.mockImplementation(async () => headingDoc('Scanned Title A'));
+        heading.sections[0].load.mockImplementation(async () => headingDoc('Scanned Title A'));
+        heading.sections[1].load.mockImplementation(async () => headingDoc('Scanned Title B'));
+        books.push(publisher, heading);
+        selectFile('default.epub').succeed();
+        await expectLoaded('Publisher');
+        expect(Array.from(document.querySelectorAll('.chapter-label'), node => node.textContent))
+            .toEqual(['Publisher 1', 'Publisher 2']);
+        expect(publisher.sections[0].load).toHaveBeenCalledTimes(1);
+        expect(publisher.sections[1].load).not.toHaveBeenCalled();
+
+        document.getElementById('openAnotherDocument').click();
+        document.getElementById('scanDocumentHeadings').checked = true;
+        selectFile('scanned.epub').succeed();
+        for (let i = 0; i < 30 &&
+            document.querySelector('.chapter-label')?.textContent !== 'Scanned Title A'; i++) await tick();
+        expect(Array.from(document.querySelectorAll('.chapter-label'), node => node.textContent))
+            .toEqual(['Scanned Title A', 'Scanned Title B']);
+        expect(heading.sections[1].load).toHaveBeenCalledTimes(1);
+    });
+
+    test('publisher navigation hrefs resolve relative to nav.xhtml while preserving order and fragments', async () => {
+        const candidate = createMockBook('Publisher');
+        candidate.packaging = { navPath: 'Nav/nav.xhtml' };
+        candidate.sections[0].href = 'Text/ch1.xhtml';
+        candidate.sections[0].url = 'Text/ch1.xhtml';
+        candidate.sections[1].href = 'Text/ch2.xhtml';
+        candidate.sections[1].url = 'Text/ch2.xhtml';
+        candidate.sections[0].load.mockResolvedValue(
+            new DOMParser().parseFromString('<p id="intro">First chapter text.</p>', 'text/html'));
+        candidate.navigation.toc = [
+            { href: '../Text/ch1.xhtml#intro', label: 'Chapter One' },
+            { href: '../Text/ch2.xhtml', label: 'Chapter Two' },
+        ];
+        books.push(candidate);
+        selectFile('nested-nav.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
+
+        expect(Array.from(document.querySelectorAll('.playable-chapter'), el => el.dataset.href))
+            .toEqual(['Text/ch1.xhtml#intro', 'Text/ch2.xhtml']);
+        expect(browser.storage.local.set.mock.lastCall[0].pendingTitle).toBe('Chapter One');
+        expect(browser.storage.local.set.mock.lastCall[0].pendingContent.map(b => b.content))
+            .toContain('First chapter text.');
+        expect(candidate.sections[0].load).toHaveBeenCalledTimes(1);
+        expect(candidate.sections[1].load).not.toHaveBeenCalled();
+        expect(document.getElementById('chapterError').hidden).toBe(true);
+
+        document.getElementById('nextChapter').click();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length < 2; i++) await tick();
+        expect(browser.storage.local.set.mock.lastCall[0].pendingTitle).toBe('Chapter Two');
+    });
+
+    test('navigation-relative link wins when an identical root-level filename also exists', async () => {
+        const candidate = createMockBook('Publisher');
+        candidate.packaging = { navPath: 'Nav/nav.xhtml' };
+        candidate.sections[0].href = 'chapter.xhtml';
+        candidate.sections[0].url = 'chapter.xhtml';
+        candidate.sections[1].href = 'Nav/chapter.xhtml';
+        candidate.sections[1].url = 'Nav/chapter.xhtml';
+        candidate.sections[0].load.mockResolvedValue(documentWithText('Wrong root-level chapter.'));
+        candidate.sections[1].load.mockResolvedValue(documentWithText('Correct navigation chapter.'));
+        candidate.navigation.toc = [{ href: 'chapter.xhtml', label: 'Navigation chapter' }];
+        books.push(candidate);
+        selectFile('colliding-names.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
+
+        expect(document.querySelector('.playable-chapter').dataset.href)
+            .toBe('Nav/chapter.xhtml');
+        expect(candidate.sections[0].load).not.toHaveBeenCalled();
+        expect(candidate.sections[1].load).toHaveBeenCalledTimes(1);
+        expect(browser.storage.local.set.mock.lastCall[0].pendingContent[0].content)
+            .toContain('Correct navigation chapter.');
+    });
+
+    test('fragment-only TOC link plays the navigation document when it belongs to the spine', async () => {
+        const candidate = createMockBook('Publisher');
+        candidate.packaging = { navPath: 'Nav/nav.xhtml' };
+        candidate.sections[0].href = 'Nav/nav.xhtml';
+        candidate.sections[0].url = 'Nav/nav.xhtml';
+        candidate.sections[0].load.mockResolvedValue(
+            new DOMParser().parseFromString(
+                '<body><h1 id="chapter1">Chapter in navigation document</h1></body>',
+                'text/html'));
+        candidate.navigation.toc = [{ href: '#chapter1', label: 'Navigation chapter' }];
+        books.push(candidate);
+        selectFile('fragment-nav.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
+
+        expect(document.querySelector('.playable-chapter').dataset.href)
+            .toBe('Nav/nav.xhtml#chapter1');
+        expect(browser.storage.local.set.mock.lastCall[0].pendingTitle)
+            .toBe('Navigation chapter');
+        expect(browser.storage.local.set.mock.lastCall[0].pendingStartIndex).toBe(0);
+        expect(document.getElementById('chapterError').hidden).toBe(true);
+    });
+
+    test('heading-scanned paths are not redirected by a same-name navigation-relative chapter', async () => {
+        const candidate = createMockBook('Publisher');
+        candidate.packaging = { navPath: 'Nav/nav.xhtml' };
+        candidate.sections[0].href = 'chapter.xhtml';
+        candidate.sections[0].url = 'chapter.xhtml';
+        candidate.sections[1].href = 'Nav/chapter.xhtml';
+        candidate.sections[1].url = 'Nav/chapter.xhtml';
+        candidate.sections[0].load.mockResolvedValue(new DOMParser().parseFromString(
+            '<body><h1 id="root">The root chapter.</h1></body>', 'text/html'));
+        candidate.sections[1].load.mockResolvedValue(new DOMParser().parseFromString(
+            '<body><h1 id="nav">The navigation chapter.</h1></body>', 'text/html'));
+        candidate.navigation.toc = [{ href: 'chapter.xhtml', label: 'Publisher item' }];
+        document.getElementById('scanDocumentHeadings').checked = true;
+        books.push(candidate);
+        selectFile('scan-collision.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
+
+        expect(Array.from(document.querySelectorAll('.playable-chapter'), el => el.dataset.href))
+            .toEqual(['chapter.xhtml#root', 'Nav/chapter.xhtml#nav']);
+        expect(browser.storage.local.set.mock.lastCall[0].pendingTitle)
+            .toBe('The root chapter.');
+        expect(browser.storage.local.set.mock.lastCall[0].pendingContent[0].content)
+            .toBe('The root chapter.');
+        expect(document.getElementById('chapterError').hidden).toBe(true);
+    });
+
+    test('heading scan without discovered headings still resolves publisher navigation-relative paths', async () => {
+        const candidate = createMockBook('Publisher');
+        candidate.packaging = { navPath: 'Nav/nav.xhtml' };
+        candidate.sections[0].href = 'Text/ch1.xhtml';
+        candidate.sections[0].url = 'Text/ch1.xhtml';
+        candidate.sections[1].href = 'Text/ch2.xhtml';
+        candidate.sections[1].url = 'Text/ch2.xhtml';
+        candidate.navigation.toc = [
+            { href: '../Text/ch1.xhtml', label: 'Original chapter one' },
+            { href: '../Text/ch2.xhtml', label: 'Original chapter two' },
+        ];
+        document.getElementById('scanDocumentHeadings').checked = true;
+        books.push(candidate);
+        selectFile('no-headings.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
+
+        expect(Array.from(document.querySelectorAll('.playable-chapter'), el => el.dataset.href))
+            .toEqual(['Text/ch1.xhtml', 'Text/ch2.xhtml']);
+        expect(browser.storage.local.set.mock.lastCall[0].pendingTitle)
+            .toBe('Original chapter one');
+        expect(candidate.sections[1].load).toHaveBeenCalledTimes(1); // heading scan only
+        expect(candidate.sections[0].load).toHaveBeenCalledTimes(2); // scan + speech
+    });
+
+    test('non-linked publisher TOC groups are preserved but skipped by playback and Prev/Next', async () => {
+        const candidate = createMockBook('Publisher');
+        candidate.navigation.toc = [
+            { href: '', label: 'Part One', subitems: [
+                { href: 'start.xhtml', label: 'First linked chapter' },
+                { href: 'next.xhtml', label: 'Second linked chapter' },
+            ] },
+            { href: '', label: 'Acknowledgments group', subitems: [] },
+        ];
+        books.push(candidate);
+        selectFile('grouped.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
+
+        expect(Array.from(document.querySelectorAll('.chapter-label'), el => el.textContent))
+            .toEqual(['Part One', 'First linked chapter', 'Second linked chapter', 'Acknowledgments group']);
+        expect(document.querySelectorAll('.playable-chapter')).toHaveLength(2);
+        expect(document.querySelector('.playable-chapter.active .chapter-label').textContent)
+            .toBe('First linked chapter');
+        expect(document.querySelector('.chapter-group').classList.contains('expanded')).toBe(true);
+        expect(document.getElementById('prevChapter').disabled).toBe(true);
+        expect(document.getElementById('nextChapter').disabled).toBe(false);
+        expect(browser.storage.local.set.mock.lastCall[0].pendingTitle).toBe('First linked chapter');
+
+        const writesBefore = browser.storage.local.set.mock.calls.length;
+        document.querySelector('.chapter-group-label').click();
+        await tick();
+        expect(browser.storage.local.set).toHaveBeenCalledTimes(writesBefore);
+
+        document.getElementById('nextChapter').click();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length < 2; i++) await tick();
+        expect(browser.storage.local.set.mock.lastCall[0].pendingTitle).toBe('Second linked chapter');
+        expect(document.getElementById('nextChapter').disabled).toBe(true);
+    });
+
+    test('percent-encoded publisher anchor selects the Unicode DOM ID rather than the first block', async () => {
+        const candidate = createMockBook('Book A');
+        candidate.navigation.toc[0].href = 'start.xhtml#caf%C3%A9';
+        candidate.sections[0].load.mockResolvedValue(
+            new DOMParser().parseFromString(
+                '<body><p>Prelude sentence.</p><h2 id="café">Café chapter.</h2></body>',
+                'text/html'));
+        books.push(candidate);
+        selectFile('encoded-anchor.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
+        expect(browser.storage.local.set.mock.lastCall[0].pendingStartIndex).toBe(1);
+        expect(document.getElementById('chapterError').hidden).toBe(true);
+    });
+
+    test('playback progress matches encoded publisher anchors and updates the reader title', async () => {
+        const candidate = createMockBook('Book A');
+        candidate.navigation.toc = [
+            { href: 'start.xhtml', label: 'Chapter beginning' },
+            { href: 'start.xhtml#caf%C3%A9', label: 'Café subsection' },
+        ];
+        candidate.sections[0].load.mockResolvedValue(
+            new DOMParser().parseFromString(
+                '<body><p>Prelude sentence.</p><h2 id="café">Café chapter.</h2></body>',
+                'text/html'));
+        books.push(candidate);
+        selectFile('encoded-progress.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
+        expect(document.querySelector('.playable-chapter.active').dataset.href).toBe('start.xhtml');
+        const next = document.querySelector('[data-href="start.xhtml#caf%C3%A9"]');
+        next.scrollIntoView = jest.fn();
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'KOKORO_READING_PROGRESS', blockIndex: 1 },
+        }));
+
+        expect(document.querySelector('.playable-chapter.active')).toBe(next);
+        expect(document.getElementById('prevChapter').disabled).toBe(false);
+        expect(document.getElementById('nextChapter').disabled).toBe(true);
+        expect(messages).toContainEqual({ type: 'UPDATE_TITLE', title: 'Café subsection' });
+        expect(next.scrollIntoView).toHaveBeenCalledTimes(1);
+    });
+
+    test('malformed publisher fragments cannot block progress matching later valid anchors', async () => {
+        const candidate = createMockBook('Book A');
+        candidate.navigation.toc = [
+            { href: 'start.xhtml', label: 'Chapter beginning' },
+            { href: 'start.xhtml#bad%ZZ', label: 'Malformed anchor' },
+            { href: 'start.xhtml#caf%C3%A9', label: 'Correct anchor' },
+        ];
+        candidate.sections[0].load.mockResolvedValue(
+            new DOMParser().parseFromString(
+                '<body><p>Prelude sentence.</p><h2 id="café">Café chapter.</h2></body>',
+                'text/html'));
+        books.push(candidate);
+        selectFile('malformed-progress.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
+        const validItem = document.querySelector('[data-href="start.xhtml#caf%C3%A9"]');
+        validItem.scrollIntoView = jest.fn();
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'KOKORO_READING_PROGRESS', blockIndex: 1 },
+        }));
+
+        expect(document.querySelector('.playable-chapter.active')).toBe(validItem);
+        expect(messages).toContainEqual({ type: 'UPDATE_TITLE', title: 'Correct anchor' });
+        expect(browser.storage.local.set).toHaveBeenCalledTimes(1);
+    });
+
+    test('malformed publisher anchor escapes warn and fall back without aborting playback', async () => {
+        const candidate = createMockBook('Book A');
+        candidate.navigation.toc[0].href = 'start.xhtml#bad%ZZ';
+        books.push(candidate);
+        selectFile('malformed-anchor.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
+        expect(browser.storage.local.set.mock.lastCall[0].pendingStartIndex).toBe(0);
+        expect(document.getElementById('chapterError').hidden).toBe(false);
+        expect(document.getElementById('chapterError').textContent)
+            .toContain('requested chapter anchor could not be found');
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+    });
+
+    test('missing EPUB TOC anchor warns visibly and falls back to chapter start', async () => {
+        const candidate = createMockBook('Book A');
+        candidate.navigation.toc[0].href = 'start.xhtml#absent';
+        books.push(candidate);
+        selectFile('book-a.epub').succeed();
+        await expectLoaded('Book A');
+        expect(document.getElementById('chapterError').hidden).toBe(false);
+        expect(document.getElementById('chapterError').textContent)
+            .toContain('requested chapter anchor could not be found');
+        const lastWrite = browser.storage.local.set.mock.lastCall[0];
+        expect(lastWrite.pendingStartIndex).toBe(0);
+        document.getElementById('nextChapter').click();
+        expect(document.getElementById('chapterError').hidden).toBe(true);
+    });
+
     test('does not dismiss picker until both file read and EPUB ready/TOC scan finish', async () => {
         const ready = deferred();
         books.push(createMockBook('Book A', ready.promise));
@@ -363,8 +748,9 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(messages).toEqual(['RELOAD_DATA']);
     });
 
-    test('scanning all spine sections and playing one chapter unloads their DOMs', async () => {
+    test('opt-in scanning unloads all scanned spine documents and played chapter DOMs', async () => {
         const a = createMockBook('Book A');
+        document.getElementById('scanDocumentHeadings').checked = true;
         books.push(a);
         selectFile('book.epub').succeed();
         await expectLoaded('Book A');
@@ -381,8 +767,7 @@ describe('EPUB file read/parse lifecycle', () => {
         const a = createMockBook('Book A');
         const b = createMockBook('Book B');
         const nextReady = deferred();
-        b.sections[0].load.mockImplementationOnce(async () =>
-            documentWithText('TOC B')).mockImplementationOnce(() => nextReady.promise);
+        b.sections[0].load.mockImplementationOnce(() => nextReady.promise);
         books.push(a, b);
         selectFile('book-a.epub').succeed();
         await expectLoaded('Book A');

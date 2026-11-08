@@ -20,6 +20,13 @@
                 <label for="fileInput" class="custom-file-label">Browse...</label>
                 <input type="file" id="fileInput" accept=".epub,.txt,.text,.md,.markdown,.html,.htm,.xhtml">
             </div>
+            <div class="picker-options">
+                <label for="scanDocumentHeadings">
+                    <input type="checkbox" id="scanDocumentHeadings">
+                    Scan EPUB headings instead of the publisher's chapter list
+                </label>
+            </div>
+            <button id="cancelDocumentPicker" type="button" class="nav-btn picker-cancel" hidden>Cancel</button>
             <div id="file-name-display" class="file-name-display">No file selected.</div>
             <div id="errorMsg" role="alert" style="color: red; margin-top: 10px; display: none;"></div>
             <div id="loadingStatus" style="margin-top: 20px; display: none;">Loading...</div>
@@ -31,6 +38,9 @@
             <div class="sidebar-header">
                 <h2>Chapters</h2>
                 <button id="toggleSidebar" class="icon-btn">«</button>
+            </div>
+            <div class="reader-file-actions">
+                <button id="openAnotherDocument" type="button" class="nav-btn">Open another document</button>
             </div>
             <div class="nav-controls">
                 <button id="prevChapter" class="nav-btn">Prev</button>

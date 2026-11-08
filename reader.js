@@ -7,6 +7,9 @@ import {
 
 const fileInput = document.getElementById('fileInput');
 const filePickerOverlay = document.getElementById('filePickerOverlay');
+const openAnotherDocumentButton = document.getElementById('openAnotherDocument');
+const cancelDocumentPickerButton = document.getElementById('cancelDocumentPicker');
+const scanDocumentHeadings = document.getElementById('scanDocumentHeadings');
 const chapterList = document.getElementById('chapterList');
 const errorMsg = document.getElementById('errorMsg');
 const chapterErrorMsg = document.getElementById('chapterError');
@@ -48,6 +51,47 @@ const dropZone = document.getElementById('dropZone');
 const fileNameDisplay = document.getElementById('file-name-display');
 
 // --- Event Listeners ---
+
+function hasOpenDocument() {
+    return Boolean(book || textDocument);
+}
+
+function resetPickerState() {
+    fileInput.value = '';
+    if (fileNameDisplay) fileNameDisplay.textContent = 'No file selected.';
+    errorMsg.style.display = 'none';
+    errorMsg.textContent = '';
+    loadingStatus.style.display = 'none';
+    cancelDocumentPickerButton.hidden = !hasOpenDocument();
+}
+
+function openDocumentPicker() {
+    resetPickerState();
+    filePickerOverlay.style.display = 'flex';
+}
+
+function cancelDocumentPicker() {
+    if (filePickerOverlay.style.display === 'none' || !hasOpenDocument()) return;
+    // Never leave the first-load reader empty; once a new text chapter commits
+    // and closes the picker, Cancel can no longer roll it back.
+    // Cancel an in-flight file read or EPUB open/TOC scan without altering
+    // the already committed chapter/player, even if old promises settle later.
+    ++fileRequestId;
+    if (activeFileReader && activeFileReader.readyState === FileReader.LOADING &&
+        typeof activeFileReader.abort === 'function') {
+        activeFileReader.abort();
+    }
+    resetPickerState();
+    filePickerOverlay.style.display = 'none';
+}
+
+openAnotherDocumentButton.addEventListener('click', openDocumentPicker);
+cancelDocumentPickerButton.addEventListener('click', cancelDocumentPicker);
+window.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && filePickerOverlay.style.display !== 'none') {
+        cancelDocumentPicker();
+    }
+});
 
 fileInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
@@ -97,7 +141,10 @@ async function handleFile(file) {
         if (format === 'epub') await loadEpub(file, requestId);
         else await loadTextDocument(file, format, requestId);
         // Only a successfully parsed and current document may hide the picker.
-        if (requestId === fileRequestId) filePickerOverlay.style.display = 'none';
+        if (requestId === fileRequestId) {
+            filePickerOverlay.style.display = 'none';
+            cancelDocumentPickerButton.hidden = !hasOpenDocument();
+        }
     } catch (err) {
         if (requestId !== fileRequestId) return;
         console.error('Document loading failed:', err);
@@ -117,6 +164,71 @@ document.getElementById('showSidebarBtn').addEventListener('click', () => {
     appContainer.classList.remove('sidebar-hidden');
     document.getElementById('showSidebarBtn').style.display = 'none';
 });
+
+// EPUB.js preserves raw navigation hrefs, which are relative to the
+// navigation (or NCX) file, while Spine.get() expects OPF-relative hrefs.
+// Normalize links only to actual spine sections, preserving order, labels,
+// hierarchy, and fragments. Unresolvable/external paths stay non-playable.
+function normalizePublisherToc(items, sourceBook) {
+    const navPath = sourceBook.packaging?.navPath || sourceBook.packaging?.ncxPath;
+    const origin = 'https://epub.invalid/';
+    const base = navPath ? new URL(navPath.replace(/^\/+/, ''), origin) : null;
+    const normalize = item => {
+        let href = '';
+        if (typeof item.href === 'string' && item.href.trim()) {
+            const raw = item.href.trim();
+            const hash = raw.indexOf('#');
+            const path = hash < 0 ? raw : raw.slice(0, hash);
+            const fragment = hash < 0 ? '' : raw.slice(hash);
+            // Interpret hrefs relative to the EPUB navigation document first.
+            // Otherwise "chapter.xhtml" can wrongly select a root-level
+            // chapter instead of "Nav/chapter.xhtml". A fragment-only href
+            // targets the nav document itself when that file is in the spine.
+            let section = null;
+            if (base) {
+                try {
+                    const resolved = new URL(path || '', base);
+                    if (resolved.origin === base.origin) {
+                        section = sourceBook.spine.get(
+                            decodeURIComponent(resolved.pathname.slice(1)));
+                    }
+                } catch (error) {
+                    console.warn('Ignoring invalid publisher TOC path', path, error);
+                }
+            }
+            // Some EPUB manifests use already-OPF-relative links; accept
+            // those when the navigation-relative target is not a spine item.
+            if (!section && path && !/^[a-z][a-z0-9+.-]*:/i.test(path) &&
+                !path.startsWith('//')) {
+                section = sourceBook.spine.get(path);
+            }
+            if (section) href = section.href + fragment;
+        }
+        return {
+            ...item,
+            href,
+            subitems: (item.subitems || item.items || []).map(normalize),
+        };
+    };
+    return items.map(normalize);
+}
+
+function hasPlayableTocEntry(items) {
+    return items.some(item => Boolean(item.href) ||
+        hasPlayableTocEntry(item.subitems || item.items || []));
+}
+
+// EPUB publisher TOC fragments may be URI-encoded even though the extracted
+// DOM element IDs are Unicode strings. Keep malformed escapes as literals so
+// a corrupt anchor cannot crash either chapter loading or progress syncing.
+function decodedChapterId(fragment) {
+    try {
+        return decodeURIComponent(fragment);
+    } catch (error) {
+        console.warn('Invalid EPUB chapter fragment encoding', fragment, error);
+        return fragment;
+    }
+}
 
 // --- EPUB Logic ---
 
@@ -158,9 +270,24 @@ async function loadEpub(file, requestId) {
         await candidate.ready;
         if (requestId !== fileRequestId) return;
 
-        loadingStatus.textContent = 'Scanning for chapters...';
-        const toc = await getEnrichedToc(candidate, () => requestId === fileRequestId);
+        const publisherToc = candidate.navigation?.toc || [];
+        // The EPUB's own navigation is authoritative. Heading scanning is an
+        // opt-in alternative, except for books without a publisher TOC.
+        const scan = scanDocumentHeadings.checked || publisherToc.length === 0;
+        if (scan) loadingStatus.textContent = 'Scanning for chapters...';
+        const discovered = scan
+            ? await getEnrichedToc(candidate, () => requestId === fileRequestId)
+            : publisherToc;
         if (requestId !== fileRequestId) return;
+        // Heading-scan links come from Section.href and are already relative
+        // to the OPF. Do not resolve them against the nav document again:
+        // same-name chapters in different directories would be conflated.
+        // If no headings were found, the scanner returns the original
+        // publisher array by identity; those raw links still need resolving.
+        const toc = scan && discovered !== publisherToc
+            ? discovered
+            : normalizePublisherToc(discovered, candidate);
+        if (!hasPlayableTocEntry(toc)) throw new Error('EPUB contains no readable chapters');
 
         // Retain the old book until the new chapter reaches the player:
         // current audio/image blob URLs may still refer to its archive.
@@ -204,7 +331,10 @@ async function loadTextDocument(file, format, requestId) {
     currentActiveHref = null;
     currentToc = [{ href: 'document:0', label: file.name }];
     renderChapterList(currentToc);
-    await activeTextChapterWrite;
+    // Parsing and rendering the chapter list commit the replacement. The
+    // async player write must *not* keep Cancel visible after this point.
+    // Subsequent storage failures are reported by startTextChapterLoad() in
+    // the reader's visible alert, without rolling back a committed document.
 }
 
 async function startTextChapterLoad(title) {
@@ -337,14 +467,20 @@ function renderChapterList(toc) {
     flatToc = [];
 
     const createItem = (item, level = 0) => {
-        flatToc.push(item);
+        const playable = Boolean(item.href);
+        if (playable) flatToc.push(item);
         const container = document.createElement('div');
         container.className = 'chapter-group';
         if (level > 0) container.classList.add('subchapter-list');
 
         const itemEl = document.createElement('div');
         itemEl.className = 'chapter-item';
-        itemEl.dataset.href = item.href;
+        if (playable) {
+            itemEl.classList.add('playable-chapter');
+            itemEl.dataset.href = item.href;
+        } else {
+            itemEl.classList.add('chapter-group-label');
+        }
         itemEl.style.paddingLeft = `${10 + (level * 20)}px`;
 
         const children = item.subitems || item.items || [];
@@ -371,7 +507,7 @@ function renderChapterList(toc) {
         label.textContent = (item.label || "Untitled").trim();
         itemEl.appendChild(label);
 
-        itemEl.addEventListener('click', () => {
+        if (playable) itemEl.addEventListener('click', () => {
             document.querySelectorAll('.chapter-item').forEach(d => d.classList.remove('active'));
             itemEl.classList.add('active');
             currentActiveHref = item.href;
@@ -407,14 +543,17 @@ function renderChapterList(toc) {
     updateNavButtons();
 
     // Auto-select first item
-    const firstItem = chapterList.querySelector('.chapter-item');
+    const firstItem = chapterList.querySelector('.playable-chapter');
     if (firstItem) {
         firstItem.click();
-        const firstGroup = firstItem.closest('.chapter-group');
-        if (firstGroup && firstGroup.querySelector('.sub-items')) {
-            firstGroup.classList.add('expanded');
-            const toggle = firstGroup.querySelector('.chapter-toggle');
+        // The first actual chapter can be nested below a non-linked <span>
+        // grouping label. Expand all its ancestors so it remains visible.
+        let group = firstItem.closest('.chapter-group');
+        while (group && chapterList.contains(group)) {
+            group.classList.add('expanded');
+            const toggle = group.firstElementChild?.querySelector('.chapter-toggle');
             if (toggle) toggle.textContent = '▼';
+            group = group.parentElement?.closest('.chapter-group');
         }
     }
 }
@@ -541,7 +680,9 @@ async function loadEpubChapter(href, title) {
             collectHrefs(children);
         });
     };
-    collectHrefs(requestedBook.navigation.toc);
+    // currentToc has the publisher's hrefs normalized to spine paths.
+    // Raw EPUB navigation hrefs may otherwise miss chapter boundaries.
+    collectHrefs(currentToc);
 
     const sectionsToLoad = [startSection];
     let nextIdx = startSection.index + 1;
@@ -597,15 +738,18 @@ async function loadEpubChapter(href, title) {
     let startIndex = 0;
 
     if (fragment) {
-        console.log("Searching for fragment:", fragment);
-        const idx = mergedBlocks.findIndex(b => b.ids && b.ids.includes(fragment));
+        const targetId = decodedChapterId(fragment);
+        const idx = mergedBlocks.findIndex(b => b.ids && b.ids.includes(targetId));
         if (idx !== -1) {
             startIndex = idx;
             console.log("Found fragment at block index:", idx);
         } else {
-            console.warn("Fragment not found in merged blocks:", fragment);
-            const allAvailableIds = mergedBlocks.flatMap(b => b.ids || []);
-            console.log("Available IDs in merged blocks:", allAvailableIds);
+            console.warn('Fragment not found in chapter:', fragment);
+            // This is a fallback to the start of the chapter, not a successful
+            // anchor navigation. Report it in the reader, not the hidden picker.
+            chapterErrorMsg.textContent =
+                'The requested chapter anchor could not be found. Playback starts at the chapter beginning.';
+            chapterErrorMsg.hidden = false;
         }
     }
 
@@ -733,8 +877,10 @@ function updateActiveChapter(blockIndex) {
             // item.href is like "chapter.xhtml#someId" or just "chapter.xhtml"
             const itemHash = item.href.split('#')[1];
 
-            // If item has a hash, check if it matches one of the block's IDs
-            if (itemHash && block.ids.includes(itemHash)) {
+            // Use the same decoding as initial chapter selection. Otherwise
+            // #caf%C3%A9 can navigate correctly but never update the sidebar
+            // when playback reaches <h2 id="café">.
+            if (itemHash && block.ids.includes(decodedChapterId(itemHash))) {
                 return item;
             }
             // If item has no hash, it points to the start of the file. 
@@ -756,7 +902,8 @@ function updateActiveChapter(blockIndex) {
 
         // 1. Update Sidebar
         document.querySelectorAll('.chapter-item').forEach(d => d.classList.remove('active'));
-        const activeItem = document.querySelector(`.chapter-item[data-href="${bestMatch.href}"]`);
+        const activeItem = [...document.querySelectorAll('.playable-chapter')]
+            .find(node => node.dataset.href === bestMatch.href);
         if (activeItem) {
             activeItem.classList.add('active');
             // Ensure parent groups are expanded
