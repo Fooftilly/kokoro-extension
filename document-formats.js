@@ -131,7 +131,11 @@ function cleanMarkdownInline(text) {
 }
 
 function htmlBlocks(text) {
-    const doc = new window.DOMParser().parseFromString(text, 'text/html');
+    // DOMParser.parseFromString('text/html') may fetch iframe/image resources
+    // despite script execution being disabled. A detached template parses HTML
+    // into inert content that cannot initiate embedded resource downloads.
+    const template = document.createElement('template');
+    template.innerHTML = text;
     const results = [];
     const ignored = new Set([
         'script', 'style', 'noscript', 'template', 'svg', 'iframe',
@@ -154,7 +158,7 @@ function htmlBlocks(text) {
         }
         for (const child of node.childNodes) visit(child);
     }
-    visit(doc.body);
+    for (const child of template.content.childNodes) visit(child);
     return results;
 }
 
