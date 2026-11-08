@@ -1,0 +1,125 @@
+/** @jest-environment jsdom */
+import { AudioManager } from '../audio-manager.js';
+import { MediaPipeKokoroProvider } from '../mediapipe-provider.js';
+
+jest.mock('../mediapipe-provider.js', () => ({
+    MediaPipeKokoroProvider: jest.fn(),
+}));
+
+const pcm = () => ({ samples: new Float32Array([0.2, -0.1, 0.15]), sampleRateHz: 24000 });
+function deferred() {
+    let resolve;
+    const promise = new Promise(yes => { resolve = yes; });
+    return { promise, resolve };
+}
+const nextTick = () => new Promise(resolve => setTimeout(resolve, 0));
+
+describe('navigation priority over speculative local synthesis (#57)', () => {
+    let manager;
+    let provider;
+    beforeEach(() => {
+        jest.clearAllMocks();
+        let urlNumber = 0;
+        URL.createObjectURL = jest.fn(() => 'blob:nav-' + (++urlNumber));
+        URL.revokeObjectURL = jest.fn();
+        provider = {
+            synthesize: jest.fn(async () => pcm()),
+            cancel: jest.fn(async () => {}),
+            close: jest.fn(async () => {}),
+        };
+        MediaPipeKokoroProvider.mockImplementation(() => provider);
+        global.browser = {
+            storage: { local: { get: jest.fn(async () => ({
+                pendingTtsBackend: 'mediapipe',
+                pendingMediaPipeVariant: 'cpu',
+                pendingLocalVoice: 'af_heart',
+            })) } },
+            runtime: { sendMessage: jest.fn() },
+        };
+        manager = new AudioManager();
+        manager.setSentences(Array.from({ length: 15 }, (_, i) => ({ text: 'Sentence ' + i })));
+    });
+
+    test('a distant jump skips two obsolete prefetched sentences instead of synthesizing them', async () => {
+        const started = deferred();
+        const slow = deferred();
+        provider.synthesize.mockImplementationOnce(() => {
+            started.resolve();
+            return slow.promise;
+        }).mockResolvedValue(pcm());
+        const first = manager.getAudio(0);
+        await started.promise;
+        manager.prefetch(1);
+        manager.prefetch(2);
+        await nextTick();
+
+        manager.prioritizeNavigation(9);
+        const latest = manager.getAudio(9);
+        slow.resolve(pcm());
+        await expect(first).rejects.toMatchObject({ name: 'AbortError' });
+        await expect(latest).resolves.toBe('blob:nav-1');
+
+        expect(provider.synthesize.mock.calls.map(([text]) => text))
+            .toEqual(['Sentence 0', 'Sentence 9']);
+        expect(manager.audioCache.has(1)).toBe(false);
+        expect(manager.audioCache.has(2)).toBe(false);
+        expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
+    });
+
+    test('selecting a queued prefetch promotes its sentence to active navigation', async () => {
+        const started = deferred();
+        const slow = deferred();
+        provider.synthesize.mockImplementationOnce(() => {
+            started.resolve();
+            return slow.promise;
+        }).mockResolvedValue(pcm());
+        const first = manager.getAudio(0);
+        await started.promise;
+        manager.prefetch(1);
+        await nextTick();
+        manager.prioritizeNavigation(1);
+        const selected = manager.getAudio(1);
+        slow.resolve(pcm());
+        await expect(first).rejects.toMatchObject({ name: 'AbortError' });
+        await expect(selected).resolves.toBe('blob:nav-1');
+        expect(provider.synthesize.mock.calls.map(([text]) => text))
+            .toEqual(['Sentence 0', 'Sentence 1']);
+    });
+
+    test('pinned exports are not discarded by a navigation jump', async () => {
+        const started = deferred();
+        const slow = deferred();
+        provider.synthesize.mockImplementationOnce(() => {
+            started.resolve();
+            return slow.promise;
+        }).mockResolvedValue(pcm());
+        const first = manager.getAudio(0);
+        await started.promise;
+        const release = manager.pinAudio(1);
+        manager.prefetch(1);
+        const saved = manager.getAudio(1);
+        await nextTick();
+        manager.prioritizeNavigation(9);
+        const destination = manager.getAudio(9);
+        slow.resolve(pcm());
+
+        await expect(first).rejects.toMatchObject({ name: 'AbortError' });
+        await expect(saved).resolves.toBe('blob:nav-1');
+        await expect(destination).resolves.toBe('blob:nav-2');
+        expect(provider.synthesize.mock.calls.map(([text]) => text))
+            .toEqual(['Sentence 0', 'Sentence 1', 'Sentence 9']);
+        release();
+    });
+
+    test('already-generated current audio stays valid until the replacement is installed', async () => {
+        const original = await manager.getAudio(0);
+        manager.retainWindow(0);
+        manager.prioritizeNavigation(9);
+        expect(manager.objectUrls.has(original)).toBe(true);
+        expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(original);
+
+        await manager.getAudio(9);
+        manager.retainWindow(9);
+        expect(URL.revokeObjectURL).toHaveBeenCalledWith(original);
+    });
+});
