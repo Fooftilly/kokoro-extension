@@ -140,12 +140,35 @@ body {
     background-color: var(--hover-color);
 }
 
+/* The row is a layout container; chapter selection and expansion use
+   separate native buttons with visible keyboard focus. */
+.chapter-select {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.chapter-select:focus-visible,
+.chapter-toggle:focus-visible {
+    outline: 2px solid var(--accent-color);
+    outline-offset: 2px;
+}
+
 .chapter-item.active {
     background-color: var(--accent-color);
     color: white;
 }
 
 .chapter-toggle {
+    border: 0;
+    background: transparent;
+    padding: 0;
     width: 20px;
     height: 20px;
     display: flex;
@@ -249,8 +272,23 @@ body {
     margin-top: 25px;
 }
 
+/* Keep the native file picker keyboard-focusable and labelled while
+   preserving the custom Browse appearance. display:none removes it from Tab. */
 #fileInput {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    border: 0;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+.file-input-wrapper:focus-within .custom-file-label {
+    outline: 2px solid var(--accent-color);
+    outline-offset: 3px;
 }
 
 .custom-file-label {

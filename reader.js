@@ -191,12 +191,15 @@ async function handleFile(file) {
 
 document.getElementById('toggleSidebar').addEventListener('click', () => {
     appContainer.classList.add('sidebar-hidden');
-    document.getElementById('showSidebarBtn').style.display = 'block';
+    const showButton = document.getElementById('showSidebarBtn');
+    showButton.style.display = 'block';
+    showButton.focus();
 });
 
 document.getElementById('showSidebarBtn').addEventListener('click', () => {
     appContainer.classList.remove('sidebar-hidden');
     document.getElementById('showSidebarBtn').style.display = 'none';
+    document.getElementById('toggleSidebar').focus();
 });
 
 // EPUB.js preserves raw navigation hrefs, which are relative to the
@@ -504,9 +507,39 @@ async function getEnrichedToc(book, isCurrent = () => true) {
     return enriched.length > 0 ? enriched : originalToc;
 }
 
+// Buttons make both chapter selection and TOC expansion operable by keyboard
+// without nesting interactive controls or requiring custom key handling.
+function setChapterGroupExpanded(group, expanded) {
+    group.classList.toggle('expanded', expanded);
+    const toggle = group.firstElementChild?.querySelector('.chapter-toggle');
+    if (toggle) {
+        toggle.textContent = expanded ? '▼' : '▶';
+        toggle.setAttribute('aria-expanded', String(expanded));
+        toggle.setAttribute('aria-label',
+            (expanded ? 'Collapse ' : 'Expand ') + (toggle.dataset.label || 'chapter group'));
+    }
+}
+
+function selectActiveChapter(href) {
+    let selected = null;
+    chapterList.querySelectorAll('.playable-chapter').forEach(button => {
+        const active = button.dataset.href === href;
+        button.classList.toggle('active', active);
+        button.closest('.chapter-item')?.classList.toggle('active', active);
+        if (active) {
+            button.setAttribute('aria-current', 'true');
+            selected = button;
+        } else {
+            button.removeAttribute('aria-current');
+        }
+    });
+    return selected;
+}
+
 function renderChapterList(toc) {
     chapterList.innerHTML = '';
     flatToc = [];
+    let subListId = 0;
 
     const createItem = (item, level = 0) => {
         const playable = Boolean(item.href);
@@ -517,52 +550,58 @@ function renderChapterList(toc) {
 
         const itemEl = document.createElement('div');
         itemEl.className = 'chapter-item';
-        if (playable) {
-            itemEl.classList.add('playable-chapter');
-            itemEl.dataset.href = item.href;
-        } else {
-            itemEl.classList.add('chapter-group-label');
-        }
+        if (!playable) itemEl.classList.add('chapter-group-label');
         itemEl.style.paddingLeft = `${10 + (level * 20)}px`;
 
         const children = item.subitems || item.items || [];
         const hasChildren = children.length > 0;
 
+        let subList;
         if (hasChildren) {
-            const toggle = document.createElement('span');
+            subList = document.createElement('div');
+            subList.className = 'sub-items';
+            subList.id = `reader-subitems-${++subListId}`;
+
+            const toggle = document.createElement('button');
+            toggle.type = 'button';
             toggle.className = 'chapter-toggle';
-            toggle.textContent = '▶';
-            toggle.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const isExpanded = container.classList.toggle('expanded');
-                toggle.textContent = isExpanded ? '▼' : '▶';
-            });
+            toggle.dataset.label = (item.label || 'Untitled').trim();
+            toggle.setAttribute('aria-controls', subList.id);
             itemEl.appendChild(toggle);
+            toggle.addEventListener('click', () => {
+                setChapterGroupExpanded(container, !container.classList.contains('expanded'));
+            });
         } else if (level > 0) {
             const spacer = document.createElement('span');
             spacer.className = 'chapter-spacer';
+            spacer.setAttribute('aria-hidden', 'true');
             itemEl.appendChild(spacer);
         }
 
         const label = document.createElement('span');
         label.className = 'chapter-label';
         label.textContent = (item.label || "Untitled").trim();
-        itemEl.appendChild(label);
 
-        if (playable) itemEl.addEventListener('click', () => {
-            activateChapter(item, itemEl);
-        });
+        if (playable) {
+            const chapterButton = document.createElement('button');
+            chapterButton.type = 'button';
+            chapterButton.className = 'chapter-select playable-chapter';
+            chapterButton.dataset.href = item.href;
+            chapterButton.appendChild(label);
+            chapterButton.addEventListener('click', () => {
+                activateChapter(item, chapterButton);
+            });
+            itemEl.appendChild(chapterButton);
+        } else {
+            itemEl.appendChild(label);
+        }
 
         container.appendChild(itemEl);
         chapterList.appendChild(container);
+        if (subList) setChapterGroupExpanded(container, false);
 
-        if (hasChildren) {
-            const subList = document.createElement('div');
-            subList.className = 'sub-items';
-            children.forEach(sub => {
-                const subItem = createItem(sub, level + 1);
-                subList.appendChild(subItem);
-            });
+        if (subList) {
+            children.forEach(sub => subList.appendChild(createItem(sub, level + 1)));
             container.appendChild(subList);
         }
 
@@ -570,28 +609,23 @@ function renderChapterList(toc) {
     };
 
     toc.forEach(item => createItem(item));
-
     updateNavButtons();
 
-    // Auto-select first item
+    // Expand parent TOC groups of the selected chapter, including when
+    // a non-linked group label contains the first playable chapter.
     const firstItem = chapterList.querySelector('.playable-chapter');
     if (firstItem) {
         firstItem.click();
-        // The first actual chapter can be nested below a non-linked <span>
-        // grouping label. Expand all its ancestors so it remains visible.
         let group = firstItem.closest('.chapter-group');
         while (group && chapterList.contains(group)) {
-            group.classList.add('expanded');
-            const toggle = group.firstElementChild?.querySelector('.chapter-toggle');
-            if (toggle) toggle.textContent = '▼';
+            setChapterGroupExpanded(group, true);
             group = group.parentElement?.closest('.chapter-group');
         }
     }
 }
 
 function activateChapter(item, itemEl, continuePlaying = false) {
-    document.querySelectorAll('.chapter-item').forEach(el => el.classList.remove('active'));
-    itemEl.classList.add('active');
+    selectActiveChapter(item.href);
     currentActiveHref = item.href;
     updateNavButtons();
     if (book) {
@@ -609,7 +643,7 @@ prevChapterBtn.addEventListener('click', () => {
     const index = flatToc.findIndex(item => item.href === currentActiveHref);
     if (index > 0) {
         const item = flatToc[index - 1];
-        const el = [...document.querySelectorAll('.chapter-item')]
+        const el = [...chapterList.querySelectorAll('.playable-chapter')]
             .find(node => node.dataset.href === item.href);
         el?.click();
     }
@@ -618,7 +652,7 @@ nextChapterBtn.addEventListener('click', () => {
     const index = flatToc.findIndex(item => item.href === currentActiveHref);
     if (index !== -1 && index < flatToc.length - 1) {
         const item = flatToc[index + 1];
-        const el = [...document.querySelectorAll('.chapter-item')]
+        const el = [...chapterList.querySelectorAll('.playable-chapter')]
             .find(node => node.dataset.href === item.href);
         el?.click();
     }
@@ -951,19 +985,15 @@ function updateActiveChapter(blockIndex) {
     if (bestMatch && bestMatch.href !== currentActiveHref) {
         currentActiveHref = bestMatch.href;
 
-        // 1. Update Sidebar
-        document.querySelectorAll('.chapter-item').forEach(d => d.classList.remove('active'));
-        const activeItem = [...document.querySelectorAll('.playable-chapter')]
-            .find(node => node.dataset.href === bestMatch.href);
+        // 1. Update Sidebar and announce the selected chapter.
+        const activeItem = selectActiveChapter(bestMatch.href);
         if (activeItem) {
             activeItem.classList.add('active');
             // Ensure parent groups are expanded
             let parent = activeItem.parentElement;
             while (parent) {
                 if (parent.classList.contains('chapter-group')) {
-                    parent.classList.add('expanded');
-                    const toggle = parent.querySelector('.chapter-toggle');
-                    if (toggle) toggle.textContent = '▼';
+                    setChapterGroupExpanded(parent, true);
                 }
                 parent = parent.parentElement;
             }

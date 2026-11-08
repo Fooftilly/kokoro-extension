@@ -1047,6 +1047,133 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(candidate.sections[0].load).toHaveBeenCalledTimes(2); // scan + speech
     });
 
+    test('chapter selection uses focusable native buttons and announces active state', async () => {
+        const candidate = createMockBook('Accessible');
+        books.push(candidate);
+        selectFile('accessible.epub').succeed();
+        await expectLoaded('Accessible');
+
+        const chapters = [...document.querySelectorAll('.playable-chapter')];
+        expect(chapters).toHaveLength(2);
+        for (const chapter of chapters) {
+            expect(chapter.tagName).toBe('BUTTON');
+            expect(chapter.type).toBe('button');
+            expect(chapter.tabIndex).toBe(0);
+            expect(chapter.closest('.chapter-item')).not.toBeNull();
+            expect(chapter.querySelector('button')).toBeNull();
+        }
+        chapters[0].focus();
+        expect(document.activeElement).toBe(chapters[0]);
+        expect(chapters[0].getAttribute('aria-current')).toBe('true');
+        expect(chapters[1].hasAttribute('aria-current')).toBe(false);
+
+        chapters[1].click();
+        for (let i = 0; i < 30 && !browser.storage.local.set.mock.calls
+            .some(([entry]) => entry.pendingTitle === 'Accessible 2'); i++) await tick();
+        expect(chapters[0].hasAttribute('aria-current')).toBe(false);
+        expect(chapters[1].getAttribute('aria-current')).toBe('true');
+        expect(document.querySelectorAll('.playable-chapter[aria-current="true"]'))
+            .toHaveLength(1);
+        expect(document.getElementById('prevChapter').disabled).toBe(false);
+        expect(document.getElementById('nextChapter').disabled).toBe(true);
+    });
+
+    test('TOC group expansion uses independent focusable buttons with accurate ARIA', async () => {
+        const candidate = createMockBook('Grouped');
+        candidate.navigation.toc = [
+            { href: '', label: 'Part A', subitems: [
+                { href: 'start.xhtml', label: 'Chapter 1' },
+                { href: 'next.xhtml', label: 'Chapter 2' },
+            ] },
+        ];
+        books.push(candidate);
+        selectFile('groups.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) {
+            await tick();
+        }
+
+        const group = document.querySelector('.chapter-group');
+        const toggle = group.querySelector('.chapter-toggle');
+        expect(toggle.tagName).toBe('BUTTON');
+        expect(toggle.type).toBe('button');
+        expect(toggle.tabIndex).toBe(0);
+        expect(toggle.getAttribute('aria-expanded')).toBe('true');
+        expect(toggle.getAttribute('aria-label')).toBe('Collapse Part A');
+        const controlled = document.getElementById(toggle.getAttribute('aria-controls'));
+        expect(controlled).toBe(group.querySelector('.sub-items'));
+        expect(group.querySelector('.playable-chapter')).not.toBeNull();
+        expect(toggle.querySelector('button')).toBeNull();
+
+        toggle.focus();
+        expect(document.activeElement).toBe(toggle);
+        toggle.click();
+        expect(group.classList.contains('expanded')).toBe(false);
+        expect(toggle.getAttribute('aria-expanded')).toBe('false');
+        expect(toggle.getAttribute('aria-label')).toBe('Expand Part A');
+        toggle.click();
+        expect(group.classList.contains('expanded')).toBe(true);
+        expect(toggle.getAttribute('aria-expanded')).toBe('true');
+        expect(document.querySelector('.playable-chapter.active').dataset.href)
+            .toBe('start.xhtml');
+        expect(browser.storage.local.set.mock.calls.filter(([v]) =>
+            v.pendingTitle === 'Chapter 1')).toHaveLength(1);
+    });
+
+    test('hiding and restoring the sidebar transfers keyboard focus to a visible control', async () => {
+        const source = createMockBook('Navigation');
+        books.push(source);
+        selectFile('navigation.epub').succeed();
+        await expectLoaded('Navigation');
+
+        const hide = document.getElementById('toggleSidebar');
+        const show = document.getElementById('showSidebarBtn');
+        hide.focus();
+        expect(document.activeElement).toBe(hide);
+        hide.click();
+        expect(document.querySelector('.app-container').classList.contains('sidebar-hidden'))
+            .toBe(true);
+        expect(show.style.display).toBe('block');
+        expect(document.activeElement).toBe(show);
+
+        show.click();
+        expect(document.querySelector('.app-container').classList.contains('sidebar-hidden'))
+            .toBe(false);
+        expect(show.style.display).toBe('none');
+        expect(document.activeElement).toBe(hide);
+    });
+
+    test('the custom Browse control retains a keyboard-accessible native input', () => {
+        const fs = require('fs');
+        const path = require('path');
+        const source = fs.readFileSync(path.join(__dirname, '..', 'reader.css'), 'utf8');
+        const inputRule = source.match(/#fileInput\s*\{([^}]+)\}/);
+        expect(inputRule).not.toBeNull();
+        expect(inputRule[1]).not.toMatch(/display\s*:\s*none/);
+        expect(source).toMatch(/\.file-input-wrapper:focus-within\s+\.custom-file-label/);
+    });
+
+    test('reader controls and file-loading status expose accessible labels and announcements', () => {
+        const fs = require('fs');
+        const path = require('path');
+        const html = fs.readFileSync(path.join(__dirname, '..', 'reader.html'), 'utf8');
+        const source = new DOMParser().parseFromString(html, 'text/html');
+        expect(source.getElementById('toggleSidebar').getAttribute('aria-label'))
+            .toBe('Hide chapter sidebar');
+        expect(source.getElementById('showSidebarBtn').getAttribute('aria-label'))
+            .toBe('Show chapter sidebar');
+        expect(source.getElementById('chapterList').getAttribute('role'))
+            .toBe('navigation');
+        expect(source.getElementById('chapterList').getAttribute('aria-label'))
+            .toBe('Chapters');
+        expect(source.getElementById('errorMsg').getAttribute('role')).toBe('alert');
+        expect(source.getElementById('loadingStatus').getAttribute('role')).toBe('status');
+        expect(source.getElementById('loadingStatus').getAttribute('aria-live'))
+            .toBe('polite');
+        expect(source.getElementById('chapterError').getAttribute('role'))
+            .toBe('alert');
+        expect(source.querySelector('label[for="fileInput"]')).not.toBeNull();
+    });
+
     test('non-linked publisher TOC groups are preserved but skipped by playback and Prev/Next', async () => {
         const candidate = createMockBook('Publisher');
         candidate.navigation.toc = [

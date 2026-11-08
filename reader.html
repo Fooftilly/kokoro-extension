@@ -29,7 +29,7 @@
             <button id="cancelDocumentPicker" type="button" class="nav-btn picker-cancel" hidden>Cancel</button>
             <div id="file-name-display" class="file-name-display">No file selected.</div>
             <div id="errorMsg" role="alert" style="color: red; margin-top: 10px; display: none;"></div>
-            <div id="loadingStatus" style="margin-top: 20px; display: none;">Loading...</div>
+            <div id="loadingStatus" role="status" aria-live="polite" style="margin-top: 20px; display: none;">Loading...</div>
         </div>
     </div>
 
@@ -37,7 +37,7 @@
         <div class="sidebar" id="sidebar">
             <div class="sidebar-header">
                 <h2>Chapters</h2>
-                <button id="toggleSidebar" class="icon-btn">«</button>
+                <button id="toggleSidebar" class="icon-btn" aria-label="Hide chapter sidebar" title="Hide chapters">«</button>
             </div>
             <div class="reader-file-actions">
                 <button id="openAnotherDocument" type="button" class="nav-btn">Open another document</button>
@@ -46,11 +46,11 @@
                 <button id="prevChapter" class="nav-btn">Prev</button>
                 <button id="nextChapter" class="nav-btn">Next</button>
             </div>
-            <div id="chapterList"></div>
+            <div id="chapterList" role="navigation" aria-label="Chapters"></div>
         </div>
 
         <div class="main-content">
-            <button id="showSidebarBtn" class="icon-btn floating-sidebar-btn" style="display: none;">»</button>
+            <button id="showSidebarBtn" class="icon-btn floating-sidebar-btn" style="display: none;" aria-label="Show chapter sidebar" title="Show chapters">»</button>
             <p id="chapterError" class="chapter-error" role="alert" hidden></p>
             <iframe id="playerFrame" src="overlay.html?waitForData=true" title="Kokoro Player"></iframe>
         </div>
