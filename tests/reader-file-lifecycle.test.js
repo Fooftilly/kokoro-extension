@@ -135,7 +135,8 @@ describe('EPUB file read/parse lifecycle', () => {
 
     async function expectPlainDocument(filename, expectedText) {
         for (let i = 0; i < 30 &&
-            !browser.storage.local.set.mock.calls.some(([value]) => value.pendingTitle === filename);
+            (!browser.storage.local.set.mock.calls.some(([value]) => value.pendingTitle === filename) ||
+                document.getElementById('filePickerOverlay').style.display !== 'none');
             i++) await tick();
         expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
         expect(document.getElementById('loadingStatus').style.display).toBe('none');
