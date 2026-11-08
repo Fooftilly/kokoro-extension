@@ -185,6 +185,33 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(messages).toContain('RELOAD_DATA');
     }
 
+    test('embedded player Close pauses playback and opens the picker without losing the book', async () => {
+        const previous = createMockBook('Book A');
+        books.push(previous);
+        selectFile('book.epub').succeed();
+        await expectLoaded('Book A');
+        messages.length = 0;
+
+        const frame = document.getElementById('playerFrame');
+        // Untrusted frames cannot drive reader controls.
+        window.dispatchEvent(new MessageEvent('message', {
+            data: 'CLOSE_KOKORO_PLAYER', source: window,
+        }));
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+        expect(messages).toHaveLength(0);
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: 'CLOSE_KOKORO_PLAYER', source: frame.contentWindow,
+        }));
+        expect(frame.contentWindow.postMessage)
+            .toHaveBeenCalledWith('PAUSE_KOKORO_PLAYER', window.location.origin);
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('flex');
+        expect(document.getElementById('cancelDocumentPicker').hidden).toBe(false);
+        expect(previous.destroy).not.toHaveBeenCalled();
+        document.getElementById('cancelDocumentPicker').click();
+        expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
+    });
+
     test('reads TXT into one reader chapter with escaped markup and intact local backend settings', async () => {
         const { TextEncoder } = require('util');
         const bytes = new TextEncoder().encode('Hello <world> & friends.\n\nSecond paragraph.');
