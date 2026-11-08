@@ -284,6 +284,107 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(messages).toEqual(['NAV_NEXT', 'NAV_PREV']);
     });
 
+    test('opt-in continuous EPUB mode advances once from the acknowledged chapter and starts audio', async () => {
+        browser.storage.sync.get.mockResolvedValue({
+            ttsBackend: 'mediapipe', mediaPipeVariant: 'cpu',
+            localVoice: 'af_heart', autoplayReader: false, continuousReader: true,
+        });
+        const source = createMockBook('Book A');
+        books.push(source);
+        selectFile('book.epub').succeed();
+        await expectLoaded('Book A');
+        const initial = browser.storage.local.set.mock.lastCall[0];
+        expect(initial.pendingContinuousReader).toBe(true);
+        expect(initial.pendingAutoplay).toBe(false);
+        acknowledgeCurrentChapter();
+        const frame = document.getElementById('playerFrame');
+        const revision = initial.pendingReaderReloadRevision;
+
+        // Ignore the wrong frame, origin, revision, and unacknowledged message.
+        const ended = { type: 'KOKORO_READER_CHAPTER_ENDED', revision };
+        for (const event of [
+            { data: ended, source: window, origin: window.location.origin },
+            { data: ended, source: frame.contentWindow, origin: 'https://invalid.example' },
+            { data: { ...ended, revision: revision + 10 },
+                source: frame.contentWindow, origin: window.location.origin },
+        ]) {
+            window.dispatchEvent(new MessageEvent('message', event));
+        }
+        expect(source.sections[1].load).not.toHaveBeenCalled();
+
+        window.dispatchEvent(new MessageEvent('message', {
+            data: ended, source: frame.contentWindow, origin: window.location.origin,
+        }));
+        window.dispatchEvent(new MessageEvent('message', {
+            data: ended, source: frame.contentWindow, origin: window.location.origin,
+        }));
+        for (let i = 0; i < 30 && !browser.storage.local.set.mock.calls
+            .some(([value]) => value.pendingTitle === 'Book A 2'); i++) await tick();
+        expect(source.sections[1].load).toHaveBeenCalledTimes(1);
+        const second = browser.storage.local.set.mock.calls
+            .map(([value]) => value).find(value => value.pendingTitle === 'Book A 2');
+        expect(second.pendingAutoplay).toBe(true);
+        expect(second.pendingContinuousReader).toBe(true);
+        expect(document.querySelector('.playable-chapter.active').dataset.href).toBe('next.xhtml');
+
+        // There is no third chapter; return a terminal signal instead of
+        // attempting to load another section or replay the final chapter.
+        acknowledgeCurrentChapter();
+        const written = browser.storage.local.set.mock.calls.length;
+        const last = {
+            type: 'KOKORO_READER_CHAPTER_ENDED',
+            revision: second.pendingReaderReloadRevision,
+        };
+        window.dispatchEvent(new MessageEvent('message', {
+            data: last, source: frame.contentWindow, origin: window.location.origin,
+        }));
+        expect(messages).toContainEqual({
+            type: 'KOKORO_READER_LAST_CHAPTER', revision: last.revision,
+        });
+        expect(browser.storage.local.set).toHaveBeenCalledTimes(written);
+    });
+
+    test('continuous handoff ignores disabled setting and pending manual chapter changes', async () => {
+        const source = createMockBook('Book A');
+        books.push(source);
+        selectFile('book.epub').succeed();
+        await expectLoaded('Book A');
+        acknowledgeCurrentChapter();
+        const first = browser.storage.local.set.mock.lastCall[0];
+        const frame = document.getElementById('playerFrame');
+        const ended = {
+            type: 'KOKORO_READER_CHAPTER_ENDED',
+            revision: first.pendingReaderReloadRevision,
+        };
+        // Default (off) never advances even if a message is received.
+        window.dispatchEvent(new MessageEvent('message', {
+            data: ended, source: frame.contentWindow, origin: window.location.origin,
+        }));
+        expect(source.sections[1].load).not.toHaveBeenCalled();
+
+        // Even with continuous enabled, an old completion cannot skip a
+        // chapter that the user just selected manually.
+        browser.storage.sync.get.mockResolvedValue({
+            ttsBackend: 'mediapipe', autoplayReader: false, continuousReader: true,
+        });
+        document.getElementById('openAnotherDocument').click();
+        const replacement = createMockBook('Book B');
+        books.push(replacement);
+        selectFile('next.epub').succeed();
+        for (let i = 0; i < 30 && !browser.storage.local.set.mock.calls
+            .some(([v]) => v.pendingTitle === 'Book B 1'); i++) await tick();
+        acknowledgeCurrentChapter();
+        const fresh = browser.storage.local.set.mock.lastCall[0];
+        document.getElementById('nextChapter').click();
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { ...ended, revision: fresh.pendingReaderReloadRevision },
+            source: frame.contentWindow, origin: window.location.origin,
+        }));
+        for (let i = 0; i < 30 && !browser.storage.local.set.mock.calls
+            .some(([v]) => v.pendingTitle === 'Book B 2'); i++) await tick();
+        expect(replacement.sections[1].load).toHaveBeenCalledTimes(1);
+    });
+
     test('reads TXT into one reader chapter with escaped markup and intact local backend settings', async () => {
         const { TextEncoder } = require('util');
         const bytes = new TextEncoder().encode('Hello <world> & friends.\n\nSecond paragraph.');
