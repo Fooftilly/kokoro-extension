@@ -181,6 +181,50 @@ async function loadEpub(file, requestId) {
     }
 }
 
+// Non-EPUB formats use a single synthetic chapter and the same
+// sendToPlayer() storage/iframe path as EPUB. No fake EPUB.js Book is created.
+async function loadTextDocument(file, format, requestId) {
+    if (Number.isFinite(file.size) && file.size > MAX_TEXT_DOCUMENT_BYTES) {
+        throw new Error('Text documents larger than 4 MiB are not supported');
+    }
+    const bytes = await readDocumentBuffer(file);
+    if (requestId !== fileRequestId) return;
+    const text = decodeTextDocument(bytes);
+    const blocks = parseTextDocument(format, text);
+    if (requestId !== fileRequestId) return;
+
+    // Preserve the existing EPUB if reading/parsing fails, and hand its image
+    // URLs over only after the text chapter has rendered in the iframe.
+    const oldBook = book;
+    chapterRequestId++;
+    book = null;
+    textDocument = { blocks, title: file.name };
+    if (oldBook) retiringBooks.add(oldBook);
+    currentChapterBlocks = blocks;
+    currentActiveHref = null;
+    currentToc = [{ href: 'document:0', label: file.name }];
+    renderChapterList(currentToc);
+    await activeTextChapterWrite;
+}
+
+async function startTextChapterLoad(title) {
+    const source = textDocument;
+    const requestId = ++chapterRequestId;
+    chapterErrorMsg.hidden = true;
+    chapterErrorMsg.textContent = '';
+    if (!source) return;
+    try {
+        await sendToPlayer(source.blocks, title || source.title,
+            source.blocks.map(entry => entry.content).join(' ').slice(0, 100),
+            0, requestId, null);
+    } catch (error) {
+        if (source !== textDocument || requestId !== chapterRequestId) return;
+        chapterErrorMsg.textContent = 'Failed to load document: ' + String(error.message || error);
+        chapterErrorMsg.hidden = false;
+        throw error;
+    }
+}
+
 /**
  * Scans the spine for sections not in the TOC and attempts to discover subchapters by parsing headings.
  */
@@ -336,6 +380,9 @@ function renderChapterList(toc) {
                 startChapterLoad(item.href, item.label);
             } else if (textDocument) {
                 activeTextChapterWrite = startTextChapterLoad(item.label);
+                // Subsequent manual selections have no awaiting file handler.
+                // The reader alert carries errors; avoid unhandled rejections.
+                void activeTextChapterWrite.catch(() => {});
             }
         });
 
