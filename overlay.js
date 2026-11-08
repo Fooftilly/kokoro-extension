@@ -180,8 +180,8 @@ async function downloadPinnedSentence(url, filename, release) {
         if (downloadId === null) earlyTerminals.add(delta.id);
         else if (delta.id === downloadId) finish();
     };
-    events.addListener(onChanged);
     try {
+        events.addListener(onChanged);
         downloadId = await browser.downloads.download({ url, filename, saveAs: true });
         if (earlyTerminals.has(downloadId)) finish();
         return downloadId;
@@ -207,10 +207,12 @@ if (saveAudioBtn) {
             const extension = ['mediapipe', 'onnx'].includes(settings.pendingTtsBackend) ? 'wav' : 'mp3';
             const safeTitle = (titleEl.textContent || 'kokoro')
                 .replace(/[^a-zA-Z0-9 _-]/g, '_').trim().slice(0, 90) || 'kokoro';
+            // The download helper now owns the lease, including error cleanup.
+            // Do not release it again in this handler's finally block.
+            handedOff = true;
             await downloadPinnedSentence(audioUrl,
                 safeTitle + '-sentence-' + (sentenceIndex + 1) + '.' + extension,
                 release);
-            handedOff = true;
             statusEl.textContent = 'Download started';
         } catch (error) {
             statusEl.textContent = 'Could not save audio: ' + String(error.message || error);
