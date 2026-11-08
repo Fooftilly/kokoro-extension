@@ -36,6 +36,7 @@ const sectionUsers = new WeakMap(); // concurrent readers must not unload each o
 let playerReloadRevision = 0; // correlate EPUB reloads with committed iframe content
 let lastPublishedReload = null; // { revision, sourceBook, requestId }; only iframe acknowledgement releases archives
 let renderedChapterRevision = null; // acknowledged by the embedded player
+let renderedChapterHref = null; // exact TOC entry loaded for the acknowledged revision
 let renderedChapterRequestId = null;
 let renderedChapterContinuous = false;
 let lastContinuedRevision = null; // an ended chapter may advance only once
@@ -799,7 +800,7 @@ async function loadEpubChapter(href, title, continuePlaying = false) {
 
     const fullText = mergedBlocks.map(b => b.content).join(' ');
     await sendToPlayer(mergedBlocks, title || "Chapter", fullText.substring(0, 100), startIndex,
-        requestId, requestedBook, continuePlaying);
+        requestId, requestedBook, continuePlaying, href);
 }
 
 // --- Content Processing & Extraction ---
@@ -911,6 +912,11 @@ function updateActiveChapter(blockIndex) {
     const block = currentChapterBlocks[blockIndex];
     if (!block.ids || block.ids.length === 0) return;
 
+    // Fragment IDs are unique within an XHTML file, not across the EPUB.
+    // A heading in b.xhtml#title must not activate a.xhtml#title.
+    const playbackHref = renderedChapterRequestId === chapterRequestId
+        ? renderedChapterHref : currentActiveHref;
+    const playbackBase = playbackHref?.split('#')[0];
     // Find if any of these IDs correspond to a TOC item
     // We need to flatten the TOC to search it efficiently or just search recursively
     let bestMatch = null;
@@ -924,7 +930,8 @@ function updateActiveChapter(blockIndex) {
             // Use the same decoding as initial chapter selection. Otherwise
             // #caf%C3%A9 can navigate correctly but never update the sidebar
             // when playback reaches <h2 id="café">.
-            if (itemHash && block.ids.includes(decodedChapterId(itemHash))) {
+            if (itemHash && item.href.split('#')[0] === playbackBase &&
+                block.ids.includes(decodedChapterId(itemHash))) {
                 return item;
             }
             // If item has no hash, it points to the start of the file. 
@@ -974,7 +981,8 @@ function updateActiveChapter(blockIndex) {
     }
 }
 
-async function sendToPlayer(content, title, textPreview, startIndex, requestId, requestedBook, continuePlaying = false) {
+async function sendToPlayer(content, title, textPreview, startIndex, requestId, requestedBook,
+    continuePlaying = false, sourceHref = null) {
     const settings = await browser.storage.sync.get([
         'voice', 'normalizationOptions', 'customPronunciations', 'apiUrl',
         'autoplayReader', 'continuousReader', 'ttsBackend', 'mediaPipeVariant', 'localVoice',
@@ -1035,6 +1043,7 @@ async function sendToPlayer(content, title, textPreview, startIndex, requestId, 
         lastPublishedReload = {
             revision, sourceBook: requestedBook, requestId,
             continuousReader: pending.pendingContinuousReader,
+            chapterHref: sourceHref,
         };
         playerFrame.contentWindow.postMessage('RELOAD_DATA', '*');
     });
@@ -1056,7 +1065,9 @@ function continueAfterChapter(revision) {
     }
     deferredChapterEndRevision = null;
     lastContinuedRevision = revision;
-    const index = flatToc.findIndex(item => item.href === currentActiveHref);
+    // Visual progress may select a nested TOC heading; continuation follows
+    // the file-qualified chapter actually delivered to the player.
+    const index = flatToc.findIndex(item => item.href === renderedChapterHref);
     const next = index < 0 ? null : flatToc[index + 1];
     const nextEl = next && [...chapterList.querySelectorAll('.playable-chapter')]
         .find(el => el.dataset.href === next.href);
@@ -1081,6 +1092,7 @@ window.addEventListener('message', (event) => {
             renderedChapterRevision = event.data.revision;
             renderedChapterRequestId = chapterRequestId;
             renderedChapterContinuous = lastPublishedReload.continuousReader;
+            renderedChapterHref = lastPublishedReload.chapterHref;
         }
         lastPublishedReload = null;
         releaseRetiredBooks();
