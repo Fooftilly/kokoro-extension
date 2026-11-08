@@ -552,6 +552,18 @@ describe('overlay.js logic', () => {
         expect(document.getElementById('audio')).toBe(audio);
     });
 
+    test('reader pause message stops audio without closing the embedded player', () => {
+        const audio = document.getElementById('audio');
+        audio.pause = jest.fn();
+        window.parent.postMessage.mockClear();
+        window.dispatchEvent(new MessageEvent('message', {
+            data: 'PAUSE_KOKORO_PLAYER', source: window.parent,
+        }));
+        expect(audio.pause).toHaveBeenCalledTimes(1);
+        expect(document.getElementById('playPause').textContent).toBe('Play');
+        expect(window.parent.postMessage).not.toHaveBeenCalledWith('CLOSE_KOKORO_PLAYER', '*');
+    });
+
     test('Close still posts CLOSE_KOKORO_PLAYER', async () => {
         await new Promise(r => setTimeout(r, 100));
         window.parent.postMessage.mockClear();
