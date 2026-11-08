@@ -99,6 +99,10 @@ function paragraphText(paragraph) {
             return;
         }
         if (excluded.has(node.localName)) return;
+        // Word text boxes embed complete w:p paragraphs inside a normal
+        // w:p. Those paragraphs are emitted separately by the body iterator;
+        // including them in their outer paragraph repeats the spoken text.
+        if (node.localName === 'p' && node !== paragraph) return;
         if (node.localName === 't') {
             result += node.textContent || '';
             return;
@@ -157,9 +161,21 @@ export async function parseDocxDocument(buffer, jszip = window.JSZip) {
     if (!body) throw new Error('DOCX is missing its document body');
 
     const blocks = [];
-    // Descendant paragraphs include table cells while preserving document order.
-    // Do not follow relationships or load images, external templates, or links.
+    // Descendant paragraphs include tables and text boxes in document order.
+    // Deleted/moved-from paragraphs can be nested in revision containers, so
+    // filtering only text descendants within each paragraph is insufficient.
+    // Do not follow relationships or load images, templates, or links.
     for (const paragraph of body.getElementsByTagNameNS(WORD_NS, 'p')) {
+        let excluded = false;
+        for (let parent = paragraph.parentElement; parent && parent !== body;
+            parent = parent.parentElement) {
+            if (parent.namespaceURI === WORD_NS &&
+                (parent.localName === 'del' || parent.localName === 'moveFrom')) {
+                excluded = true;
+                break;
+            }
+        }
+        if (excluded) continue;
         const text = paragraphText(paragraph);
         if (!text) continue;
         blocks.push({
