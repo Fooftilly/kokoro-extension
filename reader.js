@@ -1,3 +1,10 @@
+import {
+    MAX_TEXT_DOCUMENT_BYTES,
+    detectDocumentFormat,
+    decodeTextDocument,
+    parseTextDocument,
+} from './document-formats.js';
+
 const fileInput = document.getElementById('fileInput');
 const filePickerOverlay = document.getElementById('filePickerOverlay');
 const chapterList = document.getElementById('chapterList');
@@ -9,6 +16,8 @@ const sidebar = document.getElementById('sidebar');
 const appContainer = document.querySelector('.app-container');
 
 let book = null; // EPUB object
+let textDocument = null; // parsed TXT/Markdown/HTML document, not an EPUB archive
+let activeTextChapterWrite = Promise.resolve();
 let currentChapterBlocks = []; // For tracking progress
 let currentToc = []; // For resolving chapter titles
 let currentActiveHref = null; // To avoid redundant updates
@@ -78,23 +87,21 @@ async function handleFile(file) {
         activeFileReader.abort();
     }
     errorMsg.style.display = 'none';
-    loadingStatus.textContent = 'Loading EPUB...';
+    loadingStatus.textContent = 'Loading document...';
     loadingStatus.style.display = 'block';
 
     if (fileNameDisplay) fileNameDisplay.textContent = file.name;
 
     try {
-        if (file.type !== 'application/epub+zip' && !file.name.toLowerCase().endsWith('.epub')) {
-            throw new Error('Unsupported file type. Please select EPUB.');
-        }
-        await loadEpub(file, requestId);
-        // Only a completely parsed and scanned *current* EPUB may close the
-        // file picker. A delayed success from an old selection cannot do so.
+        const format = detectDocumentFormat(file);
+        if (format === 'epub') await loadEpub(file, requestId);
+        else await loadTextDocument(file, format, requestId);
+        // Only a successfully parsed and current document may hide the picker.
         if (requestId === fileRequestId) filePickerOverlay.style.display = 'none';
     } catch (err) {
         if (requestId !== fileRequestId) return;
-        console.error('EPUB loading failed:', err);
-        errorMsg.textContent = 'Failed to load EPUB: ' + String(err.message || err);
+        console.error('Document loading failed:', err);
+        errorMsg.textContent = 'Failed to load document: ' + String(err.message || err);
         errorMsg.style.display = 'block';
     } finally {
         if (requestId === fileRequestId) loadingStatus.style.display = 'none';
@@ -113,16 +120,13 @@ document.getElementById('showSidebarBtn').addEventListener('click', () => {
 
 // --- EPUB Logic ---
 
-async function loadEpub(file, requestId) {
+async function readDocumentBuffer(file) {
     const reader = new FileReader();
     activeFileReader = reader;
-    let bookData;
     try {
-        // FileReader uses event callbacks, not a promise. Await the actual
-        // read so invalid ZIPs/read failures cannot be reported as success.
-        bookData = await new Promise((resolve, reject) => {
+        return await new Promise((resolve, reject) => {
             reader.onload = () => resolve(reader.result);
-            reader.onerror = () => reject(reader.error || new Error('Cannot read EPUB file'));
+            reader.onerror = () => reject(reader.error || new Error('Cannot read file'));
             reader.onabort = () => reject(new DOMException('File read cancelled', 'AbortError'));
             try {
                 reader.readAsArrayBuffer(file);
@@ -133,6 +137,10 @@ async function loadEpub(file, requestId) {
     } finally {
         if (activeFileReader === reader) activeFileReader = null;
     }
+}
+
+async function loadEpub(file, requestId) {
+    const bookData = await readDocumentBuffer(file);
     if (requestId !== fileRequestId) return;
     if (!(bookData instanceof ArrayBuffer)) {
         throw new Error('EPUB file did not contain binary data');
@@ -159,6 +167,7 @@ async function loadEpub(file, requestId) {
         const oldBook = book;
         chapterRequestId++;
         book = candidate;
+        textDocument = null;
         committed = true;
         if (oldBook) retiringBooks.add(oldBook);
         currentChapterBlocks = [];
@@ -325,6 +334,8 @@ function renderChapterList(toc) {
             updateNavButtons();
             if (book) {
                 startChapterLoad(item.href, item.label);
+            } else if (textDocument) {
+                activeTextChapterWrite = startTextChapterLoad(item.label);
             }
         });
 
