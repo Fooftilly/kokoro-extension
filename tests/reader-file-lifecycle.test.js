@@ -425,6 +425,30 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(browser.storage.local.set.mock.lastCall[0].pendingTitle).toBe('Chapter Two');
     });
 
+    test('heading scan without discovered headings still resolves publisher navigation-relative paths', async () => {
+        const candidate = createMockBook('Publisher');
+        candidate.packaging = { navPath: 'Nav/nav.xhtml' };
+        candidate.sections[0].href = 'Text/ch1.xhtml';
+        candidate.sections[0].url = 'Text/ch1.xhtml';
+        candidate.sections[1].href = 'Text/ch2.xhtml';
+        candidate.sections[1].url = 'Text/ch2.xhtml';
+        candidate.navigation.toc = [
+            { href: '../Text/ch1.xhtml', label: 'Original chapter one' },
+            { href: '../Text/ch2.xhtml', label: 'Original chapter two' },
+        ];
+        document.getElementById('scanDocumentHeadings').checked = true;
+        books.push(candidate);
+        selectFile('no-headings.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
+
+        expect(Array.from(document.querySelectorAll('.playable-chapter'), el => el.dataset.href))
+            .toEqual(['Text/ch1.xhtml', 'Text/ch2.xhtml']);
+        expect(browser.storage.local.set.mock.lastCall[0].pendingTitle)
+            .toBe('Original chapter one');
+        expect(candidate.sections[1].load).toHaveBeenCalledTimes(1); // heading scan only
+        expect(candidate.sections[0].load).toHaveBeenCalledTimes(2); // scan + speech
+    });
+
     test('non-linked publisher TOC groups are preserved but skipped by playback and Prev/Next', async () => {
         const candidate = createMockBook('Publisher');
         candidate.navigation.toc = [
