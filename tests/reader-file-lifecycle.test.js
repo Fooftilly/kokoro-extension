@@ -366,8 +366,9 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(messages).toEqual(['RELOAD_DATA']);
     });
 
-    test('scanning all spine sections and playing one chapter unloads their DOMs', async () => {
+    test('opt-in scanning unloads all scanned spine documents and played chapter DOMs', async () => {
         const a = createMockBook('Book A');
+        document.getElementById('scanDocumentHeadings').checked = true;
         books.push(a);
         selectFile('book.epub').succeed();
         await expectLoaded('Book A');
@@ -384,8 +385,7 @@ describe('EPUB file read/parse lifecycle', () => {
         const a = createMockBook('Book A');
         const b = createMockBook('Book B');
         const nextReady = deferred();
-        b.sections[0].load.mockImplementationOnce(async () =>
-            documentWithText('TOC B')).mockImplementationOnce(() => nextReady.promise);
+        b.sections[0].load.mockImplementationOnce(() => nextReady.promise);
         books.push(a, b);
         selectFile('book-a.epub').succeed();
         await expectLoaded('Book A');
