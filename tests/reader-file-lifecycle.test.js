@@ -84,6 +84,8 @@ describe('EPUB file read/parse lifecycle', () => {
         messages = [];
         URL.revokeObjectURL = jest.fn();
         global.browser = {
+            tabs: { getCurrent: jest.fn(async () => ({ id: 55 })) },
+            runtime: { onMessage: { addListener: jest.fn() } },
             storage: {
                 local: {
                     remove: jest.fn(async () => {}),
@@ -255,6 +257,31 @@ describe('EPUB file read/parse lifecycle', () => {
             .map(([value]) => value).find(value => value.pendingTitle === 'replacement.txt');
         expect(nextWrite.pendingAutoplay).toBe(true);
         expect(messages).toContain('RESUME_READER_AUTOPLAY');
+    });
+
+    test('reader sentence shortcuts reach the iframe exactly once and only for this visible tab', async () => {
+        const bookA = createMockBook('Book A');
+        books.push(bookA);
+        selectFile('book.epub').succeed();
+        await expectLoaded('Book A');
+        messages.length = 0;
+
+        const listener = browser.runtime.onMessage.addListener.mock.calls[0][0];
+        expect(await listener({ action: 'KOKORO_READER_NAV', tabId: 66,
+            direction: 'NAV_NEXT' })).toBe(false);
+        expect(await listener({ action: 'KOKORO_READER_NAV', tabId: 55,
+            direction: 'UNKNOWN' })).toBe(false);
+        expect(messages).toHaveLength(0);
+        expect(await listener({ action: 'KOKORO_READER_NAV', tabId: 55,
+            direction: 'NAV_NEXT' })).toBe(true);
+        expect(await listener({ action: 'KOKORO_READER_NAV', tabId: 55,
+            direction: 'NAV_PREV' })).toBe(true);
+        expect(messages).toEqual(['NAV_NEXT', 'NAV_PREV']);
+
+        document.getElementById('openAnotherDocument').click();
+        expect(await listener({ action: 'KOKORO_READER_NAV', tabId: 55,
+            direction: 'NAV_NEXT' })).toBe(false);
+        expect(messages).toEqual(['NAV_NEXT', 'NAV_PREV']);
     });
 
     test('reads TXT into one reader chapter with escaped markup and intact local backend settings', async () => {

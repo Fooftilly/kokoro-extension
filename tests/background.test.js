@@ -3,6 +3,7 @@ global.browser = {
     runtime: {
         onInstalled: { addListener: jest.fn() },
         onMessage: { addListener: jest.fn() },
+        sendMessage: jest.fn(() => Promise.resolve()),
         getURL: jest.fn(path => `moz-extension://uuid/${path}`)
     },
     contextMenus: {
@@ -86,6 +87,34 @@ describe('background.js logic', () => {
         listener();
         expect(browser.contextMenus.create).toHaveBeenCalledWith(expect.objectContaining({ id: 'send-to-kokoro' }));
         expect(browser.contextMenus.create).toHaveBeenCalledWith(expect.objectContaining({ id: 'read-article-kokoro' }));
+    });
+
+    test('reader navigation shortcuts target only the active extension reader tab', async () => {
+        const handler = browser.commands.onCommand.addListener.mock.calls[0][0];
+        browser.tabs.query.mockResolvedValue([{ id: 55, url: 'moz-extension://uuid/reader.html' }]);
+        await handler('nav-next');
+        expect(browser.runtime.sendMessage).toHaveBeenCalledWith({
+            action: 'KOKORO_READER_NAV', tabId: 55, direction: 'NAV_NEXT',
+        });
+        expect(browser.tabs.sendMessage).not.toHaveBeenCalled();
+
+        browser.runtime.sendMessage.mockClear();
+        await handler('nav-prev');
+        expect(browser.runtime.sendMessage).toHaveBeenCalledWith({
+            action: 'KOKORO_READER_NAV', tabId: 55, direction: 'NAV_PREV',
+        });
+        expect(browser.tabs.sendMessage).not.toHaveBeenCalled();
+    });
+
+    test('ordinary webpages retain content-script sentence navigation', async () => {
+        const handler = browser.commands.onCommand.addListener.mock.calls[0][0];
+        browser.tabs.query.mockResolvedValue([{ id: 21, url: 'https://example.com/reader.html' }]);
+        browser.tabs.sendMessage.mockResolvedValue();
+        await handler('nav-next');
+        expect(browser.tabs.sendMessage).toHaveBeenCalledWith(21, { action: 'NAV_NEXT' });
+        await handler('nav-prev');
+        expect(browser.tabs.sendMessage).toHaveBeenCalledWith(21, { action: 'NAV_PREV' });
+        expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
     });
 
     test('Should handle selection TTS action', async () => {

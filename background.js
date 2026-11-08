@@ -430,12 +430,19 @@ browser.runtime.onMessage.addListener(async (request, sender) => {
 });
 
 
+// Do not confuse an ordinary website's /reader.html with our extension tab.
+function isReaderTabUrl(url) {
+    const readerUrl = browser.runtime.getURL('reader.html');
+    return typeof url === 'string' &&
+        (url === readerUrl || url.startsWith(readerUrl + '?') || url.startsWith(readerUrl + '#'));
+}
+
 browser.commands.onCommand.addListener(async (command) => {
     if (command === "read-article") {
         const tabs = await browser.tabs.query({ active: true, currentWindow: true });
         if (tabs && tabs[0]) {
             const url = tabs[0].url || "";
-            if (url.includes('reader.html') || url.startsWith('extension://') && url.includes('reader.html')) {
+            if (isReaderTabUrl(url)) {
                 console.log("Shortcut disabled on reader page.");
                 return;
             }
@@ -463,12 +470,23 @@ browser.commands.onCommand.addListener(async (command) => {
     } else if (command === "nav-next" || command === "nav-prev") {
         const tabs = await browser.tabs.query({ active: true, currentWindow: true });
         if (tabs && tabs[0]) {
-            browser.tabs.sendMessage(tabs[0].id, {
-                action: command === "nav-next" ? "NAV_NEXT" : "NAV_PREV"
-            }).catch(err => {
-                // Command might be sent while player is not open
-                console.log("Navigation command failed (player might be closed):", err);
-            });
+            const direction = command === "nav-next" ? "NAV_NEXT" : "NAV_PREV";
+            if (isReaderTabUrl(tabs[0].url)) {
+                // Extension reader pages have no content script. Broadcast within
+                // the extension; each reader checks its own tab ID before forwarding.
+                try {
+                    await browser.runtime.sendMessage({
+                        action: 'KOKORO_READER_NAV', tabId: tabs[0].id, direction,
+                    });
+                } catch (err) {
+                    console.log("Reader navigation shortcut unavailable:", err);
+                }
+            } else {
+                browser.tabs.sendMessage(tabs[0].id, { action: direction }).catch(err => {
+                    // Preserve existing webpage overlay navigation.
+                    console.log("Navigation command failed (player might be closed):", err);
+                });
+            }
         }
     } else if (command === "close-overlay") {
         const tabs = await browser.tabs.query({ active: true, currentWindow: true });

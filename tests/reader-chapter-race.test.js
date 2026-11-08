@@ -60,6 +60,8 @@ describe('EPUB chapter loading and storage ordering', () => {
             autoplayReader: false,
         };
         global.browser = {
+            tabs: { getCurrent: jest.fn(async () => ({ id: 55 })) },
+            runtime: { onMessage: { addListener: jest.fn() } },
             storage: {
                 local: {
                     remove: jest.fn(() => removePending.promise),

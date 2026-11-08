@@ -40,6 +40,22 @@ let readerPausedForPicker = false; // Close must suppress pending chapter autopl
 const prevChapterBtn = document.getElementById('prevChapter');
 const nextChapterBtn = document.getElementById('nextChapter');
 
+// The background broadcasts shortcuts to extension contexts, not to content
+// scripts inside reader.html. Route them only to this reader's tab.
+const readerTabId = browser.tabs.getCurrent().then(tab => tab?.id ?? null);
+browser.runtime.onMessage.addListener(message => {
+    if (message?.action !== 'KOKORO_READER_NAV') return;
+    return readerTabId.then(tabId => {
+        if (!Number.isInteger(tabId) || message.tabId !== tabId ||
+            (message.direction !== 'NAV_NEXT' && message.direction !== 'NAV_PREV') ||
+            !hasOpenDocument() || filePickerOverlay.style.display !== 'none') {
+            return false;
+        }
+        playerFrame.contentWindow.postMessage(message.direction, window.location.origin);
+        return true;
+    });
+});
+
 
 // Clear stale storage before the first chapter write. An unawaited remove
 // could otherwise finish after a fast first-chapter set and delete its data.
