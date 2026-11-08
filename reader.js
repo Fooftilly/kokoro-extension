@@ -39,6 +39,7 @@ let renderedChapterRevision = null; // acknowledged by the embedded player
 let renderedChapterRequestId = null;
 let renderedChapterContinuous = false;
 let lastContinuedRevision = null; // an ended chapter may advance only once
+let deferredChapterEndRevision = null; // do not advance behind the open file picker
 let readerPausedForPicker = false; // Close must suppress pending chapter autoplay
 
 const prevChapterBtn = document.getElementById('prevChapter');
@@ -112,6 +113,9 @@ function cancelDocumentPicker() {
     }
     resetPickerState();
     filePickerOverlay.style.display = 'none';
+    if (deferredChapterEndRevision !== null) {
+        continueAfterChapter(deferredChapterEndRevision);
+    }
 }
 
 openAnotherDocumentButton.addEventListener('click', openDocumentPicker);
@@ -324,6 +328,7 @@ async function loadEpub(file, requestId) {
         chapterRequestId++;
         book = candidate;
         textDocument = null;
+        deferredChapterEndRevision = null;
         committed = true;
         if (oldBook) retiringBooks.add(oldBook);
         currentChapterBlocks = [];
@@ -360,6 +365,7 @@ async function loadTextDocument(file, format, requestId) {
     chapterRequestId++;
     book = null;
     textDocument = { blocks, title: file.name };
+    deferredChapterEndRevision = null;
     if (oldBook) retiringBooks.add(oldBook);
     currentChapterBlocks = blocks;
     currentActiveHref = null;
@@ -1036,6 +1042,33 @@ async function sendToPlayer(content, title, textPreview, startIndex, requestId, 
     return operation;
 }
 
+function continueAfterChapter(revision) {
+    if (!book || !renderedChapterContinuous || readerPausedForPicker ||
+        revision !== renderedChapterRevision ||
+        renderedChapterRequestId !== chapterRequestId ||
+        lastContinuedRevision === revision) {
+        deferredChapterEndRevision = null;
+        return;
+    }
+    if (filePickerOverlay.style.display !== 'none') {
+        deferredChapterEndRevision = revision;
+        return;
+    }
+    deferredChapterEndRevision = null;
+    lastContinuedRevision = revision;
+    const index = flatToc.findIndex(item => item.href === currentActiveHref);
+    const next = index < 0 ? null : flatToc[index + 1];
+    const nextEl = next && [...chapterList.querySelectorAll('.playable-chapter')]
+        .find(el => el.dataset.href === next.href);
+    if (!nextEl) {
+        playerFrame.contentWindow.postMessage({
+            type: 'KOKORO_READER_LAST_CHAPTER', revision,
+        }, window.location.origin);
+        return;
+    }
+    activateChapter(next, nextEl, true);
+}
+
 window.addEventListener('message', (event) => {
     // Accept a successful reload only from our own extension iframe and
     // only for the latest published chapter of the currently selected book.
@@ -1052,31 +1085,13 @@ window.addEventListener('message', (event) => {
         lastPublishedReload = null;
         releaseRetiredBooks();
     }
-    // Only the currently acknowledged, still-selected EPUB chapter can ask to
-    // continue. Old player completions, duplicate ended events, text documents,
-    // and messages received during a pending chapter switch are ignored.
+    // Only the current EPUB iframe can request continuity; preserve valid
+    // completions while a replacement picker is open, then handle them on
+    // Cancel. A successful replacement discards the previous completion.
     if (event.source === playerFrame.contentWindow &&
         event.origin === window.location.origin &&
         event.data?.type === 'KOKORO_READER_CHAPTER_ENDED') {
-        const revision = event.data.revision;
-        if (!book || !renderedChapterContinuous || readerPausedForPicker ||
-            filePickerOverlay.style.display !== 'none' ||
-            revision !== renderedChapterRevision ||
-            renderedChapterRequestId !== chapterRequestId ||
-            lastContinuedRevision === revision) return;
-
-        lastContinuedRevision = revision;
-        const index = flatToc.findIndex(item => item.href === currentActiveHref);
-        const next = index < 0 ? null : flatToc[index + 1];
-        const nextEl = next && [...chapterList.querySelectorAll('.playable-chapter')]
-            .find(el => el.dataset.href === next.href);
-        if (!nextEl) {
-            playerFrame.contentWindow.postMessage({
-                type: 'KOKORO_READER_LAST_CHAPTER', revision,
-            }, window.location.origin);
-            return;
-        }
-        activateChapter(next, nextEl, true);
+        continueAfterChapter(event.data.revision);
     }
     // Explicit Play after Close/Cancel resumes the existing document and
     // re-enables continuous handoff. Never clear the latch for an unknown
@@ -1096,6 +1111,7 @@ window.addEventListener('message', (event) => {
         event.origin === window.location.origin &&
         event.data === 'CLOSE_KOKORO_PLAYER') {
         readerPausedForPicker = true;
+        deferredChapterEndRevision = null;
         playerFrame.contentWindow.postMessage('PAUSE_KOKORO_PLAYER', window.location.origin);
         openDocumentPicker();
     }
