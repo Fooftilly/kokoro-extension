@@ -5,7 +5,7 @@ export class AudioManager {
     constructor() {
         this.audioCache = new Map(); // index -> { promise, evicted }
         this.cacheWindow = null; // bounded recent sentences after playback advances
-        this.audioPins = new Map(); // downloads keep their source URL valid until finished
+        this.audioPins = new Set(); // independent leases retained until downloads finish
         this.sentences = [];
         this.abortController = new AbortController();
         this.requestQueue = Promise.resolve(); // For sequential processing
@@ -22,9 +22,13 @@ export class AudioManager {
         this.generation++;
         for (const entry of this.audioCache.values()) entry.evicted = true;
         this.cacheWindow = null;
-        this.audioPins.clear();
-        for (const url of this.objectUrls) URL.revokeObjectURL(url);
-        this.objectUrls.clear();
+        // A browser download may still be reading a blob URL after its page
+        // moves to a new document. Keep only leased URLs until downloads end.
+        const leasedUrls = new Set([...this.audioPins].map(pin => pin.url).filter(Boolean));
+        for (const url of this.objectUrls) {
+            if (!leasedUrls.has(url)) URL.revokeObjectURL(url);
+        }
+        this.objectUrls = new Set([...this.objectUrls].filter(url => leasedUrls.has(url)));
         if (this.localProvider) {
             // Cancellation is best-effort but can still be in flight after the
             // previous synthesize() promise settles. Join both operations before
@@ -59,7 +63,7 @@ export class AudioManager {
         }
         this.cacheWindow = { first: center - behind, last: center + ahead };
         for (const [index, entry] of this.audioCache) {
-            if (this.isOutsideWindow(index) && !this.audioPins.has(index)) {
+            if (this.isOutsideWindow(index) && !this.isPinned(index)) {
                 this.evictAudio(index, entry);
             }
         }
@@ -68,6 +72,11 @@ export class AudioManager {
     isOutsideWindow(index) {
         return this.cacheWindow !== null &&
             (index < this.cacheWindow.first || index > this.cacheWindow.last);
+    }
+
+    isPinned(index) {
+        return [...this.audioPins].some(pin =>
+            pin.index === index && pin.generation === this.generation);
     }
 
     evictAudio(index, entry) {
@@ -81,21 +90,30 @@ export class AudioManager {
         }, () => {});
     }
 
-    // Hold the exact sentence's generated URL while its download is pending.
-    // The release callback is idempotent and cannot alter a newer session.
+    // Save/download leases outlive a reading-session reset. They are independent
+    // of the bounded cache, and cannot accidentally pin a reused sentence index.
     pinAudio(index) {
-        const generation = this.generation;
-        this.audioPins.set(index, (this.audioPins.get(index) || 0) + 1);
+        const pin = {
+            index, generation: this.generation,
+            url: this.audioCache.get(index)?.url || null,
+        };
+        this.audioPins.add(pin);
         let released = false;
         return () => {
-            if (released || generation !== this.generation) return;
+            if (released) return;
             released = true;
-            const remaining = (this.audioPins.get(index) || 1) - 1;
-            if (remaining > 0) this.audioPins.set(index, remaining);
-            else {
-                this.audioPins.delete(index);
-                const entry = this.audioCache.get(index);
-                if (entry && this.isOutsideWindow(index)) this.evictAudio(index, entry);
+            this.audioPins.delete(pin);
+            if (pin.generation !== this.generation) {
+                // clear() deliberately retained this URL while the download ran.
+                if (pin.url && ![...this.audioPins].some(other => other.url === pin.url) &&
+                    this.objectUrls.delete(pin.url)) {
+                    URL.revokeObjectURL(pin.url);
+                }
+                return;
+            }
+            const entry = this.audioCache.get(index);
+            if (entry && this.isOutsideWindow(index) && !this.isPinned(index)) {
+                this.evictAudio(index, entry);
             }
         };
     }
@@ -108,10 +126,16 @@ export class AudioManager {
         }
 
         const generation = this.generation;
-        const entry = { promise: null, evicted: false };
+        const entry = { promise: null, evicted: false, url: null };
         const promise = this.fetchAudio(this.sentences[index].text, generation, entry);
         entry.promise = promise;
         this.audioCache.set(index, entry);
+        void promise.then(url => {
+            entry.url = url;
+            for (const pin of this.audioPins) {
+                if (pin.index === index && pin.generation === generation) pin.url = url;
+            }
+        }, () => {});
         // A missing model or transient server error must not poison retries.
         // Do not remove a newer request for the same sentence.
         void promise.catch(() => {
@@ -143,7 +167,7 @@ export class AudioManager {
             const variant = data.pendingMediaPipeVariant || 'cpu';
             if (!this.localProvider || this.localVariant !== variant) {
                 if (this.localProvider) await this.localProvider.close();
-                if (generation !== this.generation) {
+                if (generation !== this.generation || isStale()) {
                     throw new DOMException('Local generation cancelled', 'AbortError');
                 }
                 this.localProvider = new MediaPipeKokoroProvider({ variant });
@@ -158,7 +182,7 @@ export class AudioManager {
                 // A best-effort cancel() may make the SDK throw its own error.
                 // The caller requested cancellation; never misreport the stale
                 // session as a fresh inference failure or synthesize a fallback.
-                if (generation !== this.generation) {
+                if (generation !== this.generation || isStale()) {
                     throw new DOMException('Local generation cancelled', 'AbortError');
                 }
                 throw error;
