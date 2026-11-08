@@ -60,6 +60,39 @@ body {
     padding: 10px;
 }
  
+.reader-file-actions {
+    padding: 10px 15px 0;
+    display: flex;
+}
+
+.reader-file-actions .nav-btn {
+    width: 100%;
+}
+
+.picker-options {
+    margin-top: 18px;
+    text-align: left;
+    font-size: 0.9rem;
+}
+
+.picker-options label {
+    display: inline-flex;
+    align-items: flex-start;
+    gap: 8px;
+    cursor: pointer;
+}
+
+.picker-cancel {
+    display: block;
+    margin: 20px auto 0;
+    width: auto;
+    min-width: 100px;
+}
+
+.picker-cancel[hidden] {
+    display: none;
+}
+
 .nav-controls {
     display: flex;
     gap: 10px;
