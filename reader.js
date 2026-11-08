@@ -165,6 +165,51 @@ document.getElementById('showSidebarBtn').addEventListener('click', () => {
     document.getElementById('showSidebarBtn').style.display = 'none';
 });
 
+// EPUB.js preserves raw navigation hrefs, which are relative to the
+// navigation (or NCX) file, while Spine.get() expects OPF-relative hrefs.
+// Normalize links only to actual spine sections, preserving order, labels,
+// hierarchy, and fragments. Unresolvable/external paths stay non-playable.
+function normalizePublisherToc(items, sourceBook) {
+    const navPath = sourceBook.packaging?.navPath || sourceBook.packaging?.ncxPath;
+    const origin = 'https://epub.invalid/';
+    const base = navPath ? new URL(navPath.replace(/^\\/+/, ''), origin) : null;
+    const normalize = item => {
+        let href = '';
+        if (typeof item.href === 'string' && item.href.trim()) {
+            const raw = item.href.trim();
+            const hash = raw.indexOf('#');
+            const path = hash < 0 ? raw : raw.slice(0, hash);
+            const fragment = hash < 0 ? '' : raw.slice(hash);
+            if (path) {
+                let section = sourceBook.spine.get(path);
+                if (!section && base) {
+                    try {
+                        const resolved = new URL(path, base);
+                        if (resolved.origin === base.origin) {
+                            section = sourceBook.spine.get(
+                                decodeURIComponent(resolved.pathname.slice(1)));
+                        }
+                    } catch (error) {
+                        console.warn('Ignoring invalid publisher TOC path', path, error);
+                    }
+                }
+                if (section) href = section.href + fragment;
+            }
+        }
+        return {
+            ...item,
+            href,
+            subitems: (item.subitems || item.items || []).map(normalize),
+        };
+    };
+    return items.map(normalize);
+}
+
+function hasPlayableTocEntry(items) {
+    return items.some(item => Boolean(item.href) ||
+        hasPlayableTocEntry(item.subitems || item.items || []));
+}
+
 // --- EPUB Logic ---
 
 async function readDocumentBuffer(file) {
@@ -212,9 +257,9 @@ async function loadEpub(file, requestId) {
         if (scan) loadingStatus.textContent = 'Scanning for chapters...';
         const toc = scan
             ? await getEnrichedToc(candidate, () => requestId === fileRequestId)
-            : publisherToc;
+            : normalizePublisherToc(publisherToc, candidate);
         if (requestId !== fileRequestId) return;
-        if (!toc.length) throw new Error('EPUB contains no readable chapters');
+        if (!hasPlayableTocEntry(toc)) throw new Error('EPUB contains no readable chapters');
 
         // Retain the old book until the new chapter reaches the player:
         // current audio/image blob URLs may still refer to its archive.
@@ -394,14 +439,20 @@ function renderChapterList(toc) {
     flatToc = [];
 
     const createItem = (item, level = 0) => {
-        flatToc.push(item);
+        const playable = Boolean(item.href);
+        if (playable) flatToc.push(item);
         const container = document.createElement('div');
         container.className = 'chapter-group';
         if (level > 0) container.classList.add('subchapter-list');
 
         const itemEl = document.createElement('div');
         itemEl.className = 'chapter-item';
-        itemEl.dataset.href = item.href;
+        if (playable) {
+            itemEl.classList.add('playable-chapter');
+            itemEl.dataset.href = item.href;
+        } else {
+            itemEl.classList.add('chapter-group-label');
+        }
         itemEl.style.paddingLeft = `${10 + (level * 20)}px`;
 
         const children = item.subitems || item.items || [];
@@ -428,7 +479,7 @@ function renderChapterList(toc) {
         label.textContent = (item.label || "Untitled").trim();
         itemEl.appendChild(label);
 
-        itemEl.addEventListener('click', () => {
+        if (playable) itemEl.addEventListener('click', () => {
             document.querySelectorAll('.chapter-item').forEach(d => d.classList.remove('active'));
             itemEl.classList.add('active');
             currentActiveHref = item.href;
@@ -464,14 +515,17 @@ function renderChapterList(toc) {
     updateNavButtons();
 
     // Auto-select first item
-    const firstItem = chapterList.querySelector('.chapter-item');
+    const firstItem = chapterList.querySelector('.playable-chapter');
     if (firstItem) {
         firstItem.click();
-        const firstGroup = firstItem.closest('.chapter-group');
-        if (firstGroup && firstGroup.querySelector('.sub-items')) {
-            firstGroup.classList.add('expanded');
-            const toggle = firstGroup.querySelector('.chapter-toggle');
+        // The first actual chapter can be nested below a non-linked <span>
+        // grouping label. Expand all its ancestors so it remains visible.
+        let group = firstItem.closest('.chapter-group');
+        while (group && chapterList.contains(group)) {
+            group.classList.add('expanded');
+            const toggle = group.firstElementChild?.querySelector('.chapter-toggle');
             if (toggle) toggle.textContent = '▼';
+            group = group.parentElement?.closest('.chapter-group');
         }
     }
 }
@@ -598,7 +652,9 @@ async function loadEpubChapter(href, title) {
             collectHrefs(children);
         });
     };
-    collectHrefs(requestedBook.navigation.toc);
+    // currentToc has the publisher's hrefs normalized to spine paths.
+    // Raw EPUB navigation hrefs may otherwise miss chapter boundaries.
+    collectHrefs(currentToc);
 
     const sectionsToLoad = [startSection];
     let nextIdx = startSection.index + 1;
