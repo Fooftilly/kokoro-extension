@@ -15,12 +15,16 @@ describe('ONNX model manager English synthesis diagnostics', () => {
     let engine;
     let dictionaryReady;
     let installedModels;
+    let partialModels;
     let installModel;
+    let removeModel;
     beforeEach(async () => {
         jest.resetModules();
         dictionaryReady = true;
         installedModels = new Set();
+        partialModels = new Set();
         installModel = jest.fn();
+        removeModel = jest.fn();
         document.body.innerHTML = `
             <div id="modelManager"></div>
             <textarea id="benchmarkText">Hello world.</textarea>
@@ -57,9 +61,11 @@ describe('ONNX model manager English synthesis diagnostics', () => {
                     (manifest.provider === 'dictionary' && dictionaryReady) ||
                     (manifest.provider === 'mediapipe' && installedModels.has(manifest.variant));
                 const totalBytes = manifest.assets.reduce((sum, a) => sum + a.bytes, 0);
-                return { ready, totalBytes, storedBytes: ready ? totalBytes : 0 };
+                return { ready, totalBytes, storedBytes: ready ? totalBytes :
+                    partialModels.has(manifest.provider + '-' + manifest.variant) ? 4 : 0 };
             }),
             install: installModel,
+            remove: removeModel,
         }));
         require('../model-manager-page.js');
         await new Promise(resolve => setTimeout(resolve, 0));
@@ -138,6 +144,66 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(progress.hidden).toBe(false);
         expect(row.querySelector('.model-status').textContent).toContain('Installed');
         expect(button.disabled).toBe(true);
+    });
+
+    test('partial model data cannot be removed during permission or active download', async () => {
+        partialModels.add('mediapipe-cpu');
+        // Initial read-only status refresh completes before the user interacts.
+        const row = document.querySelector('[data-variant="mediapipe-cpu"]');
+        const remove = row.querySelector('.model-remove');
+        const download = row.querySelector('.model-download');
+        const probe = row.querySelector('.model-test');
+        // Initial mount has already cached a partial model's status in this test.
+        remove.disabled = false;
+        let allowPermission;
+        global.browser.permissions.request.mockImplementation(() =>
+            new Promise(resolve => { allowPermission = resolve; }));
+        let finishInstall;
+        installModel.mockImplementation(() => new Promise(resolve => { finishInstall = resolve; }));
+        download.click();
+        expect(remove.disabled).toBe(true);
+        expect(probe.disabled).toBe(true);
+        remove.click();
+        expect(removeModel).not.toHaveBeenCalled();
+        allowPermission(true);
+        await waitFor(() => installModel.mock.calls.length === 1);
+        expect(remove.disabled).toBe(true);
+        remove.click();
+        expect(removeModel).not.toHaveBeenCalled();
+        finishInstall();
+        await waitFor(() => row.querySelector('progress').value === 100);
+        expect(remove.disabled).toBe(false);
+    });
+
+    test('denied model-host permission restores existing partial-model actions', async () => {
+        partialModels.add('mediapipe-cpu');
+        const row = document.querySelector('[data-variant="mediapipe-cpu"]');
+        const remove = row.querySelector('.model-remove');
+        const download = row.querySelector('.model-download');
+        remove.disabled = false;
+        global.browser.permissions.request.mockResolvedValue(false);
+        download.click();
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('permission was denied'));
+        expect(remove.disabled).toBe(false);
+        expect(download.disabled).toBe(false);
+        expect(installModel).not.toHaveBeenCalled();
+    });
+
+    test('model cannot be removed while a local inference probe is running', async () => {
+        const row = document.querySelector('[data-variant="onnx-q8"]');
+        const remove = row.querySelector('.model-remove');
+        expect(remove.disabled).toBe(false);
+        let finishProbe;
+        engine.synthesizePhonemes.mockImplementationOnce(() =>
+            new Promise(resolve => { finishProbe = resolve; }));
+        row.querySelector('.model-test').click();
+        await waitFor(() => typeof finishProbe === 'function');
+        expect(remove.disabled).toBe(true);
+        remove.click();
+        expect(removeModel).not.toHaveBeenCalled();
+        finishProbe(audio());
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('Full-clip synthesis p50'));
+        expect(remove.disabled).toBe(false);
     });
 
     test('unsupported MediaPipe GPU shows capability result without attempting inference', async () => {
