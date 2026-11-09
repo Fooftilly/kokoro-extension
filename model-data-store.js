@@ -244,7 +244,10 @@ export class ModelDataStore {
                 }
                 if (valid) {
                     verifiedBytes += asset.bytes;
-                } else if (await cache.delete(key)) {
+                } else {
+                    if (!await cache.delete(key)) {
+                        throw new Error('Unable to remove corrupted cached model data');
+                    }
                     removedAssets++;
                 }
                 onProgress?.({ verifiedBytes, totalBytes, removedAssets, missingAssets });
