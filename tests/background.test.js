@@ -203,6 +203,30 @@ describe('background.js logic', () => {
         }
     );
 
+    test('MediaPipe download mode remains offline and tells users how to save WAV', async () => {
+        browser.storage.sync.get.mockResolvedValue({
+            ttsBackend: 'mediapipe',
+            apiUrl: 'http://private-server.example/v1/',
+            mediaPipeVariant: 'cpu', localVoice: 'af_heart',
+            voice: 'af_sarah', mode: 'download', normalizationOptions: {},
+        });
+        const listener = browser.contextMenus.onClicked.addListener.mock.calls[0][0];
+        fetch.mockClear();
+        await listener({ menuItemId: 'send-to-kokoro', selectionText: 'Local text' },
+            { id: 18, title: 'Local selection' });
+        expect(browser.storage.local.set).toHaveBeenCalledWith(expect.objectContaining({
+            pendingTtsBackend: 'mediapipe', pendingApiUrl: null,
+            pendingText: 'Local text',
+        }));
+        expect(browser.tabs.sendMessage).toHaveBeenCalledWith(18,
+            expect.objectContaining({ action: 'SHOW_PLAYER' }));
+        expect(browser.notifications.create).toHaveBeenCalledWith(expect.objectContaining({
+            message: expect.stringContaining('Save audio'),
+        }));
+        expect(fetch).not.toHaveBeenCalled();
+        expect(browser.downloads?.download).not.toHaveBeenCalled();
+    });
+
     test('capability discovery is read-only and never probes FastAPI or local models', async () => {
         const listener = browser.runtime.onMessage.addListener.mock.calls[0][0];
         fetch.mockClear();
