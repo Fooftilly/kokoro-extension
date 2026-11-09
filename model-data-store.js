@@ -102,7 +102,7 @@ export function assessStorageHeadroom(requiredBytes, estimate) {
 
 export class ModelDataStore {
     constructor({ origin, cacheStorage, fetchImpl, responseClass, streamClass,
-        lockManager = globalThis.navigator?.locks }) {
+        lockManager = globalThis.navigator?.locks, subtleCrypto = globalThis.crypto?.subtle }) {
         if (!origin || !cacheStorage || typeof cacheStorage.open !== 'function' ||
             typeof fetchImpl !== 'function' || !responseClass || !streamClass) {
             throw new TypeError('An extension origin and browser APIs are required');
@@ -117,6 +117,7 @@ export class ModelDataStore {
         this.ResponseClass = responseClass;
         this.TransformStreamClass = streamClass;
         this.lockManager = lockManager;
+        this.subtleCrypto = subtleCrypto;
     }
 
     key(manifest, asset) {
@@ -199,6 +200,59 @@ export class ModelDataStore {
                 }
             }
             return { ready: true, storedBytes: completedBytes, totalBytes };
+        }, { signal, lockManager: this.lockManager });
+    }
+
+    // User-initiated repair only. Existing Cache Storage headers describe what
+    // was verified during download, but cannot prove that cached bytes are still
+    // intact. WebCrypto hashes one full asset at a time and may temporarily use
+    // memory comparable to that asset's size (up to ~295 MB for MediaPipe).
+    // Hashing failure does NOT imply corruption; never evict on a crypto error.
+    async verifyAndPruneCorrupt(manifest, { signal, onProgress } = {}) {
+        return withModelDataLock(async () => {
+            const totalBytes = validateModelManifest(manifest);
+            if (typeof this.subtleCrypto?.digest !== 'function') {
+                throw new Error('This browser does not support SHA-256 cache verification');
+            }
+            const cache = await this.cacheStorage.open(CACHE_NAME);
+            let verifiedBytes = 0;
+            let removedAssets = 0;
+            let missingAssets = 0;
+            for (const asset of manifest.assets) {
+                if (signal?.aborted) throw new DOMException('Verification cancelled', 'AbortError');
+                const key = this.key(manifest, asset);
+                const cached = await cache.match(key);
+                if (!cached) {
+                    missingAssets++;
+                    continue;
+                }
+                let valid = this.isCurrent(cached, asset);
+                if (valid) {
+                    // A read or digest failure is not itself proof of corruption.
+                    // Propagate it so the user can retry without losing good data.
+                    const bytes = await cached.arrayBuffer();
+                    if (signal?.aborted) throw new DOMException('Verification cancelled', 'AbortError');
+                    if (bytes.byteLength !== asset.bytes) {
+                        valid = false;
+                    } else {
+                        const rawDigest = await this.subtleCrypto.digest('SHA-256', bytes);
+                        if (signal?.aborted) throw new DOMException('Verification cancelled', 'AbortError');
+                        const actualIntegrity = 'sha256-' +
+                            btoa(String.fromCharCode(...new Uint8Array(rawDigest)));
+                        valid = actualIntegrity === asset.integrity;
+                    }
+                }
+                if (valid) {
+                    verifiedBytes += asset.bytes;
+                } else if (await cache.delete(key)) {
+                    removedAssets++;
+                }
+                onProgress?.({ verifiedBytes, totalBytes, removedAssets, missingAssets });
+            }
+            return {
+                ready: verifiedBytes === totalBytes,
+                verifiedBytes, totalBytes, removedAssets, missingAssets,
+            };
         }, { signal, lockManager: this.lockManager });
     }
 
