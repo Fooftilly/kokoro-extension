@@ -85,6 +85,28 @@ describe('bounded-memory SHA-256 from locally cached MediaPipe Blob', () => {
         })).toBe(false);
     });
 
+    test('stream verification respects abort before and during the streamed hash', async () => {
+        const bytes = new Uint8Array([1, 2, 3, 4]);
+        const controller = new AbortController();
+        controller.abort();
+        await expect(blobMatchesSha256(new Blob([bytes]), {
+            bytes: 4, integrity: digest(bytes),
+        }, controller.signal)).rejects.toHaveProperty('name', 'AbortError');
+        const during = new AbortController();
+        const partiallyRead = {
+            size: 4,
+            stream: () => new ReadableStream({
+                pull(stream) {
+                    stream.enqueue(bytes.subarray(0, 2));
+                    during.abort();
+                },
+            }),
+        };
+        await expect(blobMatchesSha256(partiallyRead, {
+            bytes: 4, integrity: digest(bytes),
+        }, during.signal)).rejects.toHaveProperty('name', 'AbortError');
+    });
+
     test('valid cached model loads normally without any fetch or extra ArrayBuffer', async () => {
         const { provider, fetchImpl, loadSDK, createFromOptions, response, engine } = mediaFixture();
         await provider.initialize();
