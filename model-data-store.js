@@ -81,7 +81,8 @@ export function formatModelSize(bytes) {
 }
 
 export class ModelDataStore {
-    constructor({ origin, cacheStorage, fetchImpl, responseClass, streamClass }) {
+    constructor({ origin, cacheStorage, fetchImpl, responseClass, streamClass,
+        lockManager = globalThis.navigator?.locks }) {
         if (!origin || !cacheStorage || typeof cacheStorage.open !== 'function' ||
             typeof fetchImpl !== 'function' || !responseClass || !streamClass) {
             throw new TypeError('An extension origin and browser APIs are required');
@@ -95,6 +96,7 @@ export class ModelDataStore {
         this.fetchImpl = fetchImpl;
         this.ResponseClass = responseClass;
         this.TransformStreamClass = streamClass;
+        this.lockManager = lockManager;
     }
 
     key(manifest, asset) {
@@ -177,7 +179,7 @@ export class ModelDataStore {
                 }
             }
             return { ready: true, storedBytes: completedBytes, totalBytes };
-        }, { signal });
+        }, { signal, lockManager: this.lockManager });
     }
 
     async remove(manifest) {
@@ -187,7 +189,7 @@ export class ModelDataStore {
             for (const asset of manifest.assets) {
                 await cache.delete(this.key(manifest, asset));
             }
-        });
+        }, { lockManager: this.lockManager });
     }
 
     // Explicit cleanup after a model revision/catalog update. The caller supplies
@@ -213,6 +215,6 @@ export class ModelDataStore {
                 }
             }
             return deleted;
-        });
+        }, { lockManager: this.lockManager });
     }
 }
