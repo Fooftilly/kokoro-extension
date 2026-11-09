@@ -5,6 +5,7 @@ import { installImmediateModelLocks } from './helpers/model-locks.js';
 jest.mock('../model-data-store.js', () => ({
     ModelDataStore: jest.fn(),
     formatModelSize: bytes => (bytes / 1000000).toFixed(1) + ' MB',
+    assessStorageHeadroom: jest.requireActual('../model-data-store.js').assessStorageHeadroom,
 }));
 jest.mock('../mediapipe-provider.js', () => ({ MediaPipeKokoroProvider: jest.fn() }));
 jest.mock('../onnx-provider.js', () => ({ OnnxKokoroProvider: jest.fn() }));
