@@ -3,6 +3,7 @@
 import { manifestForVariant } from './model-catalog.js';
 import { ModelDataStore } from './model-data-store.js';
 import { validateKokoroPcm } from './pcm-wav.js';
+import { blobMatchesSha256 } from './sha256-stream.js';
 
 function extensionStore(api, cacheStorage, fetchImpl) {
     return new ModelDataStore({
@@ -63,6 +64,13 @@ export class MediaPipeKokoroProvider {
         // buffers before the MediaPipe SDK even initializes.
         const modelBlob = await response.blob();
         if (modelBlob.size !== asset.bytes) throw new Error('MediaPipe model cache entry length mismatch');
+        // Use incremental SHA-256 over the existing Blob before SDK initialization.
+        // Unlike WebCrypto.digest(blob.arrayBuffer()), this does not require
+        // another ~295-MB contiguous allocation just to check cached data.
+        if (!await blobMatchesSha256(modelBlob, asset)) {
+            throw new Error('MediaPipe cached model failed SHA-256 integrity verification. ' +
+                'Use Verify cached data, then Download to repair it.');
+        }
 
         const sdk = await this.loadSDK();
         if (typeof sdk.FilesetResolver?.forAudioTasks !== 'function' ||
