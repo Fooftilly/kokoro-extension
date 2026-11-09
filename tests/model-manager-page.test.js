@@ -170,6 +170,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(remove.disabled).toBe(true);
         remove.click();
         expect(removeModel).not.toHaveBeenCalled();
+        installedModels.add('cpu');
         finishInstall();
         await waitFor(() => row.querySelector('progress').value === 100);
         expect(remove.disabled).toBe(false);
