@@ -162,6 +162,32 @@ async function refresh(entry, ui) {
     return state;
 }
 
+// Advisory only: quota estimates may be unavailable or change at any time.
+// Preserve the original download's abort signal through the optional check.
+async function warnStorageHeadroom(manifest, ui, signal) {
+    const storage = globalThis.navigator?.storage;
+    if (typeof storage?.estimate === 'function') {
+        try {
+            const [cacheState, estimate] = await Promise.all([
+                cacheStore().status(manifest), storage.estimate(),
+            ]);
+            const remaining = Math.max(0, cacheState.totalBytes - cacheState.storedBytes);
+            const headroom = assessStorageHeadroom(remaining, estimate);
+            if (headroom?.insufficient) {
+                ui.storageWarning.textContent =
+                    'Low browser storage estimate: ' + formatModelSize(headroom.availableBytes) +
+                    ' available, but ' + formatModelSize(headroom.requiredBytes) +
+                    ' of additional model data is needed. The download may fail; ' +
+                    'free storage or remove unused models.';
+                ui.storageWarning.hidden = false;
+            }
+        } catch {
+            // Failed quota inspection never blocks an explicitly requested download.
+        }
+    }
+    if (signal.aborted) throw new DOMException('Download aborted', 'AbortError');
+}
+
 async function doDownload(entry, ui) {
     const running = inFlightDownloads.get(entry.key);
     if (running) {
@@ -233,33 +259,7 @@ async function doDownload(entry, ui) {
     setMessage(ui.status, 'Connecting to the official model source (integrity checking may delay progress)…');
     let downloadError = null;
     try {
-        // Warn using the remaining model bytes, not the full size when some
-        // verified assets are already cached. This is a browser quota estimate,
-        // not a promise of physical free space or a reason to bypass integrity.
-        if (typeof globalThis.navigator?.storage?.estimate === 'function') {
-            try {
-                const [cacheState, estimate] = await Promise.all([
-                    cacheStore().status(manifest),
-                    globalThis.navigator.storage.estimate(),
-                ]);
-                const remaining = Math.max(0, cacheState.totalBytes - cacheState.storedBytes);
-                const headroom = assessStorageHeadroom(remaining, estimate);
-                if (headroom?.insufficient) {
-                    ui.storageWarning.textContent =
-                        'Low browser storage estimate: ' + formatModelSize(headroom.availableBytes) +
-                        ' available, but ' + formatModelSize(headroom.requiredBytes) +
-                        ' of additional model data is needed. The download may fail; ' +
-                        'free storage or remove unused models.';
-                    ui.storageWarning.hidden = false;
-                }
-            } catch {
-                // Unsupported/failed quota inspection must not prevent an
-                // explicitly requested download or create a false warning.
-            }
-        }
-        if (controller.signal.aborted) {
-            throw new DOMException('Download aborted', 'AbortError');
-        }
+        await warnStorageHeadroom(manifest, ui, controller.signal);
         await cacheStore().install(manifest, {
             signal: controller.signal,
             onProgress: ({ completedBytes, totalBytes }) => {
