@@ -88,8 +88,7 @@ function createModelRow(entry) {
     return { row, status, progress, download, remove, test, choose, audio, busy: null };
 }
 
-async function refresh(entry, ui) {
-    const state = await cacheStore().status(entryManifest(entry));
+function applyModelStatus(entry, ui, state) {
     setMessage(ui.status, displayModelStatus(entry, state.ready, state.totalBytes));
     // A delayed cache-status response must not re-enable controls while
     // permission, install, inference, or removal is still in progress.
@@ -97,6 +96,11 @@ async function refresh(entry, ui) {
     ui.remove.disabled = !!ui.busy || !state.storedBytes;
     ui.download.disabled = ui.busy === 'download' ? false : !!ui.busy || state.ready;
     if (ui.busy || !state.ready) ui.choose.disabled = true;
+}
+
+async function refresh(entry, ui) {
+    const state = await cacheStore().status(entryManifest(entry));
+    applyModelStatus(entry, ui, state);
     return state;
 }
 
@@ -187,12 +191,22 @@ async function doDownload(entry, ui) {
             'Download failed: ' + String(error.message || error);
     } finally {
         inFlightDownloads.delete(entry.key);
-        ui.busy = null;
+        ui.busy = 'finalizing';
         ui.download.textContent = 'Download ' + formatModelSize(entry.totalBytes);
-        ui.download.disabled = false;
+        ui.download.disabled = true;
         try {
-            await refresh(entry, ui);
+            const state = await refresh(entry, ui);
+            // Apply the fetched state synchronously after releasing the lock.
+            // There is no window in which Download can start again before the
+            // last cache inspection has established whether installation succeeded.
+            ui.busy = null;
+            applyModelStatus(entry, ui, state);
         } catch (error) {
+            ui.busy = null;
+            ui.download.disabled = false;
+            ui.remove.disabled = priorRemoveDisabled;
+            ui.test.disabled = priorTestDisabled;
+            ui.choose.disabled = true;
             if (!downloadError) downloadError = 'Cannot inspect model cache: ' + String(error.message || error);
         }
         // The model status refresh must not erase the actual download failure.
