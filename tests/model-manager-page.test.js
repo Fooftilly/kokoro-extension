@@ -18,6 +18,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
     let partialModels;
     let installModel;
     let removeModel;
+    let delayedCpuStatus;
     beforeEach(async () => {
         jest.resetModules();
         dictionaryReady = true;
@@ -25,6 +26,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         partialModels = new Set();
         installModel = jest.fn();
         removeModel = jest.fn();
+        delayedCpuStatus = null;
         document.body.innerHTML = `
             <div id="modelManager"></div>
             <textarea id="benchmarkText">Hello world.</textarea>
@@ -57,6 +59,8 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         require('../onnx-provider.js').OnnxKokoroProvider.mockImplementation(() => engine);
         require('../model-data-store.js').ModelDataStore.mockImplementation(() => ({
             status: jest.fn(async manifest => {
+                if (delayedCpuStatus && manifest.provider === 'mediapipe' &&
+                    manifest.variant === 'cpu') await delayedCpuStatus;
                 const ready = (manifest.provider === 'onnx' && manifest.variant === 'q8') ||
                     (manifest.provider === 'dictionary' && dictionaryReady) ||
                     (manifest.provider === 'mediapipe' && installedModels.has(manifest.variant));
@@ -174,6 +178,28 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         finishInstall();
         await waitFor(() => row.querySelector('progress').value === 100);
         expect(remove.disabled).toBe(false);
+    });
+
+    test('download stays locked until its final cache-status read completes', async () => {
+        global.browser.permissions.request.mockResolvedValue(true);
+        let finishInstall;
+        installModel.mockImplementation(() => new Promise(resolve => { finishInstall = resolve; }));
+        const row = document.querySelector('[data-variant="mediapipe-cpu"]');
+        const download = row.querySelector('.model-download');
+        download.click();
+        await waitFor(() => installModel.mock.calls.length === 1);
+        let releaseStatus;
+        delayedCpuStatus = new Promise(resolve => { releaseStatus = resolve; });
+        installedModels.add('cpu');
+        finishInstall();
+        await waitFor(() => download.textContent.startsWith('Download '));
+        expect(download.disabled).toBe(true);
+        download.click();
+        expect(global.browser.permissions.request).toHaveBeenCalledTimes(1);
+        releaseStatus();
+        await waitFor(() => row.querySelector('progress').value === 100);
+        expect(download.disabled).toBe(true); // installed model
+        expect(row.querySelector('.model-status').textContent).toContain('Installed');
     });
 
     test('a model removal blocks inference until cache mutation completes', async () => {
