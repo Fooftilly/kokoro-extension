@@ -1,4 +1,5 @@
 /**
+import { installImmediateModelLocks } from './helpers/model-locks.js';
  * @jest-environment jsdom
  */
 jest.mock('../model-data-store.js', () => ({
@@ -43,12 +44,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         };
         global.caches = { open: jest.fn() };
         global.fetch = jest.fn();
-        // Simulate extension-origin Web Locks in jsdom. The coordinator's
-        // scheduling and cancellation behavior has separate contract tests.
-        Object.defineProperty(global.navigator, 'locks', {
-            configurable: true,
-            value: { request: jest.fn(async (name, options, task) => task()) },
-        });
+        installImmediateModelLocks();
         global.Response = class Response {};
         global.TransformStream = class TransformStream {};
         URL.createObjectURL = jest.fn(() => 'blob:test-audio');
