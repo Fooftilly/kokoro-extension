@@ -24,12 +24,22 @@ const inFlightDownloads = new Map();
 const lastAudioUrl = new Map();
 const modelRows = new Map();
 let activeModelOperation = null; // one mutating/inference operation per manager page
+let initialStatusPending = true;
+let recheckInProgress = false;
+let modelStatusEpoch = 0; // A model operation invalidates older read-only scans.
+
+function updateRecheckButton() {
+    const button = document.getElementById('refreshModelCache');
+    if (button) button.disabled = initialStatusPending || recheckInProgress || !!activeModelOperation;
+}
 
 function beginModelOperation(entry, ui, kind) {
     if (activeModelOperation || ui.busy) return false;
     const prior = new Map();
     activeModelOperation = { key: entry.key, prior };
+    modelStatusEpoch++;
     ui.busy = kind;
+    updateRecheckButton();
     // ONNX variants share a downloadable pronunciation dictionary. Removing
     // another row's assets while its engine is testing can corrupt inference.
     // Also avoid competing large writes and tests within this manager page.
@@ -67,6 +77,7 @@ function finishModelOperation(entry, ui) {
             }
         }
     }
+    updateRecheckButton();
 }
 
 function cacheStore() {
@@ -177,6 +188,64 @@ async function refresh(entry, ui) {
     const state = await cacheStore().status(entryManifest(entry));
     applyModelStatus(entry, ui, state);
     return state;
+}
+
+function applyRecheckedModelStatuses(snapshots) {
+    let changed = 0;
+    let missing = 0;
+    for (const { entry, state } of snapshots) {
+        const ui = modelRows.get(entry.key);
+        const previous = ui.lastStatus;
+        const differs = !previous || previous.ready !== state.ready ||
+            previous.storedBytes !== state.storedBytes;
+        const evicted = previous?.ready && !state.ready;
+        if (differs) changed++;
+        if (evicted) missing++;
+        applyModelStatus(entry, ui, state, { updateMessage: differs });
+        if (evicted) {
+            setMessage(ui.status, 'Cached model data is missing. Download again to repair it.');
+        }
+    }
+    if (missing) {
+        return 'Cache rechecked: ' + missing + ' previously installed model(s) lost data. ' +
+            'Use Download to repair them.';
+    }
+    if (changed) return 'Cache rechecked: ' + changed + ' model status(es) changed.';
+    return 'Cache rechecked: all model statuses unchanged.';
+}
+
+// Cache entries may disappear because another extension tab removes a model,
+// or because the browser evicts origin storage. A shared read lease observes a
+// consistent set of manifests without starting downloads or loading any engine.
+// Keep benchmark results visible when the underlying cache state is unchanged.
+async function recheckModelCache() {
+    if (initialStatusPending || recheckInProgress || activeModelOperation) return;
+    const epoch = modelStatusEpoch;
+    recheckInProgress = true;
+    updateRecheckButton();
+    const summary = document.getElementById('modelRecheckStatus');
+    setMessage(summary, 'Rechecking installed model data…');
+    try {
+        const snapshots = await withModelDataLock(async () => {
+            const store = cacheStore();
+            return Promise.all(variants.map(async entry => ({
+                entry, state: await store.status(entryManifest(entry)),
+            })));
+        }, { mode: 'shared' });
+        if (epoch !== modelStatusEpoch || activeModelOperation) return;
+        setMessage(summary, applyRecheckedModelStatuses(snapshots));
+    } catch (error) {
+        if (epoch === modelStatusEpoch && !activeModelOperation) {
+            setMessage(summary, 'Cannot recheck model cache: ' + String(error.message || error));
+        }
+    } finally {
+        if ((epoch !== modelStatusEpoch || activeModelOperation) &&
+            summary.textContent === 'Rechecking installed model data…') {
+            setMessage(summary, 'Cache recheck superseded by a model operation.');
+        }
+        recheckInProgress = false;
+        updateRecheckButton();
+    }
 }
 
 // Advisory only: quota estimates may be unavailable or change at any time.
@@ -503,7 +572,7 @@ function registerModel(entry) {
         await browser.storage.sync.set({ ttsBackend: 'mediapipe', mediaPipeVariant: entry.variant });
         setMessage(ui.status, 'MediaPipe selected for future article and EPUB TTS.');
     });
-    void refresh(entry, ui).catch(error => {
+    return refresh(entry, ui).catch(error => {
         setMessage(ui.status, 'Cannot inspect extension Cache Storage: ' + String(error.message || error));
     });
 }
@@ -557,8 +626,25 @@ if (page) {
         await browser.storage.sync.set({ ttsBackend: 'fastapi' });
         setMessage(document.getElementById('serverStatus'), 'FastAPI selected.');
     });
-    for (const entry of variants) registerModel(entry);
+    document.getElementById('refreshModelCache').addEventListener('click', () => {
+        void recheckModelCache();
+    });
+    const onFocus = () => { void recheckModelCache(); };
+    const onVisible = () => {
+        if (document.visibilityState === 'visible') void recheckModelCache();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    const initialReads = variants.map(registerModel);
+    void Promise.allSettled(initialReads).then(() => {
+        initialStatusPending = false;
+        setMessage(document.getElementById('modelRecheckStatus'),
+            'Model statuses checked. Recheck to detect storage eviction or changes in other tabs.');
+        updateRecheckButton();
+    });
     window.addEventListener('pagehide', () => {
+        window.removeEventListener('focus', onFocus);
+        document.removeEventListener('visibilitychange', onVisible);
         for (const url of lastAudioUrl.values()) URL.revokeObjectURL(url);
         for (const controller of inFlightDownloads.values()) controller.abort();
         for (const engine of engineByKey.values()) void engine.close();
