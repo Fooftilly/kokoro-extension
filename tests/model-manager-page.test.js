@@ -176,6 +176,23 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(remove.disabled).toBe(false);
     });
 
+    test('a model removal blocks inference until cache mutation completes', async () => {
+        const row = document.querySelector('[data-variant="onnx-q8"]');
+        let finishRemoval;
+        removeModel.mockImplementation(() => new Promise(resolve => {
+            finishRemoval = resolve;
+        }));
+        row.querySelector('.model-remove').click();
+        await waitFor(() => typeof finishRemoval === 'function');
+        expect(row.querySelector('.model-test').disabled).toBe(true);
+        expect(row.querySelector('.model-download').disabled).toBe(true);
+        row.querySelector('.model-test').click();
+        expect(engine.synthesizePhonemes).not.toHaveBeenCalled();
+        finishRemoval();
+        await waitFor(() => row.querySelector('.model-test').disabled === false);
+        expect(removeModel).toHaveBeenCalledTimes(1);
+    });
+
     test('denied model-host permission restores existing partial-model actions', async () => {
         partialModels.add('mediapipe-cpu');
         const row = document.querySelector('[data-variant="mediapipe-cpu"]');
