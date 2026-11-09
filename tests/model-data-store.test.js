@@ -317,6 +317,48 @@ describe('opt-in cached model data (#55)', () => {
         expect(entries.size).toBe(1);
     });
 
+    test.each(['install', 'verifyAndPruneCorrupt'])(
+        'cancel during stale cache metadata read preserves entries during %s',
+        async operation => {
+            const { store, cache, entries, fetchImpl } = setup();
+            const m = manifest();
+            await store.install(m);
+            const key = store.key(m, m.assets[0]);
+            const original = entries.get(key);
+            const controller = new AbortController();
+            const deletions = cache.delete.mock.calls.length;
+            cache.match.mockImplementation(async () => {
+                controller.abort();
+                return new Response(sample, { headers: {
+                    'x-kokoro-integrity': 'sha256-stale-metadata',
+                    'x-kokoro-bytes': String(sample.byteLength),
+                } });
+            });
+            await expect(store[operation](m, { signal: controller.signal }))
+                .rejects.toHaveProperty('name', 'AbortError');
+            expect(cache.delete).toHaveBeenCalledTimes(deletions);
+            expect(entries.get(key)).toBe(original);
+            expect(fetchImpl).toHaveBeenCalledTimes(1);
+        });
+
+    test.each(['install', 'verifyAndPruneCorrupt'])(
+        'cancel from final cached progress does not report success during %s',
+        async operation => {
+            const { store, cache, entries, fetchImpl } = setup();
+            const m = manifest();
+            await store.install(m);
+            const controller = new AbortController();
+            const beforeDeletes = cache.delete.mock.calls.length;
+            const progress = jest.fn(() => controller.abort());
+            await expect(store[operation](m, {
+                signal: controller.signal, onProgress: progress,
+            })).rejects.toHaveProperty('name', 'AbortError');
+            expect(progress).toHaveBeenCalledTimes(1);
+            expect(cache.delete).toHaveBeenCalledTimes(beforeDeletes);
+            expect(entries.size).toBe(1);
+            expect(fetchImpl).toHaveBeenCalledTimes(1);
+        });
+
     test('retry reuses checksum-matching bytes without a network request', async () => {
         const { store, fetchImpl } = setup();
         const m = manifest();

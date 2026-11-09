@@ -29,3 +29,14 @@ Official sources:
 - https://developer.mozilla.org/en-US/docs/Web/API/CacheStorage
 - https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX
 - https://huggingface.co/litert-community/Kokoro-82M
+
+
+### Cancellation during cache recovery
+
+Explicit install retries and Verify cached data now recheck the AbortSignal
+after asynchronous Cache Storage reads and before deletion. A cancelled
+operation cannot evict a cached entry merely because its metadata was stale.
+Cancelling in a progress callback for the final already-cached asset is also
+reported as cancellation rather than a completed installation or verification.
+Deletion already completed before cancellation cannot be undone; only
+pre-mutation cancellation is guaranteed to preserve existing data.
