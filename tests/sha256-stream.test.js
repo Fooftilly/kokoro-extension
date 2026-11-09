@@ -107,6 +107,59 @@ describe('bounded-memory SHA-256 from locally cached MediaPipe Blob', () => {
         }, during.signal)).rejects.toHaveProperty('name', 'AbortError');
     });
 
+    test('abort wakes a stalled Blob stream read and releases its reader', async () => {
+        const controller = new AbortController();
+        const content = new Uint8Array([1, 2, 3, 4]);
+        let markReading;
+        const reading = new Promise(resolve => { markReading = resolve; });
+        const cancelled = jest.fn();
+        let pendingRead = null;
+        const blob = {
+            size: content.byteLength,
+            stream: () => {
+                const stream = new ReadableStream({
+                    pull() {
+                        markReading();
+                        return new Promise(() => {}); // No more data unless cancelled.
+                    },
+                    cancel() { cancelled(); },
+                });
+                pendingRead = stream;
+                return stream;
+            },
+        };
+        const check = blobMatchesSha256(blob, {
+            bytes: content.byteLength, integrity: digest(content),
+        }, controller.signal);
+        await reading;
+        controller.abort();
+        await expect(check).rejects.toHaveProperty('name', 'AbortError');
+        expect(cancelled).toHaveBeenCalledTimes(1);
+        expect(pendingRead.locked).toBe(false);
+    });
+
+    test('success and checksum mismatch do not cancel a completed stream', async () => {
+        const content = new Uint8Array([3, 2, 1, 0]);
+        const cancelled = jest.fn();
+        const streamBlob = () => ({
+            size: content.byteLength,
+            stream: () => new ReadableStream({
+                start(controller) {
+                    controller.enqueue(content);
+                    controller.close();
+                },
+                cancel: cancelled,
+            }),
+        });
+        expect(await blobMatchesSha256(streamBlob(), {
+            bytes: content.byteLength, integrity: digest(content),
+        })).toBe(true);
+        expect(await blobMatchesSha256(streamBlob(), {
+            bytes: content.byteLength, integrity: digest(new Uint8Array([0, 1, 2, 3])),
+        })).toBe(false);
+        expect(cancelled).not.toHaveBeenCalled();
+    });
+
     test('valid cached model loads normally without any fetch or extra ArrayBuffer', async () => {
         const { provider, fetchImpl, loadSDK, createFromOptions, response, engine } = mediaFixture();
         await provider.initialize();
