@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  */
-import { validateModelManifest, formatModelSize, ModelDataStore } from '../model-data-store.js';
+import { validateModelManifest, formatModelSize, assessStorageHeadroom, ModelDataStore } from '../model-data-store.js';
 import { dictionaryManifest } from '../model-catalog.js';
 
 const sha = 'a'.repeat(40);
@@ -55,6 +55,22 @@ function setup() {
 }
 
 describe('opt-in cached model data (#55)', () => {
+    test('model storage warning distinguishes an estimated quota shortage from unknown capacity', () => {
+        expect(assessStorageHeadroom(80, { quota: 100, usage: 30 })).toEqual({
+            requiredBytes: 80, availableBytes: 70, insufficient: true,
+        });
+        expect(assessStorageHeadroom(50, { quota: 100, usage: 30 })).toEqual({
+            requiredBytes: 50, availableBytes: 70, insufficient: false,
+        });
+        expect(assessStorageHeadroom(0, { quota: 100, usage: 120 })).toEqual({
+            requiredBytes: 0, availableBytes: 0, insufficient: false,
+        });
+        expect(assessStorageHeadroom(25, undefined)).toBeNull();
+        expect(assessStorageHeadroom(25, { quota: 100 })).toBeNull();
+        expect(assessStorageHeadroom(25, { quota: NaN, usage: 10 })).toBeNull();
+        expect(() => assessStorageHeadroom(-1, {})).toThrow(/Invalid model download byte count/);
+    });
+
     test('sizes are computed from complete pinned manifest, not estimated model size', () => {
         expect(validateModelManifest(manifest())).toBe(4);
         expect(formatModelSize(92000000)).toBe('92.0 MB');

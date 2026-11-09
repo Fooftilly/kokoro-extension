@@ -5,6 +5,7 @@ import { installImmediateModelLocks } from './helpers/model-locks.js';
 jest.mock('../model-data-store.js', () => ({
     ModelDataStore: jest.fn(),
     formatModelSize: bytes => (bytes / 1000000).toFixed(1) + ' MB',
+    assessStorageHeadroom: jest.requireActual('../model-data-store.js').assessStorageHeadroom,
 }));
 jest.mock('../mediapipe-provider.js', () => ({ MediaPipeKokoroProvider: jest.fn() }));
 jest.mock('../onnx-provider.js', () => ({ OnnxKokoroProvider: jest.fn() }));
@@ -44,6 +45,9 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         };
         global.caches = { open: jest.fn() };
         global.fetch = jest.fn();
+        Object.defineProperty(global.navigator, 'storage', {
+            configurable: true, value: undefined,
+        });
         installImmediateModelLocks();
         global.Response = class Response {};
         global.TransformStream = class TransformStream {};
@@ -386,6 +390,114 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         finishProbe(audio());
         await waitFor(() => row.querySelector('.model-status').textContent.includes('Full-clip synthesis p50'));
         expect(remove.disabled).toBe(false);
+    });
+
+    test('warns while a low-quota download is active, then clears after successful install', async () => {
+        global.browser.permissions.request.mockResolvedValue(true);
+        let finishInstall;
+        installModel.mockImplementation(() => new Promise(resolve => { finishInstall = resolve; }));
+        Object.defineProperty(global.navigator, 'storage', {
+            configurable: true,
+            value: { estimate: jest.fn(async () => ({
+                quota: 300000000, usage: 290000000,
+            })) },
+        });
+        partialModels.add('mediapipe-cpu');
+        const row = document.querySelector('[data-variant="mediapipe-cpu"]');
+        const warning = row.querySelector('.model-storage-warning');
+        expect(warning.hidden).toBe(true);
+        expect(navigator.storage.estimate).not.toHaveBeenCalled();
+        row.querySelector('.model-download').click();
+        await waitFor(() => installModel.mock.calls.length === 1);
+        expect(warning.hidden).toBe(false);
+        expect(warning.getAttribute('role')).toBe('alert');
+        expect(warning.textContent).toContain('10.0 MB available');
+        expect(warning.textContent).toContain('294.8 MB');
+        expect(warning.textContent).toContain('may fail');
+        expect(global.browser.permissions.request).toHaveBeenCalledTimes(1);
+        expect(global.fetch).not.toHaveBeenCalled();
+        installedModels.add('cpu');
+        finishInstall();
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('Installed'));
+        expect(warning.hidden).toBe(true);
+        expect(warning.textContent).toBe('');
+    });
+
+    test('cancel while waiting for a storage estimate never starts the model install', async () => {
+        global.browser.permissions.request.mockResolvedValue(true);
+        let finishEstimate;
+        Object.defineProperty(global.navigator, 'storage', {
+            configurable: true,
+            value: { estimate: jest.fn(() => new Promise(resolve => {
+                finishEstimate = resolve;
+            })) },
+        });
+        const row = document.querySelector('[data-variant="mediapipe-cpu"]');
+        const download = row.querySelector('.model-download');
+        download.click();
+        await waitFor(() => typeof finishEstimate === 'function');
+        expect(download.textContent).toBe('Cancel download');
+        download.click();
+        finishEstimate({ quota: 300000000, usage: 290000000 });
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('Download cancelled'));
+        expect(installModel).not.toHaveBeenCalled();
+        expect(row.querySelector('.model-storage-warning').hidden).toBe(true);
+        expect(row.querySelector('.model-storage-warning').textContent).toBe('');
+    });
+
+    test('clears a low-space warning when an active download is cancelled', async () => {
+        global.browser.permissions.request.mockResolvedValue(true);
+        Object.defineProperty(global.navigator, 'storage', {
+            configurable: true,
+            value: { estimate: jest.fn(async () => ({ quota: 300000000, usage: 290000000 })) },
+        });
+        installModel.mockImplementation((manifest, options) => new Promise((resolve, reject) => {
+            options.signal.addEventListener('abort', () =>
+                reject(new DOMException('Download aborted', 'AbortError')), { once: true });
+        }));
+        const row = document.querySelector('[data-variant="mediapipe-cpu"]');
+        const download = row.querySelector('.model-download');
+        const warning = row.querySelector('.model-storage-warning');
+        download.click();
+        await waitFor(() => installModel.mock.calls.length === 1);
+        expect(warning.hidden).toBe(false);
+        download.click();
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('Download cancelled'));
+        expect(warning.hidden).toBe(true);
+        expect(warning.textContent).toBe('');
+    });
+
+    test('clears a low-space warning when model installation fails', async () => {
+        global.browser.permissions.request.mockResolvedValue(true);
+        Object.defineProperty(global.navigator, 'storage', {
+            configurable: true,
+            value: { estimate: jest.fn(async () => ({ quota: 300000000, usage: 290000000 })) },
+        });
+        let rejectInstall;
+        installModel.mockImplementation(() => new Promise((resolve, reject) => {
+            rejectInstall = reject;
+        }));
+        const row = document.querySelector('[data-variant="mediapipe-cpu"]');
+        const warning = row.querySelector('.model-storage-warning');
+        row.querySelector('.model-download').click();
+        await waitFor(() => typeof rejectInstall === 'function');
+        expect(warning.hidden).toBe(false);
+        rejectInstall(new Error('Cache quota exceeded'));
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('Cache quota exceeded'));
+        expect(warning.hidden).toBe(true);
+        expect(warning.textContent).toBe('');
+    });
+
+    test('failed storage estimate is advisory and does not prevent explicit installation', async () => {
+        global.browser.permissions.request.mockResolvedValue(true);
+        Object.defineProperty(global.navigator, 'storage', {
+            configurable: true,
+            value: { estimate: jest.fn(async () => { throw new Error('Storage estimate blocked'); }) },
+        });
+        const row = document.querySelector('[data-variant="mediapipe-cpu"]');
+        row.querySelector('.model-download').click();
+        await waitFor(() => installModel.mock.calls.length === 1);
+        expect(row.querySelector('.model-storage-warning').hidden).toBe(true);
     });
 
     test('unsupported MediaPipe GPU shows capability result without attempting inference', async () => {
