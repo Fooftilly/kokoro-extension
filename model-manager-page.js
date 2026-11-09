@@ -518,6 +518,91 @@ async function testEngine(entry, ui) {
     }
 }
 
+async function invalidateRuntimeFor(entry) {
+    const keys = entry.provider === 'dictionary'
+        ? [...engineByKey.keys()].filter(key => key.startsWith('onnx-'))
+        : [entry.key];
+    for (const key of keys) {
+        const engine = engineByKey.get(key);
+        if (!engine) continue;
+        engineByKey.delete(key);
+        await engine.close();
+    }
+    if (entry.provider === 'mediapipe') {
+        await browser.storage.local.remove('mediapipeValidatedRevision:' + entry.variant);
+    }
+}
+
+// Explicit, offline SHA-256 verification. A mismatch is repaired only by
+// evicting the affected cached asset; downloading it again always requires the
+// user's separate Download action. The exclusive cache lease also prevents
+// reading or deleting a model during local inference in another extension tab.
+async function verifyCachedData(entry, ui) {
+    if (!beginModelOperation(entry, ui, 'verify')) return;
+    const priorChooseEnabled = !ui.choose.disabled;
+    ui.download.disabled = true;
+    ui.remove.disabled = true;
+    ui.verify.disabled = true;
+    ui.test.disabled = true;
+    ui.choose.disabled = true;
+    let removed = 0;
+    let result = null;
+    let message;
+    setMessage(ui.status, 'Checking cached SHA-256 integrity. This may use substantial memory…');
+    try {
+        result = await cacheStore().verifyAndPruneCorrupt(entryManifest(entry), {
+            onProgress: progress => {
+                removed = progress.removedAssets;
+                setMessage(ui.status, 'Verified ' + formatModelSize(progress.verifiedBytes) +
+                    ' of ' + formatModelSize(progress.totalBytes) + ' of cached data…');
+            },
+        });
+        removed = result.removedAssets;
+        if (removed) {
+            message = 'Removed ' + removed +
+                ' corrupted cached asset(s). Click Download to repair the model.';
+        } else if (result.missingAssets) {
+            message = 'Cache verification found ' + result.missingAssets +
+                ' missing asset(s). Click Download to repair the model.';
+        } else {
+            message = 'Cached model data verified: ' +
+                formatModelSize(result.verifiedBytes) + ' matches its pinned SHA-256 hashes.';
+        }
+    } catch (error) {
+        message = 'Cache verification failed without automatic download: ' +
+            String(error.message || error);
+    } finally {
+        if (removed) {
+            try {
+                await invalidateRuntimeFor(entry);
+            } catch (error) {
+                message += ' Could not reset the cached engine: ' + String(error.message || error);
+            }
+        }
+        let state = null;
+        try {
+            state = await refresh(entry, ui);
+        } catch (error) {
+            message += ' Could not inspect cache: ' + String(error.message || error);
+        }
+        finishModelOperation(entry, ui);
+        if (state) {
+            applyModelStatus(entry, ui, state);
+            // Preserve a prior user-validated backend only if no bytes were
+            // removed and the model remains installed.
+            ui.choose.disabled = !priorChooseEnabled || removed > 0 || !state.ready;
+        } else {
+            ui.lastStatus = null;
+            ui.download.disabled = false;
+            ui.remove.disabled = true;
+            ui.verify.disabled = true;
+            ui.test.disabled = true;
+            ui.choose.disabled = true;
+        }
+        setMessage(ui.status, message);
+    }
+}
+
 function registerModel(entry) {
     const ui = createModelRow(entry);
     ui.entry = entry;
@@ -534,26 +619,10 @@ function registerModel(entry) {
         ui.test.disabled = true;
         ui.choose.disabled = true;
         try {
-            const engine = engineByKey.get(entry.key);
-            if (engine) {
-                await engine.close();
-                engineByKey.delete(entry.key);
-            }
+            await invalidateRuntimeFor(entry);
             await cacheStore().remove(entryManifest(entry));
             ui.progress.hidden = true;
             ui.storageWarning.hidden = true;
-            if (entry.provider === 'dictionary') {
-                // Invalidate in-memory lexicons after explicit removal.
-                for (const [key, provider] of engineByKey.entries()) {
-                    if (key.startsWith('onnx-')) {
-                        await provider.close();
-                        engineByKey.delete(key);
-                    }
-                }
-            }
-            if (entry.provider === 'mediapipe') {
-                await browser.storage.local.remove('mediapipeValidatedRevision:' + entry.variant);
-            }
         } catch (error) {
             setMessage(ui.status, 'Removal failed: ' + String(error.message || error));
         } finally {
@@ -582,6 +651,9 @@ function registerModel(entry) {
                 }
             }
         }
+    });
+    ui.verify.addEventListener('click', () => {
+        void verifyCachedData(entry, ui);
     });
     ui.test.addEventListener('click', () => {
         void testEngine(entry, ui);
