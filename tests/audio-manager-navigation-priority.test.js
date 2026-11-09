@@ -1,4 +1,5 @@
 /** @jest-environment jsdom */
+import { installImmediateModelLocks } from './helpers/model-locks.js';
 import { AudioManager } from '../audio-manager.js';
 import { MediaPipeKokoroProvider } from '../mediapipe-provider.js';
 
@@ -36,6 +37,7 @@ describe('navigation priority over speculative local synthesis (#57)', () => {
             })) } },
             runtime: { sendMessage: jest.fn() },
         };
+        installImmediateModelLocks();
         manager = new AudioManager();
         manager.setSentences(Array.from({ length: 15 }, (_, i) => ({ text: 'Sentence ' + i })));
     });
