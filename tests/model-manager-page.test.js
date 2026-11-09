@@ -32,6 +32,8 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         delayedCpuStatus = null;
         failStatusFor = new Set();
         document.body.innerHTML = `
+            <button id="refreshModelCache" disabled>Recheck installed models</button>
+            <p id="modelRecheckStatus" role="status"></p>
             <div id="modelManager"></div>
             <textarea id="benchmarkText">Hello world.</textarea>
             <input id="benchmarkIpa" value="hɛˈloʊ.">
@@ -86,6 +88,11 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         await new Promise(resolve => setTimeout(resolve, 0));
     });
 
+    afterEach(() => {
+        // Remove module-scoped focus/visibility listeners between jsdom tests.
+        window.dispatchEvent(new Event('pagehide'));
+    });
+
     async function runProbe() {
         const row = document.querySelector('[data-variant="onnx-q8"]');
         const button = row.querySelector('.model-test');
@@ -100,6 +107,99 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         }
         throw new Error('ONNX probe did not finish: ' + status.textContent);
     }
+
+    test('read-only recheck detects evicted models when the test page regains focus', async () => {
+        const recheck = document.getElementById('refreshModelCache');
+        const row = document.querySelector('[data-variant="mediapipe-cpu"]');
+        expect(recheck.disabled).toBe(false);
+        installedModels.add('cpu');
+        recheck.click();
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('Installed'));
+        expect(row.querySelector('.model-download').disabled).toBe(true);
+        // Simulate a variant that was previously validated for the chooser.
+        row.querySelector('.model-choose').disabled = false;
+        installedModels.delete('cpu');
+        window.dispatchEvent(new Event('focus'));
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('missing'));
+        expect(row.querySelector('.model-download').disabled).toBe(false);
+        expect(row.querySelector('.model-test').disabled).toBe(true);
+        expect(row.querySelector('.model-remove').disabled).toBe(true);
+        expect(row.querySelector('.model-choose').disabled).toBe(true);
+        expect(document.getElementById('modelRecheckStatus').textContent)
+            .toContain('previously installed model(s) lost data');
+        expect(global.fetch).not.toHaveBeenCalled();
+        expect(global.browser.permissions.request).not.toHaveBeenCalled();
+        expect(installModel).not.toHaveBeenCalled();
+        expect(navigator.locks.request).toHaveBeenCalledWith(
+            'kokoro-model-data-v1', { mode: 'shared' }, expect.any(Function));
+    });
+
+    test('recheck on visibility restoration detects newly available cache without auto-testing', async () => {
+        const row = document.querySelector('[data-variant="mediapipe-cpu"]');
+        const recheck = document.getElementById('refreshModelCache');
+        expect(row.querySelector('.model-download').disabled).toBe(false);
+        installedModels.add('cpu');
+        document.dispatchEvent(new Event('visibilitychange'));
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('Installed'));
+        expect(row.querySelector('.model-download').disabled).toBe(true);
+        expect(row.querySelector('.model-test').disabled).toBe(false);
+        expect(row.querySelector('.model-choose').disabled).toBe(true);
+        expect(recheck.disabled).toBe(false);
+        expect(engine.initialize).not.toHaveBeenCalled();
+        expect(global.browser.permissions.request).not.toHaveBeenCalled();
+    });
+
+    test('unchanged cache check preserves the previous benchmark diagnostics', async () => {
+        const { row, message } = await runProbe();
+        const button = document.getElementById('refreshModelCache');
+        button.click();
+        await waitFor(() => document.getElementById('modelRecheckStatus').textContent
+            .includes('all model statuses unchanged'));
+        expect(row.querySelector('.model-status').textContent).toBe(message);
+        expect(row.querySelector('.model-test').disabled).toBe(false);
+        expect(button.disabled).toBe(false);
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('failed recheck preserves existing controls and permits retry', async () => {
+        const row = document.querySelector('[data-variant="onnx-q8"]');
+        expect(row.querySelector('.model-test').disabled).toBe(false);
+        failStatusFor.add('mediapipe-cpu');
+        const button = document.getElementById('refreshModelCache');
+        button.click();
+        await waitFor(() => document.getElementById('modelRecheckStatus').textContent
+            .includes('Cannot recheck model cache'));
+        expect(row.querySelector('.model-test').disabled).toBe(false);
+        expect(button.disabled).toBe(false);
+        failStatusFor.clear();
+        button.click();
+        await waitFor(() => document.getElementById('modelRecheckStatus').textContent
+            .includes('all model statuses unchanged'));
+    });
+
+    test('stale cache recheck never overwrites an in-progress model permission request', async () => {
+        const row = document.querySelector('[data-variant="mediapipe-cpu"]');
+        const recheck = document.getElementById('refreshModelCache');
+        let releaseStatus;
+        delayedCpuStatus = new Promise(resolve => { releaseStatus = resolve; });
+        recheck.click();
+        await waitFor(() => recheck.disabled);
+        let allowPermission;
+        global.browser.permissions.request.mockImplementation(() => new Promise(resolve => {
+            allowPermission = resolve;
+        }));
+        row.querySelector('.model-download').click();
+        expect(recheck.disabled).toBe(true);
+        expect(row.querySelector('.model-status').textContent).toContain('permission');
+        releaseStatus();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(row.querySelector('.model-status').textContent).toContain('permission');
+        expect(installModel).not.toHaveBeenCalled();
+        allowPermission(false);
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('denied'));
+        expect(recheck.disabled).toBe(false);
+    });
 
     test('discloses pinned model source, license and total cache data before any download', () => {
         const cases = [
