@@ -5,6 +5,7 @@ import {
     parseTextDocument,
 } from './document-formats.js';
 import { MAX_DOCX_ARCHIVE_BYTES, parseDocxDocument } from './docx-reader.js';
+import './tts-providers.js';
 
 const fileInput = document.getElementById('fileInput');
 const filePickerOverlay = document.getElementById('filePickerOverlay');
@@ -1019,7 +1020,10 @@ async function sendToPlayer(content, title, textPreview, startIndex, requestId, 
     ]);
     if (requestId !== chapterRequestId || requestedBook !== book) return;
 
-    const apiUrl = settings.apiUrl || 'http://127.0.0.1:8880/v1/';
+    // The EPUB reader must follow the same privacy boundary as context-menu TTS:
+    // local providers do not carry a server URL into the playback iframe.
+    const { backend, apiUrl } = globalThis.KokoroTtsProviders.resolvePlaybackConnection(
+        settings.ttsBackend, settings.apiUrl || 'http://127.0.0.1:8880/v1/');
 
     // In continuous mode, an XHTML file with multiple TOC anchors needs a
     // playback boundary at the next anchor. Other reader modes retain their
@@ -1045,7 +1049,7 @@ async function sendToPlayer(content, title, textPreview, startIndex, requestId, 
         pendingContent: chapterContent,
         pendingVoice: settings.voice,
         pendingApiUrl: apiUrl,
-        pendingTtsBackend: settings.ttsBackend === undefined ? 'fastapi' : settings.ttsBackend,
+        pendingTtsBackend: backend,
         pendingMediaPipeVariant: settings.mediaPipeVariant || 'cpu',
         pendingLocalVoice: settings.localVoice || 'af_heart',
         pendingTitle: title || 'Document',

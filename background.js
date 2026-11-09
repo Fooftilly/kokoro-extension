@@ -231,8 +231,10 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
     });
 
     let backend;
+    let apiUrl;
     try {
-        backend = TtsProviders.resolveBackend(settings.ttsBackend);
+        ({ backend, apiUrl } = TtsProviders.resolvePlaybackConnection(
+            settings.ttsBackend, settings.apiUrl));
     } catch (error) {
         notify('Kokoro TTS Error', error.message);
         return;
@@ -244,14 +246,12 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
     // MediaPipe runs directly in the extension's audio player from cached model bytes.
     // It must never probe or request audio from FastAPI while selected.
 
-    // A local engine must not require, parse, or transmit a FastAPI URL.
-    let apiUrl = null;
-    if (backend === TtsProviders.FASTAPI) {
-        if (typeof settings.apiUrl !== 'string' || !settings.apiUrl.trim()) {
-            notify('Kokoro TTS Error', 'Configure a Kokoro server URL before using FastAPI.');
-            return;
-        }
-        apiUrl = settings.apiUrl.endsWith('/') ? settings.apiUrl : settings.apiUrl + '/';
+    // The shared resolver strips the server URL for both local providers.
+    // Preserve the existing overlay behavior in download mode until local
+    // full-selection export is implemented; saving in the player exports WAV.
+    if (backend === TtsProviders.MEDIAPIPE && settings.mode === 'download' && !isArticleMode) {
+        notify('Kokoro TTS',
+            'Local download opens the player. Use Save audio there to download a WAV sentence.');
     }
 
     // Network connectivity matters only for the explicitly selected server backend.

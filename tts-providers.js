@@ -63,6 +63,19 @@
         return KNOWN.map(id => getCapabilities(id));
     }
 
+    // Resolve once at the boundary between saved preferences and playback.
+    // Local engines must never receive the server URL, even when preferences
+    // still contain a previously configured FastAPI endpoint.
+    function resolvePlaybackConnection(value, apiUrl) {
+        const backend = resolveBackend(value);
+        if (backend !== FASTAPI) return { backend, apiUrl: null };
+        if (typeof apiUrl !== 'string' || !apiUrl.trim()) {
+            throw new Error('Configure a Kokoro server URL before using FastAPI.');
+        }
+        const trimmed = apiUrl.trim();
+        return { backend, apiUrl: trimmed.endsWith('/') ? trimmed : trimmed + '/' };
+    }
+
     function unavailableResponse(value) {
         const backend = resolveBackend(value);
         if (backend === FASTAPI) {
@@ -77,7 +90,7 @@
     }
 
     const api = Object.freeze({ FASTAPI, MEDIAPIPE, ONNX, KNOWN, LABELS, resolveBackend,
-        unavailableResponse, getCapabilities, listCapabilities });
+        unavailableResponse, getCapabilities, listCapabilities, resolvePlaybackConnection });
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     globalThis.KokoroTtsProviders = api;
 })();
