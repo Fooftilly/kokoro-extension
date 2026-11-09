@@ -4,6 +4,7 @@ import { ModelDataStore, validateModelManifest } from '../model-data-store.js';
 import { tokenizePhonemes, PHONEME_VOCAB } from '../phoneme-tokenizer.js';
 import { parseEnglishLexicon, phonemizeEnglish, loadCachedEnglishLexicon } from '../english-g2p.js';
 import { encodePcm16Wav, validateKokoroPcm } from '../pcm-wav.js';
+import { createHash, webcrypto } from 'node:crypto';
 import { MediaPipeKokoroProvider } from '../mediapipe-provider.js';
 import { OnnxKokoroProvider } from '../onnx-provider.js';
 
@@ -16,7 +17,14 @@ function fakeCache(manifest) {
     for (const asset of manifest.assets) {
         const key = 'https://kokoro-model-cache.invalid/model-data/' +
             manifest.provider + '/' + manifest.revision + '/' + manifest.variant + '/' + asset.path;
-        contents.set(key, new Response(new Uint8Array(asset.bytes), {
+        const bytes = new Uint8Array(asset.bytes); // Original, tiny test fixture.
+        // ONNX now checks the already-loaded bytes; make its tiny fabricated
+        // fixtures match the manifest. MediaPipe/dictionary fixtures retain
+        // their original pinned metadata for their separate test contracts.
+        if (manifest.provider === 'onnx') {
+            asset.integrity = 'sha256-' + createHash('sha256').update(bytes).digest('base64');
+        }
+        contents.set(key, new Response(bytes, {
             headers: {
                 'x-kokoro-integrity': asset.integrity,
                 'x-kokoro-bytes': String(asset.bytes),
@@ -148,6 +156,14 @@ describe('original strict English dictionary phonemizer', () => {
 });
 
 describe('official packaged backend adapters — SDK mocks, no fake inference claim', () => {
+    const oldCrypto = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+    beforeAll(() => {
+        Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
+    });
+    afterAll(() => {
+        if (oldCrypto) Object.defineProperty(globalThis, 'crypto', oldCrypto);
+        else delete globalThis.crypto;
+    });
     test('MediaPipe refuses inference before explicit model install and never fetches a remote URL', async () => {
         const fetchImpl = jest.fn();
         const sdk = jest.fn();
