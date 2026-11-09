@@ -123,6 +123,15 @@ export async function blobMatchesSha256(blob, asset, signal) {
     const hash = new IncrementalSha256();
     const reader = blob.stream().getReader();
     let completed = false;
+    // Abort an in-flight read, not just the next loop iteration. A browser
+    // storage stream may stall between chunks; otherwise Cancel waits for
+    // reader.read() to settle before releasing the model-data lock.
+    const cancelPendingRead = () => {
+        void reader.cancel().catch(() => {
+            // Read errors are handled by the awaiting verifier below.
+        });
+    };
+    signal?.addEventListener('abort', cancelPendingRead, { once: true });
     try {
         while (true) {
             if (signal?.aborted) throw new globalThis.DOMException('Verification cancelled', 'AbortError');
@@ -134,7 +143,14 @@ export async function blobMatchesSha256(blob, asset, signal) {
             hash.update(value);
         }
     } finally {
-        if (!completed) await reader.cancel();
+        signal?.removeEventListener('abort', cancelPendingRead);
+        if (!completed) {
+            try {
+                await reader.cancel();
+            } catch {
+                // Never mask the original stream error or user cancellation.
+            }
+        }
         reader.releaseLock();
     }
     if (hash.totalBytes !== asset.bytes) return false;

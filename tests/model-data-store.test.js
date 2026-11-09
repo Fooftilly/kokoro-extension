@@ -284,6 +284,39 @@ describe('opt-in cached model data (#55)', () => {
         expect(entries.size).toBe(1);
     });
 
+    test('aborting a stalled MediaPipe cache read releases the installation without eviction', async () => {
+        const { store, cache, entries, fetchImpl } = setup();
+        const m = mediapipeManifest();
+        await store.install(m);
+        const controller = new AbortController();
+        const stored = entries.get(store.key(m, m.assets[0]));
+        const deletesBefore = cache.delete.mock.calls.length;
+        let notifyReading;
+        const reading = new Promise(resolve => { notifyReading = resolve; });
+        const onCancel = jest.fn();
+        cache.match.mockImplementation(async () => ({
+            headers: stored.headers,
+            blob: async () => ({
+                size: 4,
+                stream: () => new ReadableStream({
+                    pull() {
+                        notifyReading();
+                        return new Promise(() => {});
+                    },
+                    cancel: onCancel,
+                }),
+            }),
+        }));
+        const installing = store.install(m, { signal: controller.signal });
+        await reading;
+        controller.abort();
+        await expect(installing).rejects.toHaveProperty('name', 'AbortError');
+        expect(onCancel).toHaveBeenCalledTimes(1);
+        expect(cache.delete).toHaveBeenCalledTimes(deletesBefore);
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+        expect(entries.size).toBe(1);
+    });
+
     test('retry reuses checksum-matching bytes without a network request', async () => {
         const { store, fetchImpl } = setup();
         const m = manifest();
