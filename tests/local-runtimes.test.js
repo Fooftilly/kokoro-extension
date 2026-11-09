@@ -1,6 +1,6 @@
 /** @jest-environment node */
 import { manifestForVariant, listModelVariants, dictionaryManifest } from '../model-catalog.js';
-import { validateModelManifest } from '../model-data-store.js';
+import { ModelDataStore, validateModelManifest } from '../model-data-store.js';
 import { tokenizePhonemes, PHONEME_VOCAB } from '../phoneme-tokenizer.js';
 import { parseEnglishLexicon, phonemizeEnglish, loadCachedEnglishLexicon } from '../english-g2p.js';
 import { encodePcm16Wav, validateKokoroPcm } from '../pcm-wav.js';
@@ -125,10 +125,18 @@ describe('original strict English dictionary phonemizer', () => {
             },
         }));
         const fetcher = jest.fn();
-        const words = await loadCachedEnglishLexicon(browserApi(), store, fetcher);
-        expect(words.size).toBe(2);
+        // This test checks offline loading, not checksum verification: its
+        // abbreviated fixture cannot match the pinned 3.6-MB dictionary digest.
+        const verified = jest.spyOn(ModelDataStore.prototype, 'cachedBytesMatch')
+            .mockResolvedValue(true);
+        try {
+            const words = await loadCachedEnglishLexicon(browserApi(), store, fetcher);
+            expect(words.size).toBe(2);
+            expect(phonemizeEnglish('Hello world.', words)).toContain('ʊ');
+        } finally {
+            verified.mockRestore();
+        }
         expect(fetcher).not.toHaveBeenCalled();
-        expect(phonemizeEnglish('Hello world.', words)).toContain('ʊ');
     });
     test('fails closed when dictionary has not been downloaded', async () => {
         const fetcher = jest.fn();
@@ -311,7 +319,15 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
             }),
         });
         provider.manifest = manifest;
-        expect((await provider.synthesize('Hello world.')).samples.length).toBe(2);
+        // The abbreviated fixture covers local inference plumbing; the real
+        // SHA-256 behavior has dedicated small-fixture integrity tests.
+        const verified = jest.spyOn(ModelDataStore.prototype, 'cachedBytesMatch')
+            .mockResolvedValue(true);
+        try {
+            expect((await provider.synthesize('Hello world.')).samples.length).toBe(2);
+        } finally {
+            verified.mockRestore();
+        }
         expect(fetcher).not.toHaveBeenCalled();
         expect(cache.match).toHaveBeenCalledWith(
             'https://kokoro-model-cache.invalid/model-data/dictionary/' +
