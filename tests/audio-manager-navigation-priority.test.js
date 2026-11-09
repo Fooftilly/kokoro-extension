@@ -36,6 +36,12 @@ describe('navigation priority over speculative local synthesis (#57)', () => {
             })) } },
             runtime: { sendMessage: jest.fn() },
         };
+        Object.defineProperty(global.navigator, 'locks', {
+            configurable: true,
+            // Browser's origin-wide lock scheduling is tested separately;
+            // these tests exercise AudioManager's session/cache lifecycle.
+            value: { request: jest.fn(async (name, options, work) => work()) },
+        });
         manager = new AudioManager();
         manager.setSentences(Array.from({ length: 15 }, (_, i) => ({ text: 'Sentence ' + i })));
     });
