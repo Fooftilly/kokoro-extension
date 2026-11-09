@@ -134,6 +134,7 @@ export class ModelDataStore {
             const response = await this.fetchImpl(asset.url, {
                 signal, cache: 'no-store', integrity: asset.integrity,
             });
+            if (signal?.aborted) throw new DOMException('Download aborted', 'AbortError');
             if (!response.ok || response.type === 'opaque' || !response.body) {
                 throw new Error('Unable to download model data through CORS');
             }
@@ -141,6 +142,7 @@ export class ModelDataStore {
             const bytesBefore = completedBytes;
             const stream = response.body.pipeThrough(new this.TransformStreamClass({
                 transform(chunk, controller) {
+                    if (signal?.aborted) throw new DOMException('Download aborted', 'AbortError');
                     received += chunk.byteLength;
                     if (received > asset.bytes) {
                         throw new Error('Downloaded asset exceeds verified size');
@@ -158,6 +160,10 @@ export class ModelDataStore {
             };
             try {
                 await cache.put(key, new this.ResponseClass(stream, { headers }));
+                // Cache Storage can finish committing even after the user clicks
+                // Cancel. A late abort must roll back that write, not report the
+                // model as installed or leave an apparently complete cache entry.
+                if (signal?.aborted) throw new DOMException('Download aborted', 'AbortError');
                 if (received !== asset.bytes) {
                     throw new Error('Downloaded asset length disagrees with pinned manifest');
                 }

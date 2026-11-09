@@ -173,6 +173,36 @@ describe('opt-in cached model data (#55)', () => {
         expect((await store.status(manifest())).ready).toBe(false);
     });
 
+    test('cancelling while Cache Storage commits rolls back the completed entry', async () => {
+        const { store, cache, entries } = setup();
+        const controller = new AbortController();
+        const originalPut = cache.put.getMockImplementation();
+        cache.put.mockImplementation(async (key, response) => {
+            await originalPut(key, response);
+            // Cache Storage has committed all bytes, but the user cancelled
+            // before the installer received the acknowledgement.
+            controller.abort();
+        });
+        await expect(store.install(manifest(), { signal: controller.signal }))
+            .rejects.toMatchObject({ name: 'AbortError' });
+        expect(entries.size).toBe(0);
+        expect((await store.status(manifest())).ready).toBe(false);
+        expect(cache.delete).toHaveBeenCalledTimes(2); // initial reset + abort rollback
+    });
+
+    test('abort after fetch resolves but before caching never writes model data', async () => {
+        const { store, fetchImpl, cache, entries } = setup();
+        const controller = new AbortController();
+        fetchImpl.mockImplementation(async () => {
+            controller.abort();
+            return new Response(sample, { status: 200 });
+        });
+        await expect(store.install(manifest(), { signal: controller.signal }))
+            .rejects.toMatchObject({ name: 'AbortError' });
+        expect(cache.put).not.toHaveBeenCalled();
+        expect(entries.size).toBe(0);
+    });
+
     test('rejects aborted downloads without a fetch', async () => {
         const { store, fetchImpl } = setup();
         const controller = new AbortController();
