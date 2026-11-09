@@ -22,6 +22,47 @@
         return value;
     }
 
+    // Stable, JSON-serializable capability descriptors for background, popup,
+    // and the eventual three-engine test page (#61). This is NOT a readiness
+    // check: downloaded weights, browser GPU support, and an available server
+    // must be verified by the respective provider at the time of use.
+    const CAPABILITIES = Object.freeze({
+        fastapi: Object.freeze({
+            id: FASTAPI, label: LABELS.fastapi, execution: 'server',
+            installation: 'external', readiness: 'requires-server-probe',
+            textSynthesis: 'supported', phonemeSynthesis: 'not-exposed',
+            outputFormats: Object.freeze(['mp3']),
+            weightedVoiceMixing: true, availableVoices: 'query-server',
+            modelStatus: 'external', supportsCancel: false,
+        }),
+        mediapipe: Object.freeze({
+            id: MEDIAPIPE, label: LABELS.mediapipe, execution: 'on-device',
+            installation: 'opt-in-model-download', readiness: 'requires-runtime-check',
+            textSynthesis: 'experimental', phonemeSynthesis: 'not-exposed',
+            outputFormats: Object.freeze(['wav']),
+            weightedVoiceMixing: false, availableVoices: 'runtime-dependent',
+            modelStatus: 'not-checked', supportsCancel: true,
+        }),
+        onnx: Object.freeze({
+            id: ONNX, label: LABELS.onnx, execution: 'on-device',
+            installation: 'opt-in-model-download', readiness: 'requires-runtime-check',
+            // The graph/phoneme diagnostic is not normal article TTS until
+            // the in-repository English G2P path is validated for production.
+            textSynthesis: 'experimental', phonemeSynthesis: 'diagnostic-only',
+            outputFormats: Object.freeze(['wav']),
+            weightedVoiceMixing: false, availableVoices: 'model-assets',
+            modelStatus: 'not-checked', supportsCancel: false,
+        }),
+    });
+
+    function getCapabilities(value) {
+        return CAPABILITIES[resolveBackend(value)];
+    }
+
+    function listCapabilities() {
+        return KNOWN.map(id => getCapabilities(id));
+    }
+
     function unavailableResponse(value) {
         const backend = resolveBackend(value);
         if (backend === FASTAPI) {
@@ -35,7 +76,8 @@
         };
     }
 
-    const api = Object.freeze({ FASTAPI, MEDIAPIPE, ONNX, KNOWN, LABELS, resolveBackend, unavailableResponse });
+    const api = Object.freeze({ FASTAPI, MEDIAPIPE, ONNX, KNOWN, LABELS, resolveBackend,
+        unavailableResponse, getCapabilities, listCapabilities });
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     globalThis.KokoroTtsProviders = api;
 })();

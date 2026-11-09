@@ -385,6 +385,19 @@ browser.runtime.onMessage.addListener(async (request, sender) => {
         if (sender.tab) {
             await handleTtsAction(sender.tab, "send-to-kokoro", request.text);
         }
+    } else if (request.action === "GET_TTS_BACKEND_CAPABILITIES") {
+        // Read-only metadata must never probe FastAPI or download/load a model.
+        // Real availability belongs to each runtime's status() path.
+        try {
+            return {
+                success: true,
+                capabilities: request.backend === undefined
+                    ? TtsProviders.listCapabilities()
+                    : [TtsProviders.getCapabilities(request.backend)],
+            };
+        } catch (error) {
+            return { success: false, kind: 'invalid-backend', error: error.message };
+        }
     } else if (request.action === "FETCH_TTS_AUDIO") {
         try {
             const selected = await browser.storage.sync.get({ ttsBackend: TtsProviders.FASTAPI });

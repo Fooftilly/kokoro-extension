@@ -1,3 +1,4 @@
+import './tts-providers.js';
 import { MediaPipeKokoroProvider } from './mediapipe-provider.js';
 import { pcmToWavBlob } from './pcm-wav.js';
 
@@ -253,9 +254,15 @@ export class AudioManager {
     }
 
     async routeAudio(text, data, isStale = () => false, onSynthesisStart = () => {}) {
-        const backend = data.pendingTtsBackend === undefined ? 'fastapi' : data.pendingTtsBackend;
-        if (backend === 'mediapipe') return this.localAudio(text, data, isStale, onSynthesisStart);
-        if (backend === 'fastapi') return this.remoteAudio(text, data, onSynthesisStart);
+        // Resolve through the same strict IDs as the background dispatcher.
+        // An unknown explicit value must NEVER be interpreted as FastAPI.
+        const backend = globalThis.KokoroTtsProviders.resolveBackend(data.pendingTtsBackend);
+        if (backend === globalThis.KokoroTtsProviders.MEDIAPIPE) {
+            return this.localAudio(text, data, isStale, onSynthesisStart);
+        }
+        if (backend === globalThis.KokoroTtsProviders.FASTAPI) {
+            return this.remoteAudio(text, data, onSynthesisStart);
+        }
         throw new Error('Local TTS backend ONNX plain-text synthesis is not yet available. No text was sent to Kokoro-FastAPI.');
     }
 
