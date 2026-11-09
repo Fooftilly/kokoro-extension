@@ -123,16 +123,70 @@ try {
     }
     const preflight = JSON.parse(await preflightPage.locator('#report').textContent());
     if (!preflight.wasmCompilation) throw Error('Chrome extension CSP blocks WebAssembly compilation');
+    // Exercise the production model-data store against its real pinned HTTPS
+    // CMUdict URL. This deliberately does not substitute the local loopback
+    // transfer used later for heavyweight model inference acceptance.
+    const dictionaryCacheAcceptance = await preflightPage.evaluate(async () => {
+        try {
+            const [{ ModelDataStore }, { dictionaryManifest }] = await Promise.all([
+                import('./model-data-store.js'), import('./model-catalog.js'),
+            ]);
+            const manifest = dictionaryManifest();
+            let networkFetches = 0;
+            let reportedBytes = 0;
+            const store = new ModelDataStore({
+                origin: chrome.runtime.getURL('/'), cacheStorage: caches,
+                fetchImpl: (...args) => {
+                    networkFetches++;
+                    return fetch(...args);
+                },
+                responseClass: Response, streamClass: TransformStream,
+            });
+            await store.remove(manifest);
+            if ((await store.status(manifest)).ready) {
+                throw Error('Dictionary persisted after explicit removal');
+            }
+            await store.install(manifest, {
+                onProgress: ({ completedBytes }) => { reportedBytes = completedBytes; },
+            });
+            const verified = await store.verifyAndPruneCorrupt(manifest);
+            if (!verified.ready || verified.removedAssets !== 0 ||
+                reportedBytes !== manifest.assets[0].bytes || networkFetches !== 1) {
+                throw Error('Real pinned dictionary CORS/SRI download or SHA-256 verification failed');
+            }
+            await store.install(manifest);
+            if (networkFetches !== 1) {
+                throw Error('Checksum-matching retry made an unnecessary network request');
+            }
+            await store.remove(manifest);
+            if ((await store.status(manifest)).ready) {
+                throw Error('Dictionary remained installed after removal');
+            }
+            return { success: true, provider: 'dictionary', byteCount: reportedBytes,
+                directOfficialHttpsFetches: networkFetches, verifiedSha256: true,
+                cachedRetryWithoutFetch: true, explicitRemoval: true };
+        } catch (error) {
+            return { success: false, error: String(error) };
+        }
+    });
+    if (!dictionaryCacheAcceptance.success) {
+        await writeFile(path.join(resultsDir, 'report.json'), JSON.stringify({
+            browser: preflight.browser, dictionaryCacheAcceptance,
+        }, null, 2));
+        throw Error('Chromium direct dictionary cache acceptance failed: ' +
+            dictionaryCacheAcceptance.error);
+    }
     // A separate renderer page per model releases ONNX WASM allocations before
     // starting the much larger MediaPipe WASM engine. Keep extension Cache
     // Storage persistent across pages so the test still uses real cached data.
     await preflightPage.close();
     const results = [];
     const saveReport = () => writeFile(path.join(resultsDir, 'report.json'), JSON.stringify({
-        testedAt: new Date().toISOString(), browser: preflight.browser, preflight, results,
+        testedAt: new Date().toISOString(), browser: preflight.browser, preflight,
+        dictionaryCacheAcceptance, results,
         providerFilter,
         networkRequirement: 'offline during every local synthesis probe',
-        cachePopulation: 'preloaded from separately verified pinned files over authenticated loopback; user-facing Download button not exercised',
+        cachePopulation: 'model weights preloaded from verified pinned files over authenticated loopback; dictionary separately tested using real pinned HTTPS CORS/SRI; user-facing Download button not exercised',
         scope: 'Linux Chromium MV3 extension origin; no subjective audio-quality or complete download-manager acceptance',
     }, null, 2));
     for (const manifest of variants) {

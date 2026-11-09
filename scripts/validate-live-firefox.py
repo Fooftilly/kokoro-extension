@@ -179,6 +179,7 @@ def main():
             WebDriverWait(driver, 20).until(
                 lambda d: d.execute_script("return Boolean(window.KokoroBenchmark)")
             )
+            dictionary_cache_acceptance = None
             preflight = driver.execute_async_script("""
                 const done=arguments[arguments.length-1];
                 window.KokoroBenchmark.inspectCapabilities().then(done, e=>done({error:String(e)}));
@@ -186,6 +187,43 @@ def main():
             if not preflight.get("wasmCompilation"):
                 raise RuntimeError("Firefox MV3 extension-page WASM compilation unavailable: " + str(preflight))
 
+            # Check real pinned dictionary CORS/SRI download in the packaged
+            # extension itself. Model-weight preload below remains loopback.
+            dictionary_cache_acceptance = driver.execute_async_script("""
+                const done=arguments[arguments.length-1];
+                (async()=>{
+                    const [{ModelDataStore},{dictionaryManifest}]=await Promise.all([
+                        import('./model-data-store.js'),import('./model-catalog.js')]);
+                    const manifest=dictionaryManifest();
+                    let networkFetches=0,reportedBytes=0;
+                    const store=new ModelDataStore({
+                        origin:browser.runtime.getURL('/'),cacheStorage:caches,
+                        fetchImpl:(...args)=>{networkFetches++;return fetch(...args)},
+                        responseClass:Response,streamClass:TransformStream});
+                    await store.remove(manifest);
+                    if((await store.status(manifest)).ready)
+                        throw Error('Dictionary persisted after explicit removal');
+                    await store.install(manifest,{onProgress:({completedBytes})=>{
+                        reportedBytes=completedBytes;
+                    }});
+                    const verified=await store.verifyAndPruneCorrupt(manifest);
+                    if(!verified.ready||verified.removedAssets!==0||
+                        reportedBytes!==manifest.assets[0].bytes||networkFetches!==1)
+                        throw Error('Pinned dictionary CORS/SRI download or SHA-256 failed');
+                    await store.install(manifest);
+                    if(networkFetches!==1)
+                        throw Error('Checksum-matching retry fetched again');
+                    await store.remove(manifest);
+                    if((await store.status(manifest)).ready)
+                        throw Error('Dictionary remained installed after removal');
+                    return {success:true,provider:'dictionary',byteCount:reportedBytes,
+                        directOfficialHttpsFetches:networkFetches,verifiedSha256:true,
+                        cachedRetryWithoutFetch:true,explicitRemoval:true};
+                })().then(done,e=>done({success:false,error:String(e)}));
+            """)
+            if not dictionary_cache_acceptance.get("success"):
+                raise RuntimeError("Firefox direct dictionary cache acceptance failed: " +
+                                   str(dictionary_cache_acceptance))
             # Use only pinned bytes verified on the runner, and copy to the
             # extension's cache. The loopback server never receives TTS text.
             cache_result = driver.execute_async_script("""
@@ -278,9 +316,10 @@ def main():
             result = {"status": "passed" if metrics.get("success") else "failed",
                 "browser": driver.capabilities.get("browserVersion"), "extensionId": addon_id,
                 "preflight": preflight, "provider": provider, provider: metrics,
+                "dictionaryCacheAcceptance": dictionary_cache_acceptance,
                 "offlineAttempted": True,
                 "offlineInference": metrics.get("success") is True,
-                "cachePopulation": "verified pinned files preloaded over loopback; extension Download UI not exercised",
+                "cachePopulation": "model weights preloaded over loopback; dictionary tested with real pinned HTTPS CORS/SRI; Download UI not exercised",
                 "scope": "Firefox/Linux MV3 offline " + provider +
                          " CPU synthesis; no subjective audio-quality or long-form acceptance"}
             print("FIREFOX REAL INFERENCE", json.dumps(result), flush=True)
@@ -289,6 +328,8 @@ def main():
         except Exception as exc:
             result["status"] = "failed"
             result["error"] = str(exc)
+            if "dictionary_cache_acceptance" in locals():
+                result["dictionaryCacheAcceptance"] = dictionary_cache_acceptance
             raise
         finally:
             output.write_text(json.dumps(result, indent=2), encoding="utf-8")

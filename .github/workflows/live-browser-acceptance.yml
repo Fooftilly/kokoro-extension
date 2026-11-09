@@ -1,6 +1,7 @@
 name: Real Kokoro MV3 model acceptance
 
-# Heavy (~388 MB) model downloads are strictly limited to explicit workflow changes
+# Heavy (~388 MB) model downloads and direct pinned-dictionary CORS/SRI smoke
+# checks are strictly limited to explicit workflow changes
 # on the experimental runtime branch or a human-triggered dispatch. Never run for
 # general pull requests or releases.
 on:
