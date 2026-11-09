@@ -58,7 +58,7 @@ function finishModelOperation(entry, ui) {
         // MediaPipe selection when the cached model is still installed.
         if (other.lastStatus) {
             const mayChoose = previous.choose === false && other.lastStatus.ready;
-            applyModelStatus(other.entry, other, other.lastStatus);
+            applyModelStatus(other.entry, other, other.lastStatus, { updateMessage: false });
             if (mayChoose) other.choose.disabled = false;
         } else {
             for (const [name, disabled] of Object.entries(previous)) {
@@ -134,9 +134,13 @@ function createModelRow(entry) {
     return { row, status, progress, download, remove, test, choose, audio, busy: null };
 }
 
-function applyModelStatus(entry, ui, state) {
+function applyModelStatus(entry, ui, state, { updateMessage = true } = {}) {
     ui.lastStatus = state;
-    if (!ui.busy) setMessage(ui.status, displayModelStatus(entry, state.ready, state.totalBytes));
+    // Refreshing unrelated controls must not erase benchmark results or an
+    // inference failure that still describes the current model.
+    if (updateMessage && !ui.busy) {
+        setMessage(ui.status, displayModelStatus(entry, state.ready, state.totalBytes));
+    }
     // A delayed cache-status response must not re-enable controls while
     // any model or dependency is being downloaded, removed, or used in a test.
     const blocked = !!ui.busy ||
@@ -405,8 +409,9 @@ function registerModel(entry) {
         } catch (error) {
             setMessage(ui.status, 'Removal failed: ' + String(error.message || error));
         } finally {
+            let finalState = null;
             try {
-                await refresh(entry, ui);
+                finalState = await refresh(entry, ui);
             } catch (error) {
                 setMessage(ui.status, 'Cannot inspect model cache after removal: ' +
                     String(error.message || error));
@@ -414,7 +419,18 @@ function registerModel(entry) {
                 finishModelOperation(entry, ui);
                 // A successful test must not authorize a removed model.
                 ui.choose.disabled = true;
-                if (ui.lastStatus) applyModelStatus(entry, ui, ui.lastStatus);
+                if (finalState) {
+                    applyModelStatus(entry, ui, finalState);
+                } else {
+                    // A successful removal followed by a failed status probe
+                    // must NOT revive stale "Installed" controls. Permit a
+                    // fresh install to repair any partially removed assets.
+                    ui.lastStatus = null;
+                    ui.download.disabled = false;
+                    ui.remove.disabled = true;
+                    ui.test.disabled = true;
+                    ui.choose.disabled = true;
+                }
             }
         }
     });
