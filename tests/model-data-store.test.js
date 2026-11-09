@@ -10,6 +10,19 @@ const sample = new Uint8Array([1, 2, 3, 4]);
 const realIntegrity = 'sha256-' + createHash('sha256').update(sample).digest('base64');
 const integrity = realIntegrity; // The simulated cached bytes must pass reuse verification.
 
+function mediapipeManifest() {
+    return {
+        provider: 'mediapipe', revision: sha, variant: 'cpu',
+        assets: [{
+            path: 'kokoro_int8_fp16.litertlm',
+            url: 'https://huggingface.co/litert-community/Kokoro-82M/resolve/' +
+                sha + '/kokoro_int8_fp16.litertlm',
+            bytes: sample.byteLength,
+            integrity,
+        }],
+    };
+}
+
 function manifest() {
     return {
         provider: 'onnx',
@@ -28,7 +41,8 @@ function manifest() {
 function setup() {
     const entries = new Map();
     const cache = {
-        match: jest.fn(async key => entries.get(key)),
+        // Real Cache Storage returns a fresh, consumable Response per match.
+        match: jest.fn(async key => entries.get(key)?.clone()),
         put: jest.fn(async (key, response) => {
             const data = await response.arrayBuffer();
             entries.set(key, new Response(data, { headers: response.headers }));
@@ -175,6 +189,99 @@ describe('opt-in cached model data (#55)', () => {
         await store.install(m); // Only an explicit user-requested retry fetches.
         expect(fetchImpl).toHaveBeenCalledTimes(2);
         expect((await store.verifyAndPruneCorrupt(m)).ready).toBe(true);
+    });
+
+    test('MediaPipe retry and explicit verification stream cached Blob without full buffer allocation', async () => {
+        const { store, cache, entries, fetchImpl } = setup();
+        const m = mediapipeManifest();
+        await store.install(m);
+        store.subtleCrypto = undefined; // Streaming verifier does not need WebCrypto.
+        const originalMatch = cache.match.getMockImplementation();
+        const forbiddenArrayBuffer = jest.fn(() => {
+            throw new Error('Full-sized MediaPipe buffer allocated during cache verification');
+        });
+        cache.match.mockImplementation(async key => {
+            const response = await originalMatch(key);
+            if (response) response.arrayBuffer = forbiddenArrayBuffer;
+            return response;
+        });
+        await store.install(m);
+        const verification = await store.verifyAndPruneCorrupt(m);
+        expect(verification).toEqual({
+            ready: true, verifiedBytes: 4, totalBytes: 4,
+            removedAssets: 0, missingAssets: 0,
+        });
+        expect(forbiddenArrayBuffer).not.toHaveBeenCalled();
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+        expect(entries.size).toBe(1);
+    });
+
+    test('explicit MediaPipe verification removes only confirmed corrupted bytes', async () => {
+        const { store, cache, entries, fetchImpl } = setup();
+        const m = mediapipeManifest();
+        await store.install(m);
+        const key = store.key(m, m.assets[0]);
+        await cache.put(key, new Response(new Uint8Array([1, 2, 3, 5]), {
+            headers: entries.get(key).headers,
+        }));
+        store.subtleCrypto = undefined;
+        expect((await store.status(m)).ready).toBe(true); // Metadata-only.
+        expect(await store.verifyAndPruneCorrupt(m)).toEqual({
+            ready: false, verifiedBytes: 0, totalBytes: 4,
+            removedAssets: 1, missingAssets: 0,
+        });
+        expect((await store.status(m)).ready).toBe(false);
+        expect(fetchImpl).toHaveBeenCalledTimes(1); // No automatic repair.
+        await store.install(m);
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+        expect((await store.verifyAndPruneCorrupt(m)).ready).toBe(true);
+    });
+
+    test('MediaPipe streaming read failure leaves cached data and does not fetch', async () => {
+        const { store, cache, entries, fetchImpl } = setup();
+        const m = mediapipeManifest();
+        await store.install(m);
+        store.subtleCrypto = undefined;
+        const stored = entries.get(store.key(m, m.assets[0]));
+        const deletesBefore = cache.delete.mock.calls.length;
+        cache.match.mockImplementation(async () => ({
+            headers: stored.headers,
+            blob: async () => ({
+                size: 4,
+                stream: () => new ReadableStream({
+                    start(controller) { controller.error(new Error('Cache stream failed')); },
+                }),
+            }),
+        }));
+        await expect(store.verifyAndPruneCorrupt(m)).rejects.toThrow('Cache stream failed');
+        expect(cache.delete).toHaveBeenCalledTimes(deletesBefore);
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
+    test('MediaPipe streamed retry cancellation keeps the cached model intact', async () => {
+        const { store, cache, entries, fetchImpl } = setup();
+        const m = mediapipeManifest();
+        await store.install(m);
+        const controller = new AbortController();
+        const stored = entries.get(store.key(m, m.assets[0]));
+        const deletedBefore = cache.delete.mock.calls.length;
+        cache.match.mockImplementation(async () => ({
+            headers: stored.headers,
+            blob: async () => ({
+                size: 4,
+                stream: () => new ReadableStream({
+                    start(stream) {
+                        stream.enqueue(new Uint8Array([1, 2]));
+                        controller.abort();
+                    },
+                }),
+            }),
+        }));
+        await expect(store.install(m, { signal: controller.signal }))
+            .rejects.toHaveProperty('name', 'AbortError');
+        expect(cache.delete).toHaveBeenCalledTimes(deletedBefore);
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+        expect(entries.size).toBe(1);
     });
 
     test('retry reuses checksum-matching bytes without a network request', async () => {

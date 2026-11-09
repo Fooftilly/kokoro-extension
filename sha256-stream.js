@@ -114,7 +114,8 @@ export class IncrementalSha256 {
 
 // Streams the existing Blob in chunks, without constructing another full-size
 // ArrayBuffer. No network requests, Cache Storage mutation, or worker setup.
-export async function blobMatchesSha256(blob, asset) {
+export async function blobMatchesSha256(blob, asset, signal) {
+    if (signal?.aborted) throw new globalThis.DOMException('Verification cancelled', 'AbortError');
     if (!blob || typeof blob.stream !== 'function' || blob.size !== asset.bytes) return false;
     if (!/^sha256-[A-Za-z0-9+/]{43}=$/.test(asset.integrity)) {
         throw new TypeError('Invalid pinned SHA-256 integrity metadata');
@@ -124,7 +125,9 @@ export async function blobMatchesSha256(blob, asset) {
     let completed = false;
     try {
         while (true) {
+            if (signal?.aborted) throw new globalThis.DOMException('Verification cancelled', 'AbortError');
             const { done, value } = await reader.read();
+            if (signal?.aborted) throw new globalThis.DOMException('Verification cancelled', 'AbortError');
             if (done) { completed = true; break; }
             if (!(value instanceof Uint8Array) ||
                 hash.totalBytes + value.byteLength > asset.bytes) return false;

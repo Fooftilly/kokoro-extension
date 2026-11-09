@@ -1,4 +1,5 @@
 import { withModelDataLock } from './model-data-lock.js';
+import { blobMatchesSha256 } from './sha256-stream.js';
 
 // Original, extension-origin model data cache. No automatic model downloads.
 // Executable SDK JS/WASM must be shipped with the extension, never fetched here.
@@ -144,12 +145,9 @@ export class ModelDataStore {
             response.headers.get('x-kokoro-bytes') === String(asset.bytes);
     }
 
-    // A metadata match cannot prove that an asset survived browser storage
-    // corruption. Check actual bytes before reusing a previously cached file.
-    // This reads one asset into memory at a time; browsers without SHA-256 must
-    // fail closed rather than silently trust metadata or evict known-good data.
-    // Verify a buffer already read for inference; avoid another Cache Storage
-    // read and an additional full-size model copy just for integrity checking.
+    // ONNX and dictionary data are checked via browser WebCrypto. MediaPipe's
+    // much larger Blob is incrementally hashed by blobMatchesSha256() below.
+    // ONNX inference can hash the buffer already loaded for its SDK directly.
     async loadedBytesMatch(bytes, asset, signal) {
         if (typeof this.subtleCrypto?.digest !== 'function') {
             throw new Error('This browser does not support SHA-256 cache verification');
@@ -164,6 +162,12 @@ export class ModelDataStore {
 
     async cachedBytesMatch(response, asset, signal) {
         if (!this.isCurrent(response, asset)) return false;
+        if (asset.path.endsWith('.litertlm')) {
+            // Do not materialize another ~295-MB ArrayBuffer when recovering or
+            // verifying MediaPipe data. Reuse the same incremental Blob hash as
+            // the inference loader; abort/read failures leave cache untouched.
+            return blobMatchesSha256(await response.blob(), asset, signal);
+        }
         if (typeof this.subtleCrypto?.digest !== 'function') {
             throw new Error('This browser does not support SHA-256 cache verification');
         }
@@ -235,15 +239,15 @@ export class ModelDataStore {
         }, { signal, lockManager: this.lockManager });
     }
 
-    // User-initiated repair only. Existing Cache Storage headers describe what
-    // was verified during download, but cannot prove that cached bytes are still
-    // intact. WebCrypto hashes one full asset at a time and may temporarily use
-    // memory comparable to that asset's size (up to ~295 MB for MediaPipe).
+    // User-initiated repair only. Metadata headers alone do not prove that
+    // cached bytes survived browser corruption. MediaPipe uses bounded-memory
+    // Blob streaming; other assets use WebCrypto one asset at a time.
     // Hashing failure does NOT imply corruption; never evict on a crypto error.
     async verifyAndPruneCorrupt(manifest, { signal, onProgress } = {}) {
         return withModelDataLock(async () => {
             const totalBytes = validateModelManifest(manifest);
-            if (typeof this.subtleCrypto?.digest !== 'function') {
+            if (manifest.assets.some(asset => !asset.path.endsWith('.litertlm')) &&
+                typeof this.subtleCrypto?.digest !== 'function') {
                 throw new Error('This browser does not support SHA-256 cache verification');
             }
             const cache = await this.cacheStorage.open(CACHE_NAME);
