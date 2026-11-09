@@ -1,5 +1,6 @@
 import './tts-providers.js';
 import { MediaPipeKokoroProvider } from './mediapipe-provider.js';
+import { withModelDataLock } from './model-data-lock.js';
 import { pcmToWavBlob } from './pcm-wav.js';
 
 export class AudioManager {
@@ -186,42 +187,52 @@ export class AudioManager {
         // still be running even after cancel() returns. Serialize local jobs
         // across sessions; never concurrently invoke the same engine.
         const generation = this.generation;
+        const abortSignal = this.abortController.signal;
         const work = this.localInferenceQueue.catch(() => {}).then(async () => {
             if (generation !== this.generation || isStale()) {
                 throw new DOMException('Local generation cancelled', 'AbortError');
             }
-            const variant = data.pendingMediaPipeVariant || 'cpu';
-            if (!this.localProvider || this.localVariant !== variant) {
-                if (this.localProvider) await this.localProvider.close();
+            // Shared read lease spans model initialization and synthesis, so
+            // other extension tabs cannot remove or replace cached model data
+            // while this provider is consuming it.
+            return withModelDataLock(async () => {
                 if (generation !== this.generation || isStale()) {
                     throw new DOMException('Local generation cancelled', 'AbortError');
                 }
-                this.localProvider = new MediaPipeKokoroProvider({ variant });
-                this.localVariant = variant;
-            }
-            let result;
-            try {
-                // Mark the request only when it actually reaches the official
-                // engine, not while waiting behind prior queued work.
-                onSynthesisStart();
-                result = await this.localProvider.synthesize(text, {
-                    voiceId: data.pendingLocalVoice || 'af_heart',
-                });
-            } catch (error) {
-                // A best-effort cancel() may make the SDK throw its own error.
-                // The caller requested cancellation; never misreport the stale
-                // session as a fresh inference failure or synthesize a fallback.
+                const variant = data.pendingMediaPipeVariant || 'cpu';
+                if (!this.localProvider || this.localVariant !== variant) {
+                    if (this.localProvider) await this.localProvider.close();
+                    if (generation !== this.generation || isStale()) {
+                        throw new DOMException('Local generation cancelled', 'AbortError');
+                    }
+                    this.localProvider = new MediaPipeKokoroProvider({ variant });
+                    this.localVariant = variant;
+                }
+                let result;
+                try {
+                    // Mark the request only when it actually reaches the official
+                    // engine, not while waiting behind prior queued work.
+                    onSynthesisStart();
+                    result = await this.localProvider.synthesize(text, {
+                        voiceId: data.pendingLocalVoice || 'af_heart',
+                    });
+                } catch (error) {
+                    // A best-effort cancel() may make the SDK throw its own error.
+                    // The caller requested cancellation; never misreport the stale
+                    // session as a fresh inference failure or synthesize a fallback.
+                    if (generation !== this.generation || isStale()) {
+                        throw new DOMException('Local generation cancelled', 'AbortError');
+                    }
+                    throw error;
+                }
                 if (generation !== this.generation || isStale()) {
                     throw new DOMException('Local generation cancelled', 'AbortError');
                 }
-                throw error;
-            }
-            if (generation !== this.generation || isStale()) {
-                throw new DOMException('Local generation cancelled', 'AbortError');
-            }
-            const url = URL.createObjectURL(pcmToWavBlob(result.samples, result.sampleRateHz));
-            this.objectUrls.add(url);
-            return url;
+                const url = URL.createObjectURL(pcmToWavBlob(result.samples, result.sampleRateHz));
+                this.objectUrls.add(url);
+                return url;
+
+            }, { mode: 'shared', signal: abortSignal });
         });
         // A rejected or cancelled previous generation cannot poison the lane.
         this.localInferenceQueue = work.catch(() => {});
