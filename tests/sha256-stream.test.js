@@ -42,6 +42,21 @@ function mediaFixture(data = modelBytes) {
     return { provider, loadSDK, createFromOptions, response, cache, fetchImpl, engine };
 }
 
+// An intentionally unresolved pull makes reader.read() block. A cancellation
+// request resolves the read immediately even if the source's cancel() stalls.
+function blockedStream(onCancel) {
+    let notifyBlocked;
+    const blocked = new Promise(resolve => { notifyBlocked = resolve; });
+    const stream = new ReadableStream({
+        pull() {
+            notifyBlocked();
+            return new Promise(() => {});
+        },
+        cancel: onCancel,
+    });
+    return { stream, blocked };
+}
+
 describe('bounded-memory SHA-256 from locally cached MediaPipe Blob', () => {
     test('matches fixed SHA-256 known-answer vectors including padding boundaries', () => {
         const vectors = [
@@ -108,83 +123,38 @@ describe('bounded-memory SHA-256 from locally cached MediaPipe Blob', () => {
     });
 
     test('abort wakes a stalled Blob stream read and releases its reader', async () => {
-        const controller = new AbortController();
-        const content = new Uint8Array([1, 2, 3, 4]);
-        let markReading;
-        const reading = new Promise(resolve => { markReading = resolve; });
-        const cancelled = jest.fn();
-        let pendingRead = null;
-        const blob = {
-            size: content.byteLength,
-            stream: () => {
-                const stream = new ReadableStream({
-                    pull() {
-                        markReading();
-                        return new Promise(() => {}); // No more data unless cancelled.
-                    },
-                    cancel() { cancelled(); },
-                });
-                pendingRead = stream;
-                return stream;
-            },
-        };
-        const check = blobMatchesSha256(blob, {
-            bytes: content.byteLength, integrity: digest(content),
-        }, controller.signal);
-        await reading;
-        controller.abort();
-        await expect(check).rejects.toHaveProperty('name', 'AbortError');
-        expect(cancelled).toHaveBeenCalledTimes(1);
-        expect(pendingRead.locked).toBe(false);
-    });
-
-    test('abort does not hang if the underlying stream cancel promise never resolves', async () => {
         const data = new Uint8Array([1, 2, 3, 4]);
         const abort = new AbortController();
-        let notifyBlocked;
-        const blocked = new Promise(resolve => { notifyBlocked = resolve; });
-        const sourceCancel = jest.fn(() => new Promise(() => {}));
-        const stream = new ReadableStream({
-            pull() {
-                notifyBlocked();
-                return new Promise(() => {});
-            },
-            cancel: sourceCancel,
-        });
-        const result = blobMatchesSha256({
+        const sourceCancel = jest.fn();
+        const { stream, blocked } = blockedStream(sourceCancel);
+        const verification = blobMatchesSha256({
             size: data.length, stream: () => stream,
         }, { bytes: data.length, integrity: digest(data) }, abort.signal);
         await blocked;
         abort.abort();
-        await expect(result).rejects.toHaveProperty('name', 'AbortError');
+        await expect(verification).rejects.toHaveProperty('name', 'AbortError');
         expect(sourceCancel).toHaveBeenCalledTimes(1);
         expect(stream.locked).toBe(false);
     });
 
-    test('an underlying source cleanup error does not mask the abort', async () => {
-        const data = new Uint8Array([1, 2, 3, 4]);
-        const abort = new AbortController();
-        let notifyBlocked;
-        const blocked = new Promise(resolve => { notifyBlocked = resolve; });
-        const sourceCancel = jest.fn(async () => {
-            throw new Error('Underlying storage cleanup failed');
+    test.each([
+        ['never resolves', () => new Promise(() => {})],
+        ['rejects', () => Promise.reject(new Error('Underlying storage cleanup failed'))],
+    ])('abort finishes and releases lock even when stream cancellation %s',
+        async (_case, cancelImpl) => {
+            const data = new Uint8Array([1, 2, 3, 4]);
+            const abort = new AbortController();
+            const sourceCancel = jest.fn(cancelImpl);
+            const { stream, blocked } = blockedStream(sourceCancel);
+            const verification = blobMatchesSha256({
+                size: data.length, stream: () => stream,
+            }, { bytes: data.length, integrity: digest(data) }, abort.signal);
+            await blocked;
+            abort.abort();
+            await expect(verification).rejects.toHaveProperty('name', 'AbortError');
+            expect(sourceCancel).toHaveBeenCalledTimes(1);
+            expect(stream.locked).toBe(false);
         });
-        const stream = new ReadableStream({
-            pull() {
-                notifyBlocked();
-                return new Promise(() => {});
-            },
-            cancel: sourceCancel,
-        });
-        const result = blobMatchesSha256({
-            size: data.length, stream: () => stream,
-        }, { bytes: data.length, integrity: digest(data) }, abort.signal);
-        await blocked;
-        abort.abort();
-        await expect(result).rejects.toHaveProperty('name', 'AbortError');
-        expect(sourceCancel).toHaveBeenCalledTimes(1);
-        expect(stream.locked).toBe(false);
-    });
 
     test('success and checksum mismatch do not cancel a completed stream', async () => {
         const content = new Uint8Array([3, 2, 1, 0]);
