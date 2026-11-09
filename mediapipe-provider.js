@@ -106,9 +106,16 @@ export class MediaPipeKokoroProvider {
     }
 
     async close() {
-        if (this.engine && typeof this.engine.close === 'function') await this.engine.close();
+        // Clear local references before awaiting native teardown. A failing
+        // close() must not retain the ~295 MB model's Blob URL indefinitely.
+        const engine = this.engine;
+        const modelUrl = this.modelUrl;
         this.engine = null;
-        if (this.modelUrl) URL.revokeObjectURL(this.modelUrl);
         this.modelUrl = null;
+        try {
+            if (engine && typeof engine.close === 'function') await engine.close();
+        } finally {
+            if (modelUrl) URL.revokeObjectURL(modelUrl);
+        }
     }
 }

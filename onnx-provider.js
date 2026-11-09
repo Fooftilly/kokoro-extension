@@ -125,10 +125,13 @@ export class OnnxKokoroProvider {
     }
 
     async close() {
-        if (this.session && typeof this.session.release === 'function') await this.session.release();
+        // A failed native release must not keep the session and potentially
+        // large cached ONNX voice/dictionary allocations referenced in JS.
+        const session = this.session;
         this.session = null;
         this.engine = null;
         this.voice = null;
         this.dictionary = null;
+        if (session && typeof session.release === 'function') await session.release();
     }
 }
