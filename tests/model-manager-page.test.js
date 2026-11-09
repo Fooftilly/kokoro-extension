@@ -199,6 +199,10 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         await Promise.resolve();
         expect(row.querySelector('.model-status').textContent).toContain('permission');
         expect(installModel).not.toHaveBeenCalled();
+        await waitFor(() => document.getElementById('modelRecheckStatus').textContent
+            .includes('superseded by a model operation'));
+        expect(document.getElementById('modelRecheckStatus').textContent)
+            .not.toContain('Rechecking installed model data');
         allowPermission(false);
         await waitFor(() => row.querySelector('.model-status').textContent.includes('denied'));
         expect(recheck.disabled).toBe(false);
