@@ -91,6 +91,7 @@ async function refresh(entry, ui) {
     ui.test.disabled = entry.provider === 'dictionary' || !state.ready;
     ui.remove.disabled = !state.storedBytes;
     ui.download.disabled = state.ready;
+    if (!state.ready) ui.choose.disabled = true;
     return state;
 }
 
@@ -103,6 +104,19 @@ async function doDownload(entry, ui) {
     // Request only the selected asset host, before the first await so
     // Firefox preserves the user gesture. Neither host is granted by default.
     const manifest = entryManifest(entry);
+    // A partially cached multi-asset model may expose Remove while Download
+    // is still active. Keep cache mutation and inference mutually exclusive.
+    const priorRemoveDisabled = ui.remove.disabled;
+    const priorTestDisabled = ui.test.disabled;
+    const priorChooseDisabled = ui.choose.disabled;
+    ui.remove.disabled = true;
+    ui.test.disabled = true;
+    ui.choose.disabled = true;
+    const restorePermissionActions = () => {
+        ui.remove.disabled = priorRemoveDisabled;
+        ui.test.disabled = priorTestDisabled;
+        ui.choose.disabled = priorChooseDisabled;
+    };
     ui.progress.hidden = false;
     // Browser Subresource Integrity may buffer an entire response before
     // exposing its stream. Keep the bar indeterminate until bytes are observed.
@@ -117,6 +131,7 @@ async function doDownload(entry, ui) {
     } catch (error) {
         ui.progress.hidden = true;
         setMessage(ui.status, 'Cannot request model download permission: ' + String(error.message || error));
+        restorePermissionActions();
         return;
     }
     ui.download.disabled = true;
@@ -127,12 +142,14 @@ async function doDownload(entry, ui) {
         ui.progress.hidden = true;
         setMessage(ui.status, 'Model download permission failed: ' + String(error.message || error));
         ui.download.disabled = false;
+        restorePermissionActions();
         return;
     }
     if (!allowed) {
         ui.progress.hidden = true;
         setMessage(ui.status, 'Model download host permission was denied.');
         ui.download.disabled = false;
+        restorePermissionActions();
         return;
     }
     const controller = new AbortController();
@@ -187,6 +204,8 @@ function currentEngine(entry) {
 
 async function testEngine(entry, ui) {
     if (entry.provider === 'dictionary') return;
+    const priorRemoveDisabled = ui.remove.disabled;
+    ui.remove.disabled = true; // Never evict a model while its runtime is executing.
     ui.test.disabled = true;
     ui.choose.disabled = true;
     const validationKey = 'mediapipeValidatedRevision:' + entry.variant;
@@ -269,6 +288,7 @@ async function testEngine(entry, ui) {
         setMessage(ui.status, 'Actual inference failed: ' + String(error.message || error));
     } finally {
         ui.test.disabled = false;
+        ui.remove.disabled = priorRemoveDisabled;
     }
 }
 
