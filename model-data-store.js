@@ -80,6 +80,26 @@ export function formatModelSize(bytes) {
     return (bytes / 1000000).toFixed(1) + ' MB';
 }
 
+// The StorageManager estimate is an approximate origin quota, not a disk-space
+// reservation. A shortage is advisory: browsers can evict other data or adjust
+// their quotas between this check and Cache Storage's write.
+export function assessStorageHeadroom(requiredBytes, estimate) {
+    if (!Number.isSafeInteger(requiredBytes) || requiredBytes < 0) {
+        throw new TypeError('Invalid model download byte count');
+    }
+    const quota = estimate?.quota;
+    const usage = estimate?.usage;
+    if (!Number.isSafeInteger(quota) || !Number.isSafeInteger(usage) ||
+        quota < 0 || usage < 0) {
+        return null;
+    }
+    const availableBytes = Math.max(0, quota - usage);
+    return {
+        requiredBytes, availableBytes,
+        insufficient: requiredBytes > availableBytes,
+    };
+}
+
 export class ModelDataStore {
     constructor({ origin, cacheStorage, fetchImpl, responseClass, streamClass,
         lockManager = globalThis.navigator?.locks }) {
