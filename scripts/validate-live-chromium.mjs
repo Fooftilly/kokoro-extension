@@ -131,7 +131,9 @@ try {
     const saveReport = () => writeFile(path.join(resultsDir, 'report.json'), JSON.stringify({
         testedAt: new Date().toISOString(), browser: preflight.browser, preflight, results,
         providerFilter,
-        scope: 'Linux Chrome MV3 extension origin; Firefox and audible quality still require separate acceptance',
+        networkRequirement: 'offline during every local synthesis probe',
+        cachePopulation: 'preloaded from separately verified pinned files over authenticated loopback; user-facing Download button not exercised',
+        scope: 'Linux Chromium MV3 extension origin; no subjective audio-quality or complete download-manager acceptance',
     }, null, 2));
     for (const manifest of variants) {
         const page = await context.newPage();
@@ -158,7 +160,13 @@ try {
             if (!(await store.status(manifest)).ready) throw Error('Verified browser model cache incomplete');
         }, { manifest, port: server.address().port, transferToken });
             if (manifest.provider === 'dictionary') continue; // verified/cache-preloaded; no inference engine
-            stage = 'model-initialization-and-synthesis';
+            // Require the cached SDK, WASM, voices, model and dictionary to
+            // produce speech with all HTTP(S) requests disabled by Chromium.
+            await context.setOffline(true);
+            if (!await page.evaluate(() => navigator.onLine === false)) {
+                throw Error('Chromium did not enter offline mode before inference');
+            }
+            stage = 'offline-model-initialization-and-synthesis';
             await page.evaluate(({ provider, variant }) => {
             window.__kokoroProbe = { done: false };
             void (async () => {
@@ -212,6 +220,12 @@ try {
         // filename instead of a Blob URL, without changing production behavior.
         // This probe has no text/network fallback beyond our authenticated loopback model server.
         if (!result.success && manifest.provider === 'mediapipe') {
+            // The existing upstream-model path diagnostics may fetch from the
+            // authenticated loopback server. Run them only AFTER the strict
+            // offline inference result has already failed; never count them
+            // as offline acceptance or silently turn a failure into a pass.
+            await context.setOffline(false);
+            result.diagnosticsNetworkReenabled = true;
             const diagnostic = await page.evaluate(async ({ port, transferToken }) => {
                 let task;
                 try {
@@ -268,7 +282,8 @@ try {
             console.log('MEDIAPIPE MODEL BUFFER DIAGNOSTIC', bufferedDiagnostic);
         }
             console.log(result.success ? 'REAL MODEL INFERENCE' : 'MODEL INFERENCE FAILURE', result);
-            results.push({ provider: manifest.provider, variant: manifest.variant, ...result });
+            results.push({ provider: manifest.provider, variant: manifest.variant,
+                offlineAttempted: true, offlineInference: result.success === true, ...result });
             await saveReport();
         } catch (error) {
             const failure = { provider: manifest.provider, variant: manifest.variant,
@@ -278,6 +293,9 @@ try {
             console.error('MODEL VALIDATION ABORTED', failure);
             throw error;
         } finally {
+            // Restore network only for the next verified local model transfer.
+            // Each provider's acceptance itself must finish entirely offline.
+            await context.setOffline(false);
             if (!page.isClosed()) await page.close();
         }
     }
