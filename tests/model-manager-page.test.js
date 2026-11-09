@@ -101,6 +101,38 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         throw new Error('ONNX probe did not finish: ' + status.textContent);
     }
 
+    test('discloses pinned model source, license and total cache data before any download', () => {
+        const cases = [
+            ['mediapipe-cpu', 'litert-community/Kokoro-82M', '294.8 MB'],
+            ['mediapipe-gpu', 'litert-community/Kokoro-82M', '294.8 MB'],
+            ['onnx-q8', 'onnx-community/Kokoro-82M-v1.0-ONNX', '92.9 MB'],
+            ['onnx-q8f16', 'onnx-community/Kokoro-82M-v1.0-ONNX', '86.6 MB'],
+            ['dictionary-english', 'cmusphinx/cmudict', '3.6 MB'],
+        ];
+        for (const [key, source, expectedSize] of cases) {
+            const row = document.querySelector('[data-variant="' + key + '"]');
+            const info = row.querySelector('.model-provenance');
+            const links = info.querySelectorAll('a');
+            expect(links).toHaveLength(2);
+            expect(links[0].textContent).toBe(source);
+            expect(links[0].href).toContain(key === 'dictionary-english'
+                ? 'github.com/cmusphinx/cmudict/tree/'
+                : 'huggingface.co/' + source + '/tree/');
+            expect(links[1].textContent).toBe(key === 'dictionary-english'
+                ? 'CMUdict permissive license' : 'Apache-2.0');
+            expect(links[1].href).toContain(key === 'dictionary-english'
+                ? 'github.com/cmusphinx/cmudict/blob/'
+                : 'huggingface.co/' + source + '/blob/');
+            expect(links[1].href).toMatch(/\/(LICENSE|README\.md)$/);
+            expect(links[0].target).toBe('_blank');
+            expect(links[0].rel).toBe('noopener noreferrer');
+            expect(info.textContent).toContain(expectedSize);
+            expect(info.textContent).toContain('browser storage overhead');
+        }
+        expect(global.fetch).not.toHaveBeenCalled();
+        expect(global.browser.permissions.request).not.toHaveBeenCalled();
+    });
+
     test('checks English output separately from IPA measurements without enabling general ONNX', async () => {
         const { row, message } = await runProbe();
         expect(engine.synthesizePhonemes).toHaveBeenCalledTimes(3);
