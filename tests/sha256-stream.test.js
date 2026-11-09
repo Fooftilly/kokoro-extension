@@ -138,6 +138,54 @@ describe('bounded-memory SHA-256 from locally cached MediaPipe Blob', () => {
         expect(pendingRead.locked).toBe(false);
     });
 
+    test('abort does not hang if the underlying stream cancel promise never resolves', async () => {
+        const data = new Uint8Array([1, 2, 3, 4]);
+        const abort = new AbortController();
+        let notifyBlocked;
+        const blocked = new Promise(resolve => { notifyBlocked = resolve; });
+        const sourceCancel = jest.fn(() => new Promise(() => {}));
+        const stream = new ReadableStream({
+            pull() {
+                notifyBlocked();
+                return new Promise(() => {});
+            },
+            cancel: sourceCancel,
+        });
+        const result = blobMatchesSha256({
+            size: data.length, stream: () => stream,
+        }, { bytes: data.length, integrity: digest(data) }, abort.signal);
+        await blocked;
+        abort.abort();
+        await expect(result).rejects.toHaveProperty('name', 'AbortError');
+        expect(sourceCancel).toHaveBeenCalledTimes(1);
+        expect(stream.locked).toBe(false);
+    });
+
+    test('an underlying source cleanup error does not mask the abort', async () => {
+        const data = new Uint8Array([1, 2, 3, 4]);
+        const abort = new AbortController();
+        let notifyBlocked;
+        const blocked = new Promise(resolve => { notifyBlocked = resolve; });
+        const sourceCancel = jest.fn(async () => {
+            throw new Error('Underlying storage cleanup failed');
+        });
+        const stream = new ReadableStream({
+            pull() {
+                notifyBlocked();
+                return new Promise(() => {});
+            },
+            cancel: sourceCancel,
+        });
+        const result = blobMatchesSha256({
+            size: data.length, stream: () => stream,
+        }, { bytes: data.length, integrity: digest(data) }, abort.signal);
+        await blocked;
+        abort.abort();
+        await expect(result).rejects.toHaveProperty('name', 'AbortError');
+        expect(sourceCancel).toHaveBeenCalledTimes(1);
+        expect(stream.locked).toBe(false);
+    });
+
     test('success and checksum mismatch do not cancel a completed stream', async () => {
         const content = new Uint8Array([3, 2, 1, 0]);
         const cancelled = jest.fn();

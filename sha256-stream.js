@@ -126,9 +126,14 @@ export async function blobMatchesSha256(blob, asset, signal) {
     // Abort an in-flight read, not just the next loop iteration. A browser
     // storage stream may stall between chunks; otherwise Cancel waits for
     // reader.read() to settle before releasing the model-data lock.
+    let cancellationRequested = false;
     const cancelPendingRead = () => {
+        cancellationRequested = true;
+        // ReadableStream.cancel() immediately resolves pending reader.read()
+        // calls, but its promise may wait indefinitely on source.cancel().
+        // Never await that source cleanup while holding the cache lock.
         void reader.cancel().catch(() => {
-            // Read errors are handled by the awaiting verifier below.
+            // Preserve the original read error or AbortError.
         });
     };
     signal?.addEventListener('abort', cancelPendingRead, { once: true });
@@ -144,13 +149,10 @@ export async function blobMatchesSha256(blob, asset, signal) {
         }
     } finally {
         signal?.removeEventListener('abort', cancelPendingRead);
-        if (!completed) {
-            try {
-                await reader.cancel();
-            } catch {
-                // Never mask the original stream error or user cancellation.
-            }
-        }
+        // Terminate the stream, but never block on an underlying source's
+        // cancellation promise. The pending read has already settled before
+        // this finally runs, so releasing the lock is safe.
+        if (!completed && !cancellationRequested) cancelPendingRead();
         reader.releaseLock();
     }
     if (hash.totalBytes !== asset.bytes) return false;
