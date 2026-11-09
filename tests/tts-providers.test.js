@@ -1,6 +1,6 @@
 const {
     FASTAPI, MEDIAPIPE, ONNX, KNOWN, resolveBackend, unavailableResponse,
-    getCapabilities, listCapabilities
+    getCapabilities, listCapabilities, resolvePlaybackConnection
 } = require('../tts-providers.js');
 
 describe('three-way provider selection (#54)', () => {
@@ -16,6 +16,26 @@ describe('three-way provider selection (#54)', () => {
         expect(resolveBackend('onnx')).toBe(ONNX);
         expect(() => resolveBackend('docker-other')).toThrow(/Unknown Kokoro TTS backend/);
         expect(() => resolveBackend({ name: 'onnx' })).toThrow();
+    });
+
+    test('playback connections retain server URLs only for FastAPI', () => {
+        const privateUrl = 'http://private-lan.example:8880/v1';
+        expect(resolvePlaybackConnection(undefined, privateUrl)).toEqual({
+            backend: FASTAPI, apiUrl: privateUrl + '/',
+        });
+        expect(resolvePlaybackConnection(FASTAPI, '  ' + privateUrl + '  ')).toEqual({
+            backend: FASTAPI, apiUrl: privateUrl + '/',
+        });
+        for (const backend of [MEDIAPIPE, ONNX]) {
+            expect(resolvePlaybackConnection(backend, privateUrl)).toEqual({
+                backend, apiUrl: null,
+            });
+            expect(resolvePlaybackConnection(backend, null)).toEqual({
+                backend, apiUrl: null,
+            });
+        }
+        expect(() => resolvePlaybackConnection(FASTAPI, null)).toThrow(/Configure a Kokoro server URL/);
+        expect(() => resolvePlaybackConnection('invalid', privateUrl)).toThrow(/Unknown Kokoro TTS backend/);
     });
 
     test('capability descriptors cover exactly three explicit engines without claiming readiness', () => {
