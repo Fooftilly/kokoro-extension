@@ -3,10 +3,12 @@
  */
 import { validateModelManifest, formatModelSize, assessStorageHeadroom, ModelDataStore } from '../model-data-store.js';
 import { dictionaryManifest } from '../model-catalog.js';
+import { createHash, webcrypto } from 'node:crypto';
 
 const sha = 'a'.repeat(40);
 const integrity = 'sha256-' + Buffer.alloc(32).toString('base64');
 const sample = new Uint8Array([1, 2, 3, 4]);
+const realIntegrity = 'sha256-' + createHash('sha256').update(sample).digest('base64');
 
 function manifest() {
     return {
@@ -49,7 +51,7 @@ function setup() {
         fetchImpl,
         responseClass: Response,
         streamClass: TransformStream,
-        lockManager,
+        lockManager, subtleCrypto: webcrypto.subtle,
     });
     return { cache, cacheStorage, fetchImpl, entries, store, lockManager };
 }
@@ -158,6 +160,108 @@ describe('opt-in cached model data (#55)', () => {
         expect(cacheStorage.open).toHaveBeenCalled();
         await store.remove(data);
         expect((await store.status(data)).ready).toBe(false);
+    });
+
+    test('user-initiated cache verification hashes the actual stored bytes without downloading', async () => {
+        const { store, fetchImpl, cache } = setup();
+        const m = manifest();
+        m.assets[0].integrity = realIntegrity;
+        await store.install(m);
+        const result = await store.verifyAndPruneCorrupt(m);
+        expect(result).toEqual({
+            ready: true, verifiedBytes: sample.byteLength, totalBytes: sample.byteLength,
+            removedAssets: 0, missingAssets: 0,
+        });
+        expect(fetchImpl).toHaveBeenCalledTimes(1); // Install only, no verification fetch.
+        expect(cache.delete).toHaveBeenCalledTimes(1); // Install's initial cache reset.
+        expect((await store.status(m)).ready).toBe(true);
+    });
+
+    test('cleans up a modified cached model with intact integrity headers and permits repair', async () => {
+        const { store, fetchImpl, cache, entries } = setup();
+        const m = manifest();
+        m.assets[0].integrity = realIntegrity;
+        await store.install(m);
+        const key = store.key(m, m.assets[0]);
+        const response = entries.get(key);
+        await cache.put(key, new Response(new Uint8Array([1, 2, 3, 5]), {
+            headers: response.headers,
+        }));
+        // Header/size-only status would accept these corrupted cached bytes.
+        expect((await store.status(m)).ready).toBe(true);
+        const repaired = await store.verifyAndPruneCorrupt(m);
+        expect(repaired).toEqual({
+            ready: false, verifiedBytes: 0, totalBytes: 4,
+            removedAssets: 1, missingAssets: 0,
+        });
+        expect((await store.status(m)).ready).toBe(false);
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+        await store.install(m); // Only an explicit second install fetches the verified asset.
+        expect((await store.verifyAndPruneCorrupt(m)).ready).toBe(true);
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+
+    test('cache verification removes stale header entries and finds missing assets', async () => {
+        const { store, cache } = setup();
+        const m = manifest();
+        const key = store.key(m, m.assets[0]);
+        await cache.put(key, new Response(sample, {
+            headers: {
+                'x-kokoro-integrity': 'sha256-bad-header',
+                'x-kokoro-bytes': '4',
+            },
+        }));
+        expect((await store.verifyAndPruneCorrupt(m)).removedAssets).toBe(1);
+        expect((await store.verifyAndPruneCorrupt(m))).toEqual({
+            ready: false, verifiedBytes: 0, totalBytes: 4, removedAssets: 0, missingAssets: 1,
+        });
+    });
+
+    test('verification failure or cancellation leaves previously cached data unchanged', async () => {
+        const { store, cache } = setup();
+        const m = manifest();
+        m.assets[0].integrity = realIntegrity;
+        await store.install(m);
+        store.subtleCrypto = { digest: jest.fn(async () => {
+            throw new Error('SHA-256 engine failed');
+        }) };
+        await expect(store.verifyAndPruneCorrupt(m)).rejects.toThrow('SHA-256 engine failed');
+        expect((await store.status(m)).ready).toBe(true);
+        const controller = new AbortController();
+        controller.abort();
+        await expect(store.verifyAndPruneCorrupt(m, { signal: controller.signal }))
+            .rejects.toHaveProperty('name', 'AbortError');
+        expect((await store.status(m)).ready).toBe(true);
+        expect(cache.delete).toHaveBeenCalledTimes(1); // No verification deletions.
+        store.subtleCrypto = undefined;
+        await expect(store.verifyAndPruneCorrupt(m)).rejects.toThrow(/support SHA-256/);
+        expect((await store.status(m)).ready).toBe(true);
+    });
+
+    test('verifies separate assets sequentially and deletes only the corrupted entry', async () => {
+        const { store, cache, entries } = setup();
+        const m = manifest();
+        m.assets[0].integrity = realIntegrity;
+        m.assets.push({
+            ...m.assets[0], path: 'voices/af.bin',
+            url: 'https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/' +
+                m.revision + '/voices/af.bin',
+        });
+        await store.install(m);
+        const key = store.key(m, m.assets[1]);
+        await cache.put(key, new Response(new Uint8Array([1, 2, 3, 5]), {
+            headers: entries.get(key).headers,
+        }));
+        const progress = jest.fn();
+        expect(await store.verifyAndPruneCorrupt(m, { onProgress: progress })).toEqual({
+            ready: false, verifiedBytes: 4, totalBytes: 8,
+            removedAssets: 1, missingAssets: 0,
+        });
+        expect((await store.status(m)).storedBytes).toBe(4);
+        expect(progress).toHaveBeenCalledTimes(2);
+        expect(progress).toHaveBeenLastCalledWith({
+            verifiedBytes: 4, totalBytes: 8, removedAssets: 1, missingAssets: 0,
+        });
     });
 
     test('explicit revision cleanup deletes only unreferenced model data and keeps other engines', async () => {

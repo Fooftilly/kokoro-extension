@@ -37,6 +37,7 @@
                 <p id="serverStatus" role="status">Not tested</p>
                 <audio id="serverAudio" controls hidden></audio>
             </div>
+            <p>Verify cached data checks the stored model bytes against pinned SHA-256 hashes. This optional offline check may temporarily use memory comparable to the largest model asset (about 295 MB for MediaPipe). Corrupt cached assets are removed; replacements are never downloaded without another explicit Download click.</p>
             <div class="model-recheck-controls">
                 <button type="button" id="refreshModelCache" disabled>Recheck installed models</button>
                 <p id="modelRecheckStatus" role="status" aria-live="polite">Checking cached model data…</p>

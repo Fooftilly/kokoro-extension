@@ -20,6 +20,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
     let partialModels;
     let installModel;
     let removeModel;
+    let verifyModel;
     let delayedCpuStatus;
     let failStatusFor;
     beforeEach(async () => {
@@ -29,6 +30,11 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         partialModels = new Set();
         installModel = jest.fn();
         removeModel = jest.fn();
+        verifyModel = jest.fn(async manifest => {
+            const totalBytes = manifest.assets.reduce((sum, asset) => sum + asset.bytes, 0);
+            return { ready: true, verifiedBytes: totalBytes, totalBytes,
+                removedAssets: 0, missingAssets: 0 };
+        });
         delayedCpuStatus = null;
         failStatusFor = new Set();
         document.body.innerHTML = `
@@ -83,6 +89,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
             }),
             install: installModel,
             remove: removeModel,
+            verifyAndPruneCorrupt: verifyModel,
         }));
         require('../model-manager-page.js');
         await new Promise(resolve => setTimeout(resolve, 0));
@@ -107,6 +114,102 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         }
         throw new Error('ONNX probe did not finish: ' + status.textContent);
     }
+
+    test('explicit SHA-256 verification checks installed bytes without requesting download permissions', async () => {
+        const row = document.querySelector('[data-variant="onnx-q8"]');
+        const button = row.querySelector('.model-verify');
+        expect(button.disabled).toBe(false);
+        expect(document.querySelector('[data-variant="mediapipe-cpu"] .model-verify').disabled)
+            .toBe(true); // No recognized cached model data.
+        button.click();
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('pinned SHA-256 hashes'));
+        expect(verifyModel).toHaveBeenCalledTimes(1);
+        expect(verifyModel.mock.calls[0][0].provider).toBe('onnx');
+        expect(button.disabled).toBe(false);
+        expect(row.querySelector('.model-test').disabled).toBe(false);
+        expect(global.fetch).not.toHaveBeenCalled();
+        expect(global.browser.permissions.request).not.toHaveBeenCalled();
+        expect(installModel).not.toHaveBeenCalled();
+    });
+
+    test('a failed verifier leaves installed models available without deleting or downloading', async () => {
+        verifyModel.mockRejectedValue(new Error('Crypto not available'));
+        const row = document.querySelector('[data-variant="onnx-q8"]');
+        row.querySelector('.model-verify').click();
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('Crypto not available'));
+        expect(row.querySelector('.model-test').disabled).toBe(false);
+        expect(row.querySelector('.model-remove').disabled).toBe(false);
+        expect(removeModel).not.toHaveBeenCalled();
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('corrupt cached MediaPipe data is evicted, validation revoked and repair requires opt-in', async () => {
+        const row = document.querySelector('[data-variant="mediapipe-cpu"]');
+        const recheck = document.getElementById('refreshModelCache');
+        installedModels.add('cpu');
+        recheck.click();
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('Installed'));
+        row.querySelector('.model-choose').disabled = false; // Previously validated by a real test.
+        verifyModel.mockImplementation(async (manifest, options) => {
+            installedModels.delete('cpu');
+            options.onProgress({
+                verifiedBytes: 0, totalBytes: manifest.assets[0].bytes,
+                removedAssets: 1, missingAssets: 0,
+            });
+            return { ready: false, verifiedBytes: 0, totalBytes: manifest.assets[0].bytes,
+                removedAssets: 1, missingAssets: 0 };
+        });
+        row.querySelector('.model-verify').click();
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('Click Download'));
+        expect(row.querySelector('.model-choose').disabled).toBe(true);
+        expect(row.querySelector('.model-test').disabled).toBe(true);
+        expect(row.querySelector('.model-download').disabled).toBe(false);
+        expect(row.querySelector('.model-verify').disabled).toBe(true);
+        expect(global.browser.storage.local.remove)
+            .toHaveBeenCalledWith('mediapipeValidatedRevision:cpu');
+        expect(global.browser.permissions.request).not.toHaveBeenCalled();
+        expect(installModel).not.toHaveBeenCalled();
+    });
+
+    test('verification holds other download/test controls and re-enables them on completion', async () => {
+        let resolveVerification;
+        verifyModel.mockImplementation(() => new Promise(resolve => {
+            resolveVerification = resolve;
+        }));
+        const row = document.querySelector('[data-variant="onnx-q8"]');
+        const other = document.querySelector('[data-variant="mediapipe-cpu"]');
+        row.querySelector('.model-verify').click();
+        expect(other.querySelector('.model-download').disabled).toBe(true);
+        expect(row.querySelector('.model-test').disabled).toBe(true);
+        other.querySelector('.model-download').click();
+        expect(global.browser.permissions.request).not.toHaveBeenCalled();
+        const totalBytes = 92361116 + 524288;
+        resolveVerification({ ready: true, verifiedBytes: totalBytes, totalBytes,
+            removedAssets: 0, missingAssets: 0 });
+        await waitFor(() => row.querySelector('.model-status').textContent
+            .includes('pinned SHA-256 hashes'));
+        expect(other.querySelector('.model-download').disabled).toBe(false);
+        expect(row.querySelector('.model-test').disabled).toBe(false);
+    });
+
+    test('dictionary verification removes stale in-memory ONNX lexicons after corruption', async () => {
+        const { row: onnx } = await runProbe();
+        expect(onnx.querySelector('.model-test').disabled).toBe(false);
+        verifyModel.mockImplementation(async (manifest, options) => {
+            dictionaryReady = false;
+            options.onProgress({ verifiedBytes: 0, totalBytes: 3618488,
+                removedAssets: 1, missingAssets: 0 });
+            return { ready: false, verifiedBytes: 0, totalBytes: 3618488,
+                removedAssets: 1, missingAssets: 0 };
+        });
+        const dictionary = document.querySelector('[data-variant="dictionary-english"]');
+        dictionary.querySelector('.model-verify').click();
+        await waitFor(() => dictionary.querySelector('.model-status').textContent.includes('Click Download'));
+        expect(engine.close).toHaveBeenCalledTimes(1);
+        expect(dictionary.querySelector('.model-download').disabled).toBe(false);
+        expect(dictionary.querySelector('.model-verify').disabled).toBe(true);
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
 
     test('read-only recheck detects evicted models when the test page regains focus', async () => {
         const recheck = document.getElementById('refreshModelCache');
