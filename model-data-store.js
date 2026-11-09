@@ -1,3 +1,5 @@
+import { withModelDataLock } from './model-data-lock.js';
+
 // Original, extension-origin model data cache. No automatic model downloads.
 // Executable SDK JS/WASM must be shipped with the extension, never fetched here.
 // Cache API request keys must have HTTP(S) schemes even in extension-owned caches.
@@ -117,94 +119,100 @@ export class ModelDataStore {
     }
 
     async install(manifest, { signal, onProgress } = {}) {
-        const totalBytes = validateModelManifest(manifest);
-        const cache = await this.cacheStorage.open(CACHE_NAME);
-        let completedBytes = 0;
-        // Explicit callers initiate this method only after a user clicked Download.
-        // There is no auto-start, and no sent speech text or executable code.
-        for (const asset of manifest.assets) {
-            if (signal && signal.aborted) throw new DOMException('Download aborted', 'AbortError');
-            const key = this.key(manifest, asset);
-            if (this.isCurrent(await cache.match(key), asset)) {
-                completedBytes += asset.bytes;
-                if (onProgress) onProgress({ completedBytes, totalBytes });
-                continue;
-            }
-            await cache.delete(key);
-            const response = await this.fetchImpl(asset.url, {
-                signal, cache: 'no-store', integrity: asset.integrity,
-            });
-            if (signal?.aborted) throw new DOMException('Download aborted', 'AbortError');
-            if (!response.ok || response.type === 'opaque' || !response.body) {
-                throw new Error('Unable to download model data through CORS');
-            }
-            let received = 0;
-            const bytesBefore = completedBytes;
-            const stream = response.body.pipeThrough(new this.TransformStreamClass({
-                transform(chunk, controller) {
-                    if (signal?.aborted) throw new DOMException('Download aborted', 'AbortError');
-                    received += chunk.byteLength;
-                    if (received > asset.bytes) {
-                        throw new Error('Downloaded asset exceeds verified size');
-                    }
-                    controller.enqueue(chunk);
-                    if (onProgress) {
-                        onProgress({ completedBytes: bytesBefore + received, totalBytes });
-                    }
-                },
-            }));
-            const headers = {
-                'content-type': 'application/octet-stream',
-                'x-kokoro-integrity': asset.integrity,
-                'x-kokoro-bytes': String(asset.bytes),
-            };
-            try {
-                await cache.put(key, new this.ResponseClass(stream, { headers }));
-                // Cache Storage can finish committing even after the user clicks
-                // Cancel. A late abort must roll back that write, not report the
-                // model as installed or leave an apparently complete cache entry.
-                if (signal?.aborted) throw new DOMException('Download aborted', 'AbortError');
-                if (received !== asset.bytes) {
-                    throw new Error('Downloaded asset length disagrees with pinned manifest');
+        return withModelDataLock(async () => {
+            const totalBytes = validateModelManifest(manifest);
+            const cache = await this.cacheStorage.open(CACHE_NAME);
+            let completedBytes = 0;
+            // Explicit callers initiate this method only after a user clicked Download.
+            // There is no auto-start, and no sent speech text or executable code.
+            for (const asset of manifest.assets) {
+                if (signal && signal.aborted) throw new DOMException('Download aborted', 'AbortError');
+                const key = this.key(manifest, asset);
+                if (this.isCurrent(await cache.match(key), asset)) {
+                    completedBytes += asset.bytes;
+                    if (onProgress) onProgress({ completedBytes, totalBytes });
+                    continue;
                 }
-                completedBytes += received;
-            } catch (error) {
                 await cache.delete(key);
-                throw error;
+                const response = await this.fetchImpl(asset.url, {
+                    signal, cache: 'no-store', integrity: asset.integrity,
+                });
+                if (signal?.aborted) throw new DOMException('Download aborted', 'AbortError');
+                if (!response.ok || response.type === 'opaque' || !response.body) {
+                    throw new Error('Unable to download model data through CORS');
+                }
+                let received = 0;
+                const bytesBefore = completedBytes;
+                const stream = response.body.pipeThrough(new this.TransformStreamClass({
+                    transform(chunk, controller) {
+                        if (signal?.aborted) throw new DOMException('Download aborted', 'AbortError');
+                        received += chunk.byteLength;
+                        if (received > asset.bytes) {
+                            throw new Error('Downloaded asset exceeds verified size');
+                        }
+                        controller.enqueue(chunk);
+                        if (onProgress) {
+                            onProgress({ completedBytes: bytesBefore + received, totalBytes });
+                        }
+                    },
+                }));
+                const headers = {
+                    'content-type': 'application/octet-stream',
+                    'x-kokoro-integrity': asset.integrity,
+                    'x-kokoro-bytes': String(asset.bytes),
+                };
+                try {
+                    await cache.put(key, new this.ResponseClass(stream, { headers }));
+                    // Cache Storage can finish committing even after the user clicks
+                    // Cancel. A late abort must roll back that write, not report the
+                    // model as installed or leave an apparently complete cache entry.
+                    if (signal?.aborted) throw new DOMException('Download aborted', 'AbortError');
+                    if (received !== asset.bytes) {
+                        throw new Error('Downloaded asset length disagrees with pinned manifest');
+                    }
+                    completedBytes += received;
+                } catch (error) {
+                    await cache.delete(key);
+                    throw error;
+                }
             }
-        }
-        return { ready: true, storedBytes: completedBytes, totalBytes };
+            return { ready: true, storedBytes: completedBytes, totalBytes };
+        }, { signal });
     }
 
     async remove(manifest) {
-        validateModelManifest(manifest);
-        const cache = await this.cacheStorage.open(CACHE_NAME);
-        for (const asset of manifest.assets) {
-            await cache.delete(this.key(manifest, asset));
-        }
+        return withModelDataLock(async () => {
+            validateModelManifest(manifest);
+            const cache = await this.cacheStorage.open(CACHE_NAME);
+            for (const asset of manifest.assets) {
+                await cache.delete(this.key(manifest, asset));
+            }
+        });
     }
 
     // Explicit cleanup after a model revision/catalog update. The caller supplies
     // ALL currently retained manifests so installed alternatives are not lost.
     async removeUnreferenced(retainedManifests) {
-        if (!Array.isArray(retainedManifests)) {
-            throw new TypeError('Retained model manifests must be an array');
-        }
-        const retained = new Set();
-        for (const manifest of retainedManifests) {
-            validateModelManifest(manifest);
-            for (const asset of manifest.assets) {
-                retained.add(this.key(manifest, asset));
+        return withModelDataLock(async () => {
+            if (!Array.isArray(retainedManifests)) {
+                throw new TypeError('Retained model manifests must be an array');
             }
-        }
-        const prefix = new URL('model-data/', CACHE_KEY_ORIGIN).href;
-        const cache = await this.cacheStorage.open(CACHE_NAME);
-        let deleted = 0;
-        for (const request of await cache.keys()) {
-            if (request.url.startsWith(prefix) && !retained.has(request.url)) {
-                if (await cache.delete(request)) deleted++;
+            const retained = new Set();
+            for (const manifest of retainedManifests) {
+                validateModelManifest(manifest);
+                for (const asset of manifest.assets) {
+                    retained.add(this.key(manifest, asset));
+                }
             }
-        }
-        return deleted;
+            const prefix = new URL('model-data/', CACHE_KEY_ORIGIN).href;
+            const cache = await this.cacheStorage.open(CACHE_NAME);
+            let deleted = 0;
+            for (const request of await cache.keys()) {
+                if (request.url.startsWith(prefix) && !retained.has(request.url)) {
+                    if (await cache.delete(request)) deleted++;
+                }
+            }
+            return deleted;
+        });
     }
 }
