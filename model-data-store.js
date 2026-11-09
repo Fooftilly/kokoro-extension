@@ -144,6 +144,24 @@ export class ModelDataStore {
             response.headers.get('x-kokoro-bytes') === String(asset.bytes);
     }
 
+    // A metadata match cannot prove that an asset survived browser storage
+    // corruption. Check actual bytes before reusing a previously cached file.
+    // This reads one asset into memory at a time; browsers without SHA-256 must
+    // fail closed rather than silently trust metadata or evict known-good data.
+    async cachedBytesMatch(response, asset, signal) {
+        if (!this.isCurrent(response, asset)) return false;
+        if (typeof this.subtleCrypto?.digest !== 'function') {
+            throw new Error('This browser does not support SHA-256 cache verification');
+        }
+        const bytes = await response.arrayBuffer();
+        if (signal?.aborted) throw new DOMException('Verification cancelled', 'AbortError');
+        if (bytes.byteLength !== asset.bytes) return false;
+        const digest = await this.subtleCrypto.digest('SHA-256', bytes);
+        if (signal?.aborted) throw new DOMException('Verification cancelled', 'AbortError');
+        const actual = 'sha256-' + btoa(String.fromCharCode(...new Uint8Array(digest)));
+        return actual === asset.integrity;
+    }
+
     async install(manifest, { signal, onProgress } = {}) {
         return withModelDataLock(async () => {
             const totalBytes = validateModelManifest(manifest);
@@ -154,7 +172,10 @@ export class ModelDataStore {
             for (const asset of manifest.assets) {
                 if (signal && signal.aborted) throw new DOMException('Download aborted', 'AbortError');
                 const key = this.key(manifest, asset);
-                if (this.isCurrent(await cache.match(key), asset)) {
+                // An interrupted installation may have a cached earlier asset.
+                // Verify its SHA-256 before treating it as completed, even when
+                // the integrity and byte-count *headers* still match.
+                if (await this.cachedBytesMatch(await cache.match(key), asset, signal)) {
                     completedBytes += asset.bytes;
                     if (onProgress) onProgress({ completedBytes, totalBytes });
                     continue;
@@ -229,22 +250,10 @@ export class ModelDataStore {
                     missingAssets++;
                     continue;
                 }
-                let valid = this.isCurrent(cached, asset);
-                if (valid) {
-                    // A read or digest failure is not itself proof of corruption.
-                    // Propagate it so the user can retry without losing good data.
-                    const bytes = await cached.arrayBuffer();
-                    if (signal?.aborted) throw new DOMException('Verification cancelled', 'AbortError');
-                    if (bytes.byteLength !== asset.bytes) {
-                        valid = false;
-                    } else {
-                        const rawDigest = await this.subtleCrypto.digest('SHA-256', bytes);
-                        if (signal?.aborted) throw new DOMException('Verification cancelled', 'AbortError');
-                        const actualIntegrity = 'sha256-' +
-                            btoa(String.fromCharCode(...new Uint8Array(rawDigest)));
-                        valid = actualIntegrity === asset.integrity;
-                    }
-                }
+                // A read/digest failure is not evidence of corruption. Propagate
+                // rather than deleting the cached model; mismatched bytes are
+                // confirmed corruption and may be removed.
+                const valid = await this.cachedBytesMatch(cached, asset, signal);
                 if (valid) {
                     verifiedBytes += asset.bytes;
                 } else {

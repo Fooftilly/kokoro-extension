@@ -6,9 +6,9 @@ import { dictionaryManifest } from '../model-catalog.js';
 import { createHash, webcrypto } from 'node:crypto';
 
 const sha = 'a'.repeat(40);
-const integrity = 'sha256-' + Buffer.alloc(32).toString('base64');
 const sample = new Uint8Array([1, 2, 3, 4]);
 const realIntegrity = 'sha256-' + createHash('sha256').update(sample).digest('base64');
+const integrity = realIntegrity; // The simulated cached bytes must pass reuse verification.
 
 function manifest() {
     return {
@@ -160,6 +160,60 @@ describe('opt-in cached model data (#55)', () => {
         expect(cacheStorage.open).toHaveBeenCalled();
         await store.remove(data);
         expect((await store.status(data)).ready).toBe(false);
+    });
+
+    test('install retry replaces corrupted cached bytes despite matching integrity headers', async () => {
+        const { store, cache, entries, fetchImpl } = setup();
+        const m = manifest();
+        await store.install(m);
+        const key = store.key(m, m.assets[0]);
+        await cache.put(key, new Response(new Uint8Array([1, 2, 3, 5]), {
+            headers: entries.get(key).headers,
+        }));
+        // Fast status uses only metadata and cannot detect this corruption.
+        expect((await store.status(m)).ready).toBe(true);
+        await store.install(m); // Only an explicit user-requested retry fetches.
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+        expect((await store.verifyAndPruneCorrupt(m)).ready).toBe(true);
+    });
+
+    test('retry reuses checksum-matching bytes without a network request', async () => {
+        const { store, fetchImpl } = setup();
+        const m = manifest();
+        await store.install(m);
+        await store.install(m);
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
+    test('digest failure during retry leaves cached bytes intact and skips download', async () => {
+        const { store, cache, fetchImpl } = setup();
+        const m = manifest();
+        await store.install(m);
+        const deletesBeforeRetry = cache.delete.mock.calls.length;
+        store.subtleCrypto = { digest: jest.fn(async () => {
+            throw new Error('SHA-256 failed');
+        }) };
+        await expect(store.install(m)).rejects.toThrow('SHA-256 failed');
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+        expect(cache.delete).toHaveBeenCalledTimes(deletesBeforeRetry);
+        expect((await store.status(m)).ready).toBe(true);
+    });
+
+    test('cancel during cached-byte digest does not discard or redownload data', async () => {
+        const { store, cache, fetchImpl } = setup();
+        const m = manifest();
+        await store.install(m);
+        const controller = new AbortController();
+        const deletesBeforeRetry = cache.delete.mock.calls.length;
+        store.subtleCrypto = { digest: jest.fn(async (...args) => {
+            controller.abort();
+            return webcrypto.subtle.digest(...args);
+        }) };
+        await expect(store.install(m, { signal: controller.signal }))
+            .rejects.toHaveProperty('name', 'AbortError');
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+        expect(cache.delete).toHaveBeenCalledTimes(deletesBeforeRetry);
+        expect((await store.status(m)).ready).toBe(true);
     });
 
     test('user-initiated cache verification hashes the actual stored bytes without downloading', async () => {
