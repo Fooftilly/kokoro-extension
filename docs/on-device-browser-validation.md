@@ -52,3 +52,21 @@ authenticated loopback transfer of pinned model bytes: they **do not** yet
 exercise the actual Download/Cancel/Retry/Remove UI, upstream fetch CORS/SRI,
 cache persistence after a browser restart, storage eviction, browser quota,
 or user-perceived audio quality. Those remain separate #55 acceptance gates.
+
+
+## Direct pinned-asset browser download smoke test (#55)
+
+The manual-only Chromium and Firefox acceptance harnesses now separately call
+the production `ModelDataStore.install()` using the official immutable CMUdict
+HTTPS URL (3,618,488 bytes). They verify browser CORS/SRI handling, the actual
+stored SHA-256, progress reaching the pinned byte count, a second install
+reusing the cached entry **without another network fetch**, and explicit
+removal. The test deliberately clears only the dedicated dictionary cache
+entry first and never downloads speech models automatically. It runs before
+the normal heavy-model cache-preload/offline-inference stages.
+
+This validates the data-store API in packaged browser contexts, not user
+gestures or the model-manager Download/Remove controls. Live workflow
+execution remains necessary; ordinary PR CI only syntax-checks these harnesses.
+Browser restarts, cancellation, quota, eviction, full model downloads via
+official host permissions, and user-facing progress remain outstanding.
