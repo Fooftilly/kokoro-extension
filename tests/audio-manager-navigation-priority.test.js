@@ -1,4 +1,5 @@
 /** @jest-environment jsdom */
+import { installImmediateModelLocks } from './helpers/model-locks.js';
 import { AudioManager } from '../audio-manager.js';
 import { MediaPipeKokoroProvider } from '../mediapipe-provider.js';
 
@@ -36,12 +37,7 @@ describe('navigation priority over speculative local synthesis (#57)', () => {
             })) } },
             runtime: { sendMessage: jest.fn() },
         };
-        Object.defineProperty(global.navigator, 'locks', {
-            configurable: true,
-            // Browser's origin-wide lock scheduling is tested separately;
-            // these tests exercise AudioManager's session/cache lifecycle.
-            value: { request: jest.fn(async (name, options, work) => work()) },
-        });
+        installImmediateModelLocks();
         manager = new AudioManager();
         manager.setSentences(Array.from({ length: 15 }, (_, i) => ({ text: 'Sentence ' + i })));
     });
