@@ -25,6 +25,7 @@ export class OnnxKokoroProvider {
         this.loading = null;
         this.dictionary = null;
         this.dictionaryLoading = null;
+        this.closing = null;
         this.loadDictionary = loadDictionary ||
             (() => loadCachedEnglishLexicon(this.browserApi, this.cacheStorage, this.fetchImpl));
     }
@@ -42,6 +43,8 @@ export class OnnxKokoroProvider {
     }
 
     async initialize() {
+        // Never install a new session before an in-progress release completes.
+        if (this.closing) await this.closing;
         if (this.session) return;
         if (this.loading !== null) return this.loading;
         this.loading = this.loadEngine();
@@ -125,13 +128,24 @@ export class OnnxKokoroProvider {
     }
 
     async close() {
-        // A failed native release must not keep the session and potentially
-        // large cached ONNX voice/dictionary allocations referenced in JS.
-        const session = this.session;
-        this.session = null;
-        this.engine = null;
-        this.voice = null;
-        this.dictionary = null;
-        if (session && typeof session.release === 'function') await session.release();
+        if (this.closing) return this.closing;
+        const closing = (async () => {
+            // Initialization and optional lexicon parsing can finish after
+            // teardown was requested. Join both before clearing references.
+            await Promise.allSettled([this.loading, this.dictionaryLoading].filter(Boolean));
+            const session = this.session;
+            this.session = null;
+            this.engine = null;
+            this.voice = null;
+            this.dictionary = null;
+            this.dictionaryLoading = null;
+            if (session && typeof session.release === 'function') await session.release();
+        })();
+        this.closing = closing;
+        try {
+            await closing;
+        } finally {
+            if (this.closing === closing) this.closing = null;
+        }
     }
 }
