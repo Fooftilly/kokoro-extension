@@ -40,7 +40,9 @@
             <p>Verify cached data checks the stored model bytes against pinned SHA-256 hashes. This optional offline check may temporarily use memory comparable to the largest model asset (about 295 MB for MediaPipe). Corrupt cached assets are removed; replacements are never downloaded without another explicit Download click.</p>
             <div class="model-recheck-controls">
                 <button type="button" id="refreshModelCache" disabled>Recheck installed models</button>
+                <button type="button" id="cleanOutdatedModels" disabled>Remove obsolete model cache files</button>
                 <p id="modelRecheckStatus" role="status" aria-live="polite">Checking cached model data…</p>
+                <p id="modelCleanupStatus" role="status" aria-live="polite"></p>
             </div>
             <div id="modelManager"></div>
             <p>Measurements are taken from actual synthesized audio, not GPU adapter detection. Local figures are warm, after engine initialization; server timings exclude audio playback. The ONNX page probe still takes explicit IPA, so its timings are not directly comparable with the other backends. Separate real-browser checks exercise limited dictionary-backed English synthesis.</p>
