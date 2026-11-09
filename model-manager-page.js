@@ -29,8 +29,11 @@ let recheckInProgress = false;
 let modelStatusEpoch = 0; // A model operation invalidates older read-only scans.
 
 function updateRecheckButton() {
-    const button = document.getElementById('refreshModelCache');
-    if (button) button.disabled = initialStatusPending || recheckInProgress || !!activeModelOperation;
+    const busy = initialStatusPending || recheckInProgress || !!activeModelOperation;
+    const recheck = document.getElementById('refreshModelCache');
+    if (recheck) recheck.disabled = busy;
+    const cleanup = document.getElementById('cleanOutdatedModels');
+    if (cleanup) cleanup.disabled = busy;
 }
 
 function beginModelOperation(entry, ui, kind) {
@@ -88,6 +91,34 @@ function cacheStore() {
         fetchImpl: fetch.bind(globalThis),
         responseClass: Response, streamClass: TransformStream,
     });
+}
+
+// Explicitly reclaim old model revisions without affecting any variant in the
+// current catalog. The exclusive cache lock waits for playback/tests in other
+// extension contexts; the page operation lock disables local model controls.
+async function cleanupObsoleteModelData() {
+    if (initialStatusPending || recheckInProgress || activeModelOperation) return;
+    if (!window.confirm('Remove only obsolete cached model revisions? All current MediaPipe, ONNX and dictionary assets will be kept.')) {
+        return;
+    }
+    const cleanupEntry = { key: 'obsolete-cache' };
+    const cleanupUi = { busy: null };
+    if (!beginModelOperation(cleanupEntry, cleanupUi, 'cleanup')) return;
+    const status = document.getElementById('modelCleanupStatus');
+    status.textContent = 'Checking cached files for obsolete model revisions…';
+    try {
+        // Keep *all* pinned catalog variants, not merely the selected or fully
+        // installed ones: partial downloads and alternative variants are valid.
+        const retained = variants.map(entryManifest);
+        const deleted = await cacheStore().removeUnreferenced(retained);
+        status.textContent = 'Removed ' + deleted + ' obsolete cached asset(s). ' +
+            'All current catalog variants and dictionary data were retained.';
+    } catch (error) {
+        status.textContent = 'Could not clean obsolete model cache: ' +
+            String(error.message || error);
+    } finally {
+        finishModelOperation(cleanupEntry, cleanupUi);
+    }
 }
 
 function setMessage(node, message) {
@@ -720,6 +751,9 @@ if (page) {
     });
     document.getElementById('refreshModelCache').addEventListener('click', () => {
         void recheckModelCache();
+    });
+    document.getElementById('cleanOutdatedModels').addEventListener('click', () => {
+        void cleanupObsoleteModelData();
     });
     const onFocus = () => { void recheckModelCache(); };
     const onVisible = () => {

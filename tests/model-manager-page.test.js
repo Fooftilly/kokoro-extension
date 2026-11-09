@@ -21,6 +21,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
     let installModel;
     let removeModel;
     let verifyModel;
+    let pruneModels;
     let delayedCpuStatus;
     let failStatusFor;
     beforeEach(async () => {
@@ -30,6 +31,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         partialModels = new Set();
         installModel = jest.fn();
         removeModel = jest.fn();
+        pruneModels = jest.fn(async () => 0);
         verifyModel = jest.fn(async manifest => {
             const totalBytes = manifest.assets.reduce((sum, asset) => sum + asset.bytes, 0);
             return { ready: true, verifiedBytes: totalBytes, totalBytes,
@@ -39,7 +41,9 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         failStatusFor = new Set();
         document.body.innerHTML = `
             <button id="refreshModelCache" disabled>Recheck installed models</button>
+            <button id="cleanOutdatedModels" disabled>Remove obsolete model cache files</button>
             <p id="modelRecheckStatus" role="status"></p>
+            <p id="modelCleanupStatus" role="status"></p>
             <div id="modelManager"></div>
             <textarea id="benchmarkText">Hello world.</textarea>
             <input id="benchmarkIpa" value="hɛˈloʊ.">
@@ -90,6 +94,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
             install: installModel,
             remove: removeModel,
             verifyAndPruneCorrupt: verifyModel,
+            removeUnreferenced: pruneModels,
         }));
         require('../model-manager-page.js');
         await new Promise(resolve => setTimeout(resolve, 0));
@@ -98,6 +103,52 @@ describe('ONNX model manager English synthesis diagnostics', () => {
     afterEach(() => {
         // Remove module-scoped focus/visibility listeners between jsdom tests.
         window.dispatchEvent(new Event('pagehide'));
+    });
+
+    test('obsolete cache cleanup is opt-in and preserves all pinned variants', async () => {
+        const cleanup = document.getElementById('cleanOutdatedModels');
+        const status = document.getElementById('modelCleanupStatus');
+        const existing = document.querySelector('[data-variant="onnx-q8"]');
+        const other = document.querySelector('[data-variant="mediapipe-cpu"]');
+        const confirm = jest.spyOn(window, 'confirm')
+            .mockReturnValueOnce(false).mockReturnValueOnce(true);
+        expect(cleanup.disabled).toBe(false);
+        expect(pruneModels).not.toHaveBeenCalled(); // No automatic pruning.
+        cleanup.click();
+        expect(pruneModels).not.toHaveBeenCalled();
+        let finish;
+        pruneModels.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+        cleanup.click();
+        await waitFor(() => pruneModels.mock.calls.length === 1);
+        const retained = pruneModels.mock.calls[0][0];
+        expect(retained.map(m => m.provider + '-' + m.variant).sort()).toEqual([
+            'dictionary-english', 'mediapipe-cpu', 'mediapipe-gpu', 'onnx-q8', 'onnx-q8f16',
+        ]);
+        expect(cleanup.disabled).toBe(true);
+        expect(existing.querySelector('.model-test').disabled).toBe(true);
+        expect(other.querySelector('.model-download').disabled).toBe(true);
+        finish(3);
+        await waitFor(() => status.textContent.includes('Removed 3 obsolete cached asset(s)'));
+        expect(cleanup.disabled).toBe(false);
+        expect(existing.querySelector('.model-test').disabled).toBe(false);
+        expect(other.querySelector('.model-download').disabled).toBe(false);
+        expect(global.fetch).not.toHaveBeenCalled();
+        expect(global.browser.permissions.request).not.toHaveBeenCalled();
+        confirm.mockRestore();
+    });
+
+    test('obsolete cache cleanup failures restore model controls without deleting current data', async () => {
+        const confirm = jest.spyOn(window, 'confirm').mockReturnValueOnce(true);
+        pruneModels.mockRejectedValueOnce(new Error('Cache unavailable'));
+        document.getElementById('cleanOutdatedModels').click();
+        await waitFor(() => document.getElementById('modelCleanupStatus').textContent
+            .includes('Cache unavailable'));
+        expect(document.querySelector('[data-variant="onnx-q8"] .model-test').disabled)
+            .toBe(false);
+        expect(document.querySelector('[data-variant="mediapipe-cpu"] .model-download').disabled)
+            .toBe(false);
+        expect(document.getElementById('cleanOutdatedModels').disabled).toBe(false);
+        confirm.mockRestore();
     });
 
     async function runProbe() {
