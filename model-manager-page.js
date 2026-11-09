@@ -190,6 +190,30 @@ async function refresh(entry, ui) {
     return state;
 }
 
+function applyRecheckedModelStatuses(snapshots) {
+    let changed = 0;
+    let missing = 0;
+    for (const { entry, state } of snapshots) {
+        const ui = modelRows.get(entry.key);
+        const previous = ui.lastStatus;
+        const differs = !previous || previous.ready !== state.ready ||
+            previous.storedBytes !== state.storedBytes;
+        const evicted = previous?.ready && !state.ready;
+        if (differs) changed++;
+        if (evicted) missing++;
+        applyModelStatus(entry, ui, state, { updateMessage: differs });
+        if (evicted) {
+            setMessage(ui.status, 'Cached model data is missing. Download again to repair it.');
+        }
+    }
+    if (missing) {
+        return 'Cache rechecked: ' + missing + ' previously installed model(s) lost data. ' +
+            'Use Download to repair them.';
+    }
+    if (changed) return 'Cache rechecked: ' + changed + ' model status(es) changed.';
+    return 'Cache rechecked: all model statuses unchanged.';
+}
+
 // Cache entries may disappear because another extension tab removes a model,
 // or because the browser evicts origin storage. A shared read lease observes a
 // consistent set of manifests without starting downloads or loading any engine.
@@ -209,26 +233,7 @@ async function recheckModelCache() {
             })));
         }, { mode: 'shared' });
         if (epoch !== modelStatusEpoch || activeModelOperation) return;
-        let changed = 0;
-        let missing = 0;
-        for (const { entry, state } of snapshots) {
-            const ui = modelRows.get(entry.key);
-            const previous = ui.lastStatus;
-            const differs = !previous || previous.ready !== state.ready ||
-                previous.storedBytes !== state.storedBytes;
-            if (differs) changed++;
-            if (previous?.ready && !state.ready) missing++;
-            applyModelStatus(entry, ui, state, { updateMessage: differs });
-            if (previous?.ready && !state.ready) {
-                setMessage(ui.status, 'Cached model data is missing. Download again to repair it.');
-            }
-        }
-        setMessage(summary, missing
-            ? 'Cache rechecked: ' + missing + ' previously installed model(s) lost data. ' +
-              'Use Download to repair them.'
-            : changed
-                ? 'Cache rechecked: ' + changed + ' model status(es) changed.'
-                : 'Cache rechecked: all model statuses unchanged.');
+        setMessage(summary, applyRecheckedModelStatuses(snapshots));
     } catch (error) {
         if (epoch === modelStatusEpoch && !activeModelOperation) {
             setMessage(summary, 'Cannot recheck model cache: ' + String(error.message || error));
