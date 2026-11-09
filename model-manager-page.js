@@ -173,7 +173,9 @@ async function warnStorageHeadroom(manifest, ui, signal) {
             ]);
             const remaining = Math.max(0, cacheState.totalBytes - cacheState.storedBytes);
             const headroom = assessStorageHeadroom(remaining, estimate);
-            if (headroom?.insufficient) {
+            // The estimate can finish after Cancel. Never display a warning
+            // for a request that will not be installed.
+            if (!signal.aborted && headroom?.insufficient) {
                 ui.storageWarning.textContent =
                     'Low browser storage estimate: ' + formatModelSize(headroom.availableBytes) +
                     ' available, but ' + formatModelSize(headroom.requiredBytes) +
@@ -277,6 +279,10 @@ async function doDownload(entry, ui) {
             'Download failed: ' + String(error.message || error);
     } finally {
         inFlightDownloads.delete(entry.key);
+        // Quota estimates describe an in-flight download, not the resulting
+        // installed model or a completed failed/cancelled attempt.
+        ui.storageWarning.hidden = true;
+        ui.storageWarning.textContent = '';
         ui.busy = 'finalizing';
         ui.download.textContent = 'Download ' + formatModelSize(entry.totalBytes);
         ui.download.disabled = true;
