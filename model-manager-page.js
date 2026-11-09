@@ -1,7 +1,7 @@
 // Extension-owned local model manager and *real* opt-in test harness.
 // No model fetch occurs when this page loads, and local test inputs stay here.
 import { listModelVariants, manifestForVariant, dictionaryManifest } from './model-catalog.js';
-import { ModelDataStore, formatModelSize } from './model-data-store.js';
+import { ModelDataStore, formatModelSize, assessStorageHeadroom } from './model-data-store.js';
 import { withModelDataLock } from './model-data-lock.js';
 import { MediaPipeKokoroProvider } from './mediapipe-provider.js';
 import { OnnxKokoroProvider } from './onnx-provider.js';
@@ -95,6 +95,10 @@ function createModelRow(entry) {
     const status = document.createElement('p');
     status.className = 'model-status';
     status.setAttribute('role', 'status');
+    const storageWarning = document.createElement('p');
+    storageWarning.className = 'model-storage-warning';
+    storageWarning.setAttribute('role', 'alert');
+    storageWarning.hidden = true;
     const progress = document.createElement('progress');
     progress.className = 'model-download-progress';
     progress.max = 100;
@@ -131,8 +135,8 @@ function createModelRow(entry) {
     const audio = document.createElement('audio');
     audio.controls = true;
     audio.hidden = true;
-    row.append(title, status, progress, actions, audio);
-    return { row, status, progress, download, remove, test, choose, audio, busy: null };
+    row.append(title, status, storageWarning, progress, actions, audio);
+    return { row, status, storageWarning, progress, download, remove, test, choose, audio, busy: null };
 }
 
 function applyModelStatus(entry, ui, state, { updateMessage = true } = {}) {
@@ -181,6 +185,8 @@ async function doDownload(entry, ui) {
         ui.test.disabled = priorTestDisabled;
         ui.choose.disabled = priorChooseDisabled;
     };
+    ui.storageWarning.hidden = true;
+    ui.storageWarning.textContent = '';
     ui.progress.hidden = false;
     // Browser Subresource Integrity may buffer an entire response before
     // exposing its stream. Keep the bar indeterminate until bytes are observed.
@@ -227,6 +233,33 @@ async function doDownload(entry, ui) {
     setMessage(ui.status, 'Connecting to the official model source (integrity checking may delay progress)…');
     let downloadError = null;
     try {
+        // Warn using the remaining model bytes, not the full size when some
+        // verified assets are already cached. This is a browser quota estimate,
+        // not a promise of physical free space or a reason to bypass integrity.
+        if (typeof globalThis.navigator?.storage?.estimate === 'function') {
+            try {
+                const [cacheState, estimate] = await Promise.all([
+                    cacheStore().status(manifest),
+                    globalThis.navigator.storage.estimate(),
+                ]);
+                const remaining = Math.max(0, cacheState.totalBytes - cacheState.storedBytes);
+                const headroom = assessStorageHeadroom(remaining, estimate);
+                if (headroom?.insufficient) {
+                    ui.storageWarning.textContent =
+                        'Low browser storage estimate: ' + formatModelSize(headroom.availableBytes) +
+                        ' available, but ' + formatModelSize(headroom.requiredBytes) +
+                        ' of additional model data is needed. The download may fail; ' +
+                        'free storage or remove unused models.';
+                    ui.storageWarning.hidden = false;
+                }
+            } catch {
+                // Unsupported/failed quota inspection must not prevent an
+                // explicitly requested download or create a false warning.
+            }
+        }
+        if (controller.signal.aborted) {
+            throw new DOMException('Download aborted', 'AbortError');
+        }
         await cacheStore().install(manifest, {
             signal: controller.signal,
             onProgress: ({ completedBytes, totalBytes }) => {
@@ -398,6 +431,7 @@ function registerModel(entry) {
             }
             await cacheStore().remove(entryManifest(entry));
             ui.progress.hidden = true;
+            ui.storageWarning.hidden = true;
             if (entry.provider === 'dictionary') {
                 // Invalidate in-memory lexicons after explicit removal.
                 for (const [key, provider] of engineByKey.entries()) {
