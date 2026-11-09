@@ -59,14 +59,17 @@ function createModelRow(entry) {
     download.type = 'button';
     download.textContent = 'Download ' + formatModelSize(entry.totalBytes);
     download.className = 'model-download';
+    download.disabled = true; // Disabled until the initial cache status resolves.
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.textContent = 'Remove';
     remove.className = 'model-remove';
+    remove.disabled = true;
     const test = document.createElement('button');
     test.type = 'button';
     test.textContent = 'Test synthesized audio (3 runs)';
     test.className = 'model-test';
+    test.disabled = true;
     const choose = document.createElement('button');
     choose.type = 'button';
     choose.textContent = 'Use this backend';
@@ -82,16 +85,18 @@ function createModelRow(entry) {
     audio.controls = true;
     audio.hidden = true;
     row.append(title, status, progress, actions, audio);
-    return { row, status, progress, download, remove, test, choose, audio };
+    return { row, status, progress, download, remove, test, choose, audio, busy: null };
 }
 
 async function refresh(entry, ui) {
     const state = await cacheStore().status(entryManifest(entry));
     setMessage(ui.status, displayModelStatus(entry, state.ready, state.totalBytes));
-    ui.test.disabled = entry.provider === 'dictionary' || !state.ready;
-    ui.remove.disabled = !state.storedBytes;
-    ui.download.disabled = state.ready;
-    if (!state.ready) ui.choose.disabled = true;
+    // A delayed cache-status response must not re-enable controls while
+    // permission, install, inference, or removal is still in progress.
+    ui.test.disabled = !!ui.busy || entry.provider === 'dictionary' || !state.ready;
+    ui.remove.disabled = !!ui.busy || !state.storedBytes;
+    ui.download.disabled = ui.busy === 'download' ? false : !!ui.busy || state.ready;
+    if (ui.busy || !state.ready) ui.choose.disabled = true;
     return state;
 }
 
@@ -101,6 +106,8 @@ async function doDownload(entry, ui) {
         running.abort();
         return;
     }
+    if (ui.busy) return;
+    ui.busy = 'permission';
     // Request only the selected asset host, before the first await so
     // Firefox preserves the user gesture. Neither host is granted by default.
     const manifest = entryManifest(entry);
@@ -131,6 +138,7 @@ async function doDownload(entry, ui) {
     } catch (error) {
         ui.progress.hidden = true;
         setMessage(ui.status, 'Cannot request model download permission: ' + String(error.message || error));
+        ui.busy = null;
         restorePermissionActions();
         return;
     }
@@ -142,6 +150,7 @@ async function doDownload(entry, ui) {
         ui.progress.hidden = true;
         setMessage(ui.status, 'Model download permission failed: ' + String(error.message || error));
         ui.download.disabled = false;
+        ui.busy = null;
         restorePermissionActions();
         return;
     }
@@ -149,10 +158,12 @@ async function doDownload(entry, ui) {
         ui.progress.hidden = true;
         setMessage(ui.status, 'Model download host permission was denied.');
         ui.download.disabled = false;
+        ui.busy = null;
         restorePermissionActions();
         return;
     }
     const controller = new AbortController();
+    ui.busy = 'download';
     inFlightDownloads.set(entry.key, controller);
     ui.download.disabled = false;
     ui.download.textContent = 'Cancel download';
@@ -176,6 +187,7 @@ async function doDownload(entry, ui) {
             'Download failed: ' + String(error.message || error);
     } finally {
         inFlightDownloads.delete(entry.key);
+        ui.busy = null;
         ui.download.textContent = 'Download ' + formatModelSize(entry.totalBytes);
         ui.download.disabled = false;
         try {
@@ -203,7 +215,8 @@ function currentEngine(entry) {
 }
 
 async function testEngine(entry, ui) {
-    if (entry.provider === 'dictionary') return;
+    if (entry.provider === 'dictionary' || ui.busy) return;
+    ui.busy = 'test';
     const priorRemoveDisabled = ui.remove.disabled;
     ui.remove.disabled = true; // Never evict a model while its runtime is executing.
     ui.test.disabled = true;
@@ -287,6 +300,7 @@ async function testEngine(entry, ui) {
     } catch (error) {
         setMessage(ui.status, 'Actual inference failed: ' + String(error.message || error));
     } finally {
+        ui.busy = null;
         ui.test.disabled = false;
         ui.remove.disabled = priorRemoveDisabled;
     }
@@ -299,7 +313,12 @@ function registerModel(entry) {
         void doDownload(entry, ui);
     });
     ui.remove.addEventListener('click', async () => {
+        if (ui.busy) return;
+        ui.busy = 'remove';
         ui.remove.disabled = true;
+        ui.download.disabled = true;
+        ui.test.disabled = true;
+        ui.choose.disabled = true;
         try {
             const engine = engineByKey.get(entry.key);
             if (engine) {
@@ -322,9 +341,11 @@ function registerModel(entry) {
             }
         } catch (error) {
             setMessage(ui.status, 'Removal failed: ' + String(error.message || error));
+        } finally {
+            ui.busy = null;
+            await refresh(entry, ui);
+            ui.choose.disabled = true;
         }
-        await refresh(entry, ui);
-        ui.choose.disabled = true;
     });
     ui.test.addEventListener('click', () => {
         void testEngine(entry, ui);
