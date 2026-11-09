@@ -129,6 +129,38 @@ describe('EPUB chapter loading and storage ordering', () => {
         throw new Error('EPUB chapter list did not appear');
     }
 
+    test.each(['mediapipe', 'onnx'])(
+        'reader never stores a FastAPI URL while %s is selected', async backend => {
+            settings.ttsBackend = backend;
+            settings.apiUrl = 'http://private-server.example/v1/';
+            removePending.resolve();
+            await openBook();
+            chapterA.resolve(sectionDocument('Private chapter text.'));
+            for (let n = 0; n < 20 && browser.storage.local.set.mock.calls.length === 0; n++) {
+                await nextTurn();
+            }
+            expect(browser.storage.local.set).toHaveBeenCalledWith(expect.objectContaining({
+                pendingTtsBackend: backend,
+                pendingApiUrl: null,
+            }));
+        }
+    );
+
+    test('legacy reader mode still supplies the configured FastAPI URL', async () => {
+        delete settings.ttsBackend;
+        settings.apiUrl = 'http://private-server.example/v1';
+        removePending.resolve();
+        await openBook();
+        chapterA.resolve(sectionDocument('Legacy chapter text.'));
+        for (let n = 0; n < 20 && browser.storage.local.set.mock.calls.length === 0; n++) {
+            await nextTurn();
+        }
+        expect(browser.storage.local.set).toHaveBeenCalledWith(expect.objectContaining({
+            pendingTtsBackend: 'fastapi',
+            pendingApiUrl: 'http://private-server.example/v1/',
+        }));
+    });
+
     test('a slower old chapter cannot replace a newer selected chapter', async () => {
         removePending.resolve();
         await openBook();
