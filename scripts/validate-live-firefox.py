@@ -292,16 +292,8 @@ def main():
         finally:
             output.write_text(json.dumps(result, indent=2), encoding="utf-8")
             if driver:
-                try:
-                    driver.set_context("chrome")
-                    driver.execute_script("""
-                        Services.io.offline = false;
-                        Services.io.manageOfflineStatus = true;
-                    """)
-                except Exception:
-                    # A failed browser must still be shut down; do not turn
-                    # cleanup errors into an acceptance success.
-                    pass
+                # The isolated temporary browser is discarded; no need to
+                # restore network state or mask an underlying test failure.
                 driver.quit()
             if server:
                 server.shutdown()

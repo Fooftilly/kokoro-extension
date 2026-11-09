@@ -42,7 +42,7 @@ session. They check offline state and require playable, finite, non-silent PCM
 from locally packaged SDK/WASM in the extension origin. Chromium restores
 connectivity between separate provider runs solely to preload the next model;
 any optional failure diagnostics are clearly reported as outside offline
-acceptance. Firefox restores its network state during cleanup.
+acceptance. Firefox remains offline until its isolated temporary browser process is closed.
 
 The manual-only GitHub Actions workflow tests Chromium and separate Firefox
 ONNX/MediaPipe CPU sessions, attaching browser reports. It intentionally
