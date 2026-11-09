@@ -36,6 +36,12 @@ describe('bounded playback sentence cache and download leases (#57)', () => {
             })) } },
             runtime: { sendMessage: jest.fn() },
         };
+        Object.defineProperty(global.navigator, 'locks', {
+            configurable: true,
+            // Browser's origin-wide lock scheduling is tested separately;
+            // these tests exercise AudioManager's session/cache lifecycle.
+            value: { request: jest.fn(async (name, options, work) => work()) },
+        });
         manager = new AudioManager();
         manager.setSentences(Array.from({ length: 30 }, (_, i) => ({
             text: 'Sentence ' + i,
