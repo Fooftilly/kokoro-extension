@@ -36,14 +36,22 @@ function setup() {
     };
     const cacheStorage = { open: jest.fn(async () => cache) };
     const fetchImpl = jest.fn(async () => new Response(sample, { status: 200 }));
+    const lockManager = {
+        request: jest.fn(async (name, options, run) => {
+            expect(name).toBe('kokoro-model-data-v1');
+            if (options.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+            return run();
+        }),
+    };
     const store = new ModelDataStore({
         origin: 'moz-extension://test-uuid/',
         cacheStorage,
         fetchImpl,
         responseClass: Response,
         streamClass: TransformStream,
+        lockManager,
     });
-    return { cache, cacheStorage, fetchImpl, entries, store };
+    return { cache, cacheStorage, fetchImpl, entries, store, lockManager };
 }
 
 describe('opt-in cached model data (#55)', () => {
@@ -163,6 +171,19 @@ describe('opt-in cached model data (#55)', () => {
         expect(fetchImpl).toHaveBeenCalledTimes(3);
         expect(cache.keys).toHaveBeenCalledTimes(1);
         await expect(store.removeUnreferenced(null)).rejects.toThrow();
+    });
+
+    test('all data mutations take exclusive cross-context locks, but status does not', async () => {
+        const { store, lockManager } = setup();
+        const m = manifest();
+        await store.status(m);
+        expect(lockManager.request).not.toHaveBeenCalled();
+        await store.install(m);
+        await store.remove(m);
+        await store.removeUnreferenced([m]);
+        expect(lockManager.request).toHaveBeenCalledTimes(3);
+        expect(lockManager.request.mock.calls.map(([, options]) => options.mode))
+            .toEqual(['exclusive', 'exclusive', 'exclusive']);
     });
 
     test('rejects incorrect byte count and discards partial cache entries', async () => {
