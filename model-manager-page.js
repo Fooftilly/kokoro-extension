@@ -2,6 +2,7 @@
 // No model fetch occurs when this page loads, and local test inputs stay here.
 import { listModelVariants, manifestForVariant, dictionaryManifest } from './model-catalog.js';
 import { ModelDataStore, formatModelSize } from './model-data-store.js';
+import { withModelDataLock } from './model-data-lock.js';
 import { MediaPipeKokoroProvider } from './mediapipe-provider.js';
 import { OnnxKokoroProvider } from './onnx-provider.js';
 import { pcmToWavBlob } from './pcm-wav.js';
@@ -290,79 +291,82 @@ async function testEngine(entry, ui) {
     const validationKey = 'mediapipeValidatedRevision:' + entry.variant;
     setMessage(ui.status, 'Loading locally packaged runtime and cached model…');
     try {
-        if (entry.provider === 'mediapipe') {
-            // A failing re-test cannot leave its previous approval active.
-            await browser.storage.local.remove(validationKey);
-        }
-        // An installed GPU model is not proof that this browser has a usable
-        // GPU delegate. Do not initialize the official GPU runtime when the
-        // browser cannot provide a WebGPU adapter; show a clear unavailable
-        // result instead of surfacing an opaque upstream device.queue error.
-        if (entry.provider === 'mediapipe' && entry.variant === 'gpu') {
-            const capabilities = await window.KokoroBenchmark.inspectCapabilities();
-            const gpuStatus = capabilities.webgpu?.status || 'unknown';
-            if (gpuStatus !== 'adapter-available') {
-                setMessage(ui.status, 'GPU test unavailable in this browser (' + gpuStatus +
-                    '). No inference was attempted. Try MediaPipe CPU instead.');
-                return;
+        await withModelDataLock(async () => {
+            if (entry.provider === 'mediapipe') {
+                // A failing re-test cannot leave its previous approval active.
+                await browser.storage.local.remove(validationKey);
             }
-        }
-        const engine = currentEngine(entry);
-        await engine.initialize(); // Initialize outside warm-run timings.
-        const text = document.getElementById('benchmarkText').value.trim();
-        const ipa = document.getElementById('benchmarkIpa').value.trim();
-        const runs = [];
-        let last = null;
-        for (let n = 0; n < 3; n++) {
-            const started = performance.now();
-            last = entry.provider === 'mediapipe'
-                ? await engine.synthesize(text)
-                : await engine.synthesizePhonemes(ipa);
-            const elapsed = performance.now() - started;
-            runs.push({ kind: 'warm', firstAudioMs: null, synthesisMs: elapsed,
-                audioDurationSec: last.samples.length / last.sampleRateHz });
-        }
-        // Keep the IPA measurements distinct from dictionary-backed text synthesis.
-        // A failed or missing English lexicon must not erase a valid IPA probe.
-        let englishResult = '';
-        if (entry.provider === 'onnx') {
-            if (!(await cacheStore().status(dictionaryManifest())).ready) {
-                englishResult = ' English text not tested: download the pronunciation dictionary first.';
-            } else {
-                try {
-                    const textAudio = await engine.synthesize(text);
-                    last = textAudio;
-                    englishResult = ' Experimental English text audio is ready to listen to.';
-                } catch (error) {
-                    englishResult = ' English text synthesis failed: ' +
-                        String(error.message || error) + '. Playing the IPA probe instead.';
+            // An installed GPU model is not proof that this browser has a usable
+            // GPU delegate. Do not initialize the official GPU runtime when the
+            // browser cannot provide a WebGPU adapter; show a clear unavailable
+            // result instead of surfacing an opaque upstream device.queue error.
+            if (entry.provider === 'mediapipe' && entry.variant === 'gpu') {
+                const capabilities = await window.KokoroBenchmark.inspectCapabilities();
+                const gpuStatus = capabilities.webgpu?.status || 'unknown';
+                if (gpuStatus !== 'adapter-available') {
+                    setMessage(ui.status, 'GPU test unavailable in this browser (' + gpuStatus +
+                        '). No inference was attempted. Try MediaPipe CPU instead.');
+                    return;
                 }
             }
-        }
-        const metrics = window.KokoroBenchmark.summarizeRuns(runs);
-        const previous = lastAudioUrl.get(entry.key);
-        if (previous) URL.revokeObjectURL(previous);
-        const audioUrl = URL.createObjectURL(pcmToWavBlob(last.samples, last.sampleRateHz));
-        lastAudioUrl.set(entry.key, audioUrl);
-        ui.audio.src = audioUrl;
-        ui.audio.hidden = false;
-        setMessage(ui.status, 'Real local inference, warm (3 runs). Full-clip synthesis p50: ' +
-            metrics.synthesisP50Ms.toFixed(0) + ' ms, p95: ' +
-            metrics.synthesisP95Ms.toFixed(0) + ' ms; RTF p50: ' +
-            metrics.realTimeFactorP50.toFixed(2) +
-            '. Streaming time-to-first-audio was not measured.' +
-            (entry.provider === 'onnx'
-                ? ' Benchmark used IPA; English synthesis is a separate, unmeasured check.' +
-                  englishResult + ' ONNX article/EPUB backend is not yet enabled.'
-                : ' Listen before choosing.'));
-        // The ONNX text check is experimental, not an approval for general
-        // article/EPUB usage. Keep its backend chooser disabled.
-        if (entry.provider === 'mediapipe') {
-            await browser.storage.local.set({
-                [validationKey]: manifestForVariant('mediapipe', entry.variant).revision,
-            });
-            ui.choose.disabled = false;
-        }
+            const engine = currentEngine(entry);
+            await engine.initialize(); // Initialize outside warm-run timings.
+            const text = document.getElementById('benchmarkText').value.trim();
+            const ipa = document.getElementById('benchmarkIpa').value.trim();
+            const runs = [];
+            let last = null;
+            for (let n = 0; n < 3; n++) {
+                const started = performance.now();
+                last = entry.provider === 'mediapipe'
+                    ? await engine.synthesize(text)
+                    : await engine.synthesizePhonemes(ipa);
+                const elapsed = performance.now() - started;
+                runs.push({ kind: 'warm', firstAudioMs: null, synthesisMs: elapsed,
+                    audioDurationSec: last.samples.length / last.sampleRateHz });
+            }
+            // Keep the IPA measurements distinct from dictionary-backed text synthesis.
+            // A failed or missing English lexicon must not erase a valid IPA probe.
+            let englishResult = '';
+            if (entry.provider === 'onnx') {
+                if (!(await cacheStore().status(dictionaryManifest())).ready) {
+                    englishResult = ' English text not tested: download the pronunciation dictionary first.';
+                } else {
+                    try {
+                        const textAudio = await engine.synthesize(text);
+                        last = textAudio;
+                        englishResult = ' Experimental English text audio is ready to listen to.';
+                    } catch (error) {
+                        englishResult = ' English text synthesis failed: ' +
+                            String(error.message || error) + '. Playing the IPA probe instead.';
+                    }
+                }
+            }
+            const metrics = window.KokoroBenchmark.summarizeRuns(runs);
+            const previous = lastAudioUrl.get(entry.key);
+            if (previous) URL.revokeObjectURL(previous);
+            const audioUrl = URL.createObjectURL(pcmToWavBlob(last.samples, last.sampleRateHz));
+            lastAudioUrl.set(entry.key, audioUrl);
+            ui.audio.src = audioUrl;
+            ui.audio.hidden = false;
+            setMessage(ui.status, 'Real local inference, warm (3 runs). Full-clip synthesis p50: ' +
+                metrics.synthesisP50Ms.toFixed(0) + ' ms, p95: ' +
+                metrics.synthesisP95Ms.toFixed(0) + ' ms; RTF p50: ' +
+                metrics.realTimeFactorP50.toFixed(2) +
+                '. Streaming time-to-first-audio was not measured.' +
+                (entry.provider === 'onnx'
+                    ? ' Benchmark used IPA; English synthesis is a separate, unmeasured check.' +
+                      englishResult + ' ONNX article/EPUB backend is not yet enabled.'
+                    : ' Listen before choosing.'));
+            // The ONNX text check is experimental, not an approval for general
+            // article/EPUB usage. Keep its backend chooser disabled.
+            if (entry.provider === 'mediapipe') {
+                await browser.storage.local.set({
+                    [validationKey]: manifestForVariant('mediapipe', entry.variant).revision,
+                });
+                ui.choose.disabled = false;
+            }
+
+        }, { mode: 'shared' });
     } catch (error) {
         setMessage(ui.status, 'Actual inference failed: ' + String(error.message || error));
     } finally {
