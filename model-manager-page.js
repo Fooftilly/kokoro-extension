@@ -1,6 +1,6 @@
 // Extension-owned local model manager and *real* opt-in test harness.
 // No model fetch occurs when this page loads, and local test inputs stay here.
-import { listModelVariants, manifestForVariant, dictionaryManifest } from './model-catalog.js';
+import { listModelVariants, manifestForVariant, dictionaryManifest, modelDataProvenance } from './model-catalog.js';
 import { ModelDataStore, formatModelSize, assessStorageHeadroom } from './model-data-store.js';
 import { withModelDataLock } from './model-data-lock.js';
 import { MediaPipeKokoroProvider } from './mediapipe-provider.js';
@@ -92,6 +92,23 @@ function createModelRow(entry) {
     row.dataset.variant = entry.key;
     const title = document.createElement('h3');
     title.textContent = entry.label;
+    const source = modelDataProvenance(entryManifest(entry));
+    const provenance = document.createElement('p');
+    provenance.className = 'model-provenance';
+    const sourceLink = document.createElement('a');
+    sourceLink.textContent = source.name;
+    sourceLink.href = source.sourceUrl;
+    sourceLink.target = '_blank';
+    sourceLink.rel = 'noopener noreferrer';
+    const licenseLink = document.createElement('a');
+    licenseLink.textContent = source.license;
+    licenseLink.href = source.licenseUrl;
+    licenseLink.target = '_blank';
+    licenseLink.rel = 'noopener noreferrer';
+    provenance.append('Source: ', sourceLink, ' · License: ', licenseLink,
+        ' · Pinned revision: ', source.revision.slice(0, 7),
+        ' · Model data to download and cache: ', formatModelSize(entry.totalBytes),
+        ' (browser storage overhead may add to this).');
     const status = document.createElement('p');
     status.className = 'model-status';
     status.setAttribute('role', 'status');
@@ -135,7 +152,7 @@ function createModelRow(entry) {
     const audio = document.createElement('audio');
     audio.controls = true;
     audio.hidden = true;
-    row.append(title, status, storageWarning, progress, actions, audio);
+    row.append(title, provenance, status, storageWarning, progress, actions, audio);
     return { row, status, storageWarning, progress, download, remove, test, choose, audio, busy: null };
 }
 

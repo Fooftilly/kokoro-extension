@@ -48,6 +48,33 @@ const ENGLISH_DICTIONARY = Object.freeze({
     }]),
 });
 
+// Explain the provenance of explicitly downloaded model DATA, not the
+// separately packaged JS/WASM runtimes. Link to the pinned upstream revision
+// so the stated license cannot drift with a moving main branch.
+export function modelDataProvenance(manifest) {
+    if (manifest?.provider === 'dictionary' &&
+        manifest.revision === ENGLISH_DICTIONARY.revision) {
+        const base = 'https://github.com/cmusphinx/cmudict/';
+        return {
+            name: 'cmusphinx/cmudict', revision: manifest.revision,
+            sourceUrl: base + 'tree/' + manifest.revision,
+            license: 'CMUdict permissive license',
+            licenseUrl: base + 'blob/' + manifest.revision + '/LICENSE',
+        };
+    }
+    const repo = REPOSITORIES[manifest?.provider];
+    if (!repo || manifest.revision !== repo.revision) {
+        throw new RangeError('Unknown pinned model-data source');
+    }
+    const base = 'https://huggingface.co/' + repo.name + '/';
+    return {
+        name: repo.name, revision: repo.revision,
+        sourceUrl: base + 'tree/' + repo.revision,
+        license: 'Apache-2.0',
+        licenseUrl: base + 'blob/' + repo.revision + '/README.md',
+    };
+}
+
 export function dictionaryManifest() {
     return { ...ENGLISH_DICTIONARY,
         assets: ENGLISH_DICTIONARY.assets.map(item => ({ ...item })) };

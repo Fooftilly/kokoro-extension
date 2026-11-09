@@ -15,6 +15,8 @@ textarea, input { box-sizing: border-box; display: block; width: 100%; padding: 
 .model-variant audio { display: block; width: 100%; margin-top: 8px; }
 .model-variant audio[hidden] { display: none; }
 .model-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.model-provenance { font-size: 0.9em; overflow-wrap: anywhere; margin: 6px 0 10px; }
+.model-provenance a { color: LinkText; }
 .model-status { overflow-wrap: anywhere; }
 .model-download-progress { display: block; box-sizing: border-box; width: 100%; height: 12px; margin: 8px 0; border-radius: 0; accent-color: CanvasText; }
 .model-download-progress[hidden] { display: none; }
