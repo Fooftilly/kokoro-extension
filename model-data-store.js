@@ -148,18 +148,26 @@ export class ModelDataStore {
     // corruption. Check actual bytes before reusing a previously cached file.
     // This reads one asset into memory at a time; browsers without SHA-256 must
     // fail closed rather than silently trust metadata or evict known-good data.
-    async cachedBytesMatch(response, asset, signal) {
-        if (!this.isCurrent(response, asset)) return false;
+    // Verify a buffer already read for inference; avoid another Cache Storage
+    // read and an additional full-size model copy just for integrity checking.
+    async loadedBytesMatch(bytes, asset, signal) {
         if (typeof this.subtleCrypto?.digest !== 'function') {
             throw new Error('This browser does not support SHA-256 cache verification');
         }
-        const bytes = await response.arrayBuffer();
         if (signal?.aborted) throw new DOMException('Verification cancelled', 'AbortError');
         if (bytes.byteLength !== asset.bytes) return false;
         const digest = await this.subtleCrypto.digest('SHA-256', bytes);
         if (signal?.aborted) throw new DOMException('Verification cancelled', 'AbortError');
         const actual = 'sha256-' + btoa(String.fromCharCode(...new Uint8Array(digest)));
         return actual === asset.integrity;
+    }
+
+    async cachedBytesMatch(response, asset, signal) {
+        if (!this.isCurrent(response, asset)) return false;
+        if (typeof this.subtleCrypto?.digest !== 'function') {
+            throw new Error('This browser does not support SHA-256 cache verification');
+        }
+        return this.loadedBytesMatch(await response.arrayBuffer(), asset, signal);
     }
 
     async install(manifest, { signal, onProgress } = {}) {

@@ -67,6 +67,12 @@ export class OnnxKokoroProvider {
             if (!store.isCurrent(response, asset)) throw new Error('ONNX model asset missing from cache');
             const bytes = new Uint8Array(await response.arrayBuffer());
             if (bytes.byteLength !== asset.bytes) throw new Error('ONNX asset has unexpected length');
+            // Verify the same bytes passed to ONNX, not just the cache headers.
+            // Keep both model and voice data offline and fail before SDK loading.
+            if (!await store.loadedBytesMatch(bytes, asset)) {
+                throw new Error('ONNX cached model asset failed SHA-256 integrity verification: ' +
+                    asset.path + '. Use Verify cached data, then Download to repair it.');
+            }
             assets.push(bytes);
         }
         const sdk = await this.loadSDK();
