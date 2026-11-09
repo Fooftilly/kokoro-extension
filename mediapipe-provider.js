@@ -24,6 +24,7 @@ export class MediaPipeKokoroProvider {
         this.engine = null;
         this.modelUrl = null;
         this.loading = null;
+        this.closing = null;
     }
 
     get store() {
@@ -35,6 +36,9 @@ export class MediaPipeKokoroProvider {
     }
 
     async initialize() {
+        // A caller arriving during teardown must not start a new SDK load
+        // until the previous engine and its Blob URL have been released.
+        if (this.closing !== null) await this.closing;
         if (this.engine) return;
         if (this.loading !== null) return this.loading;
         this.loading = this.loadEngine();
@@ -106,16 +110,33 @@ export class MediaPipeKokoroProvider {
     }
 
     async close() {
-        // Clear local references before awaiting native teardown. A failing
-        // close() must not retain the ~295 MB model's Blob URL indefinitely.
-        const engine = this.engine;
-        const modelUrl = this.modelUrl;
-        this.engine = null;
-        this.modelUrl = null;
+        if (this.closing !== null) return this.closing;
+        // SDK initialization may still be constructing the native engine.
+        // Join it before taking teardown ownership.
+        const closing = (async () => {
+            if (this.loading !== null) {
+                try {
+                    await this.loading;
+                } catch {
+                    // The original initialize() caller observes the load error.
+                    // Teardown must still release partially initialized state.
+                }
+            }
+            const engine = this.engine;
+            const modelUrl = this.modelUrl;
+            this.engine = null;
+            this.modelUrl = null;
+            try {
+                if (engine && typeof engine.close === 'function') await engine.close();
+            } finally {
+                if (modelUrl) URL.revokeObjectURL(modelUrl);
+            }
+        })();
+        this.closing = closing;
         try {
-            if (engine && typeof engine.close === 'function') await engine.close();
+            await closing;
         } finally {
-            if (modelUrl) URL.revokeObjectURL(modelUrl);
+            if (this.closing === closing) this.closing = null;
         }
     }
 }
