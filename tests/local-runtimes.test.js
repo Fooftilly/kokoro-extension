@@ -18,10 +18,10 @@ function fakeCache(manifest) {
         const key = 'https://kokoro-model-cache.invalid/model-data/' +
             manifest.provider + '/' + manifest.revision + '/' + manifest.variant + '/' + asset.path;
         const bytes = new Uint8Array(asset.bytes); // Original, tiny test fixture.
-        // ONNX now checks the already-loaded bytes; make its tiny fabricated
-        // fixtures match the manifest. MediaPipe/dictionary fixtures retain
-        // their original pinned metadata for their separate test contracts.
-        if (manifest.provider === 'onnx') {
+        // Both local backends check the bytes before inference; tiny mock
+        // fixtures must carry a digest for their actual zero-filled contents.
+        // The dictionary's real upstream checksum remains unchanged.
+        if (manifest.provider === 'onnx' || manifest.provider === 'mediapipe') {
             asset.integrity = 'sha256-' + createHash('sha256').update(bytes).digest('base64');
         }
         contents.set(key, new Response(bytes, {
@@ -182,11 +182,13 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
         const loadSDK = jest.fn(async () => ({
             FilesetResolver: { forAudioTasks }, TextToSpeech: { createFromOptions },
         }));
+        const manifest = manifestForVariant('mediapipe', 'cpu');
+        manifest.assets[0].bytes = 4;
+        manifest.assets[0].integrity = 'sha256-' +
+            createHash('sha256').update(new Uint8Array(4)).digest('base64');
         const provider = new MediaPipeKokoroProvider({ browserApi: browserApi(), loadSDK,
-            cacheStorage: fakeCache({ ...manifestForVariant('mediapipe', 'cpu'),
-                assets: [{ ...manifestForVariant('mediapipe', 'cpu').assets[0], bytes: 4 }] }),
-            fetchImpl: jest.fn() });
-        provider.manifest.assets[0].bytes = 4;
+            cacheStorage: fakeCache(manifest), fetchImpl: jest.fn() });
+        provider.manifest = manifest;
         const result = await provider.synthesize('Hello');
         expect(result.sampleRateHz).toBe(24000);
         expect(forAudioTasks).toHaveBeenCalledWith('moz-extension://test-uuid/runtimes/mediapipe/wasm');
@@ -200,6 +202,8 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
         const manifest = manifestForVariant('mediapipe', 'cpu');
         manifest.assets[0].bytes = 4;
         const asset = manifest.assets[0];
+        asset.integrity = 'sha256-' +
+            createHash('sha256').update(new Uint8Array(4)).digest('base64');
         const response = {
             headers: new Headers({
                 'x-kokoro-integrity': asset.integrity,

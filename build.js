@@ -29,6 +29,7 @@ const SRC_FILES = [
     'text-processor.js',
     'audio-manager.js',
     'model-data-store.js',
+    'sha256-stream.js',
     'model-data-lock.js',
     'onnx-kokoro-inputs.js',
     'model-catalog.js',
