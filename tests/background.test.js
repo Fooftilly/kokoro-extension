@@ -224,7 +224,7 @@ describe('background.js logic', () => {
             message: expect.stringContaining('Save audio'),
         }));
         expect(fetch).not.toHaveBeenCalled();
-        expect(browser.downloads?.download).not.toHaveBeenCalled();
+        expect(browser.downloads).toBeUndefined();
     });
 
     test('capability discovery is read-only and never probes FastAPI or local models', async () => {
