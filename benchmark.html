@@ -37,6 +37,10 @@
                 <p id="serverStatus" role="status">Not tested</p>
                 <audio id="serverAudio" controls hidden></audio>
             </div>
+            <div class="model-recheck-controls">
+                <button type="button" id="refreshModelCache" disabled>Recheck installed models</button>
+                <p id="modelRecheckStatus" role="status" aria-live="polite">Checking cached model data…</p>
+            </div>
             <div id="modelManager"></div>
             <p>Measurements are taken from actual synthesized audio, not GPU adapter detection. Local figures are warm, after engine initialization; server timings exclude audio playback. The ONNX page probe still takes explicit IPA, so its timings are not directly comparable with the other backends. Separate real-browser checks exercise limited dictionary-backed English synthesis.</p>
         </section>
