@@ -43,6 +43,12 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         };
         global.caches = { open: jest.fn() };
         global.fetch = jest.fn();
+        // Simulate extension-origin Web Locks in jsdom. The coordinator's
+        // scheduling and cancellation behavior has separate contract tests.
+        Object.defineProperty(global.navigator, 'locks', {
+            configurable: true,
+            value: { request: jest.fn(async (name, options, task) => task()) },
+        });
         global.Response = class Response {};
         global.TransformStream = class TransformStream {};
         URL.createObjectURL = jest.fn(() => 'blob:test-audio');
@@ -328,6 +334,14 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(media.querySelector('.model-download').disabled).toBe(false);
         expect(installModel).not.toHaveBeenCalled();
         expect(removeModel).not.toHaveBeenCalled();
+    });
+
+    test('local benchmark takes a shared lease through inference and diagnostics', async () => {
+        const { message } = await runProbe();
+        expect(message).toContain('Full-clip synthesis p50');
+        expect(navigator.locks.request).toHaveBeenCalledWith(
+            'kokoro-model-data-v1', { mode: 'shared' }, expect.any(Function));
+        expect(engine.synthesizePhonemes).toHaveBeenCalledTimes(3);
     });
 
     test('a model removal blocks inference until cache mutation completes', async () => {
