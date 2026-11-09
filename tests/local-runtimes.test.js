@@ -18,9 +18,12 @@ function fakeCache(manifest) {
         const key = 'https://kokoro-model-cache.invalid/model-data/' +
             manifest.provider + '/' + manifest.revision + '/' + manifest.variant + '/' + asset.path;
         const bytes = new Uint8Array(asset.bytes); // Original, tiny test fixture.
-        // The real provider now hashes loaded bytes; keep these simulated cache
-        // entries consistent with the pinned format instead of bypassing checks.
-        asset.integrity = 'sha256-' + createHash('sha256').update(bytes).digest('base64');
+        // ONNX now checks the already-loaded bytes; make its tiny fabricated
+        // fixtures match the manifest. MediaPipe/dictionary fixtures retain
+        // their original pinned metadata for their separate test contracts.
+        if (manifest.provider === 'onnx') {
+            asset.integrity = 'sha256-' + createHash('sha256').update(bytes).digest('base64');
+        }
         contents.set(key, new Response(bytes, {
             headers: {
                 'x-kokoro-integrity': asset.integrity,
