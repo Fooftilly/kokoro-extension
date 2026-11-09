@@ -139,6 +139,9 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         const recheck = document.getElementById('refreshModelCache');
         expect(row.querySelector('.model-download').disabled).toBe(false);
         installedModels.add('cpu');
+        Object.defineProperty(document, 'visibilityState', {
+            configurable: true, value: 'visible',
+        });
         document.dispatchEvent(new Event('visibilitychange'));
         await waitFor(() => row.querySelector('.model-status').textContent.includes('Installed'));
         expect(row.querySelector('.model-download').disabled).toBe(true);
