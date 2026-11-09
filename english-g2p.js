@@ -93,7 +93,14 @@ export async function loadCachedEnglishLexicon(browserApi, cacheStorage, fetchIm
     const asset = manifest.assets[0];
     const response = await cache.match(store.key(manifest, asset));
     if (!store.isCurrent(response, asset)) {
-        throw new Error('Verified English dictionary missing from local cache');
+        throw new Error('English pronunciation dictionary missing from local cache');
+    }
+    // Cache headers only prove which digest was expected when downloaded.
+    // Verify the actual small dictionary bytes before using them as phonemes.
+    // Clone so reading the digest does not consume the response used for parsing.
+    if (!await store.cachedBytesMatch(response.clone(), asset)) {
+        throw new Error('English dictionary failed SHA-256 integrity verification. ' +
+            'Use Verify cached data, then Download to repair it.');
     }
     const contents = await response.text();
     if (contents.length > 8_000_000) throw new RangeError('Pronunciation dictionary exceeds safety bound');
