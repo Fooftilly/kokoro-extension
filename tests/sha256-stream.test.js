@@ -107,36 +107,27 @@ describe('bounded-memory SHA-256 from locally cached MediaPipe Blob', () => {
         }, during.signal)).rejects.toHaveProperty('name', 'AbortError');
     });
 
-    test('abort wakes a stalled Blob stream read and releases its reader', async () => {
-        const controller = new AbortController();
-        const content = new Uint8Array([1, 2, 3, 4]);
-        let markReading;
-        const reading = new Promise(resolve => { markReading = resolve; });
-        const cancelled = jest.fn();
-        let pendingRead = null;
-        const blob = {
-            size: content.byteLength,
-            stream: () => {
-                const stream = new ReadableStream({
-                    pull() {
-                        markReading();
-                        return new Promise(() => {}); // No more data unless cancelled.
-                    },
-                    cancel() { cancelled(); },
-                });
-                pendingRead = stream;
-                return stream;
-            },
-        };
-        const check = blobMatchesSha256(blob, {
-            bytes: content.byteLength, integrity: digest(content),
-        }, controller.signal);
-        await reading;
-        controller.abort();
-        await expect(check).rejects.toHaveProperty('name', 'AbortError');
-        expect(cancelled).toHaveBeenCalledTimes(1);
-        expect(pendingRead.locked).toBe(false);
-    });
+    test.each([
+        ['resolves normally', () => undefined],
+        ['never settles', () => new Promise(() => {})],
+        ['rejects', () => Promise.reject(new Error('Storage cancellation failed'))],
+    ])('abort releases a pending cache read even if source cancellation %s',
+        async (_name, cancelSource) => {
+            const data = new Uint8Array([1, 2, 3, 4]);
+            const controller = new AbortController();
+            const sourceCancel = jest.fn(cancelSource);
+            // A stream with no chunks leaves reader.read() pending. The
+            // verifier starts the read synchronously before returning.
+            const stream = new ReadableStream({ cancel: sourceCancel });
+            const verification = blobMatchesSha256({
+                size: data.length, stream: () => stream,
+            }, { bytes: data.length, integrity: digest(data) }, controller.signal);
+            expect(stream.locked).toBe(true);
+            controller.abort();
+            await expect(verification).rejects.toHaveProperty('name', 'AbortError');
+            expect(sourceCancel).toHaveBeenCalledTimes(1);
+            expect(stream.locked).toBe(false);
+        });
 
     test('success and checksum mismatch do not cancel a completed stream', async () => {
         const content = new Uint8Array([3, 2, 1, 0]);
