@@ -135,6 +135,6 @@ export async function blobMatchesSha256(blob, asset) {
         reader.releaseLock();
     }
     if (hash.totalBytes !== asset.bytes) return false;
-    const actual = 'sha256-' + btoa(String.fromCharCode(...hash.digest()));
+    const actual = 'sha256-' + globalThis.btoa(String.fromCharCode(...hash.digest()));
     return actual === asset.integrity;
 }
