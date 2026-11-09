@@ -95,7 +95,8 @@ function setMessage(node, message) {
 }
 
 function displayModelStatus(entry, ready, totalBytes) {
-    if (ready) return 'Installed (' + formatModelSize(totalBytes) + ' verified model data)';
+    if (ready) return 'Installed (' + formatModelSize(totalBytes) +
+        ' cached). Use Verify cached data to recheck SHA-256 integrity.';
     return 'Not installed — ' + formatModelSize(entry.totalBytes) + ' opt-in download';
 }
 

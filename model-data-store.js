@@ -125,6 +125,9 @@ export class ModelDataStore {
             '/' + manifest.variant + '/' + asset.path, CACHE_KEY_ORIGIN).href;
     }
 
+    // Fast metadata-only check: cached integrity/length headers indicate a
+    // previously accepted download, not proof its stored bytes are still intact.
+    // Use verifyAndPruneCorrupt() for an explicit full SHA-256 recheck.
     async status(manifest) {
         const totalBytes = validateModelManifest(manifest);
         const cache = await this.cacheStorage.open(CACHE_NAME);
