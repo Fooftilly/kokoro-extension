@@ -239,6 +239,10 @@ async function recheckModelCache() {
             setMessage(summary, 'Cannot recheck model cache: ' + String(error.message || error));
         }
     } finally {
+        if ((epoch !== modelStatusEpoch || activeModelOperation) &&
+            summary.textContent === 'Rechecking installed model data…') {
+            setMessage(summary, 'Cache recheck superseded by a model operation.');
+        }
         recheckInProgress = false;
         updateRecheckButton();
     }
