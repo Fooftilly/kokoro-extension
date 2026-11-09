@@ -278,7 +278,8 @@ def main():
             result = {"status": "passed" if metrics.get("success") else "failed",
                 "browser": driver.capabilities.get("browserVersion"), "extensionId": addon_id,
                 "preflight": preflight, "provider": provider, provider: metrics,
-                "offlineInference": True,
+                "offlineAttempted": True,
+                "offlineInference": metrics.get("success") is True,
                 "cachePopulation": "verified pinned files preloaded over loopback; extension Download UI not exercised",
                 "scope": "Firefox/Linux MV3 offline " + provider +
                          " CPU synthesis; no subjective audio-quality or long-form acceptance"}

@@ -283,7 +283,7 @@ try {
         }
             console.log(result.success ? 'REAL MODEL INFERENCE' : 'MODEL INFERENCE FAILURE', result);
             results.push({ provider: manifest.provider, variant: manifest.variant,
-                offlineInference: true, ...result });
+                offlineAttempted: true, offlineInference: result.success === true, ...result });
             await saveReport();
         } catch (error) {
             const failure = { provider: manifest.provider, variant: manifest.variant,
