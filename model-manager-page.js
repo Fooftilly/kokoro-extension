@@ -620,12 +620,12 @@ if (page) {
     document.getElementById('refreshModelCache').addEventListener('click', () => {
         void recheckModelCache();
     });
-    window.addEventListener('focus', () => {
-        void recheckModelCache();
-    });
-    document.addEventListener('visibilitychange', () => {
+    const onFocus = () => { void recheckModelCache(); };
+    const onVisible = () => {
         if (document.visibilityState === 'visible') void recheckModelCache();
-    });
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
     const initialReads = variants.map(registerModel);
     void Promise.allSettled(initialReads).then(() => {
         initialStatusPending = false;
@@ -634,6 +634,8 @@ if (page) {
         updateRecheckButton();
     });
     window.addEventListener('pagehide', () => {
+        window.removeEventListener('focus', onFocus);
+        document.removeEventListener('visibilitychange', onVisible);
         for (const url of lastAudioUrl.values()) URL.revokeObjectURL(url);
         for (const controller of inFlightDownloads.values()) controller.abort();
         for (const engine of engineByKey.values()) void engine.close();
