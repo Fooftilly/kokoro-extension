@@ -44,7 +44,7 @@ export class OnnxKokoroProvider {
 
     async initialize() {
         // Never install a new session before an in-progress release completes.
-        if (this.closing) await this.closing;
+        if (this.closing !== null) await this.closing;
         if (this.session) return;
         if (this.loading !== null) return this.loading;
         this.loading = this.loadEngine();
@@ -128,7 +128,7 @@ export class OnnxKokoroProvider {
     }
 
     async close() {
-        if (this.closing) return this.closing;
+        if (this.closing !== null) return this.closing;
         const closing = (async () => {
             // Initialization and optional lexicon parsing can finish after
             // teardown was requested. Join both before clearing references.

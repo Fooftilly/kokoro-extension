@@ -38,7 +38,7 @@ export class MediaPipeKokoroProvider {
     async initialize() {
         // A caller arriving during teardown must not start a new SDK load
         // until the previous engine and its Blob URL have been released.
-        if (this.closing) await this.closing;
+        if (this.closing !== null) await this.closing;
         if (this.engine) return;
         if (this.loading !== null) return this.loading;
         this.loading = this.loadEngine();
@@ -110,11 +110,11 @@ export class MediaPipeKokoroProvider {
     }
 
     async close() {
-        if (this.closing) return this.closing;
+        if (this.closing !== null) return this.closing;
         // SDK initialization may still be constructing the native engine.
         // Join it before taking teardown ownership.
         const closing = (async () => {
-            if (this.loading) {
+            if (this.loading !== null) {
                 try {
                     await this.loading;
                 } catch {
