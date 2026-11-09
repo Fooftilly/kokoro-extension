@@ -19,6 +19,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
     let installModel;
     let removeModel;
     let delayedCpuStatus;
+    let failStatusFor;
     beforeEach(async () => {
         jest.resetModules();
         dictionaryReady = true;
@@ -27,6 +28,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         installModel = jest.fn();
         removeModel = jest.fn();
         delayedCpuStatus = null;
+        failStatusFor = new Set();
         document.body.innerHTML = `
             <div id="modelManager"></div>
             <textarea id="benchmarkText">Hello world.</textarea>
@@ -59,6 +61,9 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         require('../onnx-provider.js').OnnxKokoroProvider.mockImplementation(() => engine);
         require('../model-data-store.js').ModelDataStore.mockImplementation(() => ({
             status: jest.fn(async manifest => {
+                if (failStatusFor.has(manifest.provider + '-' + manifest.variant)) {
+                    throw new Error('Cache status unavailable');
+                }
                 if (delayedCpuStatus && manifest.provider === 'mediapipe' &&
                     manifest.variant === 'cpu') await delayedCpuStatus;
                 const ready = (manifest.provider === 'onnx' && manifest.variant === 'q8') ||
@@ -200,6 +205,129 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         await waitFor(() => row.querySelector('progress').value === 100);
         expect(download.disabled).toBe(true); // installed model
         expect(row.querySelector('.model-status').textContent).toContain('Installed');
+    });
+
+    test('unlocking other rows preserves previous ONNX synthesis diagnostics', async () => {
+        const { row, message } = await runProbe();
+        expect(message).toContain('Full-clip synthesis p50');
+        expect(message).toContain('Experimental English text audio is ready');
+        global.browser.permissions.request.mockResolvedValue(false);
+        const other = document.querySelector('[data-variant="mediapipe-cpu"]');
+        other.querySelector('.model-download').click();
+        await waitFor(() => other.querySelector('.model-status').textContent
+            .includes('permission was denied'));
+        expect(row.querySelector('.model-status').textContent).toBe(message);
+        expect(row.querySelector('.model-test').disabled).toBe(false);
+    });
+
+    test('a failed status check after removal never revives stale installed controls', async () => {
+        const row = document.querySelector('[data-variant="onnx-q8"]');
+        expect(row.querySelector('.model-test').disabled).toBe(false);
+        failStatusFor.add('onnx-q8');
+        row.querySelector('.model-remove').click();
+        await waitFor(() => row.querySelector('.model-status').textContent
+            .includes('Cannot inspect model cache after removal'));
+        expect(removeModel).toHaveBeenCalledTimes(1);
+        expect(row.querySelector('.model-status').textContent)
+            .toContain('Cache status unavailable');
+        expect(row.querySelector('.model-download').disabled).toBe(false);
+        expect(row.querySelector('.model-test').disabled).toBe(true);
+        expect(row.querySelector('.model-remove').disabled).toBe(true);
+        expect(row.querySelector('.model-choose').disabled).toBe(true);
+        expect(row.querySelector('.model-status').textContent).not.toContain('Installed');
+        expect(engine.synthesizePhonemes).not.toHaveBeenCalled();
+    });
+
+    test('ONNX inference prevents dictionary removal and other model downloads', async () => {
+        const onnx = document.querySelector('[data-variant="onnx-q8"]');
+        const dictionary = document.querySelector('[data-variant="dictionary-english"]');
+        const mediapipe = document.querySelector('[data-variant="mediapipe-cpu"]');
+        expect(dictionary.querySelector('.model-remove').disabled).toBe(false);
+        expect(mediapipe.querySelector('.model-download').disabled).toBe(false);
+        let finishInference;
+        engine.synthesizePhonemes.mockImplementationOnce(() => new Promise(resolve => {
+            finishInference = resolve;
+        }));
+        onnx.querySelector('.model-test').click();
+        await waitFor(() => typeof finishInference === 'function');
+        expect(dictionary.querySelector('.model-remove').disabled).toBe(true);
+        expect(mediapipe.querySelector('.model-download').disabled).toBe(true);
+        dictionary.querySelector('.model-remove').click();
+        mediapipe.querySelector('.model-download').click();
+        expect(removeModel).not.toHaveBeenCalled();
+        expect(global.browser.permissions.request).not.toHaveBeenCalled();
+
+        finishInference(audio());
+        await waitFor(() => onnx.querySelector('.model-status').textContent
+            .includes('Full-clip synthesis p50'));
+        expect(dictionary.querySelector('.model-remove').disabled).toBe(false);
+        expect(mediapipe.querySelector('.model-download').disabled).toBe(false);
+    });
+
+    test('download blocks concurrent ONNX inference and dictionary removal, then unlocks', async () => {
+        global.browser.permissions.request.mockResolvedValue(true);
+        let finishInstall;
+        installModel.mockImplementation(() => new Promise(resolve => {
+            finishInstall = resolve;
+        }));
+        const mediapipe = document.querySelector('[data-variant="mediapipe-cpu"]');
+        const onnx = document.querySelector('[data-variant="onnx-q8"]');
+        const dictionary = document.querySelector('[data-variant="dictionary-english"]');
+        mediapipe.querySelector('.model-download').click();
+        await waitFor(() => typeof finishInstall === 'function');
+        expect(onnx.querySelector('.model-test').disabled).toBe(true);
+        expect(dictionary.querySelector('.model-remove').disabled).toBe(true);
+        onnx.querySelector('.model-test').click();
+        dictionary.querySelector('.model-remove').click();
+        expect(engine.initialize).not.toHaveBeenCalled();
+        expect(removeModel).not.toHaveBeenCalled();
+        installedModels.add('cpu');
+        finishInstall();
+        await waitFor(() => mediapipe.querySelector('progress').value === 100);
+        expect(onnx.querySelector('.model-test').disabled).toBe(false);
+        expect(dictionary.querySelector('.model-remove').disabled).toBe(false);
+    });
+
+    test('dictionary removal blocks ONNX tests even when a model variant is installed', async () => {
+        const dictionary = document.querySelector('[data-variant="dictionary-english"]');
+        const onnx = document.querySelector('[data-variant="onnx-q8"]');
+        let finishRemoval;
+        removeModel.mockImplementation(() => new Promise(resolve => {
+            finishRemoval = resolve;
+        }));
+        dictionary.querySelector('.model-remove').click();
+        await waitFor(() => typeof finishRemoval === 'function');
+        expect(onnx.querySelector('.model-test').disabled).toBe(true);
+        onnx.querySelector('.model-test').click();
+        expect(engine.initialize).not.toHaveBeenCalled();
+        dictionaryReady = false;
+        finishRemoval();
+        await waitFor(() => dictionary.querySelector('.model-status').textContent
+            .includes('Not installed'));
+        expect(onnx.querySelector('.model-test').disabled).toBe(false);
+        expect(dictionary.querySelector('.model-remove').disabled).toBe(true);
+    });
+
+    test('denied download permission releases every model row without writing cache', async () => {
+        let resolvePermission;
+        global.browser.permissions.request.mockImplementation(() => new Promise(resolve => {
+            resolvePermission = resolve;
+        }));
+        const media = document.querySelector('[data-variant="mediapipe-cpu"]');
+        const onnx = document.querySelector('[data-variant="onnx-q8"]');
+        const dictionary = document.querySelector('[data-variant="dictionary-english"]');
+        media.querySelector('.model-download').click();
+        expect(typeof resolvePermission).toBe('function');
+        expect(onnx.querySelector('.model-test').disabled).toBe(true);
+        expect(dictionary.querySelector('.model-remove').disabled).toBe(true);
+        resolvePermission(false);
+        await waitFor(() => media.querySelector('.model-status').textContent
+            .includes('permission was denied'));
+        expect(onnx.querySelector('.model-test').disabled).toBe(false);
+        expect(dictionary.querySelector('.model-remove').disabled).toBe(false);
+        expect(media.querySelector('.model-download').disabled).toBe(false);
+        expect(installModel).not.toHaveBeenCalled();
+        expect(removeModel).not.toHaveBeenCalled();
     });
 
     test('a model removal blocks inference until cache mutation completes', async () => {

@@ -21,6 +21,52 @@ function entryManifest(entry) {
 const engineByKey = new Map();
 const inFlightDownloads = new Map();
 const lastAudioUrl = new Map();
+const modelRows = new Map();
+let activeModelOperation = null; // one mutating/inference operation per manager page
+
+function beginModelOperation(entry, ui, kind) {
+    if (activeModelOperation || ui.busy) return false;
+    const prior = new Map();
+    activeModelOperation = { key: entry.key, prior };
+    ui.busy = kind;
+    // ONNX variants share a downloadable pronunciation dictionary. Removing
+    // another row's assets while its engine is testing can corrupt inference.
+    // Also avoid competing large writes and tests within this manager page.
+    for (const [key, other] of modelRows) {
+        if (key === entry.key) continue;
+        prior.set(key, {
+            download: other.download.disabled, remove: other.remove.disabled,
+            test: other.test.disabled, choose: other.choose.disabled,
+        });
+        other.download.disabled = true;
+        other.remove.disabled = true;
+        other.test.disabled = true;
+        other.choose.disabled = true;
+    }
+    return true;
+}
+
+function finishModelOperation(entry, ui) {
+    const operation = activeModelOperation;
+    ui.busy = null;
+    activeModelOperation = null;
+    for (const [key, previous] of operation?.prior || []) {
+        const other = modelRows.get(key);
+        if (!other) continue;
+        // Initial cache reads may have settled while another row was locked.
+        // Prefer their latest status, while retaining previously validated
+        // MediaPipe selection when the cached model is still installed.
+        if (other.lastStatus) {
+            const mayChoose = previous.choose === false && other.lastStatus.ready;
+            applyModelStatus(other.entry, other, other.lastStatus, { updateMessage: false });
+            if (mayChoose) other.choose.disabled = false;
+        } else {
+            for (const [name, disabled] of Object.entries(previous)) {
+                other[name].disabled = disabled;
+            }
+        }
+    }
+}
 
 function cacheStore() {
     return new ModelDataStore({
@@ -88,14 +134,21 @@ function createModelRow(entry) {
     return { row, status, progress, download, remove, test, choose, audio, busy: null };
 }
 
-function applyModelStatus(entry, ui, state) {
-    setMessage(ui.status, displayModelStatus(entry, state.ready, state.totalBytes));
+function applyModelStatus(entry, ui, state, { updateMessage = true } = {}) {
+    ui.lastStatus = state;
+    // Refreshing unrelated controls must not erase benchmark results or an
+    // inference failure that still describes the current model.
+    if (updateMessage && !ui.busy) {
+        setMessage(ui.status, displayModelStatus(entry, state.ready, state.totalBytes));
+    }
     // A delayed cache-status response must not re-enable controls while
-    // permission, install, inference, or removal is still in progress.
-    ui.test.disabled = !!ui.busy || entry.provider === 'dictionary' || !state.ready;
-    ui.remove.disabled = !!ui.busy || !state.storedBytes;
-    ui.download.disabled = ui.busy === 'download' ? false : !!ui.busy || state.ready;
-    if (ui.busy || !state.ready) ui.choose.disabled = true;
+    // any model or dependency is being downloaded, removed, or used in a test.
+    const blocked = !!ui.busy ||
+        !!(activeModelOperation && activeModelOperation.key !== entry.key);
+    ui.test.disabled = blocked || entry.provider === 'dictionary' || !state.ready;
+    ui.remove.disabled = blocked || !state.storedBytes;
+    ui.download.disabled = ui.busy === 'download' ? false : blocked || state.ready;
+    if (blocked || !state.ready) ui.choose.disabled = true;
 }
 
 async function refresh(entry, ui) {
@@ -110,8 +163,7 @@ async function doDownload(entry, ui) {
         running.abort();
         return;
     }
-    if (ui.busy) return;
-    ui.busy = 'permission';
+    if (!beginModelOperation(entry, ui, 'permission')) return;
     // Request only the selected asset host, before the first await so
     // Firefox preserves the user gesture. Neither host is granted by default.
     const manifest = entryManifest(entry);
@@ -142,7 +194,7 @@ async function doDownload(entry, ui) {
     } catch (error) {
         ui.progress.hidden = true;
         setMessage(ui.status, 'Cannot request model download permission: ' + String(error.message || error));
-        ui.busy = null;
+        finishModelOperation(entry, ui);
         restorePermissionActions();
         return;
     }
@@ -154,7 +206,7 @@ async function doDownload(entry, ui) {
         ui.progress.hidden = true;
         setMessage(ui.status, 'Model download permission failed: ' + String(error.message || error));
         ui.download.disabled = false;
-        ui.busy = null;
+        finishModelOperation(entry, ui);
         restorePermissionActions();
         return;
     }
@@ -162,7 +214,7 @@ async function doDownload(entry, ui) {
         ui.progress.hidden = true;
         setMessage(ui.status, 'Model download host permission was denied.');
         ui.download.disabled = false;
-        ui.busy = null;
+        finishModelOperation(entry, ui);
         restorePermissionActions();
         return;
     }
@@ -199,10 +251,10 @@ async function doDownload(entry, ui) {
             // Apply the fetched state synchronously after releasing the lock.
             // There is no window in which Download can start again before the
             // last cache inspection has established whether installation succeeded.
-            ui.busy = null;
+            finishModelOperation(entry, ui);
             applyModelStatus(entry, ui, state);
         } catch (error) {
-            ui.busy = null;
+            finishModelOperation(entry, ui);
             ui.download.disabled = false;
             ui.remove.disabled = priorRemoveDisabled;
             ui.test.disabled = priorTestDisabled;
@@ -229,8 +281,8 @@ function currentEngine(entry) {
 }
 
 async function testEngine(entry, ui) {
-    if (entry.provider === 'dictionary' || ui.busy) return;
-    ui.busy = 'test';
+    if (entry.provider === 'dictionary' ||
+        !beginModelOperation(entry, ui, 'test')) return;
     const priorRemoveDisabled = ui.remove.disabled;
     ui.remove.disabled = true; // Never evict a model while its runtime is executing.
     ui.test.disabled = true;
@@ -314,7 +366,7 @@ async function testEngine(entry, ui) {
     } catch (error) {
         setMessage(ui.status, 'Actual inference failed: ' + String(error.message || error));
     } finally {
-        ui.busy = null;
+        finishModelOperation(entry, ui);
         ui.test.disabled = false;
         ui.remove.disabled = priorRemoveDisabled;
     }
@@ -322,13 +374,14 @@ async function testEngine(entry, ui) {
 
 function registerModel(entry) {
     const ui = createModelRow(entry);
+    ui.entry = entry;
+    modelRows.set(entry.key, ui);
     page.appendChild(ui.row);
     ui.download.addEventListener('click', () => {
         void doDownload(entry, ui);
     });
     ui.remove.addEventListener('click', async () => {
-        if (ui.busy) return;
-        ui.busy = 'remove';
+        if (!beginModelOperation(entry, ui, 'remove')) return;
         ui.remove.disabled = true;
         ui.download.disabled = true;
         ui.test.disabled = true;
@@ -356,9 +409,29 @@ function registerModel(entry) {
         } catch (error) {
             setMessage(ui.status, 'Removal failed: ' + String(error.message || error));
         } finally {
-            ui.busy = null;
-            await refresh(entry, ui);
-            ui.choose.disabled = true;
+            let finalState = null;
+            try {
+                finalState = await refresh(entry, ui);
+            } catch (error) {
+                setMessage(ui.status, 'Cannot inspect model cache after removal: ' +
+                    String(error.message || error));
+            } finally {
+                finishModelOperation(entry, ui);
+                // A successful test must not authorize a removed model.
+                ui.choose.disabled = true;
+                if (finalState) {
+                    applyModelStatus(entry, ui, finalState);
+                } else {
+                    // A successful removal followed by a failed status probe
+                    // must NOT revive stale "Installed" controls. Permit a
+                    // fresh install to repair any partially removed assets.
+                    ui.lastStatus = null;
+                    ui.download.disabled = false;
+                    ui.remove.disabled = true;
+                    ui.test.disabled = true;
+                    ui.choose.disabled = true;
+                }
+            }
         }
     });
     ui.test.addEventListener('click', () => {
