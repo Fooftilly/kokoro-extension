@@ -272,6 +272,28 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(dictionary.querySelector('.model-remove').disabled).toBe(true);
     });
 
+    test('denied download permission releases every model row without writing cache', async () => {
+        let resolvePermission;
+        global.browser.permissions.request.mockImplementation(() => new Promise(resolve => {
+            resolvePermission = resolve;
+        }));
+        const media = document.querySelector('[data-variant="mediapipe-cpu"]');
+        const onnx = document.querySelector('[data-variant="onnx-q8"]');
+        const dictionary = document.querySelector('[data-variant="dictionary-english"]');
+        media.querySelector('.model-download').click();
+        expect(typeof resolvePermission).toBe('function');
+        expect(onnx.querySelector('.model-test').disabled).toBe(true);
+        expect(dictionary.querySelector('.model-remove').disabled).toBe(true);
+        resolvePermission(false);
+        await waitFor(() => media.querySelector('.model-status').textContent
+            .includes('permission was denied'));
+        expect(onnx.querySelector('.model-test').disabled).toBe(false);
+        expect(dictionary.querySelector('.model-remove').disabled).toBe(false);
+        expect(media.querySelector('.model-download').disabled).toBe(false);
+        expect(installModel).not.toHaveBeenCalled();
+        expect(removeModel).not.toHaveBeenCalled();
+    });
+
     test('a model removal blocks inference until cache mutation completes', async () => {
         const row = document.querySelector('[data-variant="onnx-q8"]');
         let finishRemoval;
