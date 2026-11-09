@@ -1,4 +1,5 @@
 /** @jest-environment jsdom */
+import { installImmediateModelLocks } from './helpers/model-locks.js';
 import { AudioManager } from '../audio-manager.js';
 import { MediaPipeKokoroProvider } from '../mediapipe-provider.js';
 
@@ -37,12 +38,7 @@ describe('local Kokoro synthesis is serialized across reading-session resets (#5
         URL.createObjectURL = jest.fn()
             .mockReturnValueOnce('blob:next').mockReturnValue('blob:latest');
         URL.revokeObjectURL = jest.fn();
-        Object.defineProperty(global.navigator, 'locks', {
-            configurable: true,
-            // Browser's origin-wide lock scheduling is tested separately;
-            // these tests exercise AudioManager's session/cache lifecycle.
-            value: { request: jest.fn(async (name, options, work) => work()) },
-        });
+        installImmediateModelLocks();
         manager = new AudioManager();
     });
 
