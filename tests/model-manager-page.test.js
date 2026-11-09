@@ -1,7 +1,7 @@
 /**
-import { installImmediateModelLocks } from './helpers/model-locks.js';
  * @jest-environment jsdom
  */
+import { installImmediateModelLocks } from './helpers/model-locks.js';
 jest.mock('../model-data-store.js', () => ({
     ModelDataStore: jest.fn(),
     formatModelSize: bytes => (bytes / 1000000).toFixed(1) + ' MB',
