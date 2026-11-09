@@ -118,6 +118,10 @@ describe('ONNX model manager English synthesis diagnostics', () => {
     test('explicit SHA-256 verification checks installed bytes without requesting download permissions', async () => {
         const row = document.querySelector('[data-variant="onnx-q8"]');
         const button = row.querySelector('.model-verify');
+        // A quick cache-status read must not claim the stored bytes were rehashed.
+        expect(row.querySelector('.model-status').textContent)
+            .toContain('Use Verify cached data to recheck SHA-256 integrity');
+        expect(verifyModel).not.toHaveBeenCalled();
         expect(button.disabled).toBe(false);
         expect(document.querySelector('[data-variant="mediapipe-cpu"] .model-verify').disabled)
             .toBe(true); // No recognized cached model data.
