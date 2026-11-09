@@ -47,10 +47,12 @@ function beginModelOperation(entry, ui, kind) {
         if (key === entry.key) continue;
         prior.set(key, {
             download: other.download.disabled, remove: other.remove.disabled,
+            verify: other.verify.disabled,
             test: other.test.disabled, choose: other.choose.disabled,
         });
         other.download.disabled = true;
         other.remove.disabled = true;
+        other.verify.disabled = true;
         other.test.disabled = true;
         other.choose.disabled = true;
     }
@@ -144,6 +146,12 @@ function createModelRow(entry) {
     remove.textContent = 'Remove';
     remove.className = 'model-remove';
     remove.disabled = true;
+    const verify = document.createElement('button');
+    verify.type = 'button';
+    verify.textContent = 'Verify cached data';
+    verify.className = 'model-verify';
+    verify.disabled = true;
+    verify.title = 'Reads cached model bytes and removes confirmed corrupt files; may use significant memory.';
     const test = document.createElement('button');
     test.type = 'button';
     test.textContent = 'Test synthesized audio (3 runs)';
@@ -159,12 +167,13 @@ function createModelRow(entry) {
         choose.hidden = true;
         test.disabled = true;
     }
-    actions.append(download, remove, test, choose);
+    actions.append(download, remove, verify, test, choose);
     const audio = document.createElement('audio');
     audio.controls = true;
     audio.hidden = true;
     row.append(title, provenance, status, storageWarning, progress, actions, audio);
-    return { row, status, storageWarning, progress, download, remove, test, choose, audio, busy: null };
+    return { row, status, storageWarning, progress, download, remove, verify, test, choose,
+        audio, busy: null };
 }
 
 function applyModelStatus(entry, ui, state, { updateMessage = true } = {}) {
@@ -180,6 +189,7 @@ function applyModelStatus(entry, ui, state, { updateMessage = true } = {}) {
         !!(activeModelOperation && activeModelOperation.key !== entry.key);
     ui.test.disabled = blocked || entry.provider === 'dictionary' || !state.ready;
     ui.remove.disabled = blocked || !state.storedBytes;
+    ui.verify.disabled = blocked || !state.storedBytes;
     ui.download.disabled = ui.busy === 'download' ? false : blocked || state.ready;
     if (blocked || !state.ready) ui.choose.disabled = true;
 }
@@ -290,12 +300,15 @@ async function doDownload(entry, ui) {
     // is still active. Keep cache mutation and inference mutually exclusive.
     const priorRemoveDisabled = ui.remove.disabled;
     const priorTestDisabled = ui.test.disabled;
+    const priorVerifyDisabled = ui.verify.disabled;
     const priorChooseDisabled = ui.choose.disabled;
     ui.remove.disabled = true;
+    ui.verify.disabled = true;
     ui.test.disabled = true;
     ui.choose.disabled = true;
     const restorePermissionActions = () => {
         ui.remove.disabled = priorRemoveDisabled;
+        ui.verify.disabled = priorVerifyDisabled;
         ui.test.disabled = priorTestDisabled;
         ui.choose.disabled = priorChooseDisabled;
     };
@@ -383,6 +396,7 @@ async function doDownload(entry, ui) {
             finishModelOperation(entry, ui);
             ui.download.disabled = false;
             ui.remove.disabled = priorRemoveDisabled;
+            ui.verify.disabled = priorVerifyDisabled;
             ui.test.disabled = priorTestDisabled;
             ui.choose.disabled = true;
             if (!downloadError) downloadError = 'Cannot inspect model cache: ' + String(error.message || error);
@@ -410,7 +424,9 @@ async function testEngine(entry, ui) {
     if (entry.provider === 'dictionary' ||
         !beginModelOperation(entry, ui, 'test')) return;
     const priorRemoveDisabled = ui.remove.disabled;
+    const priorVerifyDisabled = ui.verify.disabled;
     ui.remove.disabled = true; // Never evict a model while its runtime is executing.
+    ui.verify.disabled = true;
     ui.test.disabled = true;
     ui.choose.disabled = true;
     const validationKey = 'mediapipeValidatedRevision:' + entry.variant;
@@ -498,6 +514,7 @@ async function testEngine(entry, ui) {
         finishModelOperation(entry, ui);
         ui.test.disabled = false;
         ui.remove.disabled = priorRemoveDisabled;
+        ui.verify.disabled = priorVerifyDisabled;
     }
 }
 
@@ -513,6 +530,7 @@ function registerModel(entry) {
         if (!beginModelOperation(entry, ui, 'remove')) return;
         ui.remove.disabled = true;
         ui.download.disabled = true;
+        ui.verify.disabled = true;
         ui.test.disabled = true;
         ui.choose.disabled = true;
         try {
@@ -558,6 +576,7 @@ function registerModel(entry) {
                     ui.lastStatus = null;
                     ui.download.disabled = false;
                     ui.remove.disabled = true;
+                    ui.verify.disabled = true;
                     ui.test.disabled = true;
                     ui.choose.disabled = true;
                 }
