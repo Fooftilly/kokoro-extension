@@ -18,7 +18,7 @@ export function withModelDataLock(work, {
     return lockManager.request(MODEL_CACHE_LOCK, {
         mode, ...(signal ? { signal } : {}),
     }, async () => {
-        if (signal?.aborted) throw new DOMException('Model operation cancelled', 'AbortError');
+        if (signal?.aborted) throw new globalThis.DOMException('Model operation cancelled', 'AbortError');
         return work();
     });
 }
