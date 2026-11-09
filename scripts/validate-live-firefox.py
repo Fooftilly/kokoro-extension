@@ -213,6 +213,20 @@ def main():
             """, manifests, server.server_port, token)
             if not cache_result.get("success"):
                 raise RuntimeError("Firefox extension cache preload failed: " + str(cache_result))
+            # Require the actual packaged Firefox extension to load cached
+            # executable assets, weights, and dictionary while Firefox is
+            # offline. Geckodriver commands remain local browser automation.
+            driver.set_context("chrome")
+            try:
+                browser_offline = driver.execute_script("""
+                    Services.io.manageOfflineStatus = false;
+                    Services.io.offline = true;
+                    return Services.io.offline;
+                """)
+            finally:
+                driver.set_context("content")
+            if not browser_offline or not driver.execute_script("return navigator.onLine === false;"):
+                raise RuntimeError("Firefox did not enter offline mode before inference")
             metrics = driver.execute_async_script("""
                 const provider=arguments[0];
                 const done=arguments[arguments.length-1];
@@ -264,7 +278,9 @@ def main():
             result = {"status": "passed" if metrics.get("success") else "failed",
                 "browser": driver.capabilities.get("browserVersion"), "extensionId": addon_id,
                 "preflight": preflight, "provider": provider, provider: metrics,
-                "scope": "Firefox/Linux MV3 real " + provider +
+                "offlineInference": True,
+                "cachePopulation": "verified pinned files preloaded over loopback; extension Download UI not exercised",
+                "scope": "Firefox/Linux MV3 offline " + provider +
                          " CPU synthesis; no subjective audio-quality or long-form acceptance"}
             print("FIREFOX REAL INFERENCE", json.dumps(result), flush=True)
             if not metrics.get("success"):
@@ -276,6 +292,16 @@ def main():
         finally:
             output.write_text(json.dumps(result, indent=2), encoding="utf-8")
             if driver:
+                try:
+                    driver.set_context("chrome")
+                    driver.execute_script("""
+                        Services.io.offline = false;
+                        Services.io.manageOfflineStatus = true;
+                    """)
+                except Exception:
+                    # A failed browser must still be shut down; do not turn
+                    # cleanup errors into an acceptance success.
+                    pass
                 driver.quit()
             if server:
                 server.shutdown()

@@ -12,6 +12,8 @@ on:
       - 'scripts/validate-live-firefox.py'
       - 'mediapipe-provider.js'
       - 'onnx-provider.js'
+      - 'sha256-stream.js'
+      - 'english-g2p.js'
   workflow_dispatch:
 
 permissions:
@@ -52,10 +54,14 @@ jobs:
           path: dist/runtime-acceptance/report.json
           if-no-files-found: ignore
 
-  firefox-onnx-inference:
-    name: Real ONNX Firefox MV3 phoneme synthesis
+  firefox-local-inference:
+    name: Real ${{ matrix.provider }} Firefox MV3 offline synthesis
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [onnx, mediapipe]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -83,6 +89,7 @@ jobs:
         env:
           KOKORO_LIVE_DOWNLOAD: '1'
           FIREFOX_BINARY: ${{ steps.firefox.outputs.firefox-path }}
+          KOKORO_FIREFOX_PROVIDER: ${{ matrix.provider }}
           MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: '1'
         run: |
           "$RUNNER_TEMP/firefox-selenium/bin/python" scripts/validate-live-firefox.py
@@ -90,6 +97,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: kokoro-live-firefox-report
+          name: kokoro-live-firefox-${{ matrix.provider }}-report
           path: dist/runtime-acceptance/firefox.json
           if-no-files-found: ignore

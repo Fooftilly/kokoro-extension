@@ -31,3 +31,24 @@ A WebGPU adapter does **not** establish ONNX graph support or MediaPipe GPU comp
 - Original Kokoro ONNX model interface: https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX
 
 No source code from those projects is copied into this extension by this PR.
+
+
+## Strict offline inference acceptance — follow-up to #55
+
+The opt-in real-browser harnesses now explicitly switch the browser offline
+**after** transferring checksum-verified pinned assets into the extension's
+Cache Storage, and **before** constructing the MediaPipe or ONNX inference
+session. They check offline state and require playable, finite, non-silent PCM
+from locally packaged SDK/WASM in the extension origin. Chromium restores
+connectivity between separate provider runs solely to preload the next model;
+any optional failure diagnostics are clearly reported as outside offline
+acceptance. Firefox restores its network state during cleanup.
+
+The manual-only GitHub Actions workflow tests Chromium and separate Firefox
+ONNX/MediaPipe CPU sessions, attaching browser reports. It intentionally
+does **not** run on ordinary master pushes or PRs because the live models are
+large. CI only syntax-checks the harnesses. The tests still use a runner-side
+authenticated loopback transfer of pinned model bytes: they **do not** yet
+exercise the actual Download/Cancel/Retry/Remove UI, upstream fetch CORS/SRI,
+cache persistence after a browser restart, storage eviction, browser quota,
+or user-perceived audio quality. Those remain separate #55 acceptance gates.
