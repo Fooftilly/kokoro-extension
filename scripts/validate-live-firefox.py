@@ -511,7 +511,7 @@ def main():
                 raise RuntimeError("Firefox MV3 extension-page WASM compilation unavailable: " + str(preflight))
 
             # Check real pinned dictionary CORS/SRI download in the packaged
-            # extension itself. Model-weight preload below remains loopback.
+            # extension itself. Weight preload is loopback only in legacy mode.
             dictionary_cache_acceptance = driver.execute_async_script("""
                 const done=arguments[arguments.length-1];
                 (async()=>{
@@ -818,6 +818,47 @@ def main():
                     finally{try{await engine?.close()}catch{}}
                 })().catch(e=>done({success:false,provider,error:String(e)}));
             """, provider)
+
+            if origin_download and metrics.get("success"):
+                # The engine is closed before this point. Remove must work
+                # while Firefox remains offline and not alter ONNX cache data.
+                media_row = '[data-variant="mediapipe-cpu"]'
+                driver.find_element(
+                    By.CSS_SELECTOR, media_row + " .model-remove").click()
+                WebDriverWait(driver, 30).until(
+                    lambda d: "Not installed" in d.find_element(
+                        By.CSS_SELECTOR, media_row + " .model-status").text
+                    and not d.find_element(
+                        By.CSS_SELECTOR, media_row + " .model-remove").is_enabled()
+                    and d.find_element(
+                        By.CSS_SELECTOR, media_row + " .model-download").is_enabled()
+                )
+                removal = driver.execute_async_script("""
+                    const done=arguments[arguments.length-1];
+                    (async()=>{
+                        if(navigator.onLine!==false)
+                            throw Error('Firefox unexpectedly online during removal');
+                        const [{ModelDataStore},{manifestForVariant}]=await Promise.all([
+                            import('./model-data-store.js'),import('./model-catalog.js')]);
+                        const store=new ModelDataStore({
+                            origin:browser.runtime.getURL('/'),cacheStorage:caches,
+                            fetchImpl:()=>{throw Error('Removal must never fetch model bytes')},
+                            responseClass:Response,streamClass:TransformStream});
+                        const model=await store.status(manifestForVariant('mediapipe','cpu'));
+                        const otherProvider=await Promise.all(['q8','q8f16'].map(
+                            async variant=>({variant,...await store.status(
+                                manifestForVariant('onnx',variant))})));
+                        return {model,otherProvider,networkOffline:true};
+                    })().then(done,e=>done({error:String(e)}));
+                """)
+                if (removal.get("error") or
+                        removal.get("model", {}).get("ready") or
+                        removal.get("model", {}).get("storedBytes") != 0 or
+                        removal.get("otherProvider") !=
+                        origin_model_acceptance["otherProviderBefore"]):
+                    raise RuntimeError("Firefox offline model Remove affected other "
+                                       "providers or left cached bytes: " + str(removal))
+                origin_model_acceptance["offlineUiRemoval"] = removal
             result = {"status": "passed" if metrics.get("success") else "failed",
                 "browser": driver.capabilities.get("browserVersion"), "extensionId": addon_id,
                 "preflight": preflight, "provider": provider, provider: metrics,
