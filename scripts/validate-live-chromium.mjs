@@ -23,6 +23,10 @@ const providerFilter = process.env.KOKORO_LIVE_PROVIDER || 'both';
 if (!['both', 'onnx', 'mediapipe', 'dictionary'].includes(providerFilter)) {
     throw Error('KOKORO_LIVE_PROVIDER must be both, onnx, mediapipe, or dictionary');
 }
+const originDownload = process.env.KOKORO_CHROMIUM_ORIGIN_DOWNLOAD === '1';
+if (originDownload && providerFilter !== 'mediapipe') {
+    throw Error('Real origin-download acceptance requires KOKORO_LIVE_PROVIDER=mediapipe');
+}
 const variants = [
     ...(providerFilter === 'mediapipe' || providerFilter === 'dictionary' ? [] :
         [dictionaryManifest(), manifestForVariant('onnx', 'q8')]),
@@ -35,7 +39,7 @@ await mkdir(sourceDir, { recursive: true });
 await mkdir(resultsDir, { recursive: true });
 const local = new Map();
 const byFilename = new Map();
-for (const manifest of variants) for (const asset of manifest.assets) {
+for (const manifest of (originDownload ? [] : variants)) for (const asset of manifest.assets) {
     const expected = Buffer.from(asset.integrity.slice(7), 'base64').toString('hex');
     if (local.has(expected)) continue;
     const file = path.join(sourceDir, expected);
@@ -67,6 +71,125 @@ for (const manifest of variants) for (const asset of manifest.assets) {
     byFilename.set(path.posix.basename(asset.path), file);
     // The test fixture indexes the exact public model filenames as well as hashes.
 }
+
+/**
+ * Independently exercise the real packaged extension's MediaPipe Download
+ * control against its pinned upstream HTTPS URLs. Do not use the preloaded
+ * loopback fixture: it would bypass consent, browser CORS and download UI.
+ * This intentionally runs only when the separate heavyweight mode is opted in.
+ */
+async function downloadMediaPipeFromOfficialOrigin(page, manifest) {
+    if (manifest.provider !== 'mediapipe' || manifest.variant !== 'cpu') {
+        throw Error('Only the pinned MediaPipe CPU variant is supported here');
+    }
+    const rowSelector = '[data-variant="mediapipe-cpu"]';
+    // Force a true install instead of accidentally passing on a previous run's
+    // cache. This explicit harness action never downloads replacement data.
+    await page.evaluate(async ({ provider, variant }) => {
+        const [{ ModelDataStore }, { manifestForVariant }] = await Promise.all([
+            import('./model-data-store.js'), import('./model-catalog.js'),
+        ]);
+        const store = new ModelDataStore({
+            origin: chrome.runtime.getURL('/'), cacheStorage: caches,
+            fetchImpl: () => { throw Error('Unexpected fetch during test reset'); },
+            responseClass: Response, streamClass: TransformStream,
+        });
+        await store.remove(manifestForVariant(provider, variant));
+    }, { provider: manifest.provider, variant: manifest.variant });
+    await page.reload();
+    await page.waitForFunction(selector => {
+        const row = document.querySelector(selector);
+        return row?.querySelector('.model-status')?.textContent?.includes('Not installed') &&
+            row?.querySelector('.model-download')?.disabled === false;
+    }, rowSelector, { timeout: 30000 });
+
+    // Count actual received stream bytes (not advertised Content-Length or
+    // nominal model size). Instrument only this extension page's fetch; reject
+    // any unpinned HTTP(S) request during the user-initiated download.
+    await page.evaluate(expectedUrls => {
+        const original = globalThis.fetch.bind(globalThis);
+        const expected = new Set(expectedUrls);
+        const transfer = { requests: [], bytesByUrl: {}, completedUrls: [], unexpectedUrls: [] };
+        globalThis.__officialModelTransfer = transfer;
+        globalThis.fetch = async (input, options) => {
+            const url = String(input?.url || input);
+            if (/^https?:/i.test(url) && !expected.has(url)) {
+                transfer.unexpectedUrls.push(url);
+                throw Error('Unexpected network URL during official model install: ' + url);
+            }
+            if (!expected.has(url)) return original(input, options);
+            transfer.requests.push(url);
+            const response = await original(input, options);
+            if (!response.ok || !response.body) return response;
+            transfer.bytesByUrl[url] = 0;
+            const body = response.body.pipeThrough(new TransformStream({
+                transform(chunk, controller) {
+                    transfer.bytesByUrl[url] += chunk.byteLength;
+                    controller.enqueue(chunk);
+                },
+                flush() { transfer.completedUrls.push(url); },
+            }));
+            return new Response(body, {
+                status: response.status, statusText: response.statusText,
+                headers: response.headers,
+            });
+        };
+    }, manifest.assets.map(asset => asset.url));
+    const button = page.locator(rowSelector + ' .model-download');
+    await button.click();
+    await page.waitForFunction(selector => {
+        const status = document.querySelector(selector)?.querySelector('.model-status')?.textContent || '';
+        return status.includes('Installed') || /permission.*(denied|failed)|Cannot request|Download failed/i.test(status);
+    }, rowSelector, { timeout: 900000 });
+    const uiStatus = await page.locator(rowSelector + ' .model-status').textContent();
+    if (!uiStatus.includes('Installed')) {
+        throw Error('MediaPipe official download did not complete through UI: ' + uiStatus);
+    }
+    const report = await page.evaluate(async ({ provider, variant, selector }) => {
+        const [{ ModelDataStore }, { manifestForVariant }] = await Promise.all([
+            import('./model-data-store.js'), import('./model-catalog.js'),
+        ]);
+        const m = manifestForVariant(provider, variant);
+        const store = new ModelDataStore({
+            origin: chrome.runtime.getURL('/'), cacheStorage: caches,
+            fetchImpl: () => { throw Error('Unexpected fetch during post-download verification'); },
+            responseClass: Response, streamClass: TransformStream,
+        });
+        const status = await store.status(m);
+        const verified = await store.verifyAndPruneCorrupt(m);
+        const transfer = globalThis.__officialModelTransfer;
+        const row = document.querySelector(selector);
+        const permission = await chrome.permissions.contains({
+            origins: [new URL(m.assets[0].url).origin + '/*'],
+        });
+        const expectedUrls = m.assets.map(asset => asset.url);
+        const receivedBytes = expectedUrls.reduce((sum, url) =>
+            sum + (transfer.bytesByUrl[url] || 0), 0);
+        return {
+            success: true, provider, variant, permission,
+            expectedBytes: m.assets.reduce((sum, asset) => sum + asset.bytes, 0),
+            receivedBytes, cachedBytes: status.storedBytes,
+            requests: transfer.requests, completedUrls: transfer.completedUrls,
+            unexpectedUrls: transfer.unexpectedUrls,
+            fullSha256Verified: verified.ready && verified.removedAssets === 0 &&
+                verified.missingAssets === 0,
+            progressPercent: row.querySelector('.model-download-progress').value,
+            uiStatus: row.querySelector('.model-status').textContent,
+        };
+    }, { provider: manifest.provider, variant: manifest.variant, selector: rowSelector });
+    const expectedUrls = manifest.assets.map(asset => asset.url);
+    if (!report.permission || !report.fullSha256Verified ||
+        report.receivedBytes !== report.expectedBytes ||
+        report.cachedBytes !== report.expectedBytes || report.progressPercent !== 100 ||
+        report.unexpectedUrls.length ||
+        report.requests.length !== expectedUrls.length ||
+        expectedUrls.some((url, i) =>
+            report.requests[i] !== url || !report.completedUrls.includes(url))) {
+        throw Error('Official MediaPipe UI transfer verification failed: ' + JSON.stringify(report));
+    }
+    return report;
+}
+
 let extensionOrigin = null;
 // A random per-run URL token authenticates Chrome requests, including MV3 GET
 // requests for which Chrome intentionally omits the Origin header.
@@ -185,26 +308,35 @@ try {
     const saveReport = () => writeFile(path.join(resultsDir, 'report.json'), JSON.stringify({
         testedAt: new Date().toISOString(), browser: preflight.browser, preflight,
         dictionaryCacheAcceptance, browserRestartAcceptance,
-        dictionaryUiDownloadAcceptance, results,
+        dictionaryUiDownloadAcceptance, results, originDownload,
         providerFilter,
         networkRequirement: providerFilter === 'dictionary'
             ? 'offline during dictionary persistence/verification; no inference attempted'
             : 'offline during every local synthesis probe',
-        cachePopulation: providerFilter === 'dictionary'
-            ? 'no model weights downloaded; direct pinned dictionary HTTPS and model-manager UI acceptance only'
-            : 'heavy weights preloaded from verified pinned bytes over authenticated loopback; dictionary official HTTPS and model-manager UI checked separately',
-        scope: providerFilter === 'dictionary'
-            ? 'Chromium dictionary-only UI/Cache acceptance; no large speech models or audio synthesis'
-            : 'Linux Chromium MV3 extension origin; no subjective audio-quality or complete download-manager acceptance',
+        cachePopulation: originDownload
+            ? 'MediaPipe weights downloaded through real user-facing Download control from official HTTPS origin; no loopback preload'
+            : providerFilter === 'dictionary'
+                ? 'no model weights downloaded; direct pinned dictionary HTTPS and model-manager UI acceptance only'
+                : 'heavy weights preloaded from verified pinned bytes over authenticated loopback; dictionary official HTTPS and model-manager UI checked separately',
+        scope: originDownload
+            ? 'Chromium MediaPipe CPU official-origin UI download, pinned bytes/SHA-256 and offline synthesis; ONNX and Firefox untested'
+            : providerFilter === 'dictionary'
+                ? 'Chromium dictionary-only UI/Cache acceptance; no large speech models or audio synthesis'
+                : 'Linux Chromium MV3 extension origin; no subjective audio-quality or complete download-manager acceptance',
     }, null, 2));
     for (const manifest of variants) {
         const page = await context.newPage();
         let crashed = false;
         let stage = 'model-cache-population';
+        let originModelAcceptance = null;
         page.on('pageerror', error => errors.push(String(error)));
         page.on('crash', () => { crashed = true; });
         try {
             await page.goto('chrome-extension://' + extensionId + '/benchmark.html');
+            if (originDownload) {
+                stage = 'official-origin-download-via-real-model-manager-ui';
+                originModelAcceptance = await downloadMediaPipeFromOfficialOrigin(page, manifest);
+            } else {
             await page.evaluate(async ({ manifest, port, transferToken }) => {
             const { ModelDataStore } = await import('./model-data-store.js');
             const store = new ModelDataStore({ origin: chrome.runtime.getURL('/'),
@@ -221,6 +353,7 @@ try {
             }
             if (!(await store.status(manifest)).ready) throw Error('Verified browser model cache incomplete');
         }, { manifest, port: server.address().port, transferToken });
+            }
             if (manifest.provider === 'dictionary') continue; // verified/cache-preloaded; no inference engine
             // Require the cached SDK, WASM, voices, model and dictionary to
             // produce speech with all HTTP(S) requests disabled by Chromium.
@@ -281,7 +414,7 @@ try {
         // Diagnose whether the upstream task requires the original .litertlm
         // filename instead of a Blob URL, without changing production behavior.
         // This probe has no text/network fallback beyond our authenticated loopback model server.
-        if (!result.success && manifest.provider === 'mediapipe') {
+        if (!result.success && manifest.provider === 'mediapipe' && !originDownload) {
             // The existing upstream-model path diagnostics may fetch from the
             // authenticated loopback server. Run them only AFTER the strict
             // offline inference result has already failed; never count them
@@ -345,11 +478,12 @@ try {
         }
             console.log(result.success ? 'REAL MODEL INFERENCE' : 'MODEL INFERENCE FAILURE', result);
             results.push({ provider: manifest.provider, variant: manifest.variant,
-                offlineAttempted: true, offlineInference: result.success === true, ...result });
+                offlineAttempted: true, offlineInference: result.success === true,
+                originModelAcceptance, ...result });
             await saveReport();
         } catch (error) {
             const failure = { provider: manifest.provider, variant: manifest.variant,
-                success: false, crashed, stage, error: String(error) };
+                success: false, crashed, stage, originModelAcceptance, error: String(error) };
             results.push(failure);
             await saveReport();
             console.error('MODEL VALIDATION ABORTED', failure);
