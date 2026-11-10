@@ -1,4 +1,5 @@
 // Live model-backed Chromium MV3 validation. Explicit opt-in and no model weights in git.
+import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
@@ -24,6 +25,11 @@ if (!['both', 'onnx', 'mediapipe', 'dictionary'].includes(providerFilter)) {
     throw Error('KOKORO_LIVE_PROVIDER must be both, onnx, mediapipe, or dictionary');
 }
 const originDownload = process.env.KOKORO_CHROMIUM_ORIGIN_DOWNLOAD === '1';
+const headedConsent = process.env.KOKORO_CHROMIUM_HEADFUL_CONSENT === '1';
+if (originDownload && (!headedConsent || !process.env.DISPLAY)) {
+    throw Error('Official-origin Chromium acceptance needs headed X11 consent; ' +
+        'run the manual scope with KOKORO_CHROMIUM_HEADFUL_CONSENT=1 under Xvfb');
+}
 if (originDownload && !['mediapipe', 'onnx'].includes(providerFilter)) {
     throw Error('Real origin-download acceptance requires KOKORO_LIVE_PROVIDER=mediapipe or onnx');
 }
@@ -365,7 +371,7 @@ try {
     const { chromium } = await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE_PATH).href);
     const extension = path.resolve('dist/chrome');
     context = await chromium.launchPersistentContext(path.join(sourceDir, 'profile'), {
-        channel: 'chromium', headless: true,
+        channel: 'chromium', headless: !originDownload,
         args: ['--disable-extensions-except=' + extension, '--load-extension=' + extension],
     });
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', { timeout: 30000 });
