@@ -221,3 +221,38 @@ a manual run must supply evidence of actual browser/host behavior, including
 whether headless Chromium can present or approve the optional permission.
 It does not establish ONNX or Firefox origin-download acceptance, real
 quota eviction, subjective speech quality, or native permission-dialog UX.
+
+
+## Chromium ONNX q8 official-host origin download (#55)
+
+Choose `acceptance_scope: chromium-onnx-origin` in the manual **Real Kokoro MV3
+model acceptance** workflow (or use `KOKORO_LIVE_DOWNLOAD=1`,
+`KOKORO_LIVE_PROVIDER=onnx` and
+`KOKORO_CHROMIUM_ORIGIN_DOWNLOAD=1` with an explicitly pinned Playwright
+module). This runs the production extension's ONNX q8 **Download** button,
+including its permission request, against the two pinned Hugging Face assets:
+the quantized ONNX graph and the af voice embedding. The packaged tokenizer
+is not downloaded. The separate official pinned CMUdict asset is downloaded,
+hashed, and retained by the existing dictionary preflight, not silently
+requested by ONNX installation.
+
+The run clears only the selected ONNX q8 cache entries, requires Not installed
+before clicking Download, measures actual response-stream bytes per pinned
+asset URL, rejects any unexpected HTTP(S) request, verifies exact cumulative
+byte count and SHA-256 for both ONNX assets, and requires the actual UI to
+display the manifest total and reach 100%. The test also checks full dictionary
+integrity and confirms the preexisting MediaPipe CPU/GPU cache status is
+unchanged across the ONNX installation. It then performs the existing
+**network-offline** ONNX synthesis checks, including English dictionary
+synthesis, and browser-restart cache persistence checks.
+
+The resulting `report.json` has `providerFilter: "onnx"`,
+`originDownload: true` and an `originModelAcceptance` object with expected,
+transferred and cached bytes, actual asset requests, permission, integrity,
+dictionary and cross-provider status. No model weights or new permissions are
+added to the extension or ordinary CI.
+
+This mode must be **run manually** before claiming passing real-browser
+acceptance. In particular, headless optional permission prompts may prevent
+the download and should fail the run visibly. It does not establish Firefox
+origin-download behavior, native UI prompt quality, or real quota eviction.

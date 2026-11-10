@@ -24,8 +24,8 @@ if (!['both', 'onnx', 'mediapipe', 'dictionary'].includes(providerFilter)) {
     throw Error('KOKORO_LIVE_PROVIDER must be both, onnx, mediapipe, or dictionary');
 }
 const originDownload = process.env.KOKORO_CHROMIUM_ORIGIN_DOWNLOAD === '1';
-if (originDownload && providerFilter !== 'mediapipe') {
-    throw Error('Real origin-download acceptance requires KOKORO_LIVE_PROVIDER=mediapipe');
+if (originDownload && !['mediapipe', 'onnx'].includes(providerFilter)) {
+    throw Error('Real origin-download acceptance requires KOKORO_LIVE_PROVIDER=mediapipe or onnx');
 }
 const variants = [
     ...(providerFilter === 'mediapipe' || providerFilter === 'dictionary' ? [] :
@@ -73,16 +73,17 @@ for (const manifest of (originDownload ? [] : variants)) for (const asset of man
 }
 
 /**
- * Independently exercise the real packaged extension's MediaPipe Download
+ * Independently exercise the real packaged extension's local-model Download
  * control against its pinned upstream HTTPS URLs. Do not use the preloaded
  * loopback fixture: it would bypass consent, browser CORS and download UI.
  * This intentionally runs only when the separate heavyweight mode is opted in.
  */
-async function downloadMediaPipeFromOfficialOrigin(page, manifest) {
-    if (manifest.provider !== 'mediapipe' || manifest.variant !== 'cpu') {
-        throw Error('Only the pinned MediaPipe CPU variant is supported here');
+async function downloadModelFromOfficialOrigin(page, manifest) {
+    if (!((manifest.provider === 'mediapipe' && manifest.variant === 'cpu') ||
+        (manifest.provider === 'onnx' && manifest.variant === 'q8'))) {
+        throw Error('Only pinned MediaPipe CPU and ONNX q8 variants are supported here');
     }
-    const rowSelector = '[data-variant="mediapipe-cpu"]';
+    const rowSelector = '[data-variant="' + manifest.provider + '-' + manifest.variant + '"]';
     // Force a true install instead of accidentally passing on a previous run's
     // cache. This explicit harness action never downloads replacement data.
     await page.evaluate(async ({ provider, variant }) => {
@@ -96,6 +97,23 @@ async function downloadMediaPipeFromOfficialOrigin(page, manifest) {
         });
         await store.remove(manifestForVariant(provider, variant));
     }, { provider: manifest.provider, variant: manifest.variant });
+    // The ONNX engine is independently installable: keep any earlier
+    // MediaPipe CPU/GPU cache entries (including partial entries) untouched.
+    // Snapshot metadata before this user's model install, without fetching.
+    const otherProviderBefore = manifest.provider === 'onnx'
+        ? await page.evaluate(async () => {
+            const [{ ModelDataStore }, { manifestForVariant }] = await Promise.all([
+                import('./model-data-store.js'), import('./model-catalog.js'),
+            ]);
+            const store = new ModelDataStore({
+                origin: chrome.runtime.getURL('/'), cacheStorage: caches,
+                fetchImpl: () => { throw Error('Snapshot unexpectedly fetched data'); },
+                responseClass: Response, streamClass: TransformStream,
+            });
+            return Promise.all(['cpu', 'gpu'].map(async variant => ({
+                variant, ...await store.status(manifestForVariant('mediapipe', variant)),
+            })));
+        }) : null;
     await page.reload();
     await page.waitForFunction(selector => {
         const row = document.querySelector(selector);
@@ -145,7 +163,7 @@ async function downloadMediaPipeFromOfficialOrigin(page, manifest) {
     }, rowSelector, { timeout: 900000 });
     const uiStatus = await page.locator(rowSelector + ' .model-status').textContent();
     if (!uiStatus.includes('Installed')) {
-        throw Error('MediaPipe official download did not complete through UI: ' + uiStatus);
+        throw Error(manifest.provider + ' official download did not complete through UI: ' + uiStatus);
     }
     const report = await page.evaluate(async ({ provider, variant, selector }) => {
         const [{ ModelDataStore, formatModelSize }, { manifestForVariant }] = await Promise.all([
@@ -159,6 +177,14 @@ async function downloadMediaPipeFromOfficialOrigin(page, manifest) {
         });
         const status = await store.status(m);
         const verified = await store.verifyAndPruneCorrupt(m);
+        const dictionary = provider === 'onnx'
+            ? await store.verifyAndPruneCorrupt((await import('./model-catalog.js')).dictionaryManifest())
+            : null;
+        const mediaPipeUntouched = provider === 'onnx'
+            ? await Promise.all(['cpu', 'gpu'].map(async choice => ({
+                variant: choice, ...await store.status(manifestForVariant('mediapipe', choice)),
+            })))
+            : null;
         const transfer = globalThis.__officialModelTransfer;
         const row = document.querySelector(selector);
         const permission = await chrome.permissions.contains({
@@ -171,6 +197,11 @@ async function downloadMediaPipeFromOfficialOrigin(page, manifest) {
             success: true, provider, variant, permission,
             expectedBytes: m.assets.reduce((sum, asset) => sum + asset.bytes, 0),
             receivedBytes, cachedBytes: status.storedBytes,
+            verifiedAssets: m.assets.map(asset => ({ path: asset.path, bytes: asset.bytes })),
+            dictionaryIntegrityVerified: dictionary
+                ? dictionary.ready && dictionary.removedAssets === 0 && dictionary.missingAssets === 0
+                : null,
+            otherProviderStatusAfter: mediaPipeUntouched,
             requests: transfer.requests, completedUrls: transfer.completedUrls,
             unexpectedUrls: transfer.unexpectedUrls,
             fullSha256Verified: verified.ready && verified.removedAssets === 0 &&
@@ -184,6 +215,14 @@ async function downloadMediaPipeFromOfficialOrigin(page, manifest) {
         };
     }, { provider: manifest.provider, variant: manifest.variant, selector: rowSelector });
     const expectedUrls = manifest.assets.map(asset => asset.url);
+    if (manifest.provider === 'onnx' &&
+        (!report.dictionaryIntegrityVerified ||
+            JSON.stringify(otherProviderBefore) !==
+                JSON.stringify(report.otherProviderStatusAfter))) {
+        throw Error('ONNX install damaged dictionary or altered MediaPipe cache: ' +
+            JSON.stringify({ dictionaryVerified: report.dictionaryIntegrityVerified,
+                otherProviderBefore, otherProviderAfter: report.otherProviderStatusAfter }));
+    }
     if (!report.permission || !report.fullSha256Verified ||
         !report.displayedSizeMatchesManifest ||
         report.receivedBytes !== report.expectedBytes ||
@@ -192,9 +231,9 @@ async function downloadMediaPipeFromOfficialOrigin(page, manifest) {
         report.requests.length !== expectedUrls.length ||
         expectedUrls.some((url, i) =>
             report.requests[i] !== url || !report.completedUrls.includes(url))) {
-        throw Error('Official MediaPipe UI transfer verification failed: ' + JSON.stringify(report));
+        throw Error('Official ' + manifest.provider + ' UI transfer verification failed: ' + JSON.stringify(report));
     }
-    return report;
+    return { ...report, otherProviderStatusBefore: otherProviderBefore };
 }
 
 let extensionOrigin = null;
@@ -321,17 +360,20 @@ try {
             ? 'offline during dictionary persistence/verification; no inference attempted'
             : 'offline during every local synthesis probe',
         cachePopulation: originDownload
-            ? 'MediaPipe weights downloaded through real user-facing Download control from official HTTPS origin; no loopback preload'
+            ? providerFilter + ' weights downloaded through real user-facing Download control from official HTTPS origin; no loopback preload'
             : providerFilter === 'dictionary'
                 ? 'no model weights downloaded; direct pinned dictionary HTTPS and model-manager UI acceptance only'
                 : 'heavy weights preloaded from verified pinned bytes over authenticated loopback; dictionary official HTTPS and model-manager UI checked separately',
         scope: originDownload
-            ? 'Chromium MediaPipe CPU official-origin UI download, pinned bytes/SHA-256 and offline synthesis; ONNX and Firefox untested'
+            ? 'Chromium ' + providerFilter + ' CPU official-origin UI download, pinned bytes/SHA-256 and offline synthesis; other engine and Firefox untested'
             : providerFilter === 'dictionary'
                 ? 'Chromium dictionary-only UI/Cache acceptance; no large speech models or audio synthesis'
                 : 'Linux Chromium MV3 extension origin; no subjective audio-quality or complete download-manager acceptance',
     }, null, 2));
     for (const manifest of variants) {
+        // Direct HTTPS CMUdict cache acceptance already ran in the preflight.
+        // Never substitute a loopback copy for the dictionary in origin mode.
+        if (originDownload && manifest.provider === 'dictionary') continue;
         const page = await context.newPage();
         let crashed = false;
         let stage = 'model-cache-population';
@@ -342,7 +384,7 @@ try {
             await page.goto('chrome-extension://' + extensionId + '/benchmark.html');
             if (originDownload) {
                 stage = 'official-origin-download-via-real-model-manager-ui';
-                originModelAcceptance = await downloadMediaPipeFromOfficialOrigin(page, manifest);
+                originModelAcceptance = await downloadModelFromOfficialOrigin(page, manifest);
             } else {
             await page.evaluate(async ({ manifest, port, transferToken }) => {
             const { ModelDataStore } = await import('./model-data-store.js');
