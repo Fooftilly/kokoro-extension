@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 import urllib3
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.firefox.service import Service as FirefoxService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 
@@ -588,7 +589,10 @@ def _open_persistent_firefox(profile):
     options.add_argument("-profile")
     options.add_argument(str(profile))
     options.set_preference("xpinstall.signatures.required", False)
-    browser = webdriver.Firefox(options=options)
+    # Geckodriver 0.37.1 requires this explicit flag for CHROME-context
+    # AddonManager/Services checks; Firefox browser arguments are insufficient.
+    service = FirefoxService(service_args=["--allow-system-access"])
+    browser = webdriver.Firefox(options=options, service=service)
     browser.set_script_timeout(250)
     # Geckodriver exposes the effective on-disk profile. Refuse a silently
     # cloned/temporary profile: it would make the restart test meaningless.
