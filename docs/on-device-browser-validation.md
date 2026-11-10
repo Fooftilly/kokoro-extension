@@ -70,3 +70,32 @@ gestures or the model-manager Download/Remove controls. Live workflow
 execution remains necessary; ordinary PR CI only syntax-checks these harnesses.
 Browser restarts, cancellation, quota, eviction, full model downloads via
 official host permissions, and user-facing progress remain outstanding.
+
+
+## Persistence and simulated eviction acceptance (#55)
+
+The manual-only Chromium harness now keeps a verified official dictionary in
+Cache Storage until it shuts down the **actual Chromium browser process** and
+starts a new persistent context using the same profile and unpacked extension.
+With network access disabled, it verifies the extension ID did not change,
+checks that all previously populated model entries are still present (fast
+metadata-only status), and verifies the dictionary's actual SHA-256. It then
+simulates storage eviction of the dictionary, checks that missing data is
+detected without any automatic network access, explicitly re-downloads and
+verifies only that dictionary, and finally removes it. The result is recorded
+as `browserRestartAcceptance` in the report. Model weight byte-for-byte
+integrity after restart is **not** established by these metadata-only checks.
+
+Firefox's live harness uses a **temporary** add-on, which is not retained
+across browser-process restart. It therefore verifies the dictionary after
+reloading the extension page within the same Firefox process, then exercises
+the same simulated eviction/explicit SHA-256 repair/removal sequence. It reports
+`dictionaryReloadAcceptance.browserProcessRestarted: false` to avoid conflating
+page reload with a true restart. Genuine Firefox browser-restart persistence,
+model-manager UI interactions, actual browser quota eviction, and full-model
+direct host-permission downloads still need their own acceptance runs.
+
+The cache-eviction step deletes a known test entry deliberately; this checks
+recovery logic but **does not** simulate the browser's automatic quota-driven
+eviction heuristics. Neither script runs in normal PR CI or downloads real
+weights without the explicit manual live-acceptance workflow.

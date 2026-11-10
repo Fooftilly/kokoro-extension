@@ -180,6 +180,7 @@ def main():
                 lambda d: d.execute_script("return Boolean(window.KokoroBenchmark)")
             )
             dictionary_cache_acceptance = None
+            dictionary_reload_acceptance = None
             preflight = driver.execute_async_script("""
                 const done=arguments[arguments.length-1];
                 window.KokoroBenchmark.inspectCapabilities().then(done, e=>done({error:String(e)}));
@@ -213,17 +214,58 @@ def main():
                     await store.install(manifest);
                     if(networkFetches!==1)
                         throw Error('Checksum-matching retry fetched again');
-                    await store.remove(manifest);
-                    if((await store.status(manifest)).ready)
-                        throw Error('Dictionary remained installed after removal');
+                    // Keep this entry for the extension-page reload probe.
                     return {success:true,provider:'dictionary',byteCount:reportedBytes,
                         directOfficialHttpsFetches:networkFetches,verifiedSha256:true,
-                        cachedRetryWithoutFetch:true,explicitRemoval:true};
+                        cachedRetryWithoutFetch:true,retainedForPageReload:true};
                 })().then(done,e=>done({success:false,error:String(e)}));
             """)
             if not dictionary_cache_acceptance.get("success"):
                 raise RuntimeError("Firefox direct dictionary cache acceptance failed: " +
                                    str(dictionary_cache_acceptance))
+            # Temporary Firefox add-ons are not retained across browser
+            # restarts. Exercise a fresh extension document instead; never
+            # mislabel this as browser-process persistence acceptance.
+            driver.refresh()
+            WebDriverWait(driver, 20).until(
+                lambda d: d.execute_script("return Boolean(window.KokoroBenchmark)")
+            )
+            dictionary_reload_acceptance = driver.execute_async_script("""
+                const done=arguments[arguments.length-1];
+                (async()=>{
+                    const [{ModelDataStore},{dictionaryManifest}]=await Promise.all([
+                        import('./model-data-store.js'),import('./model-catalog.js')]);
+                    const manifest=dictionaryManifest();
+                    let fetches=0;
+                    const store=new ModelDataStore({
+                        origin:browser.runtime.getURL('/'),cacheStorage:caches,
+                        fetchImpl:(...args)=>{fetches++;return fetch(...args)},
+                        responseClass:Response,streamClass:TransformStream});
+                    if(!(await store.status(manifest)).ready)
+                        throw Error('Dictionary missing after extension page reload');
+                    const verified=await store.verifyAndPruneCorrupt(manifest);
+                    if(!verified.ready||verified.removedAssets||fetches)
+                        throw Error('Dictionary integrity lost on page reload');
+                    const cache=await caches.open('kokoro-model-data-v1');
+                    if(!await cache.delete(store.key(manifest,manifest.assets[0])))
+                        throw Error('Unable to simulate dictionary eviction');
+                    if((await store.status(manifest)).ready||fetches)
+                        throw Error('Evicted dictionary not detected or fetched implicitly');
+                    await store.install(manifest);
+                    if(fetches!==1||(await store.verifyAndPruneCorrupt(manifest)).ready!==true)
+                        throw Error('Explicit dictionary repair failed');
+                    await store.remove(manifest);
+                    if((await store.status(manifest)).ready)
+                        throw Error('Explicit dictionary removal failed');
+                    return {success:true,extensionPageReloaded:true,
+                        browserProcessRestarted:false,
+                        dictionarySha256Retained:true,simulatedEvictionDetected:true,
+                        explicitRepairFetches:fetches,explicitRemoval:true};
+                })().then(done,e=>done({success:false,error:String(e)}));
+            """)
+            if not dictionary_reload_acceptance.get("success"):
+                raise RuntimeError("Firefox dictionary reload/eviction acceptance failed: " +
+                                   str(dictionary_reload_acceptance))
             # Use only pinned bytes verified on the runner, and copy to the
             # extension's cache. The loopback server never receives TTS text.
             cache_result = driver.execute_async_script("""
@@ -317,6 +359,7 @@ def main():
                 "browser": driver.capabilities.get("browserVersion"), "extensionId": addon_id,
                 "preflight": preflight, "provider": provider, provider: metrics,
                 "dictionaryCacheAcceptance": dictionary_cache_acceptance,
+                "dictionaryReloadAcceptance": dictionary_reload_acceptance,
                 "offlineAttempted": True,
                 "offlineInference": metrics.get("success") is True,
                 "cachePopulation": "model weights preloaded over loopback; dictionary tested with real pinned HTTPS CORS/SRI; Download UI not exercised",
@@ -330,6 +373,8 @@ def main():
             result["error"] = str(exc)
             if "dictionary_cache_acceptance" in locals():
                 result["dictionaryCacheAcceptance"] = dictionary_cache_acceptance
+            if "dictionary_reload_acceptance" in locals():
+                result["dictionaryReloadAcceptance"] = dictionary_reload_acceptance
             raise
         finally:
             output.write_text(json.dumps(result, indent=2), encoding="utf-8")
