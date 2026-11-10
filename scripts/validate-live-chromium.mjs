@@ -556,7 +556,7 @@ try {
                 return row?.querySelector('.model-status')?.textContent?.includes('Download cancelled') &&
                     row?.querySelector('.model-download')?.textContent?.startsWith('Download') &&
                     row?.querySelector('.model-download')?.disabled === false &&
-                    row?.querySelector('.model-progress')?.hidden === true;
+                    row?.querySelector('.model-download-progress')?.hidden === true;
             }, null, { timeout: 30000 });
             const cancelled = await reopened.evaluate(async () => {
                 const [{ ModelDataStore }, { dictionaryManifest }] = await Promise.all([
@@ -589,7 +589,7 @@ try {
                 const row = document.querySelector('[data-variant="dictionary-english"]');
                 return row?.querySelector('.model-status')?.textContent?.includes('Installed') &&
                     row?.querySelector('.model-remove')?.disabled === false &&
-                    row?.querySelector('.model-progress')?.value === 100;
+                    row?.querySelector('.model-download-progress')?.value === 100;
             }, null, { timeout: 120000 });
             const installed = await reopened.evaluate(async () => {
                 const [{ ModelDataStore }, { dictionaryManifest }] = await Promise.all([
