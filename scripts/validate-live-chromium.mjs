@@ -375,6 +375,12 @@ try {
     reopened.on('pageerror', error => errors.push(String(error)));
     try {
         await reopened.goto('chrome-extension://' + restartedId + '/benchmark.html');
+        // Prove the UI has observed the dictionary before deliberate eviction.
+        await reopened.waitForFunction(() => {
+            const row = document.querySelector('[data-variant="dictionary-english"]');
+            return row?.querySelector('.model-status')?.textContent?.includes('Installed') &&
+                row?.querySelector('.model-remove')?.disabled === false;
+        }, null, { timeout: 30000 });
         await context.setOffline(true);
         const persisted = await reopened.evaluate(async manifests => {
             const [{ ModelDataStore }, { dictionaryManifest }] = await Promise.all([
@@ -408,6 +414,17 @@ try {
             return { modelStatusRetained: manifests.length, dictionarySha256Retained: true,
                 simulatedEvictionDetected: true };
         }, variants);
+        // Recheck uses an eviction-specific message for previously ready data.
+        const dictionaryRow = reopened.locator('[data-variant="dictionary-english"]');
+        const recheck = reopened.locator('#refreshModelCache');
+        await recheck.click();
+        await reopened.waitForFunction(() => {
+            const row = document.querySelector('[data-variant="dictionary-english"]');
+            return row?.querySelector('.model-status')?.textContent
+                ?.includes('Cached model data is missing') &&
+                row?.querySelector('.model-remove')?.disabled === true &&
+                row?.querySelector('.model-download')?.disabled === false;
+        }, null, { timeout: 30000 });
         // Restore network for an explicitly requested dictionary repair only.
         await context.setOffline(false);
         const repaired = await reopened.evaluate(async () => {
@@ -429,18 +446,67 @@ try {
             if (fetches !== 1 || !verified.ready || verified.removedAssets) {
                 throw Error('Explicit post-eviction repair did not restore pinned bytes');
             }
-            await store.remove(manifest);
-            if ((await store.status(manifest)).ready) {
-                throw Error('Dictionary cache remained after explicit Remove');
-            }
-            return { explicitRepairFetches: fetches, repairedSha256: true,
-                explicitRemoval: true };
+            // The real model-manager Remove button is exercised below.
+            return { explicitRepairFetches: fetches, repairedSha256: true };
         });
         if (errors.length) {
             throw Error('Extension page errors after restart: ' + errors.join('; '));
         }
+        // Instrument the actual window.fetch which cacheStore() binds inside
+        // model-manager Recheck and Remove handlers, after explicit repair.
+        await reopened.evaluate(() => {
+            const originalFetch = globalThis.fetch.bind(globalThis);
+            globalThis.__modelManagerAssetFetches = 0;
+            globalThis.fetch = (...args) => {
+                const url = String(args[0]?.url || args[0]);
+                if (url.startsWith('https://huggingface.co/') ||
+                    url.startsWith('https://raw.githubusercontent.com/')) {
+                    globalThis.__modelManagerAssetFetches++;
+                    throw Error('Unexpected model fetch by manager UI');
+                }
+                return originalFetch(...args);
+            };
+        });
+        // This must transition from Not installed to Installed via Recheck.
+        await recheck.click();
+        await reopened.waitForFunction(() => {
+            const row = document.querySelector('[data-variant="dictionary-english"]');
+            return row?.querySelector('.model-status')?.textContent?.includes('Installed') &&
+                row?.querySelector('.model-remove')?.disabled === false;
+        }, null, { timeout: 30000 });
+        await dictionaryRow.locator('.model-remove').click();
+        await reopened.waitForFunction(() => {
+            const row = document.querySelector('[data-variant="dictionary-english"]');
+            return row?.querySelector('.model-status')?.textContent?.includes('Not installed') &&
+                row?.querySelector('.model-remove')?.disabled === true &&
+                row?.querySelector('.model-download')?.disabled === false;
+        }, null, { timeout: 30000 });
+        const afterUiRemove = await reopened.evaluate(async () => {
+            const [{ ModelDataStore }, { dictionaryManifest }] = await Promise.all([
+                import('./model-data-store.js'), import('./model-catalog.js'),
+            ]);
+            const store = new ModelDataStore({
+                origin: chrome.runtime.getURL('/'), cacheStorage: caches,
+                fetchImpl: () => { throw Error('Removal unexpectedly fetched model data'); },
+                responseClass: Response, streamClass: TransformStream,
+            });
+            return {
+                ...(await store.status(dictionaryManifest())),
+                pageModelFetches: globalThis.__modelManagerAssetFetches,
+            };
+        });
+        if (afterUiRemove.ready || afterUiRemove.storedBytes !== 0 ||
+            afterUiRemove.pageModelFetches !== 0) {
+            throw Error('Manager cache or fetch assertion failed: ' + JSON.stringify(afterUiRemove));
+        }
+        if (errors.length) {
+            throw Error('Extension page errors after restart: ' + errors.join('; '));
+        }
         browserRestartAcceptance = { success: true, browserProcessRestarted: true,
-            networkDisabledDuringPersistenceChecks: true, ...persisted, ...repaired };
+            networkDisabledDuringPersistenceChecks: true,
+            modelManagerRecheckClicked: true, modelManagerRemoveClicked: true,
+            uiEvictionObservedBeforeRepair: true, noUiModelFetches: true,
+            uiRemovalVerifiedInCache: true, ...persisted, ...repaired };
         await saveReport();
     } catch (error) {
         browserRestartAcceptance = { success: false, browserProcessRestarted: true,

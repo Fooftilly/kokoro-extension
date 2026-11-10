@@ -103,3 +103,32 @@ The cache-eviction step deletes a known test entry deliberately; this checks
 recovery logic but **does not** simulate the browser's automatic quota-driven
 eviction heuristics. Neither script runs in normal PR CI or downloads real
 weights without the explicit manual live-acceptance workflow.
+
+
+## Real model-manager button acceptance (part of #55)
+
+Both opt-in live browser harnesses first require the UI to show **Installed**,
+then deliberately evict the dictionary and click **Recheck installed models**.
+The row must display **Cached model data is missing** with Remove disabled.
+Only after this visible transition do they explicitly repair the dictionary
+through the harness data-store API. A second
+Recheck must transition the row to **Installed**, after which the harness
+clicks the actual **Remove** button and confirms the row says Not installed
+with Download available and no dictionary bytes left in Cache Storage.
+The harness instruments the real page global fetch used by the manager's
+button handlers and fails if either action requests additional model data. Chromium runs this after its true browser restart; Firefox runs it
+after its fresh extension-page reload. Results include
+`modelManagerRecheckClicked`, `modelManagerRemoveClicked`,
+`uiEvictionObservedBeforeRepair`, `noUiModelFetches`, and
+`uiRemovalVerifiedInCache`.
+
+These tests do not yet exercise the Download, Cancel, or Retry UI buttons or
+optional host-permission prompt (the dictionary is installed by an explicit
+test-harness data-store operation). No live-browser result is claimed until
+the manually dispatched workflow has actually passed.
+
+
+The Firefox harness installs its network guard on the actual page window
+(using the Marionette page wrapper when present), because each Selenium
+script executes in a separate sandbox. It restores the original fetch
+function after the UI assertions, before beginning offline inference.

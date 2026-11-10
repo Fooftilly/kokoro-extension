@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 import urllib3
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 
 
@@ -230,6 +231,16 @@ def main():
             WebDriverWait(driver, 20).until(
                 lambda d: d.execute_script("return Boolean(window.KokoroBenchmark)")
             )
+            # First require the fresh UI to observe the retained dictionary.
+            WebDriverWait(driver, 30).until(
+                lambda d: "Installed" in d.find_element(
+                    By.CSS_SELECTOR,
+                    '[data-variant="dictionary-english"] .model-status'
+                ).text and d.find_element(
+                    By.CSS_SELECTOR,
+                    '[data-variant="dictionary-english"] .model-remove'
+                ).is_enabled()
+            )
             dictionary_reload_acceptance = driver.execute_async_script("""
                 const done=arguments[arguments.length-1];
                 (async()=>{
@@ -251,21 +262,123 @@ def main():
                         throw Error('Unable to simulate dictionary eviction');
                     if((await store.status(manifest)).ready||fetches)
                         throw Error('Evicted dictionary not detected or fetched implicitly');
-                    await store.install(manifest);
-                    if(fetches!==1||(await store.verifyAndPruneCorrupt(manifest)).ready!==true)
-                        throw Error('Explicit dictionary repair failed');
-                    await store.remove(manifest);
-                    if((await store.status(manifest)).ready)
-                        throw Error('Explicit dictionary removal failed');
+                    // Leave dictionary evicted until the real manager Recheck
+                    // button has observed its missing state.
                     return {success:true,extensionPageReloaded:true,
                         browserProcessRestarted:false,
-                        dictionarySha256Retained:true,simulatedEvictionDetected:true,
-                        explicitRepairFetches:fetches,explicitRemoval:true};
+                        dictionarySha256Retained:true,simulatedEvictionDetected:true};
                 })().then(done,e=>done({success:false,error:String(e)}));
             """)
             if not dictionary_reload_acceptance.get("success"):
                 raise RuntimeError("Firefox dictionary reload/eviction acceptance failed: " +
                                    str(dictionary_reload_acceptance))
+            # The packaged extension UI must first observe the missing
+            # dictionary. Explicit repair happens only after this transition.
+            WebDriverWait(driver, 20).until(
+                lambda d: d.find_element(By.ID, "refreshModelCache").is_enabled()
+            )
+            row = '[data-variant="dictionary-english"]'
+            driver.find_element(By.ID, "refreshModelCache").click()
+            WebDriverWait(driver, 30).until(
+                lambda d: "Cached model data is missing" in
+                d.find_element(By.CSS_SELECTOR, row + " .model-status").text
+                and not d.find_element(By.CSS_SELECTOR, row + " .model-remove").is_enabled()
+                and d.find_element(By.CSS_SELECTOR, row + " .model-download").is_enabled()
+            )
+            repair = driver.execute_async_script("""
+                const done=arguments[arguments.length-1];
+                (async()=>{
+                    const [{ModelDataStore},{dictionaryManifest}]=await Promise.all([
+                        import('./model-data-store.js'),import('./model-catalog.js')]);
+                    const manifest=dictionaryManifest();
+                    let fetches=0;
+                    const store=new ModelDataStore({
+                        origin:browser.runtime.getURL('/'),cacheStorage:caches,
+                        fetchImpl:(...args)=>{fetches++;return fetch(...args)},
+                        responseClass:Response,streamClass:TransformStream});
+                    if((await store.status(manifest)).ready)
+                        throw Error('Dictionary unexpectedly restored before opt-in');
+                    await store.install(manifest);
+                    if(fetches!==1||(await store.verifyAndPruneCorrupt(manifest)).ready!==true)
+                        throw Error('Explicit dictionary repair failed');
+                    return {success:true,explicitRepairFetches:fetches};
+                })().then(done,e=>done({success:false,error:String(e)}));
+            """)
+            if not repair.get("success"):
+                raise RuntimeError("Firefox explicit dictionary repair failed: " + str(repair))
+            dictionary_reload_acceptance.update(repair)
+            # The manager binds window.fetch when its handlers construct
+            # ModelDataStore. Block/record unexpected model URL requests.
+            driver.execute_script("""
+                // Marionette executes each call in a new sandbox. Store the
+                // hook on the real page window, not sandbox globalThis.
+                const page=window.wrappedJSObject||window;
+                const original=page.fetch;
+                page.__modelManagerOriginalFetch=original;
+                page.__modelManagerAssetFetches=0;
+                const guarded=(...args)=>{
+                    const url=String(args[0]?.url||args[0]);
+                    if(url.startsWith('https://huggingface.co/')||
+                        url.startsWith('https://raw.githubusercontent.com/')){
+                        page.__modelManagerAssetFetches++;
+                        throw Error('Unexpected model fetch by manager UI');
+                    }
+                    return original.apply(page,args);
+                };
+                if(typeof exportFunction==='function'){
+                    exportFunction(guarded,page,{defineAs:'fetch'});
+                }else{
+                    page.fetch=guarded;
+                }
+                if(typeof page.fetch!=='function')
+                    throw Error('Could not install page-window fetch guard');
+            """)
+            driver.find_element(By.ID, "refreshModelCache").click()
+            WebDriverWait(driver, 30).until(
+                lambda d: d.find_element(By.CSS_SELECTOR, row + " .model-remove").is_enabled()
+                and "Installed" in d.find_element(By.CSS_SELECTOR, row + " .model-status").text
+            )
+            driver.find_element(By.CSS_SELECTOR, row + " .model-remove").click()
+            WebDriverWait(driver, 30).until(
+                lambda d: "Not installed" in
+                d.find_element(By.CSS_SELECTOR, row + " .model-status").text
+                and not d.find_element(By.CSS_SELECTOR, row + " .model-remove").is_enabled()
+                and d.find_element(By.CSS_SELECTOR, row + " .model-download").is_enabled()
+            )
+            after_ui_removal = driver.execute_async_script("""
+                const done=arguments[arguments.length-1];
+                (async()=>{
+                    const [{ModelDataStore},{dictionaryManifest}]=await Promise.all([
+                        import('./model-data-store.js'),import('./model-catalog.js')]);
+                    const store=new ModelDataStore({
+                        origin:browser.runtime.getURL('/'),cacheStorage:caches,
+                        fetchImpl:()=>{throw Error('Unexpected removal fetch')},
+                        responseClass:Response,streamClass:TransformStream});
+                    const page=window.wrappedJSObject||window;
+                    return {...(await store.status(dictionaryManifest())),
+                        pageModelFetches:page.__modelManagerAssetFetches};
+                })().then(done,e=>done({error:String(e)}));
+            """)
+            if (after_ui_removal.get("ready") or after_ui_removal.get("storedBytes") != 0
+                    or after_ui_removal.get("pageModelFetches") != 0):
+                raise RuntimeError("Firefox manager cache or fetch check failed: " +
+                                   str(after_ui_removal))
+            dictionary_reload_acceptance.update({
+                "modelManagerRecheckClicked": True,
+                "modelManagerRemoveClicked": True,
+                "uiEvictionObservedBeforeRepair": True,
+                "noUiModelFetches": True,
+                "uiRemovalVerifiedInCache": True,
+            })
+            # Restore the original fetch before exercising the real packaged
+            # ONNX/MediaPipe runtime in this same temporary Firefox page.
+            driver.execute_script("""
+                const page=window.wrappedJSObject||window;
+                if(typeof page.__modelManagerOriginalFetch!=='function')
+                    throw Error('Missing original Firefox page fetch');
+                page.fetch=page.__modelManagerOriginalFetch;
+                delete page.__modelManagerOriginalFetch;
+            """)
             # Use only pinned bytes verified on the runner, and copy to the
             # extension's cache. The loopback server never receives TTS text.
             cache_result = driver.execute_async_script("""
