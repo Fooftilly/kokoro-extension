@@ -522,3 +522,31 @@ mock downloads, increase timeouts, download weights in ordinary CI, or
 alter the production extension. Re-run this manual scope only after that
 follow-up merges; investigate its captured state before choosing a runtime
 fix. The failed run is **not** full-model or offline-inference evidence.
+
+
+### Chromium optional host-consent blocker (2026-11-10)
+
+The second manual `chromium-mediapipe-origin` attempt,
+[run 42903782679](https://github.com/Fooftilly/kokoro-extension/actions/runs/42903782679)
+on `master` commit `c9970c48fe514851b3235775a0d5d9b9d0134b7f`,
+failed after 900,000 ms with the model-manager UI still displaying
+`Waiting for model download permission…`. The actual browser reported
+zero model HTTP requests, zero received bytes, disabled Download and
+no browser crash. The browser never reached the 294,783,298-byte MediaPipe
+asset or offline inference; this is **not** a model bandwidth/CDN/SRI
+or cache-integrity failure.
+
+Chrome's optional host permission is normally confirmed in a **native
+browser dialog**, not an HTML/Playwright `dialog`. The original acceptance
+harness used headless Chromium with no way to interact with that prompt.
+The manual-only follow-up runs **headed Chromium under isolated Xvfb**
+and uses a single native X11 Return input after a real Download click.
+It fails if the origin was already granted, the UI does not enter the
+expected permission-request state, or Chrome does not subsequently report
+the precise `https://huggingface.co/*` permission. This does not
+pregrant hosts, alter the shipped manifest, monkey-patch permissions,
+or bypass the browser's HTTPS model download or SHA-256 verification.
+Only the manual official-origin scopes use Xvfb; normal CI remains
+unchanged. The actual browser-dialog interaction must be validated in
+a new manual run after this patch merges. A failed Xvfb grant must not
+be silently converted into a test pass or a broader permission grant.
