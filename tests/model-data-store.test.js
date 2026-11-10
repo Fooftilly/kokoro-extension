@@ -550,6 +550,50 @@ describe('opt-in cached model data (#55)', () => {
         expect((await store.status(manifest())).ready).toBe(false);
     });
 
+    test('interrupted second asset retains first verified asset and retries only missing bytes', async () => {
+        const { store, entries, fetchImpl } = setup();
+        const m = manifest();
+        m.assets.push({
+            ...m.assets[0],
+            path: 'voices/af.bin',
+            url: 'https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/' +
+                m.revision + '/voices/af.bin',
+        });
+        const [first, second] = m.assets.map(asset => store.key(m, asset));
+        const interruptedResponse = () => new Response(new ReadableStream({
+            start(controller) {
+                controller.enqueue(sample.subarray(0, 2));
+                controller.error(new Error('Simulated network interruption'));
+            },
+        }), { status: 200 });
+        fetchImpl.mockResolvedValueOnce(new Response(sample, { status: 200 }))
+            .mockImplementationOnce(async () => interruptedResponse());
+        await expect(store.install(m)).rejects.toThrow('Simulated network interruption');
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+        expect(fetchImpl.mock.calls.map(args => args[0]))
+            .toEqual(m.assets.map(asset => asset.url));
+        expect(entries.has(first)).toBe(true);
+        expect(entries.has(second)).toBe(false);
+        const retainedResponse = entries.get(first);
+        const partial = await store.status(m);
+        expect(partial.ready).toBe(false);
+        expect(partial.storedBytes).toBe(4);
+        // Checking status and reloading the page cannot initiate a repair.
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+        const progress = jest.fn();
+        const repaired = await store.install(m, { onProgress: progress });
+        expect(repaired).toEqual({ ready: true, storedBytes: 8, totalBytes: 8 });
+        expect(fetchImpl).toHaveBeenCalledTimes(3);
+        expect(fetchImpl.mock.calls[2][0]).toBe(m.assets[1].url);
+        expect(entries.get(first)).toBe(retainedResponse);
+        expect(progress).toHaveBeenCalledWith({ completedBytes: 4, totalBytes: 8 });
+        expect(progress).toHaveBeenLastCalledWith({ completedBytes: 8, totalBytes: 8 });
+        expect(await store.verifyAndPruneCorrupt(m)).toEqual({
+            ready: true, verifiedBytes: 8, totalBytes: 8,
+            removedAssets: 0, missingAssets: 0,
+        });
+    });
+
     test('cancelling while Cache Storage commits rolls back the completed entry', async () => {
         const { store, cache, entries } = setup();
         const controller = new AbortController();
