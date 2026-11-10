@@ -497,3 +497,28 @@ browser-managed eviction acceptance remain separate issue #55 gates.
 ### Firefox quota live failure (2026-11-10)
 
 [Workflow run 42895307873](https://github.com/Fooftilly/kokoro-extension/actions/runs/42895307873) failed during the limited-quota phase. The initial test used a 5-MiB voice fixture and a 96-KiB model fixture under an 8-MiB global cap, so the asset was **too small to guarantee quota pressure**. The original Selenium error wrapper additionally returned Firefox's JavaScript stack without its exception message, obscuring the failed assertion. This is a defect in the acceptance harness, not proven production cache corruption. The next test revision uses a 16-MiB high-entropy voice fixture, asserts it exceeds the global cap before running the write, removes invalid comparisons between per-origin estimates and the global pref, and retains the browser's full exception text. Re-run the manual scope after merging that change; do not treat the original failed run as quota acceptance.
+
+
+### Chromium MediaPipe official-origin UI timeout (2026-11-10)
+
+[Manually dispatched workflow run 42898267735](https://github.com/Fooftilly/kokoro-extension/actions/runs/42898267735)
+on `master` commit `ce5848b0d29d1cf67809650abcf7841b2e9824b4`
+**failed** after a 900,000-ms `page.waitForFunction` timeout in the
+official-origin model-manager Download flow. The pinned CMUdict download,
+SHA-256 verification, browser preflight, and extension setup passed.
+The [attached report](https://github.com/Fooftilly/kokoro-extension/actions/runs/42898267735/artifacts/13802518147)
+does **not** contain final UI status, byte counts, network request events or
+browser-side failure detail, so it does not prove whether the pinned
+294,783,298-byte MediaPipe asset was stalled at the upstream source, still
+under browser SRI buffering, blocked, or cached without a matching UI result.
+
+The separate test-harness diagnostic follow-up preserves the existing
+15-minute upper bound. On timeout and other non-installed terminal states,
+it records the model-manager status text, button/progress state, transfer
+request/received/completed counts, unexpected URLs, and a **bounded** set
+of Playwright HTTP request/response/finish/failure events. CDN query strings,
+including signed download parameters, are never recorded. It does not
+mock downloads, increase timeouts, download weights in ordinary CI, or
+alter the production extension. Re-run this manual scope only after that
+follow-up merges; investigate its captured state before choosing a runtime
+fix. The failed run is **not** full-model or offline-inference evidence.

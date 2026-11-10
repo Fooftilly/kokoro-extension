@@ -73,6 +73,70 @@ for (const manifest of (originDownload ? [] : variants)) for (const asset of man
 }
 
 /**
+ * Evidence-only diagnostics. Do not manipulate the transfer, mock responses,
+ * implicitly retry, or read a potentially in-flight Cache Storage entry.
+ * Scrub query strings because redirected CDN URLs can include signed tokens.
+ */
+function summarizedOriginRequest(url) {
+    try {
+        const parsed = new URL(url);
+        return parsed.origin + parsed.pathname.slice(0, 180);
+    } catch {
+        return '[unparseable URL]';
+    }
+}
+
+async function captureOfficialOriginDownloadState(page, selector, events) {
+    let ui;
+    let watchdog;
+    try {
+        ui = await Promise.race([
+            page.evaluate(selector => {
+            const row = document.querySelector(selector);
+            const status = row?.querySelector('.model-status');
+            const progress = row?.querySelector('.model-download-progress');
+            const button = row?.querySelector('.model-download');
+            const warning = row?.querySelector('.model-storage-warning');
+            const transfer = globalThis.__officialModelTransfer;
+            const scrub = url => {
+                try {
+                    const parsed = new URL(url);
+                    return parsed.origin + parsed.pathname.slice(0, 180);
+                } catch {
+                    return '[unparseable URL]';
+                }
+            };
+            return {
+                rowFound: !!row,
+                status: status?.textContent || null,
+                progressHidden: progress?.hidden ?? null,
+                progressValue: progress?.hasAttribute('value') ? progress.value : null,
+                buttonText: button?.textContent || null,
+                buttonDisabled: button?.disabled ?? null,
+                warning: warning && !warning.hidden ? warning.textContent : null,
+                transfer: transfer ? {
+                    requests: transfer.requests.map(scrub),
+                    receivedBytesByUrl: Object.fromEntries(Object.entries(
+                        transfer.bytesByUrl).map(([url, bytes]) => [scrub(url), bytes])),
+                    completedUrls: transfer.completedUrls.map(scrub),
+                    unexpectedUrls: transfer.unexpectedUrls.map(scrub),
+                } : null,
+            };
+            }, selector),
+            new Promise((_, reject) => {
+                watchdog = setTimeout(() => reject(Error(
+                    'UI diagnostic snapshot exceeded 5 seconds')), 5000);
+            }),
+        ]);
+    } catch (error) {
+        ui = { inspectionError: String(error) };
+    } finally {
+        clearTimeout(watchdog);
+    }
+    return { ui, networkEvents: [...events] };
+}
+
+/**
  * Independently exercise the real packaged extension's local-model Download
  * control against its pinned upstream HTTPS URLs. Do not use the preloaded
  * loopback fixture: it would bypass consent, browser CORS and download UI.
@@ -153,17 +217,49 @@ async function downloadModelFromOfficialOrigin(page, manifest) {
             });
         };
     }, manifest.assets.map(asset => asset.url));
+    // Observe only real page HTTP(S) activity (including redirects). Keep a
+    // bounded record, never the signed CDN query tokens or response bodies.
+    // A 295-MB SRI fetch may buffer before the page can see any stream bytes.
+    const networkEvents = [];
+    const record = (event, request, extra = {}) => {
+        if (!/^https?:/i.test(request.url())) return;
+        networkEvents.push({
+            event, url: summarizedOriginRequest(request.url()),
+            elapsedMs: Math.round(performance.now() - networkStart), ...extra,
+        });
+        if (networkEvents.length > 60) networkEvents.shift();
+    };
+    const networkStart = performance.now();
+    page.on('request', request => record('request', request));
+    page.on('response', response => record('response', response.request(), {
+        status: response.status(),
+        contentLength: response.headers()['content-length'] || null,
+    }));
+    page.on('requestfinished', request => record('finished', request));
+    page.on('requestfailed', request => record('failed', request, {
+        failure: request.failure() || null,
+    }));
     const button = page.locator(rowSelector + ' .model-download');
     await button.click();
-    await page.waitForFunction(selector => {
-        const status = document.querySelector(selector)?.querySelector('.model-status')?.textContent || '';
-        return (status.includes('Installed') &&
-            document.querySelector(selector)?.querySelector('.model-download-progress')?.value === 100) ||
-            /permission.*(denied|failed)|Cannot request|Download failed/i.test(status);
-    }, rowSelector, { timeout: 900000 });
+    try {
+        await page.waitForFunction(selector => {
+            const row = document.querySelector(selector);
+            const status = row?.querySelector('.model-status')?.textContent || '';
+            const finished = status.includes('Installed') &&
+                row?.querySelector('.model-download-progress')?.value === 100;
+            return finished ||
+                /permission.*(denied|failed)|Cannot request|Download failed|Download cancelled|Cannot inspect model cache/i.test(status);
+        }, rowSelector, { timeout: 900000 });
+    } catch (error) {
+        const diagnostics = await captureOfficialOriginDownloadState(page, rowSelector, networkEvents);
+        throw Error(manifest.provider + ' official-origin UI acceptance did not settle: ' +
+            JSON.stringify({ cause: String(error), ...diagnostics }));
+    }
     const uiStatus = await page.locator(rowSelector + ' .model-status').textContent();
     if (!uiStatus.includes('Installed')) {
-        throw Error(manifest.provider + ' official download did not complete through UI: ' + uiStatus);
+        const diagnostics = await captureOfficialOriginDownloadState(page, rowSelector, networkEvents);
+        throw Error(manifest.provider + ' official download did not complete through UI: ' +
+            JSON.stringify({ uiStatus, ...diagnostics }));
     }
     const report = await page.evaluate(async ({ provider, variant, selector }) => {
         const [{ ModelDataStore, formatModelSize }, { manifestForVariant }] = await Promise.all([
