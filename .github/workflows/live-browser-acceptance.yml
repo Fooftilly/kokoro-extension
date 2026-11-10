@@ -16,6 +16,15 @@ on:
       - 'sha256-stream.js'
       - 'english-g2p.js'
   workflow_dispatch:
+    inputs:
+      acceptance_scope:
+        description: 'Select full browser inference or lightweight Chromium dictionary-only UI acceptance'
+        type: choice
+        required: true
+        default: full
+        options:
+          - full
+          - chromium-dictionary
 
 permissions:
   contents: read
@@ -45,6 +54,7 @@ jobs:
       - name: Execute real model-backed Chrome extension inference
         env:
           KOKORO_LIVE_DOWNLOAD: '1'
+          KOKORO_LIVE_PROVIDER: ${{ inputs.acceptance_scope == 'chromium-dictionary' && 'dictionary' || 'both' }}
           PLAYWRIGHT_MODULE_PATH: ${{ runner.temp }}/kokoro-playwright/node_modules/playwright/index.mjs
         run: node scripts/validate-live-chromium.mjs
       - name: Attach measured browser report (when available)
@@ -57,6 +67,7 @@ jobs:
 
   firefox-local-inference:
     name: Real ${{ matrix.provider }} Firefox MV3 offline synthesis
+    if: ${{ inputs.acceptance_scope != 'chromium-dictionary' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:

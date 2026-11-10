@@ -132,3 +132,40 @@ The Firefox harness installs its network guard on the actual page window
 (using the Marionette page wrapper when present), because each Selenium
 script executes in a separate sandbox. It restores the original fetch
 function after the UI assertions, before beginning offline inference.
+
+## Chromium model-manager dictionary Download/Cancel/Retry acceptance (#55)
+
+The manual-only Chromium workflow now explicitly clicks the packaged
+extension's **Download** button on the dictionary row, requests the normal
+narrow optional official-host permission, and intercepts just that dictionary
+fetch with an abort-aware stalled response. It clicks the **Cancel download**
+button, checks that the status and controls recover and the cache is empty,
+then retries by clicking **Download** again with the real pinned HTTPS fetch
+restored. It requires a single real asset fetch, the exact full manifest byte
+count in Cache Storage, actual SHA-256 verification, a completed 100% progress
+indicator, and the real Remove button clearing the data. This is reported as
+`dictionaryUiDownloadAcceptance` with separate failure diagnostics.
+
+This is an opt-in browser acceptance script, **not evidence of a passing real
+browser run** until manually executed. The artificial stall is used only for
+repeatable cancellation; the retry downloads the authentic pinned dictionary.
+Firefox Download/Cancel/Retry UI and real heavyweight model-host transfers
+remain separate gates. Browser native host-permission prompt behavior must be
+confirmed during actual run, not inferred from unit tests.
+
+### Lightweight manual execution
+
+For the Chromium dictionary-only UI path, dispatch the **Real Kokoro MV3 model
+acceptance** workflow with `acceptance_scope: chromium-dictionary`. This
+explicitly skips ONNX/MediaPipe weight downloads and both Firefox matrix jobs;
+it still packages the extension, runs Chromium preflight, verifies the real
+pinned dictionary URL and SHA-256, restarts its persistent browser profile,
+tests simulated eviction/recovery, and exercises the real Download/Cancel/Retry/
+Remove buttons. The normal `full` dispatch retains all heavy model-backed
+Chromium and Firefox acceptance jobs. Neither choice runs automatically on
+ordinary PRs or pushes to master.
+
+Direct local invocation can instead set `KOKORO_LIVE_PROVIDER=dictionary`
+alongside the existing explicit live-download flag and pinned Playwright
+module path. A dictionary-only pass is **not** evidence of offline TTS
+inference: the reported `providerFilter` and `scope` identify that limitation.

@@ -20,13 +20,14 @@ if (process.env.KOKORO_LIVE_DOWNLOAD !== '1' || !process.env.PLAYWRIGHT_MODULE_P
 // Test a single provider in isolation when diagnosing memory pressure. The
 // default still tests both providers and fails if either fails.
 const providerFilter = process.env.KOKORO_LIVE_PROVIDER || 'both';
-if (!['both', 'onnx', 'mediapipe'].includes(providerFilter)) {
-    throw Error('KOKORO_LIVE_PROVIDER must be both, onnx, or mediapipe');
+if (!['both', 'onnx', 'mediapipe', 'dictionary'].includes(providerFilter)) {
+    throw Error('KOKORO_LIVE_PROVIDER must be both, onnx, mediapipe, or dictionary');
 }
 const variants = [
-    ...(providerFilter === 'mediapipe' ? [] :
+    ...(providerFilter === 'mediapipe' || providerFilter === 'dictionary' ? [] :
         [dictionaryManifest(), manifestForVariant('onnx', 'q8')]),
-    ...(providerFilter === 'onnx' ? [] : [manifestForVariant('mediapipe', 'cpu')]),
+    ...(providerFilter === 'onnx' || providerFilter === 'dictionary' ? [] :
+        [manifestForVariant('mediapipe', 'cpu')]),
 ];
 const sourceDir = path.join(os.tmpdir(), 'kokoro-live-models');
 const resultsDir = path.resolve('dist/runtime-acceptance');
@@ -180,13 +181,21 @@ try {
     await preflightPage.close();
     const results = [];
     let browserRestartAcceptance = null;
+    let dictionaryUiDownloadAcceptance = null;
     const saveReport = () => writeFile(path.join(resultsDir, 'report.json'), JSON.stringify({
         testedAt: new Date().toISOString(), browser: preflight.browser, preflight,
-        dictionaryCacheAcceptance, browserRestartAcceptance, results,
+        dictionaryCacheAcceptance, browserRestartAcceptance,
+        dictionaryUiDownloadAcceptance, results,
         providerFilter,
-        networkRequirement: 'offline during every local synthesis probe',
-        cachePopulation: 'model weights preloaded from verified pinned files over authenticated loopback; dictionary separately tested using real pinned HTTPS CORS/SRI; user-facing Download button not exercised',
-        scope: 'Linux Chromium MV3 extension origin; no subjective audio-quality or complete download-manager acceptance',
+        networkRequirement: providerFilter === 'dictionary'
+            ? 'offline during dictionary persistence/verification; no inference attempted'
+            : 'offline during every local synthesis probe',
+        cachePopulation: providerFilter === 'dictionary'
+            ? 'no model weights downloaded; direct pinned dictionary HTTPS and model-manager UI acceptance only'
+            : 'heavy weights preloaded from verified pinned bytes over authenticated loopback; dictionary official HTTPS and model-manager UI checked separately',
+        scope: providerFilter === 'dictionary'
+            ? 'Chromium dictionary-only UI/Cache acceptance; no large speech models or audio synthesis'
+            : 'Linux Chromium MV3 extension origin; no subjective audio-quality or complete download-manager acceptance',
     }, null, 2));
     for (const manifest of variants) {
         const page = await context.newPage();
@@ -508,6 +517,150 @@ try {
             uiEvictionObservedBeforeRepair: true, noUiModelFetches: true,
             uiRemovalVerifiedInCache: true, ...persisted, ...repaired };
         await saveReport();
+
+        // Download/Cancel/Retry acceptance: use real packaged extension buttons
+        // and a real pinned dictionary, not the model manager's mocked API.
+        // A deliberately stalled fetch makes cancellation reproducible.
+        try {
+            await reopened.reload(); // Drop the earlier no-fetch guard.
+            await reopened.waitForFunction(() => {
+                const row = document.querySelector('[data-variant="dictionary-english"]');
+                return row?.querySelector('.model-status')?.textContent?.includes('Not installed') &&
+                    row?.querySelector('.model-download')?.disabled === false;
+            }, null, { timeout: 30000 });
+            const downloadButton = reopened.locator(
+                '[data-variant="dictionary-english"] .model-download');
+            await reopened.evaluate(() => {
+                const original = globalThis.fetch.bind(globalThis);
+                globalThis.__dictionaryUiOriginalFetch = original;
+                globalThis.__dictionaryUiCancelledFetches = 0;
+                globalThis.fetch = (input, options) => {
+                    const url = String(input?.url || input);
+                    if (url.includes('/cmudict.dict')) {
+                        globalThis.__dictionaryUiCancelledFetches++;
+                        return new Promise((resolve, reject) => {
+                            if (options?.signal?.aborted) {
+                                reject(new DOMException('Download aborted', 'AbortError'));
+                            } else {
+                                options?.signal?.addEventListener('abort', () => {
+                                    reject(new DOMException('Download aborted', 'AbortError'));
+                                }, { once: true });
+                            }
+                        });
+                    }
+                    return original(input, options);
+                };
+            });
+            await downloadButton.click();
+            await reopened.waitForFunction(() => {
+                const row = document.querySelector('[data-variant="dictionary-english"]');
+                return row?.querySelector('.model-download')?.textContent ===
+                    'Cancel download' && row?.querySelector('.model-download')?.disabled === false &&
+                    globalThis.__dictionaryUiCancelledFetches === 1;
+            }, null, { timeout: 30000 });
+            await downloadButton.click();
+            await reopened.waitForFunction(() => {
+                const row = document.querySelector('[data-variant="dictionary-english"]');
+                return row?.querySelector('.model-status')?.textContent?.includes('Download cancelled') &&
+                    row?.querySelector('.model-download')?.textContent?.startsWith('Download') &&
+                    row?.querySelector('.model-download')?.disabled === false &&
+                    row?.querySelector('.model-download-progress')?.hidden === true;
+            }, null, { timeout: 30000 });
+            const cancelled = await reopened.evaluate(async () => {
+                const [{ ModelDataStore }, { dictionaryManifest }] = await Promise.all([
+                    import('./model-data-store.js'), import('./model-catalog.js'),
+                ]);
+                const store = new ModelDataStore({
+                    origin: chrome.runtime.getURL('/'), cacheStorage: caches,
+                    fetchImpl: () => { throw Error('Cancelled download unexpectedly fetched'); },
+                    responseClass: Response, streamClass: TransformStream,
+                });
+                return { ...(await store.status(dictionaryManifest())),
+                    fetches: globalThis.__dictionaryUiCancelledFetches };
+            });
+            if (cancelled.ready || cancelled.storedBytes !== 0 || cancelled.fetches !== 1) {
+                throw Error('UI cancellation left data or did not exercise stalled fetch: ' +
+                    JSON.stringify(cancelled));
+            }
+            await reopened.evaluate(() => {
+                const original = globalThis.__dictionaryUiOriginalFetch;
+                if (typeof original !== 'function') throw Error('Missing native fetch');
+                globalThis.__dictionaryUiRealFetches = 0;
+                globalThis.fetch = (input, options) => {
+                    const url = String(input?.url || input);
+                    if (url.includes('/cmudict.dict')) globalThis.__dictionaryUiRealFetches++;
+                    return original(input, options);
+                };
+            });
+            await downloadButton.click(); // Explicit retry through user-facing UI.
+            await reopened.waitForFunction(() => {
+                const row = document.querySelector('[data-variant="dictionary-english"]');
+                return row?.querySelector('.model-status')?.textContent?.includes('Installed') &&
+                    row?.querySelector('.model-remove')?.disabled === false &&
+                    row?.querySelector('.model-download-progress')?.value === 100;
+            }, null, { timeout: 120000 });
+            const installed = await reopened.evaluate(async () => {
+                const [{ ModelDataStore }, { dictionaryManifest }] = await Promise.all([
+                    import('./model-data-store.js'), import('./model-catalog.js'),
+                ]);
+                const manifest = dictionaryManifest();
+                const store = new ModelDataStore({
+                    origin: chrome.runtime.getURL('/'), cacheStorage: caches,
+                    fetchImpl: () => { throw Error('Verification unexpectedly downloaded'); },
+                    responseClass: Response, streamClass: TransformStream,
+                });
+                const status = await store.status(manifest);
+                const verified = await store.verifyAndPruneCorrupt(manifest);
+                const permission = await chrome.permissions.contains({
+                    origins: [new URL(manifest.assets[0].url).origin + '/*'],
+                });
+                return { status, verified, permission,
+                    actualHostFetches: globalThis.__dictionaryUiRealFetches };
+            });
+            if (!installed.permission || installed.actualHostFetches !== 1 ||
+                !installed.status.ready ||
+                installed.status.storedBytes !== installed.status.totalBytes ||
+                !installed.verified.ready || installed.verified.removedAssets !== 0) {
+                throw Error('UI retry official HTTPS/permission/SHA-256 failed: ' +
+                    JSON.stringify(installed));
+            }
+            await reopened.locator(
+                '[data-variant="dictionary-english"] .model-remove').click();
+            await reopened.waitForFunction(() => {
+                const row = document.querySelector('[data-variant="dictionary-english"]');
+                return row?.querySelector('.model-status')?.textContent?.includes('Not installed') &&
+                    row?.querySelector('.model-remove')?.disabled === true;
+            }, null, { timeout: 30000 });
+            const afterRemoval = await reopened.evaluate(async () => {
+                const [{ ModelDataStore }, { dictionaryManifest }] = await Promise.all([
+                    import('./model-data-store.js'), import('./model-catalog.js'),
+                ]);
+                const store = new ModelDataStore({
+                    origin: chrome.runtime.getURL('/'), cacheStorage: caches,
+                    fetchImpl: () => { throw Error('Unexpected network during removal'); },
+                    responseClass: Response, streamClass: TransformStream,
+                });
+                return store.status(dictionaryManifest());
+            });
+            if (afterRemoval.ready || afterRemoval.storedBytes !== 0 ||
+                errors.length) throw Error('Dictionary UI cleanup failed: ' +
+                    JSON.stringify({ afterRemoval, errors }));
+            dictionaryUiDownloadAcceptance = {
+                success: true, browser: 'chromium',
+                cancelledStalledDownload: true, cacheEmptyAfterCancel: true,
+                realOfficialHttpsRetryFetches: installed.actualHostFetches,
+                requestedNarrowHostPermission: installed.permission,
+                fullPinnedBytes: installed.status.totalBytes,
+                sha256VerifiedAfterUiRetry: true,
+                uiProgressReached100: true, uiRemoveClearedCache: true,
+            };
+            await saveReport();
+        } catch (error) {
+            dictionaryUiDownloadAcceptance = { success: false, error: String(error) };
+            await saveReport();
+            throw error;
+        }
+
     } catch (error) {
         browserRestartAcceptance = { success: false, browserProcessRestarted: true,
             error: String(error) };
