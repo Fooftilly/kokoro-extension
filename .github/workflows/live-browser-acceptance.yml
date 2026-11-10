@@ -29,6 +29,7 @@ on:
           - firefox-mediapipe-origin
           - firefox-onnx-origin
           - firefox-persistent-restart
+          - firefox-quota-recovery
           - chromium-mediapipe-origin
           - chromium-onnx-origin
           - chromium-quota-recovery
@@ -39,7 +40,7 @@ permissions:
 jobs:
   chromium-model-inference:
     name: Real ONNX and MediaPipe Chromium MV3 synthesis
-    if: ${{ inputs.acceptance_scope != 'firefox-dictionary' && inputs.acceptance_scope != 'firefox-mediapipe-origin' && inputs.acceptance_scope != 'firefox-onnx-origin' && inputs.acceptance_scope != 'firefox-persistent-restart' }}
+    if: ${{ inputs.acceptance_scope != 'firefox-dictionary' && inputs.acceptance_scope != 'firefox-mediapipe-origin' && inputs.acceptance_scope != 'firefox-onnx-origin' && inputs.acceptance_scope != 'firefox-persistent-restart' && inputs.acceptance_scope != 'firefox-quota-recovery' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -179,7 +180,7 @@ jobs:
 
   firefox-model-origin:
     name: Firefox MV3 model download and persistent restart acceptance
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.acceptance_scope == 'firefox-mediapipe-origin' || inputs.acceptance_scope == 'firefox-onnx-origin' || inputs.acceptance_scope == 'firefox-persistent-restart') }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.acceptance_scope == 'firefox-mediapipe-origin' || inputs.acceptance_scope == 'firefox-onnx-origin' || inputs.acceptance_scope == 'firefox-persistent-restart' || inputs.acceptance_scope == 'firefox-quota-recovery') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -196,7 +197,7 @@ jobs:
         id: firefox
         uses: browser-actions/setup-firefox@0bc507ddf224827e3b1af68e014d5e42ab93e795 # v1
         with:
-          firefox-version: ${{ inputs.acceptance_scope == 'firefox-persistent-restart' && 'latest-devedition' || 'latest' }}
+          firefox-version: ${{ (inputs.acceptance_scope == 'firefox-persistent-restart' || inputs.acceptance_scope == 'firefox-quota-recovery') && 'latest-devedition' || 'latest' }}
       - name: Install pinned geckodriver
         uses: browser-actions/setup-geckodriver@5ef1526ed36211ab6cb531ec1cfb11f924ca2dee
         with:
@@ -210,6 +211,7 @@ jobs:
           KOKORO_LIVE_DOWNLOAD: '1'
           KOKORO_FIREFOX_ORIGIN_DOWNLOAD: ${{ inputs.acceptance_scope == 'firefox-persistent-restart' && '0' || '1' }}
           KOKORO_FIREFOX_PERSISTENT_RESTART: ${{ inputs.acceptance_scope == 'firefox-persistent-restart' && '1' || '0' }}
+          KOKORO_FIREFOX_QUOTA_ACCEPTANCE: ${{ inputs.acceptance_scope == 'firefox-quota-recovery' && '1' || '0' }}
           KOKORO_FIREFOX_PROVIDER: ${{ inputs.acceptance_scope == 'firefox-onnx-origin' && 'onnx' || 'mediapipe' }}
           FIREFOX_BINARY: ${{ steps.firefox.outputs.firefox-path }}
           MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: '1'
@@ -220,5 +222,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kokoro-live-${{ inputs.acceptance_scope }}-report
-          path: dist/runtime-acceptance/firefox.json
+          path: |
+            dist/runtime-acceptance/firefox.json
+            dist/runtime-acceptance/firefox-quota.json
           if-no-files-found: ignore

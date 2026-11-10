@@ -582,13 +582,20 @@ def run_model_origin_ui_acceptance(driver, manifest):
 
 
 
-def _open_persistent_firefox(profile):
+def _open_persistent_firefox(profile, quota_limit_kib=None):
     options = Options()
     options.binary_location = os.environ["FIREFOX_BINARY"]
     options.add_argument("-headless")
     options.add_argument("-profile")
     options.add_argument(str(profile))
     options.set_preference("xpinstall.signatures.required", False)
+    if quota_limit_kib is not None:
+        # Real Gecko QuotaManager pref, in KiB; applied only to an isolated
+        # Developer Edition profile used by the manual Firefox quota test.
+        if quota_limit_kib not in (8192, 131072):
+            raise ValueError("Unexpected Firefox quota-test limit")
+        options.set_preference("dom.quotaManager.temporaryStorage.fixedLimit",
+                               quota_limit_kib)
     # Geckodriver 0.37.1 requires this explicit flag for CHROME-context
     # AddonManager/Services checks; Firefox browser arguments are insufficient.
     service = FirefoxService(service_args=["--allow-system-access"])
@@ -655,6 +662,144 @@ def _pinned_firefox_handler(files, token, state):
         def log_message(self, *args):
             return
     return PinnedTransfer
+
+
+
+def _firefox_actual_quota_pref(browser):
+    browser.set_context("chrome")
+    try:
+        return browser.execute_script(
+            "return Services.prefs.getIntPref("
+            "'dom.quotaManager.temporaryStorage.fixedLimit', -1);"
+        )
+    finally:
+        browser.set_context("content")
+
+
+def run_firefox_quota_acceptance():
+    """Manual quota pressure against real Cache Storage across Firefox restarts.
+
+    A reduced Firefox QuotaManager global limit forces a second-asset write
+    failure; a process restart with a restored cap permits explicit retry.
+    Neither Firefox StorageManager nor Cache Storage is mocked.
+    """
+    from zipfile import ZipFile
+
+    output = Path("dist/runtime-acceptance/firefox-quota.json")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    result = {
+        "status": "started", "scope": "firefox-real-quota-recovery",
+        "syntheticAssetsOnly": True, "fullModelDownloaded": False,
+        "browserQuotaFailureVerified": False,
+        "browserManagedEvictionClaimed": False,
+    }
+    driver = None
+    # Separate on-disk profile; never modify the user's Firefox settings,
+    # quota limits or cache. The entire directory is removed on exit.
+    with tempfile.TemporaryDirectory(prefix="kokoro-firefox-quota-") as temp:
+        profile = Path(temp) / "profile"
+        profile.mkdir()
+        (profile / "user.js").write_text(
+            'user_pref("xpinstall.signatures.required", false);\n'
+            'user_pref("extensions.autoDisableScopes", 0);\n',
+            encoding="utf-8",
+        )
+        try:
+            version = json.loads(Path("package.json").read_text(encoding="utf-8"))["version"]
+            package = (Path("dist/package") /
+                       f"kokoro-extension-firefox-{version}.zip").resolve()
+            if not package.is_file():
+                raise FileNotFoundError("Packaged Firefox XPI missing: " + str(package))
+            with ZipFile(package) as archive:
+                expected_id = json.loads(archive.read("manifest.json"))[
+                    "browser_specific_settings"]["gecko"]["id"]
+            probe_source = Path("scripts/firefox-quota-probe.js").read_text(encoding="utf-8")
+            # Selenium supplies `arguments` when it wraps execute_async_script;
+            # the standalone probe stays lint-clean and accepts just a phase.
+            probe = probe_source + """
+                const done=arguments[arguments.length-1];
+                globalThis.runFirefoxQuotaProbe(arguments[0])
+                    .then(report=>done({success:true,...report}),
+                        error=>done({success:false,error:String(error.stack||error)}));
+            """
+            driver = _open_persistent_firefox(profile, quota_limit_kib=8192)
+            first_pid = driver.capabilities["moz:processID"]
+            if _firefox_actual_quota_pref(driver) != 8192:
+                raise RuntimeError("Firefox did not activate the restrictive quota preference")
+            installed_id = driver.install_addon(str(package), temporary=False)
+            if installed_id != expected_id:
+                raise RuntimeError("Firefox permanent add-on identity mismatch")
+            extension_origin = _persistent_firefox_extension_origin(driver, installed_id)
+            driver.get(extension_origin + "/benchmark.html")
+            WebDriverWait(driver, 30).until(
+                lambda d: d.execute_script("return Boolean(window.KokoroBenchmark)")
+            )
+            limited = driver.execute_async_script(probe, "limited")
+            result["limited"] = limited
+            if not limited.get("success"):
+                raise RuntimeError("Real Firefox limited-quota phase failed: " +
+                                   str(limited.get("error")))
+            if (limited["storageEstimate"]["quota"] >= limited["modelBytes"] or
+                    not limited.get("dictionaryPreserved")):
+                raise RuntimeError("Firefox quota estimate did not reflect test pressure")
+            result["browserQuotaFailureVerified"] = True
+            result["initialProcessId"] = first_pid
+            result["extensionId"] = installed_id
+            result["extensionOrigin"] = extension_origin
+
+            driver.quit()
+            driver = None
+            # A different parent process must load the SAME installed add-on
+            # and profile; unlike a preference-only JS stub this resets Gecko's
+            # quota manager with the new capacity.
+            driver = _open_persistent_firefox(profile, quota_limit_kib=131072)
+            second_pid = driver.capabilities["moz:processID"]
+            if second_pid == first_pid:
+                raise RuntimeError("Firefox did not restart its parent process")
+            if _firefox_actual_quota_pref(driver) != 131072:
+                raise RuntimeError("Firefox did not restore the quota preference")
+            if _persistent_firefox_extension_origin(driver, installed_id) != extension_origin:
+                raise RuntimeError("Firefox lost the installed extension after quota reset")
+            driver.get(extension_origin + "/benchmark.html")
+            WebDriverWait(driver, 30).until(
+                lambda d: d.execute_script("return Boolean(window.KokoroBenchmark)")
+            )
+            driver.set_context("chrome")
+            try:
+                network_disabled = driver.execute_script("""
+                    Services.io.manageOfflineStatus=false;
+                    Services.io.offline=true;
+                    return Services.io.offline;
+                """)
+            finally:
+                driver.set_context("content")
+            if not network_disabled or not driver.execute_script(
+                    "return navigator.onLine === false"):
+                raise RuntimeError("Firefox was not network-offline before retry")
+            recovered = driver.execute_async_script(probe, "recovery")
+            result["recovery"] = recovered
+            if not recovered.get("success"):
+                raise RuntimeError("Real Firefox relaxed-quota retry failed: " +
+                                   str(recovered.get("error")))
+            if recovered["storageEstimate"]["quota"] <= limited["storageEstimate"]["quota"]:
+                raise RuntimeError("Firefox quota remained restrictive after process restart")
+            result.update({
+                "status": "passed",
+                "restartedProcessId": second_pid,
+                "browserProcessRestarted": True,
+                "networkOfflineDuringRetry": True,
+                "explicitRetryFetchedOnlyMissingAsset": True,
+                "dictionaryPreserved": True,
+            })
+            print("FIREFOX REAL-QUOTA ACCEPTANCE", json.dumps(result), flush=True)
+        except Exception as exc:
+            result["status"] = "failed"
+            result["error"] = str(exc)
+            raise
+        finally:
+            output.write_text(json.dumps(result, indent=2), encoding="utf-8")
+            if driver:
+                driver.quit()
 
 
 def run_permanent_addon_restart_acceptance():
@@ -864,6 +1009,9 @@ def run_permanent_addon_restart_acceptance():
 def main():
     if os.environ.get("KOKORO_LIVE_DOWNLOAD") != "1":
         raise RuntimeError("Explicit model download opt-in is required")
+    if os.environ.get("KOKORO_FIREFOX_QUOTA_ACCEPTANCE") == "1":
+        run_firefox_quota_acceptance()
+        return
     if os.environ.get("KOKORO_FIREFOX_PERSISTENT_RESTART") == "1":
         run_permanent_addon_restart_acceptance()
         return
