@@ -263,19 +263,22 @@ def run_dictionary_ui_acceptance(driver):
             "uiProgressReached100": True, "uiRemoveClearedCache": True}
 
 
-def run_mediapipe_origin_ui_acceptance(driver, manifest):
+def run_model_origin_ui_acceptance(driver, manifest):
     """Real Firefox model-manager Download with pinned HTTPS data, not loopback preload.
 
     The hook is installed in the extension's actual page window. Firefox
     Marionette's per-command sandbox must not silently conceal transfer counts.
     """
-    if manifest["provider"] != "mediapipe" or manifest["variant"] != "cpu":
-        raise ValueError("Origin acceptance supports only pinned MediaPipe CPU")
-    row = '[data-variant="mediapipe-cpu"]'
+    provider = manifest["provider"]
+    variant = manifest["variant"]
+    if (provider, variant) not in (("mediapipe", "cpu"), ("onnx", "q8")):
+        raise ValueError("Origin acceptance supports MediaPipe CPU and ONNX q8")
+    row = f'[data-variant="{provider}-{variant}"]'
     expected_urls = [asset["url"] for asset in manifest["assets"]]
+    stalled_voice_url = expected_urls[1] if provider == "onnx" else None
     # Do not let a stale cached install pass without any actual upstream fetch.
     prior = driver.execute_async_script("""
-        const done=arguments[arguments.length-1];
+        const [provider,variant,done]=arguments;
         (async()=>{
             const [{ModelDataStore},{manifestForVariant}]=await Promise.all([
                 import('./model-data-store.js'),import('./model-catalog.js')]);
@@ -283,12 +286,14 @@ def run_mediapipe_origin_ui_acceptance(driver, manifest):
                 origin:browser.runtime.getURL('/'),cacheStorage:caches,
                 fetchImpl:()=>{throw Error('Unexpected fetch during origin cache reset')},
                 responseClass:Response,streamClass:TransformStream});
-            await store.remove(manifestForVariant('mediapipe','cpu'));
-            return Promise.all(['q8','q8f16'].map(async variant=>({
-                variant,...await store.status(manifestForVariant('onnx',variant))})));
+            await store.remove(manifestForVariant(provider,variant));
+            const otherProvider=provider==='onnx'?'mediapipe':'onnx';
+            const variants=provider==='onnx'?['cpu','gpu']:['q8','q8f16'];
+            return Promise.all(variants.map(async v=>({
+                variant:v,...await store.status(manifestForVariant(otherProvider,v))})));
         })().then(value=>done({success:true,otherProviderBefore:value}),
             e=>done({success:false,error:String(e)}));
-    """)
+    """, provider, variant)
     if not prior.get("success"):
         raise RuntimeError("Firefox model origin reset failed: " + str(prior))
     driver.refresh()
@@ -300,6 +305,8 @@ def run_mediapipe_origin_ui_acceptance(driver, manifest):
     driver.execute_script("""
         const page=window.wrappedJSObject||window;
         const expected=new Set(arguments[0]);
+        const stallUrl=arguments[1];
+        page.__originModelStallVoice=!!stallUrl;
         const original=page.fetch;
         if(typeof original!=='function')throw Error('Missing native model fetch');
         const stats={requests:[],bytesByUrl:{},completed:[],unexpected:[]};
@@ -319,6 +326,13 @@ def run_mediapipe_origin_ui_acceptance(driver, manifest):
             }
             if(!expected.has(url))return original.apply(page,[input,options]);
             stats.requests.push(url);
+            if(url===stallUrl && page.__originModelStallVoice){
+                return new Promise((resolve,reject)=>{
+                    const abort=()=>reject(new page.DOMException('Download aborted','AbortError'));
+                    if(options?.signal?.aborted)abort();
+                    else options?.signal?.addEventListener('abort',abort,{once:true});
+                });
+            }
             const response=await original.apply(page,[input,options]);
             if(!response.ok||!response.body)return response;
             stats.bytesByUrl[url]=0;
@@ -337,8 +351,78 @@ def run_mediapipe_origin_ui_acceptance(driver, manifest):
         else page.fetch=counted;
         if(typeof page.fetch!=='function')
             throw Error('Model download fetch instrumentation unavailable');
-    """, expected_urls)
-    driver.find_element(By.CSS_SELECTOR, row + " .model-download").click()
+    """, expected_urls, stalled_voice_url)
+    button = row + " .model-download"
+    driver.find_element(By.CSS_SELECTOR, button).click()
+
+    cancelled_retry = None
+    if provider == "onnx":
+        # ONNX contains a 92-MB graph followed by a ~0.5-MB voice embedding.
+        # Stall only the voice fetch, then Cancel via the real UI. A partial
+        # install must preserve the previously verified graph, not silently
+        # restart it when the user explicitly retries.
+        try:
+            WebDriverWait(driver, 480).until(
+                lambda d: (
+                    (stalled_voice_url in json.loads(d.execute_script(
+                        "return (window.wrappedJSObject||window).__originModelStatsJson()"
+                    ))["requests"]
+                     and d.find_element(By.CSS_SELECTOR, button).text ==
+                     "Cancel download")
+                    or any(word in d.find_element(
+                        By.CSS_SELECTOR, row + " .model-status").text.lower()
+                        for word in ("permission was denied", "permission failed",
+                                     "cannot request", "download failed"))
+                )
+            )
+        except Exception as exc:
+            ui = driver.find_element(By.CSS_SELECTOR, row + " .model-status").text
+            raise RuntimeError("Firefox ONNX voice-stall acceptance did not "
+                               "reach cancellable second asset: " + ui) from exc
+        if driver.find_element(By.CSS_SELECTOR, button).text != "Cancel download":
+            raise RuntimeError("Firefox ONNX first Download/permission failed: " +
+                               driver.find_element(By.CSS_SELECTOR,
+                                                   row + " .model-status").text)
+        driver.find_element(By.CSS_SELECTOR, button).click()
+        WebDriverWait(driver, 60).until(
+            lambda d: "Download cancelled" in d.find_element(
+                By.CSS_SELECTOR, row + " .model-status").text
+            and d.find_element(By.CSS_SELECTOR, button).is_enabled()
+            and d.find_element(By.CSS_SELECTOR, button).text.startswith("Download")
+            and d.find_element(By.CSS_SELECTOR, row + " .model-download-progress")
+                .get_attribute("hidden") is not None
+        )
+        cancelled_retry = driver.execute_async_script("""
+            const done=arguments[arguments.length-1];
+            (async()=>{
+                const [{ModelDataStore},{manifestForVariant}]=await Promise.all([
+                    import('./model-data-store.js'),import('./model-catalog.js')]);
+                const store=new ModelDataStore({
+                    origin:browser.runtime.getURL('/'),cacheStorage:caches,
+                    fetchImpl:()=>{throw Error('Cancel unexpectedly fetched model')},
+                    responseClass:Response,streamClass:TransformStream});
+                const m=manifestForVariant('onnx','q8');
+                const status=await store.status(m);
+                const verified=await store.verifyAndPruneCorrupt(m);
+                return {status,verified};
+            })().then(done,e=>done({error:String(e)}));
+        """)
+        graph_bytes = manifest["assets"][0]["bytes"]
+        status = cancelled_retry.get("status") or {}
+        verified = cancelled_retry.get("verified") or {}
+        if (cancelled_retry.get("error") or status.get("ready") or
+                status.get("storedBytes") != graph_bytes or
+                verified.get("ready") or verified.get("removedAssets") != 0 or
+                verified.get("missingAssets") != 1):
+            raise RuntimeError("Firefox ONNX Cancel failed to retain only the "
+                               "verified graph: " + str(cancelled_retry))
+        driver.execute_script("""
+            const page=window.wrappedJSObject||window;
+            if(typeof page.__originModelStatsJson!=='function')
+                throw Error('Origin fetch counters missing before Retry');
+            page.__originModelStallVoice=false;
+        """)
+        driver.find_element(By.CSS_SELECTOR, button).click()
 
     # In headless Firefox an optional-host dialog might not be approved.
     # Never grant it from Selenium, and fail visibly on denied/stuck consent.
@@ -358,19 +442,19 @@ def run_mediapipe_origin_ui_acceptance(driver, manifest):
         )
     except Exception as exc:
         status = driver.find_element(By.CSS_SELECTOR, row + " .model-status").text
-        raise RuntimeError("Firefox official MediaPipe UI did not complete "
+        raise RuntimeError("Firefox official " + provider + " UI did not complete "
                            "(host permission or transfer): " + status) from exc
 
     ui_status = driver.find_element(By.CSS_SELECTOR, row + " .model-status").text
     if "Installed" not in ui_status:
-        raise RuntimeError("Firefox MediaPipe official-host Download failed: " + ui_status)
+        raise RuntimeError("Firefox " + provider + " official-host Download failed: " + ui_status)
 
     report = driver.execute_async_script("""
-        const done=arguments[arguments.length-1];
+        const [provider,variant,done]=arguments;
         (async()=>{
-            const [{ModelDataStore,formatModelSize},{manifestForVariant}]=await Promise.all([
+            const [{ModelDataStore,formatModelSize},{manifestForVariant,dictionaryManifest}]=await Promise.all([
                 import('./model-data-store.js'),import('./model-catalog.js')]);
-            const manifest=manifestForVariant('mediapipe','cpu');
+            const manifest=manifestForVariant(provider,variant);
             const store=new ModelDataStore({
                 origin:browser.runtime.getURL('/'),cacheStorage:caches,
                 fetchImpl:()=>{throw Error('Verification unexpectedly fetched model')},
@@ -385,14 +469,18 @@ def run_mediapipe_origin_ui_acceptance(driver, manifest):
             const expectedBytes=manifest.assets.reduce((n,a)=>n+a.bytes,0);
             const receivedBytes=urls.reduce(
                 (n,url)=>n+(stats.bytesByUrl[url]||0),0);
-            const otherProviderAfter=await Promise.all(['q8','q8f16'].map(
-                async variant=>({
-                    variant,...await store.status(manifestForVariant('onnx',variant))})));
-            const row=document.querySelector('[data-variant="mediapipe-cpu"]');
+            const otherProvider=provider==='onnx'?'mediapipe':'onnx';
+            const otherVariants=provider==='onnx'?['cpu','gpu']:['q8','q8f16'];
+            const otherProviderAfter=await Promise.all(otherVariants.map(
+                async v=>({variant:v,...await store.status(
+                    manifestForVariant(otherProvider,v))})));
+            const dictionary=provider==='onnx'
+                ? await store.verifyAndPruneCorrupt(dictionaryManifest()) : null;
+            const row=document.querySelector('[data-variant="'+provider+'-'+variant+'"]');
             const permission=await browser.permissions.contains({
                 origins:[new URL(urls[0]).origin+'/*']});
             return {
-                success:true,provider:'mediapipe',variant:'cpu',permission,
+                success:true,provider,variant,permission,
                 expectedBytes,receivedBytes,cachedBytes:status.storedBytes,
                 pinnedAssets:manifest.assets.map(a=>({path:a.path,bytes:a.bytes})),
                 requests:stats.requests,completedUrls:stats.completed,
@@ -405,10 +493,15 @@ def run_mediapipe_origin_ui_acceptance(driver, manifest):
                     row.querySelector('.model-status').textContent
                         .includes(formatModelSize(expectedBytes)),
                 otherProviderAfter,
+                dictionaryIntegrityVerified:dictionary?
+                    dictionary.ready&&dictionary.removedAssets===0&&
+                    dictionary.missingAssets===0:null,
             };
         })().then(done,e=>done({success:false,error:String(e)}));
-    """)
+    """, provider, variant)
     expected_bytes = sum(a["bytes"] for a in manifest["assets"])
+    expected_requests = ([expected_urls[0], expected_urls[1], expected_urls[1]]
+                         if provider == "onnx" else expected_urls)
     if (not report.get("success") or not report.get("permission") or
             not report.get("fullSha256Verified") or
             not report.get("displayedSizeMatchesManifest") or
@@ -416,12 +509,21 @@ def run_mediapipe_origin_ui_acceptance(driver, manifest):
             report.get("receivedBytes") != expected_bytes or
             report.get("cachedBytes") != expected_bytes or
             report.get("progressPercent") != 100 or
-            report.get("requests") != expected_urls or
+            report.get("requests") != expected_requests or
             report.get("unexpectedUrls") or
             sorted(report.get("completedUrls", [])) != sorted(expected_urls) or
-            report.get("otherProviderAfter") != prior["otherProviderBefore"]):
+            report.get("otherProviderAfter") != prior["otherProviderBefore"] or
+            (provider == "onnx" and not report.get("dictionaryIntegrityVerified"))):
         raise RuntimeError("Firefox official-origin model verification failed: " + str(report))
     report["otherProviderBefore"] = prior["otherProviderBefore"]
+    if cancelled_retry:
+        report["cancelRetry"] = {
+            "cancelledDuringSecondAsset": True,
+            "verifiedFirstAssetPreserved": True,
+            "missingAssetCountAfterCancel": 1,
+            "explicitRetryFetchedOnlyMissingVoice": True,
+            "requestsBeforeAndAfterRetry": report["requests"],
+        }
     return report
 
 
@@ -430,8 +532,8 @@ def main():
         raise RuntimeError("Explicit model download opt-in is required")
     provider = os.environ.get("KOKORO_FIREFOX_PROVIDER", "onnx")
     origin_download = os.environ.get("KOKORO_FIREFOX_ORIGIN_DOWNLOAD") == "1"
-    if origin_download and provider != "mediapipe":
-        raise ValueError("Official-origin Firefox acceptance requires MediaPipe CPU")
+    if origin_download and provider not in ("mediapipe", "onnx"):
+        raise ValueError("Official-origin Firefox acceptance requires MediaPipe CPU or ONNX q8")
     if provider not in ("onnx", "mediapipe", "dictionary"):
         raise ValueError("KOKORO_FIREFOX_PROVIDER must be onnx, mediapipe, or dictionary")
     output = Path("dist/runtime-acceptance/firefox.json")
@@ -733,7 +835,7 @@ def main():
             # The explicit origin path clicks the actual model-manager
             # Download button rather than transferring verified runner bytes.
             if origin_download:
-                origin_model_acceptance = run_mediapipe_origin_ui_acceptance(
+                origin_model_acceptance = run_model_origin_ui_acceptance(
                     driver, manifests[0])
             else:
                 # Existing loopback bootstrap is retained only for the
