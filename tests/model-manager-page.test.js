@@ -247,6 +247,82 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(row.querySelector('.model-test').disabled).toBe(false);
     });
 
+    test('Cancel verification aborts SHA-256 without fetching or deleting installed data', async () => {
+        const row = document.querySelector('[data-variant="onnx-q8"]');
+        const button = row.querySelector('.model-verify');
+        const other = document.querySelector('[data-variant="mediapipe-cpu"]');
+        verifyModel.mockImplementation((manifest, { signal }) => new Promise((resolve, reject) => {
+            signal.addEventListener('abort', () =>
+                reject(new DOMException('Verification cancelled', 'AbortError')), { once: true });
+        }));
+        button.click();
+        await waitFor(() => verifyModel.mock.calls.length === 1);
+        expect(button.textContent).toBe('Cancel verification');
+        expect(button.disabled).toBe(false);
+        expect(other.querySelector('.model-download').disabled).toBe(true);
+        const signal = verifyModel.mock.calls[0][1].signal;
+        button.click();
+        expect(signal.aborted).toBe(true);
+        expect(button.disabled).toBe(true);
+        await waitFor(() => row.querySelector('.model-status').textContent
+            .includes('Cache verification cancelled'));
+        expect(button.textContent).toBe('Verify cached data');
+        expect(button.disabled).toBe(false);
+        expect(row.querySelector('.model-test').disabled).toBe(false);
+        expect(row.querySelector('.model-remove').disabled).toBe(false);
+        expect(other.querySelector('.model-download').disabled).toBe(false);
+        expect(global.fetch).not.toHaveBeenCalled();
+        expect(installModel).not.toHaveBeenCalled();
+        expect(removeModel).not.toHaveBeenCalled();
+        expect(global.browser.permissions.request).not.toHaveBeenCalled();
+    });
+
+    test('Cancel after detected MediaPipe corruption still invalidates runtime', async () => {
+        const row = document.querySelector('[data-variant="mediapipe-cpu"]');
+        installedModels.add('cpu');
+        document.getElementById('refreshModelCache').click();
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('Installed'));
+        row.querySelector('.model-choose').disabled = false;
+        verifyModel.mockImplementation((manifest, { signal, onProgress }) =>
+            new Promise((resolve, reject) => {
+                installedModels.delete('cpu');
+                onProgress({ verifiedBytes: 0, totalBytes: manifest.assets[0].bytes,
+                    removedAssets: 1, missingAssets: 0 });
+                signal.addEventListener('abort', () =>
+                    reject(new DOMException('Verification cancelled', 'AbortError')),
+                { once: true });
+            }));
+        const button = row.querySelector('.model-verify');
+        button.click();
+        await waitFor(() => button.textContent === 'Cancel verification');
+        button.click();
+        await waitFor(() => row.querySelector('.model-status').textContent
+            .includes('Cache verification cancelled'));
+        expect(global.browser.storage.local.remove)
+            .toHaveBeenCalledWith('mediapipeValidatedRevision:cpu');
+        expect(row.querySelector('.model-test').disabled).toBe(true);
+        expect(row.querySelector('.model-choose').disabled).toBe(true);
+        expect(row.querySelector('.model-download').disabled).toBe(false);
+        expect(installModel).not.toHaveBeenCalled();
+    });
+
+    test('pagehide aborts active cache SHA-256 verification', async () => {
+        const row = document.querySelector('[data-variant="onnx-q8"]');
+        verifyModel.mockImplementation((manifest, { signal }) => new Promise((resolve, reject) => {
+            signal.addEventListener('abort', () =>
+                reject(new DOMException('Verification cancelled', 'AbortError')), { once: true });
+        }));
+        row.querySelector('.model-verify').click();
+        await waitFor(() => verifyModel.mock.calls.length === 1);
+        const signal = verifyModel.mock.calls[0][1].signal;
+        expect(signal.aborted).toBe(false);
+        window.dispatchEvent(new Event('pagehide'));
+        expect(signal.aborted).toBe(true);
+        await waitFor(() => row.querySelector('.model-status').textContent
+            .includes('Cache verification cancelled'));
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
     test('dictionary verification removes stale in-memory ONNX lexicons after corruption', async () => {
         const { row: onnx } = await runProbe();
         expect(onnx.querySelector('.model-test').disabled).toBe(false);

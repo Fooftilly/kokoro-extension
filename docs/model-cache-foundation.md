@@ -40,3 +40,16 @@ Cancelling in a progress callback for the final already-cached asset is also
 reported as cancellation rather than a completed installation or verification.
 Deletion already completed before cancellation cannot be undone; only
 pre-mutation cancellation is guaranteed to preserve existing data.
+
+
+## User cancellation of explicit cache verification (#55)
+
+The model manager changes the **Verify cached data** button to **Cancel
+verification** while a user-initiated SHA-256 check is running. This forwards
+AbortSignal to the existing cache verifier, including MediaPipe Blob streams.
+Other model actions remain locked through final cache-status inspection.
+The Verify button is restored after cancellation, which does not trigger any
+automatic model download. Already confirmed corrupt bytes may have been
+removed before the user clicked Cancel, so the existing runtime invalidation
+still runs when a previous verified asset was deleted. Leaving the page also
+aborts active verification.
