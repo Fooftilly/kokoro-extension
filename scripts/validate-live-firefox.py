@@ -263,6 +263,74 @@ def run_dictionary_ui_acceptance(driver):
             "uiProgressReached100": True, "uiRemoveClearedCache": True}
 
 
+def restore_onnx_dictionary_from_real_ui(driver):
+    """Install the pinned dictionary by an explicit Firefox UI click.
+
+    The preceding Download/Cancel/Retry/Remove dictionary test finishes with
+    an empty cache. ONNX English synthesis requires the dictionary installed.
+    """
+    row = '[data-variant="dictionary-english"]'
+    WebDriverWait(driver, 30).until(
+        lambda d: "Not installed" in d.find_element(
+            By.CSS_SELECTOR, row + " .model-status").text
+        and d.find_element(By.CSS_SELECTOR, row + " .model-download").is_enabled()
+    )
+    driver.find_element(By.CSS_SELECTOR, row + " .model-download").click()
+    try:
+        WebDriverWait(driver, 180).until(
+            lambda d: (
+                ("Installed" in d.find_element(
+                    By.CSS_SELECTOR, row + " .model-status").text
+                 and d.find_element(
+                    By.CSS_SELECTOR, row + " .model-download-progress"
+                 ).get_attribute("value") == "100")
+                or any(word in d.find_element(
+                    By.CSS_SELECTOR, row + " .model-status").text.lower()
+                    for word in ("permission was denied", "permission failed",
+                                 "cannot request", "download failed"))
+            )
+        )
+    except Exception as exc:
+        status = driver.find_element(By.CSS_SELECTOR, row + " .model-status").text
+        raise RuntimeError("Firefox dictionary was not restored by explicit UI: " +
+                           status) from exc
+    if "Installed" not in driver.find_element(
+            By.CSS_SELECTOR, row + " .model-status").text:
+        raise RuntimeError("Firefox dictionary restoration failed")
+
+    report = driver.execute_async_script("""
+        const done=arguments[arguments.length-1];
+        (async()=>{
+            const [{ModelDataStore,formatModelSize},{dictionaryManifest}]=await Promise.all([
+                import('./model-data-store.js'),import('./model-catalog.js')]);
+            const manifest=dictionaryManifest();
+            const store=new ModelDataStore({
+                origin:browser.runtime.getURL('/'),cacheStorage:caches,
+                fetchImpl:()=>{throw Error('Dictionary check unexpectedly fetched')},
+                responseClass:Response,streamClass:TransformStream});
+            const status=await store.status(manifest);
+            const verified=await store.verifyAndPruneCorrupt(manifest);
+            const row=document.querySelector('[data-variant="dictionary-english"]');
+            const permission=await browser.permissions.contains({
+                origins:[new URL(manifest.assets[0].url).origin+'/*']});
+            return {ready:status.ready,storedBytes:status.storedBytes,
+                expectedBytes:status.totalBytes,
+                verified:verified.ready&&verified.removedAssets===0&&
+                    verified.missingAssets===0,
+                permission,displayedSizeMatchesManifest:row.querySelector(
+                    '.model-status').textContent.includes(formatModelSize(
+                        status.totalBytes))};
+        })().then(done,e=>done({error:String(e)}));
+    """)
+    if (report.get("error") or not report.get("ready") or
+            not report.get("verified") or not report.get("permission") or
+            not report.get("displayedSizeMatchesManifest") or
+            report.get("storedBytes") != report.get("expectedBytes") or
+            report.get("expectedBytes") != 3618488):
+        raise RuntimeError("Firefox restored dictionary integrity failed: " + str(report))
+    return report
+
+
 def run_model_origin_ui_acceptance(driver, manifest):
     """Real Firefox model-manager Download with pinned HTTPS data, not loopback preload.
 
@@ -835,8 +903,15 @@ def main():
             # The explicit origin path clicks the actual model-manager
             # Download button rather than transferring verified runner bytes.
             if origin_download:
+                if provider == "onnx":
+                    # The dictionary UI regression deliberately removed its
+                    # model data; request it again from the user's control.
+                    dictionary_reinstalled = restore_onnx_dictionary_from_real_ui(driver)
                 origin_model_acceptance = run_model_origin_ui_acceptance(
                     driver, manifests[0])
+                if provider == "onnx":
+                    origin_model_acceptance["dictionaryReinstalledThroughUi"] = (
+                        dictionary_reinstalled)
             else:
                 # Existing loopback bootstrap is retained only for the
                 # non-origin model inference acceptance mode.
@@ -929,44 +1004,57 @@ def main():
             """, provider)
 
             if origin_download and metrics.get("success"):
-                # The engine is closed before this point. Remove must work
-                # while Firefox remains offline and not alter ONNX cache data.
-                media_row = '[data-variant="mediapipe-cpu"]'
+                # Close the active engine before Remove; no re-download may
+                # occur and other-provider assets must not be modified.
+                model_variant = "q8" if provider == "onnx" else "cpu"
+                model_row = f'[data-variant="{provider}-{model_variant}"]'
                 driver.find_element(
-                    By.CSS_SELECTOR, media_row + " .model-remove").click()
+                    By.CSS_SELECTOR, model_row + " .model-remove").click()
                 WebDriverWait(driver, 30).until(
                     lambda d: "Not installed" in d.find_element(
-                        By.CSS_SELECTOR, media_row + " .model-status").text
+                        By.CSS_SELECTOR, model_row + " .model-status").text
                     and not d.find_element(
-                        By.CSS_SELECTOR, media_row + " .model-remove").is_enabled()
+                        By.CSS_SELECTOR, model_row + " .model-remove").is_enabled()
                     and d.find_element(
-                        By.CSS_SELECTOR, media_row + " .model-download").is_enabled()
+                        By.CSS_SELECTOR, model_row + " .model-download").is_enabled()
                 )
                 removal = driver.execute_async_script("""
-                    const done=arguments[arguments.length-1];
+                    const [provider,variant,done]=arguments;
                     (async()=>{
                         if(navigator.onLine!==false)
                             throw Error('Firefox unexpectedly online during removal');
-                        const [{ModelDataStore},{manifestForVariant}]=await Promise.all([
-                            import('./model-data-store.js'),import('./model-catalog.js')]);
+                        const [{ModelDataStore},{manifestForVariant,dictionaryManifest}]=
+                            await Promise.all([
+                                import('./model-data-store.js'),
+                                import('./model-catalog.js')]);
                         const store=new ModelDataStore({
                             origin:browser.runtime.getURL('/'),cacheStorage:caches,
-                            fetchImpl:()=>{throw Error('Removal must never fetch model bytes')},
+                            fetchImpl:()=>{throw Error('Removal must not fetch model data')},
                             responseClass:Response,streamClass:TransformStream});
-                        const model=await store.status(manifestForVariant('mediapipe','cpu'));
-                        const otherProvider=await Promise.all(['q8','q8f16'].map(
-                            async variant=>({variant,...await store.status(
-                                manifestForVariant('onnx',variant))})));
-                        return {model,otherProvider,networkOffline:true};
+                        const model=await store.status(manifestForVariant(provider,variant));
+                        const otherProvider=provider==='onnx'?'mediapipe':'onnx';
+                        const variants=provider==='onnx'?['cpu','gpu']:['q8','q8f16'];
+                        const otherStatus=await Promise.all(variants.map(
+                            async v=>({variant:v,...await store.status(
+                                manifestForVariant(otherProvider,v))})));
+                        const dictionary=provider==='onnx'
+                            ? await store.verifyAndPruneCorrupt(dictionaryManifest()):null;
+                        return {model,otherProvider:otherStatus,networkOffline:true,
+                            dictionaryStillVerified:dictionary?
+                                dictionary.ready&&dictionary.removedAssets===0&&
+                                dictionary.missingAssets===0:null};
                     })().then(done,e=>done({error:String(e)}));
-                """)
+                """, provider, model_variant)
                 if (removal.get("error") or
                         removal.get("model", {}).get("ready") or
                         removal.get("model", {}).get("storedBytes") != 0 or
                         removal.get("otherProvider") !=
-                        origin_model_acceptance["otherProviderBefore"]):
-                    raise RuntimeError("Firefox offline model Remove affected other "
-                                       "providers or left cached bytes: " + str(removal))
+                        origin_model_acceptance["otherProviderBefore"] or
+                        (provider == "onnx" and not
+                         removal.get("dictionaryStillVerified"))):
+                    raise RuntimeError("Firefox offline " + provider +
+                                       " Remove affected other caches or left bytes: " +
+                                       str(removal))
                 origin_model_acceptance["offlineUiRemoval"] = removal
             result = {"status": "passed" if metrics.get("success") else "failed",
                 "browser": driver.capabilities.get("browserVersion"), "extensionId": addon_id,
@@ -979,7 +1067,7 @@ def main():
                 "offlineAttempted": True,
                 "offlineInference": metrics.get("success") is True,
                 "cachePopulation": (
-                    "MediaPipe model downloaded through real Firefox UI from pinned HTTPS origin; no loopback preload"
+                    provider + " model downloaded through real Firefox UI from pinned HTTPS origin; no loopback preload"
                     if origin_download else
                     "model weights preloaded over authenticated loopback; dictionary tested with pinned HTTPS CORS/SRI and real Download/Cancel/Retry/Remove UI"),
                 "scope": "Firefox/Linux MV3 offline " + provider +
