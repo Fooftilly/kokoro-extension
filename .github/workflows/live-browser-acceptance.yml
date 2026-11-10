@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       acceptance_scope:
-        description: 'Explicitly select full inference, dictionary UI, or Chromium MediaPipe official-origin download'
+        description: 'Select full inference, dictionary UI, or isolated Chromium official-origin model install'
         type: choice
         required: true
         default: full
@@ -27,6 +27,7 @@ on:
           - chromium-dictionary
           - firefox-dictionary
           - chromium-mediapipe-origin
+          - chromium-onnx-origin
 
 permissions:
   contents: read
@@ -57,8 +58,8 @@ jobs:
       - name: Execute real model-backed Chrome extension inference
         env:
           KOKORO_LIVE_DOWNLOAD: '1'
-          KOKORO_LIVE_PROVIDER: ${{ inputs.acceptance_scope == 'chromium-dictionary' && 'dictionary' || inputs.acceptance_scope == 'chromium-mediapipe-origin' && 'mediapipe' || 'both' }}
-          KOKORO_CHROMIUM_ORIGIN_DOWNLOAD: ${{ inputs.acceptance_scope == 'chromium-mediapipe-origin' && '1' || '0' }}
+          KOKORO_LIVE_PROVIDER: ${{ inputs.acceptance_scope == 'chromium-dictionary' && 'dictionary' || inputs.acceptance_scope == 'chromium-mediapipe-origin' && 'mediapipe' || inputs.acceptance_scope == 'chromium-onnx-origin' && 'onnx' || 'both' }}
+          KOKORO_CHROMIUM_ORIGIN_DOWNLOAD: ${{ (inputs.acceptance_scope == 'chromium-mediapipe-origin' || inputs.acceptance_scope == 'chromium-onnx-origin') && '1' || '0' }}
           PLAYWRIGHT_MODULE_PATH: ${{ runner.temp }}/kokoro-playwright/node_modules/playwright/index.mjs
         run: node scripts/validate-live-chromium.mjs
       - name: Attach measured browser report (when available)
