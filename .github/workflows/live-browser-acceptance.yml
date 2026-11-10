@@ -66,19 +66,18 @@ jobs:
           KOKORO_LIVE_DOWNLOAD: '1'
           KOKORO_LIVE_PROVIDER: ${{ inputs.acceptance_scope == 'chromium-dictionary' && 'dictionary' || inputs.acceptance_scope == 'chromium-mediapipe-origin' && 'mediapipe' || inputs.acceptance_scope == 'chromium-onnx-origin' && 'onnx' || 'both' }}
           KOKORO_CHROMIUM_ORIGIN_DOWNLOAD: ${{ (inputs.acceptance_scope == 'chromium-mediapipe-origin' || inputs.acceptance_scope == 'chromium-onnx-origin') && '1' || '0' }}
-          KOKORO_CHROMIUM_HEADFUL_CONSENT: ${{ (inputs.acceptance_scope == 'chromium-mediapipe-origin' || inputs.acceptance_scope == 'chromium-onnx-origin') && '1' || '0' }}
+          KOKORO_CHROMIUM_HEADFUL_CONSENT: '1'
           PLAYWRIGHT_MODULE_PATH: ${{ runner.temp }}/kokoro-playwright/node_modules/playwright/index.mjs
         run: |
-          if [[ "$KOKORO_CHROMIUM_ORIGIN_DOWNLOAD" == "1" ]]; then
-            # Optional extension-host prompts are native Chromium UI. The
-            # browser must be headed for the real consent interaction.
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq xvfb openbox xdotool
-            xvfb-run -a -s '-screen 0 1440x900x24' \
-              bash -c 'openbox >/dev/null 2>&1 & exec node scripts/validate-live-chromium.mjs'
-          else
-            node scripts/validate-live-chromium.mjs
-          fi
+          # Every live Chromium scope also tests optional dictionary Download,
+          # Cancel and Retry after a real process restart. Preserve the headed
+          # browser across both processes so native consent is interactive.
+          # This workflow is explicitly opt-in (or limited to the experimental
+          # branch) and is not part of routine extension CI.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb openbox xdotool
+          xvfb-run -a -s '-screen 0 1440x900x24' \
+            bash -c 'openbox >/dev/null 2>&1 & exec node scripts/validate-live-chromium.mjs'
       - name: Execute Chromium real-quota, offline multi-asset recovery acceptance
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.acceptance_scope == 'chromium-quota-recovery' }}
         env:
