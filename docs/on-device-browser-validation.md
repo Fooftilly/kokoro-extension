@@ -107,14 +107,18 @@ weights without the explicit manual live-acceptance workflow.
 
 ## Real model-manager button acceptance (part of #55)
 
-After explicit dictionary recovery, both opt-in live browser harnesses now
-click the packaged extension's actual **Recheck installed models** and
-dictionary **Remove** buttons. The assertions require the repaired dictionary
-to appear installed and removable, then show Not installed with Download
-available and confirm that no dictionary bytes remain in extension Cache
-Storage. Chromium runs this after its true browser restart; Firefox runs it
+Both opt-in live browser harnesses first click **Recheck installed
+models** with the dictionary deliberately evicted and require the real row
+to show **Not installed**. Only after this visible missing state do they
+explicitly repair the dictionary through the harness data-store API. A second
+Recheck must transition the row to **Installed**, after which the harness
+clicks the actual **Remove** button and confirms the row says Not installed
+with Download available and no dictionary bytes left in Cache Storage.
+The harness instruments the real page global fetch used by the manager's
+button handlers and fails if either action requests additional model data. Chromium runs this after its true browser restart; Firefox runs it
 after its fresh extension-page reload. Results include
-`modelManagerRecheckClicked`, `modelManagerRemoveClicked`, and
+`modelManagerRecheckClicked`, `modelManagerRemoveClicked`,
+`uiEvictionObservedBeforeRepair`, `noUiModelFetches`, and
 `uiRemovalVerifiedInCache`.
 
 These tests do not yet exercise the Download, Cancel, or Retry UI buttons or
