@@ -551,7 +551,8 @@ try {
             await reopened.waitForFunction(() => {
                 const row = document.querySelector('[data-variant="dictionary-english"]');
                 return row?.querySelector('.model-download')?.textContent ===
-                    'Cancel download' && row?.querySelector('.model-download')?.disabled === false;
+                    'Cancel download' && row?.querySelector('.model-download')?.disabled === false &&
+                    globalThis.__dictionaryUiCancelledFetches === 1;
             }, null, { timeout: 30000 });
             await downloadButton.click();
             await reopened.waitForFunction(() => {
