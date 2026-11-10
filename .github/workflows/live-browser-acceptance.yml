@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       acceptance_scope:
-        description: 'Select full inference, dictionary UI, or isolated Chromium official-origin model install'
+        description: 'Select full inference, dictionary UI, or manual official-origin browser model install'
         type: choice
         required: true
         default: full
@@ -27,6 +27,7 @@ on:
           - chromium-dictionary
           - firefox-dictionary
           - firefox-mediapipe-origin
+          - firefox-onnx-origin
           - chromium-mediapipe-origin
           - chromium-onnx-origin
 
@@ -36,7 +37,7 @@ permissions:
 jobs:
   chromium-model-inference:
     name: Real ONNX and MediaPipe Chromium MV3 synthesis
-    if: ${{ inputs.acceptance_scope != 'firefox-dictionary' && inputs.acceptance_scope != 'firefox-mediapipe-origin' }}
+    if: ${{ inputs.acceptance_scope != 'firefox-dictionary' && inputs.acceptance_scope != 'firefox-mediapipe-origin' && inputs.acceptance_scope != 'firefox-onnx-origin' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -160,6 +161,52 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kokoro-live-firefox-dictionary-report
+          path: dist/runtime-acceptance/firefox.json
+          if-no-files-found: ignore
+
+
+  firefox-onnx-origin:
+    name: Firefox MV3 ONNX q8 official-host download/cancel/retry and offline synthesis
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.acceptance_scope == 'firefox-onnx-origin' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install extension dependencies
+        run: npm ci --ignore-scripts
+      - name: Package Firefox temporary add-on
+        run: npm run package:ci
+      - name: Install Firefox binary
+        id: firefox
+        uses: browser-actions/setup-firefox@0bc507ddf224827e3b1af68e014d5e42ab93e795 # v1
+        with:
+          firefox-version: latest
+      - name: Install pinned geckodriver
+        uses: browser-actions/setup-geckodriver@5ef1526ed36211ab6cb531ec1cfb11f924ca2dee
+        with:
+          geckodriver-version: '0.37.1'
+      - name: Install isolated Selenium driver
+        run: |
+          python3 -m venv "$RUNNER_TEMP/firefox-selenium"
+          "$RUNNER_TEMP/firefox-selenium/bin/python" -m pip install --disable-pip-version-check selenium==4.38.0
+      - name: Execute real Firefox ONNX origin-download acceptance
+        env:
+          KOKORO_LIVE_DOWNLOAD: '1'
+          KOKORO_FIREFOX_ORIGIN_DOWNLOAD: '1'
+          KOKORO_FIREFOX_PROVIDER: onnx
+          FIREFOX_BINARY: ${{ steps.firefox.outputs.firefox-path }}
+          MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: '1'
+        run: |
+          "$RUNNER_TEMP/firefox-selenium/bin/python" scripts/validate-live-firefox.py
+      - name: Upload official-origin Firefox ONNX acceptance report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kokoro-live-firefox-onnx-origin-report
           path: dist/runtime-acceptance/firefox.json
           if-no-files-found: ignore
 
