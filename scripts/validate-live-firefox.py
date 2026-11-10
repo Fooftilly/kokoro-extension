@@ -448,9 +448,9 @@ def main():
             if not origin_download:
                 for manifest in manifests:
                     files.update(verified_assets(manifest, root))
+            state = {"origin": None}
             if not origin_download:
                 token = secrets.token_hex(32)
-                state = {"origin": None}
                 class Server(http.server.BaseHTTPRequestHandler):
                     def do_GET(self):
                         from urllib.parse import parse_qs, urlsplit
