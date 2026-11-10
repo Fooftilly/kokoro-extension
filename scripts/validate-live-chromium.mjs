@@ -174,8 +174,11 @@ async function acceptOfficialOriginHostPermission(page, manifest, rowSelector, b
         activeWindow = execFileSync('/usr/bin/xdotool', ['getactivewindow', 'getwindowname'],
             { encoding: 'utf8', timeout: 4000 }).trim();
         if (!activeWindow) throw Error('No active Chromium window');
-        execFileSync('/usr/bin/xdotool', ['key', '--clearmodifiers', 'Return'],
-            { timeout: 4000 });
+        // Chromium's extension permission dialog defaults to Cancel. On
+        // Linux the dialog's focus order goes Cancel -> Allow (OK); Tab
+        // explicitly focuses Allow before Return confirms it.
+        execFileSync('/usr/bin/xdotool',
+            ['key', '--clearmodifiers', 'Tab', 'Return'], { timeout: 4000 });
     } catch (error) {
         throw Error('Cannot interact with headed Chromium permission prompt: ' +
             String(error.message || error));
