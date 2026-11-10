@@ -187,12 +187,20 @@ export class ModelDataStore {
                 // An interrupted installation may have a cached earlier asset.
                 // Verify its SHA-256 before treating it as completed, even when
                 // the integrity and byte-count *headers* still match.
-                if (await this.cachedBytesMatch(await cache.match(key), asset, signal)) {
+                const cachedMatches = await this.cachedBytesMatch(
+                    await cache.match(key), asset, signal);
+                // An abort during cache.match() must not delete an existing
+                // entry, even if its metadata does not match the manifest.
+                if (signal?.aborted) throw new DOMException('Download aborted', 'AbortError');
+                if (cachedMatches) {
                     completedBytes += asset.bytes;
-                    if (onProgress) onProgress({ completedBytes, totalBytes });
+                    onProgress?.({ completedBytes, totalBytes });
+                    // A progress listener may cancel the final cached asset.
+                    if (signal?.aborted) throw new DOMException('Download aborted', 'AbortError');
                     continue;
                 }
                 await cache.delete(key);
+                if (signal?.aborted) throw new DOMException('Download aborted', 'AbortError');
                 const response = await this.fetchImpl(asset.url, {
                     signal, cache: 'no-store', integrity: asset.integrity,
                 });
@@ -258,6 +266,9 @@ export class ModelDataStore {
                 if (signal?.aborted) throw new DOMException('Verification cancelled', 'AbortError');
                 const key = this.key(manifest, asset);
                 const cached = await cache.match(key);
+                // Cache Storage reads are asynchronous. Cancellation before
+                // any mutation wins, including for stale metadata entries.
+                if (signal?.aborted) throw new DOMException('Verification cancelled', 'AbortError');
                 if (!cached) {
                     missingAssets++;
                     continue;
@@ -266,6 +277,7 @@ export class ModelDataStore {
                 // rather than deleting the cached model; mismatched bytes are
                 // confirmed corruption and may be removed.
                 const valid = await this.cachedBytesMatch(cached, asset, signal);
+                if (signal?.aborted) throw new DOMException('Verification cancelled', 'AbortError');
                 if (valid) {
                     verifiedBytes += asset.bytes;
                 } else {
@@ -275,6 +287,7 @@ export class ModelDataStore {
                     removedAssets++;
                 }
                 onProgress?.({ verifiedBytes, totalBytes, removedAssets, missingAssets });
+                if (signal?.aborted) throw new DOMException('Verification cancelled', 'AbortError');
             }
             return {
                 ready: verifiedBytes === totalBytes,
