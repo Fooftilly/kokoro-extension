@@ -37,6 +37,7 @@ jobs:
         run: |
           python3 -m py_compile scripts/validate-live-firefox.py
           node --check scripts/validate-live-chromium.mjs
+          node --check scripts/validate-real-quota-chromium.mjs
 
       - name: Test
         run: npm test
