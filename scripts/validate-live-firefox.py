@@ -32,7 +32,8 @@ def pinned_manifest(provider):
         "const source = 'data:text/javascript;base64,' + catalog.toString('base64'); "
         "const {manifestForVariant,dictionaryManifest} = await import(source); "
         "const provider = process.argv[1]; "
-        "console.log(JSON.stringify(provider === 'mediapipe' "
+        "console.log(JSON.stringify(provider === 'dictionary' "
+        " ? [dictionaryManifest()] : provider === 'mediapipe' "
         " ? [manifestForVariant('mediapipe', 'cpu')] "
         " : [manifestForVariant('onnx', 'q8'), dictionaryManifest()]));"
     )
@@ -109,8 +110,8 @@ def main():
     if os.environ.get("KOKORO_LIVE_DOWNLOAD") != "1":
         raise RuntimeError("Explicit model download opt-in is required")
     provider = os.environ.get("KOKORO_FIREFOX_PROVIDER", "onnx")
-    if provider not in ("onnx", "mediapipe"):
-        raise ValueError("KOKORO_FIREFOX_PROVIDER must be onnx or mediapipe")
+    if provider not in ("onnx", "mediapipe", "dictionary"):
+        raise ValueError("KOKORO_FIREFOX_PROVIDER must be onnx, mediapipe, or dictionary")
     output = Path("dist/runtime-acceptance/firefox.json")
     output.parent.mkdir(parents=True, exist_ok=True)
     result = {"status": "started", "browser": "Firefox MV3"}
@@ -182,6 +183,7 @@ def main():
             )
             dictionary_cache_acceptance = None
             dictionary_reload_acceptance = None
+            dictionary_ui_acceptance = None
             preflight = driver.execute_async_script("""
                 const done=arguments[arguments.length-1];
                 window.KokoroBenchmark.inspectCapabilities().then(done, e=>done({error:String(e)}));
@@ -473,6 +475,7 @@ def main():
                 "preflight": preflight, "provider": provider, provider: metrics,
                 "dictionaryCacheAcceptance": dictionary_cache_acceptance,
                 "dictionaryReloadAcceptance": dictionary_reload_acceptance,
+                "dictionaryUiDownloadAcceptance": dictionary_ui_acceptance,
                 "offlineAttempted": True,
                 "offlineInference": metrics.get("success") is True,
                 "cachePopulation": "model weights preloaded over loopback; dictionary tested with real pinned HTTPS CORS/SRI; Download UI not exercised",
@@ -488,6 +491,8 @@ def main():
                 result["dictionaryCacheAcceptance"] = dictionary_cache_acceptance
             if "dictionary_reload_acceptance" in locals():
                 result["dictionaryReloadAcceptance"] = dictionary_reload_acceptance
+            if "dictionary_ui_acceptance" in locals():
+                result["dictionaryUiDownloadAcceptance"] = dictionary_ui_acceptance
             raise
         finally:
             output.write_text(json.dumps(result, indent=2), encoding="utf-8")
