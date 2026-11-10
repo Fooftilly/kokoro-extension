@@ -609,8 +609,8 @@ def run_permanent_addon_restart_acceptance():
         # cloning the profile into a throwaway directory on each new session.
         # On supported developer-channel binaries, disable unsigned-XPI checks.
         (profile / "user.js").write_text(
-            'user_pref("xpinstall.signatures.required", false);\\n'
-            'user_pref("extensions.autoDisableScopes", 0);\\n',
+            'user_pref("xpinstall.signatures.required", false);\n'
+            'user_pref("extensions.autoDisableScopes", 0);\n',
             encoding="utf-8",
         )
 
