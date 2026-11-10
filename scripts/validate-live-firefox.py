@@ -719,8 +719,13 @@ def run_firefox_quota_acceptance():
             probe = probe_source + """
                 const done=arguments[arguments.length-1];
                 globalThis.runFirefoxQuotaProbe(arguments[0])
-                    .then(report=>done({success:true,...report}),
-                        error=>done({success:false,error:String(error.stack||error)}));
+                    .then(report => done({success: true, ...report}),
+                        error => done({
+                            success: false,
+                            error: String(error?.message || error),
+                            stack: String(error?.stack || ''),
+                            details: error?.details || null
+                        }));
             """
             driver = _open_persistent_firefox(profile, quota_limit_kib=8192)
             first_pid = driver.capabilities["moz:processID"]
@@ -739,9 +744,13 @@ def run_firefox_quota_acceptance():
             if not limited.get("success"):
                 raise RuntimeError("Real Firefox limited-quota phase failed: " +
                                    str(limited.get("error")))
-            if (limited["storageEstimate"]["quota"] >= limited["modelBytes"] or
+            # Firefox StorageManager.estimate().quota is an *origin* estimate,
+            # not the global QuotaManager fixedLimit. It can legitimately be
+            # much larger than the test cap; only the real Cache Storage
+            # QuotaExceededError plus preserved checksummed bytes prove this.
+            if (limited.get("modelBytes", 0) <= 8192 * 1024 or
                     not limited.get("dictionaryPreserved")):
-                raise RuntimeError("Firefox quota estimate did not reflect test pressure")
+                raise RuntimeError("Firefox quota recovery fixture did not exceed the global cap")
             result["browserQuotaFailureVerified"] = True
             result["initialProcessId"] = first_pid
             result["extensionId"] = installed_id
@@ -781,8 +790,8 @@ def run_firefox_quota_acceptance():
             if not recovered.get("success"):
                 raise RuntimeError("Real Firefox relaxed-quota retry failed: " +
                                    str(recovered.get("error")))
-            if recovered["storageEstimate"]["quota"] <= limited["storageEstimate"]["quota"]:
-                raise RuntimeError("Firefox quota remained restrictive after process restart")
+            # The global QuotaManager preference was checked above; do not
+            # infer that it changed from the per-origin StorageManager estimate.
             result.update({
                 "status": "passed",
                 "restartedProcessId": second_pid,
