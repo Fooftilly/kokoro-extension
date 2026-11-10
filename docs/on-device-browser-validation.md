@@ -540,7 +540,10 @@ Chrome's optional host permission is normally confirmed in a **native
 browser dialog**, not an HTML/Playwright `dialog`. The original acceptance
 harness used headless Chromium with no way to interact with that prompt.
 The manual-only follow-up runs **headed Chromium under isolated Xvfb**
-and uses a single native X11 Return input after a real Download click.
+and uses native X11 Tab then Return after a real Download click. Chromium's
+permission dialog defaults to Cancel, so the test explicitly focuses the
+adjacent Allow action before activating it. The exact native dialog focus
+behavior still requires a passing manual run.
 It fails if the origin was already granted, the UI does not enter the
 expected permission-request state, or Chrome does not subsequently report
 the precise `https://huggingface.co/*` permission. This does not
