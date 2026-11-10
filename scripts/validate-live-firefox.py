@@ -252,26 +252,67 @@ def main():
                         throw Error('Unable to simulate dictionary eviction');
                     if((await store.status(manifest)).ready||fetches)
                         throw Error('Evicted dictionary not detected or fetched implicitly');
-                    await store.install(manifest);
-                    if(fetches!==1||(await store.verifyAndPruneCorrupt(manifest)).ready!==true)
-                        throw Error('Explicit dictionary repair failed');
-                    // Leave the verified dictionary for real UI removal below.
+                    // Leave dictionary evicted until the real manager Recheck
+                    // button has observed its missing state.
                     return {success:true,extensionPageReloaded:true,
                         browserProcessRestarted:false,
-                        dictionarySha256Retained:true,simulatedEvictionDetected:true,
-                        explicitRepairFetches:fetches};
+                        dictionarySha256Retained:true,simulatedEvictionDetected:true};
                 })().then(done,e=>done({success:false,error:String(e)}));
             """)
             if not dictionary_reload_acceptance.get("success"):
                 raise RuntimeError("Firefox dictionary reload/eviction acceptance failed: " +
                                    str(dictionary_reload_acceptance))
-            # Real Firefox extension-page Recheck and Remove buttons must
-            # observe the repaired dictionary and delete its cached bytes.
+            # The packaged extension UI must first observe the missing
+            # dictionary. Explicit repair happens only after this transition.
             WebDriverWait(driver, 20).until(
                 lambda d: d.find_element(By.ID, "refreshModelCache").is_enabled()
             )
-            driver.find_element(By.ID, "refreshModelCache").click()
             row = '[data-variant="dictionary-english"]'
+            driver.find_element(By.ID, "refreshModelCache").click()
+            WebDriverWait(driver, 30).until(
+                lambda d: "Not installed" in
+                d.find_element(By.CSS_SELECTOR, row + " .model-status").text
+                and not d.find_element(By.CSS_SELECTOR, row + " .model-remove").is_enabled()
+                and d.find_element(By.CSS_SELECTOR, row + " .model-download").is_enabled()
+            )
+            repair = driver.execute_async_script("""
+                const done=arguments[arguments.length-1];
+                (async()=>{
+                    const [{ModelDataStore},{dictionaryManifest}]=await Promise.all([
+                        import('./model-data-store.js'),import('./model-catalog.js')]);
+                    const manifest=dictionaryManifest();
+                    let fetches=0;
+                    const store=new ModelDataStore({
+                        origin:browser.runtime.getURL('/'),cacheStorage:caches,
+                        fetchImpl:(...args)=>{fetches++;return fetch(...args)},
+                        responseClass:Response,streamClass:TransformStream});
+                    if((await store.status(manifest)).ready)
+                        throw Error('Dictionary unexpectedly restored before opt-in');
+                    await store.install(manifest);
+                    if(fetches!==1||(await store.verifyAndPruneCorrupt(manifest)).ready!==true)
+                        throw Error('Explicit dictionary repair failed');
+                    return {success:true,explicitRepairFetches:fetches};
+                })().then(done,e=>done({success:false,error:String(e)}));
+            """)
+            if not repair.get("success"):
+                raise RuntimeError("Firefox explicit dictionary repair failed: " + str(repair))
+            dictionary_reload_acceptance.update(repair)
+            # The manager binds window.fetch when its handlers construct
+            # ModelDataStore. Block/record unexpected model URL requests.
+            driver.execute_script("""
+                const original=globalThis.fetch.bind(globalThis);
+                globalThis.__modelManagerAssetFetches=0;
+                globalThis.fetch=(...args)=>{
+                    const url=String(args[0]?.url||args[0]);
+                    if(url.startsWith('https://huggingface.co/')||
+                        url.startsWith('https://raw.githubusercontent.com/')){
+                        globalThis.__modelManagerAssetFetches++;
+                        throw Error('Unexpected model fetch by manager UI');
+                    }
+                    return original(...args);
+                };
+            """)
+            driver.find_element(By.ID, "refreshModelCache").click()
             WebDriverWait(driver, 30).until(
                 lambda d: d.find_element(By.CSS_SELECTOR, row + " .model-remove").is_enabled()
                 and "Installed" in d.find_element(By.CSS_SELECTOR, row + " .model-status").text
@@ -292,15 +333,19 @@ def main():
                         origin:browser.runtime.getURL('/'),cacheStorage:caches,
                         fetchImpl:()=>{throw Error('Unexpected removal fetch')},
                         responseClass:Response,streamClass:TransformStream});
-                    return store.status(dictionaryManifest());
+                    return {...(await store.status(dictionaryManifest())),
+                        pageModelFetches:globalThis.__modelManagerAssetFetches};
                 })().then(done,e=>done({error:String(e)}));
             """)
-            if after_ui_removal.get("ready") or after_ui_removal.get("storedBytes") != 0:
-                raise RuntimeError("Firefox model-manager Remove left cached dictionary data: " +
+            if (after_ui_removal.get("ready") or after_ui_removal.get("storedBytes") != 0
+                    or after_ui_removal.get("pageModelFetches") != 0):
+                raise RuntimeError("Firefox manager cache or fetch check failed: " +
                                    str(after_ui_removal))
             dictionary_reload_acceptance.update({
                 "modelManagerRecheckClicked": True,
                 "modelManagerRemoveClicked": True,
+                "uiEvictionObservedBeforeRepair": True,
+                "noUiModelFetches": True,
                 "uiRemovalVerifiedInCache": True,
             })
             # Use only pinned bytes verified on the runner, and copy to the
