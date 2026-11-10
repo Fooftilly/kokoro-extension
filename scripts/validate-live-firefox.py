@@ -263,15 +263,181 @@ def run_dictionary_ui_acceptance(driver):
             "uiProgressReached100": True, "uiRemoveClearedCache": True}
 
 
+def run_mediapipe_origin_ui_acceptance(driver, manifest):
+    """Real Firefox model-manager Download with pinned HTTPS data, not loopback preload.
+
+    The hook is installed in the extension's actual page window. Firefox
+    Marionette's per-command sandbox must not silently conceal transfer counts.
+    """
+    if manifest["provider"] != "mediapipe" or manifest["variant"] != "cpu":
+        raise ValueError("Origin acceptance supports only pinned MediaPipe CPU")
+    row = '[data-variant="mediapipe-cpu"]'
+    expected_urls = [asset["url"] for asset in manifest["assets"]]
+    # Do not let a stale cached install pass without any actual upstream fetch.
+    prior = driver.execute_async_script("""
+        const done=arguments[arguments.length-1];
+        (async()=>{
+            const [{ModelDataStore},{manifestForVariant}]=await Promise.all([
+                import('./model-data-store.js'),import('./model-catalog.js')]);
+            const store=new ModelDataStore({
+                origin:browser.runtime.getURL('/'),cacheStorage:caches,
+                fetchImpl:()=>{throw Error('Unexpected fetch during origin cache reset')},
+                responseClass:Response,streamClass:TransformStream});
+            await store.remove(manifestForVariant('mediapipe','cpu'));
+            return Promise.all(['q8','q8f16'].map(async variant=>({
+                variant,...await store.status(manifestForVariant('onnx',variant))})));
+        })().then(value=>done({success:true,otherProviderBefore:value}),
+            e=>done({success:false,error:String(e)}));
+    """)
+    if not prior.get("success"):
+        raise RuntimeError("Firefox model origin reset failed: " + str(prior))
+    driver.refresh()
+    WebDriverWait(driver, 30).until(
+        lambda d: "Not installed" in d.find_element(
+            By.CSS_SELECTOR, row + " .model-status").text
+        and d.find_element(By.CSS_SELECTOR, row + " .model-download").is_enabled()
+    )
+    driver.execute_script("""
+        const page=window.wrappedJSObject||window;
+        const expected=new Set(arguments[0]);
+        const original=page.fetch;
+        if(typeof original!=='function')throw Error('Missing native model fetch');
+        const stats={requests:[],bytesByUrl:{},completed:[],unexpected:[]};
+        page.__originModelOriginalFetch=original;
+        // Marionette's later commands use a different JS sandbox. Return a
+        // primitive JSON snapshot through an exported page function instead
+        // of exposing a cross-compartment mutable object to that sandbox.
+        const snapshot=()=>JSON.stringify(stats);
+        if(typeof exportFunction==='function')
+            exportFunction(snapshot,page,{defineAs:'__originModelStatsJson'});
+        else page.__originModelStatsJson=snapshot;
+        const counted=async(input,options)=>{
+            const url=String(input?.url||input);
+            if(/^https?:/i.test(url)&&!expected.has(url)){
+                stats.unexpected.push(url);
+                throw Error('Unpinned HTTP(S) model fetch: '+url);
+            }
+            if(!expected.has(url))return original.apply(page,[input,options]);
+            stats.requests.push(url);
+            const response=await original.apply(page,[input,options]);
+            if(!response.ok||!response.body)return response;
+            stats.bytesByUrl[url]=0;
+            const body=response.body.pipeThrough(new page.TransformStream({
+                transform(chunk,controller){
+                    stats.bytesByUrl[url]+=chunk.byteLength;
+                    controller.enqueue(chunk);
+                },
+                flush(){stats.completed.push(url)}
+            }));
+            return new page.Response(body,{status:response.status,
+                statusText:response.statusText,headers:response.headers});
+        };
+        if(typeof exportFunction==='function')
+            exportFunction(counted,page,{defineAs:'fetch'});
+        else page.fetch=counted;
+        if(typeof page.fetch!=='function')
+            throw Error('Model download fetch instrumentation unavailable');
+    """, expected_urls)
+    driver.find_element(By.CSS_SELECTOR, row + " .model-download").click()
+
+    # In headless Firefox an optional-host dialog might not be approved.
+    # Never grant it from Selenium, and fail visibly on denied/stuck consent.
+    try:
+        WebDriverWait(driver, 480).until(
+            lambda d: (
+                ("Installed" in d.find_element(
+                    By.CSS_SELECTOR, row + " .model-status").text
+                 and d.find_element(
+                    By.CSS_SELECTOR, row + " .model-download-progress"
+                 ).get_attribute("value") == "100")
+                or any(word in d.find_element(
+                    By.CSS_SELECTOR, row + " .model-status").text.lower()
+                    for word in ("permission was denied", "permission failed",
+                                 "cannot request", "download failed"))
+            )
+        )
+    except Exception as exc:
+        status = driver.find_element(By.CSS_SELECTOR, row + " .model-status").text
+        raise RuntimeError("Firefox official MediaPipe UI did not complete "
+                           "(host permission or transfer): " + status) from exc
+
+    ui_status = driver.find_element(By.CSS_SELECTOR, row + " .model-status").text
+    if "Installed" not in ui_status:
+        raise RuntimeError("Firefox MediaPipe official-host Download failed: " + ui_status)
+
+    report = driver.execute_async_script("""
+        const done=arguments[arguments.length-1];
+        (async()=>{
+            const [{ModelDataStore,formatModelSize},{manifestForVariant}]=await Promise.all([
+                import('./model-data-store.js'),import('./model-catalog.js')]);
+            const manifest=manifestForVariant('mediapipe','cpu');
+            const store=new ModelDataStore({
+                origin:browser.runtime.getURL('/'),cacheStorage:caches,
+                fetchImpl:()=>{throw Error('Verification unexpectedly fetched model')},
+                responseClass:Response,streamClass:TransformStream});
+            const status=await store.status(manifest);
+            const verified=await store.verifyAndPruneCorrupt(manifest);
+            const page=window.wrappedJSObject||window;
+            if(typeof page.__originModelStatsJson!=='function')
+                throw Error('Lost real Firefox page transfer counters');
+            const stats=JSON.parse(page.__originModelStatsJson());
+            const urls=manifest.assets.map(a=>a.url);
+            const expectedBytes=manifest.assets.reduce((n,a)=>n+a.bytes,0);
+            const receivedBytes=urls.reduce(
+                (n,url)=>n+(stats.bytesByUrl[url]||0),0);
+            const otherProviderAfter=await Promise.all(['q8','q8f16'].map(
+                async variant=>({
+                    variant,...await store.status(manifestForVariant('onnx',variant))})));
+            const row=document.querySelector('[data-variant="mediapipe-cpu"]');
+            const permission=await browser.permissions.contains({
+                origins:[new URL(urls[0]).origin+'/*']});
+            return {
+                success:true,provider:'mediapipe',variant:'cpu',permission,
+                expectedBytes,receivedBytes,cachedBytes:status.storedBytes,
+                pinnedAssets:manifest.assets.map(a=>({path:a.path,bytes:a.bytes})),
+                requests:stats.requests,completedUrls:stats.completed,
+                unexpectedUrls:stats.unexpected,
+                fullSha256Verified:verified.ready&&verified.removedAssets===0&&
+                    verified.missingAssets===0,
+                progressPercent:row.querySelector('.model-download-progress').value,
+                displayedSizeMatchesManifest:row.querySelector('.model-download')
+                    .textContent.includes(formatModelSize(expectedBytes))&&
+                    row.querySelector('.model-status').textContent
+                        .includes(formatModelSize(expectedBytes)),
+                otherProviderAfter,
+            };
+        })().then(done,e=>done({success:false,error:String(e)}));
+    """)
+    expected_bytes = sum(a["bytes"] for a in manifest["assets"])
+    if (not report.get("success") or not report.get("permission") or
+            not report.get("fullSha256Verified") or
+            not report.get("displayedSizeMatchesManifest") or
+            report.get("expectedBytes") != expected_bytes or
+            report.get("receivedBytes") != expected_bytes or
+            report.get("cachedBytes") != expected_bytes or
+            report.get("progressPercent") != 100 or
+            report.get("requests") != expected_urls or
+            report.get("unexpectedUrls") or
+            sorted(report.get("completedUrls", [])) != sorted(expected_urls) or
+            report.get("otherProviderAfter") != prior["otherProviderBefore"]):
+        raise RuntimeError("Firefox official-origin model verification failed: " + str(report))
+    report["otherProviderBefore"] = prior["otherProviderBefore"]
+    return report
+
+
 def main():
     if os.environ.get("KOKORO_LIVE_DOWNLOAD") != "1":
         raise RuntimeError("Explicit model download opt-in is required")
     provider = os.environ.get("KOKORO_FIREFOX_PROVIDER", "onnx")
+    origin_download = os.environ.get("KOKORO_FIREFOX_ORIGIN_DOWNLOAD") == "1"
+    if origin_download and provider != "mediapipe":
+        raise ValueError("Official-origin Firefox acceptance requires MediaPipe CPU")
     if provider not in ("onnx", "mediapipe", "dictionary"):
         raise ValueError("KOKORO_FIREFOX_PROVIDER must be onnx, mediapipe, or dictionary")
     output = Path("dist/runtime-acceptance/firefox.json")
     output.parent.mkdir(parents=True, exist_ok=True)
-    result = {"status": "started", "browser": "Firefox MV3"}
+    result = {"status": "started", "browser": "Firefox MV3",
+              "originDownload": origin_download, "provider": provider}
     driver = None
     server = None
     with tempfile.TemporaryDirectory(prefix="kokoro-firefox-") as tmp:
@@ -279,38 +445,40 @@ def main():
         try:
             manifests = pinned_manifest(provider)
             files = {}
-            for manifest in manifests:
-                files.update(verified_assets(manifest, root))
-            token = secrets.token_hex(32)
+            if not origin_download:
+                for manifest in manifests:
+                    files.update(verified_assets(manifest, root))
             state = {"origin": None}
-            class Server(http.server.BaseHTTPRequestHandler):
-                def do_GET(self):
-                    from urllib.parse import parse_qs, urlsplit
-                    parts = urlsplit(self.path)
-                    origin = self.headers.get("Origin")
-                    if (parse_qs(parts.query).get("token") != [token] or
-                        (origin and origin != state["origin"]) or
-                        state["origin"] is None or
-                        self.client_address[0] != "127.0.0.1"):
-                        self.send_error(403)
+            if not origin_download:
+                token = secrets.token_hex(32)
+                class Server(http.server.BaseHTTPRequestHandler):
+                    def do_GET(self):
+                        from urllib.parse import parse_qs, urlsplit
+                        parts = urlsplit(self.path)
+                        origin = self.headers.get("Origin")
+                        if (parse_qs(parts.query).get("token") != [token] or
+                            (origin and origin != state["origin"]) or
+                            state["origin"] is None or
+                            self.client_address[0] != "127.0.0.1"):
+                            self.send_error(403)
+                            return
+                        file = files.get(parts.path.removeprefix("/"))
+                        if not file:
+                            self.send_error(404)
+                            return
+                        self.send_response(200)
+                        self.send_header("Access-Control-Allow-Origin", state["origin"])
+                        self.send_header("Vary", "Origin")
+                        self.send_header("Content-Type", "application/octet-stream")
+                        self.send_header("Content-Length", str(file.stat().st_size))
+                        self.end_headers()
+                        with file.open("rb") as stream:
+                            while block := stream.read(1024 * 1024):
+                                self.wfile.write(block)
+                    def log_message(self, *args):
                         return
-                    file = files.get(parts.path.removeprefix("/"))
-                    if not file:
-                        self.send_error(404)
-                        return
-                    self.send_response(200)
-                    self.send_header("Access-Control-Allow-Origin", state["origin"])
-                    self.send_header("Vary", "Origin")
-                    self.send_header("Content-Type", "application/octet-stream")
-                    self.send_header("Content-Length", str(file.stat().st_size))
-                    self.end_headers()
-                    with file.open("rb") as stream:
-                        while block := stream.read(1024 * 1024):
-                            self.wfile.write(block)
-                def log_message(self, *args):
-                    return
-            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Server)
-            threading.Thread(target=server.serve_forever, daemon=True).start()
+                server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Server)
+                threading.Thread(target=server.serve_forever, daemon=True).start()
             options = Options()
             options.binary_location = os.environ["FIREFOX_BINARY"]
             options.add_argument("-headless")
@@ -341,6 +509,7 @@ def main():
             dictionary_cache_acceptance = None
             dictionary_reload_acceptance = None
             dictionary_ui_acceptance = None
+            origin_model_acceptance = None
             preflight = driver.execute_async_script("""
                 const done=arguments[arguments.length-1];
                 window.KokoroBenchmark.inspectCapabilities().then(done, e=>done({error:String(e)}));
@@ -349,7 +518,7 @@ def main():
                 raise RuntimeError("Firefox MV3 extension-page WASM compilation unavailable: " + str(preflight))
 
             # Check real pinned dictionary CORS/SRI download in the packaged
-            # extension itself. Model-weight preload below remains loopback.
+            # extension itself. Weight preload is loopback only in legacy mode.
             dictionary_cache_acceptance = driver.execute_async_script("""
                 const done=arguments[arguments.length-1];
                 (async()=>{
@@ -561,9 +730,15 @@ def main():
                 }
                 print("FIREFOX DICTIONARY UI ACCEPTANCE", json.dumps(result), flush=True)
                 return
-            # Use only pinned bytes verified on the runner, and copy to the
-            # extension's cache. The loopback server never receives TTS text.
-            cache_result = driver.execute_async_script("""
+            # The explicit origin path clicks the actual model-manager
+            # Download button rather than transferring verified runner bytes.
+            if origin_download:
+                origin_model_acceptance = run_mediapipe_origin_ui_acceptance(
+                    driver, manifests[0])
+            else:
+                # Existing loopback bootstrap is retained only for the
+                # non-origin model inference acceptance mode.
+                cache_result = driver.execute_async_script("""
                 const [manifests,port,token,done]=arguments;
                 (async()=>{
                     const {ModelDataStore}=await import('./model-data-store.js');
@@ -585,9 +760,9 @@ def main():
                     }
                     done({success:true});
                 })().catch(e=>done({success:false,error:String(e)}));
-            """, manifests, server.server_port, token)
-            if not cache_result.get("success"):
-                raise RuntimeError("Firefox extension cache preload failed: " + str(cache_result))
+                """, manifests, server.server_port, token)
+                if not cache_result.get("success"):
+                    raise RuntimeError("Firefox extension cache preload failed: " + str(cache_result))
             # Require the actual packaged Firefox extension to load cached
             # executable assets, weights, and dictionary while Firefox is
             # offline. Geckodriver commands remain local browser automation.
@@ -650,15 +825,61 @@ def main():
                     finally{try{await engine?.close()}catch{}}
                 })().catch(e=>done({success:false,provider,error:String(e)}));
             """, provider)
+
+            if origin_download and metrics.get("success"):
+                # The engine is closed before this point. Remove must work
+                # while Firefox remains offline and not alter ONNX cache data.
+                media_row = '[data-variant="mediapipe-cpu"]'
+                driver.find_element(
+                    By.CSS_SELECTOR, media_row + " .model-remove").click()
+                WebDriverWait(driver, 30).until(
+                    lambda d: "Not installed" in d.find_element(
+                        By.CSS_SELECTOR, media_row + " .model-status").text
+                    and not d.find_element(
+                        By.CSS_SELECTOR, media_row + " .model-remove").is_enabled()
+                    and d.find_element(
+                        By.CSS_SELECTOR, media_row + " .model-download").is_enabled()
+                )
+                removal = driver.execute_async_script("""
+                    const done=arguments[arguments.length-1];
+                    (async()=>{
+                        if(navigator.onLine!==false)
+                            throw Error('Firefox unexpectedly online during removal');
+                        const [{ModelDataStore},{manifestForVariant}]=await Promise.all([
+                            import('./model-data-store.js'),import('./model-catalog.js')]);
+                        const store=new ModelDataStore({
+                            origin:browser.runtime.getURL('/'),cacheStorage:caches,
+                            fetchImpl:()=>{throw Error('Removal must never fetch model bytes')},
+                            responseClass:Response,streamClass:TransformStream});
+                        const model=await store.status(manifestForVariant('mediapipe','cpu'));
+                        const otherProvider=await Promise.all(['q8','q8f16'].map(
+                            async variant=>({variant,...await store.status(
+                                manifestForVariant('onnx',variant))})));
+                        return {model,otherProvider,networkOffline:true};
+                    })().then(done,e=>done({error:String(e)}));
+                """)
+                if (removal.get("error") or
+                        removal.get("model", {}).get("ready") or
+                        removal.get("model", {}).get("storedBytes") != 0 or
+                        removal.get("otherProvider") !=
+                        origin_model_acceptance["otherProviderBefore"]):
+                    raise RuntimeError("Firefox offline model Remove affected other "
+                                       "providers or left cached bytes: " + str(removal))
+                origin_model_acceptance["offlineUiRemoval"] = removal
             result = {"status": "passed" if metrics.get("success") else "failed",
                 "browser": driver.capabilities.get("browserVersion"), "extensionId": addon_id,
                 "preflight": preflight, "provider": provider, provider: metrics,
                 "dictionaryCacheAcceptance": dictionary_cache_acceptance,
                 "dictionaryReloadAcceptance": dictionary_reload_acceptance,
                 "dictionaryUiDownloadAcceptance": dictionary_ui_acceptance,
+                "originDownload": origin_download,
+                "originModelAcceptance": origin_model_acceptance,
                 "offlineAttempted": True,
                 "offlineInference": metrics.get("success") is True,
-                "cachePopulation": "model weights preloaded over authenticated loopback; dictionary tested with pinned HTTPS CORS/SRI and real Download/Cancel/Retry/Remove UI",
+                "cachePopulation": (
+                    "MediaPipe model downloaded through real Firefox UI from pinned HTTPS origin; no loopback preload"
+                    if origin_download else
+                    "model weights preloaded over authenticated loopback; dictionary tested with pinned HTTPS CORS/SRI and real Download/Cancel/Retry/Remove UI"),
                 "scope": "Firefox/Linux MV3 offline " + provider +
                          " CPU synthesis; no subjective audio-quality or long-form acceptance"}
             print("FIREFOX REAL INFERENCE", json.dumps(result), flush=True)
@@ -673,6 +894,8 @@ def main():
                 result["dictionaryReloadAcceptance"] = dictionary_reload_acceptance
             if "dictionary_ui_acceptance" in locals():
                 result["dictionaryUiDownloadAcceptance"] = dictionary_ui_acceptance
+            if "origin_model_acceptance" in locals():
+                result["originModelAcceptance"] = origin_model_acceptance
             raise
         finally:
             output.write_text(json.dumps(result, indent=2), encoding="utf-8")

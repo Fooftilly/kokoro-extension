@@ -256,3 +256,39 @@ This mode must be **run manually** before claiming passing real-browser
 acceptance. In particular, headless optional permission prompts may prevent
 the download and should fail the run visibly. It does not establish Firefox
 origin-download behavior, native UI prompt quality, or real quota eviction.
+
+
+## Firefox MediaPipe CPU real model Download/Remove UI (#55)
+
+Dispatch the **Real Kokoro MV3 model acceptance** workflow manually with
+`acceptance_scope: firefox-mediapipe-origin`. This runs the separate
+`KOKORO_FIREFOX_ORIGIN_DOWNLOAD=1`,
+`KOKORO_FIREFOX_PROVIDER=mediapipe` harness. It packages the Firefox
+extension and installs it temporarily for this attended acceptance; normal
+CI and the existing heavyweight Firefox matrix still use the verified,
+authenticated loopback preloader, unchanged.
+
+The opt-in Firefox origin mode does **not** pre-download the 294,783,298-byte
+MediaPipe CPU model on the test runner or run a loopback model server. After
+the separately pinned HTTPS dictionary smoke/UI checks, it removes any prior
+MediaPipe CPU model data and requires the real extension-manager **Download**
+button to become enabled. The click requests the normal narrowly scoped
+optional Hugging Face permission. The real Firefox page's fetch is wrapped
+to reject non-pinned HTTP(S) URLs and count **actual response-stream bytes**.
+The script requires exactly one official model request, a fully consumed
+response, the manifest-matching total, the expected UI size and 100% bar,
+a granted narrow permission and a successful full cached SHA-256 check.
+
+ONNX CPU cache metadata is compared before and after installation. The
+standard Firefox offline MediaPipe CPU inference check then runs with
+browser-level networking disabled, followed by the real **Remove** button
+and a cache/status check while still offline. The ONNX cache must remain
+unchanged. The captured `firefox.json` records `originDownload: true`,
+`originModelAcceptance` and `offlineInference`.
+
+**Evidence boundary:** This is an implementation of manual acceptance, not
+a passing browser test. Real host permission prompts (especially headless
+Firefox), CORS, full transfer, and offline synthesis must be verified by
+running the workflow and inspecting its attachment. A temporary Firefox
+add-on survives page reload but **not** a browser-process restart; permanent
+installation and real quota/eviction remain separate issue #55 gates.
