@@ -436,6 +436,9 @@ try {
             return { explicitRepairFetches: fetches, repairedSha256: true,
                 explicitRemoval: true };
         });
+        if (errors.length) {
+            throw Error('Extension page errors after restart: ' + errors.join('; '));
+        }
         browserRestartAcceptance = { success: true, browserProcessRestarted: true,
             networkDisabledDuringPersistenceChecks: true, ...persisted, ...repaired };
         await saveReport();

@@ -50,8 +50,10 @@ does **not** run on ordinary master pushes or PRs because the live models are
 large. CI only syntax-checks the harnesses. The tests still use a runner-side
 authenticated loopback transfer of pinned model bytes: they **do not** yet
 exercise the actual Download/Cancel/Retry/Remove UI, upstream fetch CORS/SRI,
-cache persistence after a browser restart, storage eviction, browser quota,
-or user-perceived audio quality. Those remain separate #55 acceptance gates.
+real Firefox browser-restart persistence, browser-managed storage eviction,
+quota behavior, or user-perceived audio quality. Those remain separate #55
+acceptance gates; the Chromium restart test below is manual-only and has
+not yet been executed.
 
 
 ## Direct pinned-asset browser download smoke test (#55)
@@ -68,8 +70,10 @@ the normal heavy-model cache-preload/offline-inference stages.
 This validates the data-store API in packaged browser contexts, not user
 gestures or the model-manager Download/Remove controls. Live workflow
 execution remains necessary; ordinary PR CI only syntax-checks these harnesses.
-Browser restarts, cancellation, quota, eviction, full model downloads via
-official host permissions, and user-facing progress remain outstanding.
+The new opt-in tests cover a Chromium process restart and page reload in
+Firefox, plus simulated dictionary eviction. Genuine Firefox process restart,
+browser-managed quota eviction, full model downloads through official host
+permissions, cancellation UI, and user-facing progress still require acceptance.
 
 
 ## Persistence and simulated eviction acceptance (#55)
