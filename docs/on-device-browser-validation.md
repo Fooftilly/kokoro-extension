@@ -428,3 +428,65 @@ that a particular Chromium version applies CDP quota overrides to
 eviction, and heavyweight model downloads remain open in issue #55. Ordinary
 PR CI checks the script's syntax only and never runs this heavyweight
 manual browser scope.
+
+
+## Firefox real QuotaManager pressure and recovery (#55)
+
+Dispatch the **Real Kokoro MV3 model acceptance** workflow manually with
+`acceptance_scope: firefox-quota-recovery`. This selects Developer Edition,
+the existing non-temporary packaged-XPI install, and
+`KOKORO_FIREFOX_QUOTA_ACCEPTANCE=1`. Normal PR CI syntax-checks the test
+but does not download or install any model data.
+
+The harness uses a **disposable Firefox profile**, a real
+`moz-extension://` page, the unchanged production `ModelDataStore`, actual
+Firefox Cache Storage, and browser WebCrypto. `scripts/firefox-quota-probe.js`
+is injected by Selenium **only during the manual acceptance**; it does not
+ship in the add-on. The fixtures use deterministic, high-entropy *synthetic*
+bytes with pinned official-URL shapes and independently computed SHA-256.
+The 16-KiB dictionary is stored as an independent provider. An ONNX-shaped
+manifest has a 96-KiB first asset and a 5-MiB second asset. There are **no**
+external model fetches, real weights, production permissions or speech
+inputs in this test.
+
+Firefox's Gecko QuotaManager preference
+`dom.quotaManager.temporaryStorage.fixedLimit` accepts a global temporary
+storage limit **in KiB**. The first Firefox process sets an 8-MiB global
+limit. The harness verifies the actual parent-process preference and
+`navigator.storage.estimate()` values, explicitly installs the separate
+dictionary, then calls `ModelDataStore.install()` with both synthetic
+model assets. A passing limited phase requires Firefox's **real Cache
+Storage/QuotaManager** to reject the large second-asset write with a
+quota/storage error, leaving the first asset *fully checksum-verified*,
+the independent dictionary intact, no complete model, and no automatic
+retry. An unsupported or unenforced preference is a **failed test**, not
+a simulated pass.
+
+The browser process then exits. The second process opens the *same
+profile* and installed XPI, resets the limit to 128 MiB, verifies the
+actual preference and extension identity, disables browser networking,
+and runs an **explicit** second install. It must reuse the first verified
+asset and fetch **only the absent synthetic voice**, verify both assets
+and the dictionary, then remove only the selected model. The browser's
+reported quota must increase across processes. The report is
+`dist/runtime-acceptance/firefox-quota.json`, uploaded independently of
+`firefox.json`.
+
+**Important Firefox eviction distinction:** Gecko intentionally excludes
+installed extension origins from the ordinary inactive-origin automatic
+eviction selection (Mozilla bug
+[1720487](https://bugzilla.mozilla.org/show_bug.cgi?id=1720487)).
+Do not force-delete a Cache Storage entry and call that a real Firefox
+browser-managed eviction. The quota failure tested here is a separate
+failure mode, and explicit cache deletion remains only a deterministic
+repair-regression test. If the observed browser has stricter guarantees
+for extension storage, report the behavior rather than creating fake
+browser eviction evidence.
+
+**Evidence boundary:** The fixed-limit preference and quota error are
+verified only **when the isolated manual workflow runs successfully**.
+The test has not yet established success on a real Firefox version.
+Developer Edition unsigned-addon behavior is not proof of signed Release
+Firefox installation or profile persistence. Full heavyweight model
+origin-download reports, Chrome quota execution, and any supportable
+browser-managed eviction acceptance remain separate issue #55 gates.
