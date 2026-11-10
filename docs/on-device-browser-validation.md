@@ -191,3 +191,33 @@ report records `dictionaryUiDownloadAcceptance` separately, with
 host-permission dialog may block permission approval; the acceptance run
 must **fail visibly** rather than silently bypass user consent or claim
 success. Manual real-browser execution is still required.
+
+
+## Chromium MediaPipe official-host origin download (#55)
+
+Dispatch **Real Kokoro MV3 model acceptance** with
+`acceptance_scope: chromium-mediapipe-origin`. This is an explicit,
+heavyweight, manual-only run; normal PR CI and the default `full` workflow
+keep their existing authenticated-loopback model preload. This origin mode
+downloads **only MediaPipe CPU** from its pinned official HTTPS model URL,
+through the packaged extension's actual Download control after its optional
+host-permission request. It does not bypass denied permission or grant
+permissions silently. The independent Firefox and ONNX jobs are not run.
+
+Before the click the harness explicitly clears any prior MediaPipe CPU cached
+assets, reloads the model-manager page, and requires a ready Download control
+with a Not installed status. It counts **streamed response bytes** for each
+pinned URL, rejects any unexpected HTTP(S) request, checks exactly one fetch
+per pinned asset, confirms the UI reaches 100%, and verifies all stored assets
+against pinned SHA-256 and byte counts. The completed cache is then used by
+the existing **network-offline** MediaPipe CPU initialization/synthesis probe
+and Chromium browser-restart persistence checks. The attached
+`report.json` identifies this mode via `originDownload: true` and records
+`originModelAcceptance` with transferred bytes, cache bytes, permission,
+asset requests, and verification. No weights enter the repository.
+
+This harness is an **acceptance implementation, not a passing test report**:
+a manual run must supply evidence of actual browser/host behavior, including
+whether headless Chromium can present or approve the optional permission.
+It does not establish ONNX or Firefox origin-download acceptance, real
+quota eviction, subjective speech quality, or native permission-dialog UX.
