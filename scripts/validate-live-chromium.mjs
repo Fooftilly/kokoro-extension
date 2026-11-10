@@ -187,8 +187,12 @@ try {
         dictionaryCacheAcceptance, browserRestartAcceptance,
         dictionaryUiDownloadAcceptance, results,
         providerFilter,
-        networkRequirement: 'offline during every local synthesis probe',
-        cachePopulation: 'heavy weights preloaded from verified pinned bytes over authenticated loopback; dictionary official HTTPS verified and opt-in Chromium Download/Cancel/Retry UI exercised separately',
+        networkRequirement: providerFilter === 'dictionary'
+            ? 'offline during dictionary persistence/verification; no inference attempted'
+            : 'offline during every local synthesis probe',
+        cachePopulation: providerFilter === 'dictionary'
+            ? 'no model weights downloaded; direct pinned dictionary HTTPS and model-manager UI acceptance only'
+            : 'heavy weights preloaded from verified pinned bytes over authenticated loopback; dictionary official HTTPS and model-manager UI checked separately',
         scope: providerFilter === 'dictionary'
             ? 'Chromium dictionary-only UI/Cache acceptance; no large speech models or audio synthesis'
             : 'Linux Chromium MV3 extension origin; no subjective audio-quality or complete download-manager acceptance',
