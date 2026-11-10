@@ -126,3 +126,9 @@ These tests do not yet exercise the Download, Cancel, or Retry UI buttons or
 optional host-permission prompt (the dictionary is installed by an explicit
 test-harness data-store operation). No live-browser result is claimed until
 the manually dispatched workflow has actually passed.
+
+
+The Firefox harness installs its network guard on the actual page window
+(using the Marionette page wrapper when present), because each Selenium
+script executes in a separate sandbox. It restores the original fetch
+function after the UI assertions, before beginning offline inference.

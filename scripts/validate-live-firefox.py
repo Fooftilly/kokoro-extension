@@ -310,17 +310,28 @@ def main():
             # The manager binds window.fetch when its handlers construct
             # ModelDataStore. Block/record unexpected model URL requests.
             driver.execute_script("""
-                const original=globalThis.fetch.bind(globalThis);
-                globalThis.__modelManagerAssetFetches=0;
-                globalThis.fetch=(...args)=>{
+                // Marionette executes each call in a new sandbox. Store the
+                // hook on the real page window, not sandbox globalThis.
+                const page=window.wrappedJSObject||window;
+                const original=page.fetch;
+                page.__modelManagerOriginalFetch=original;
+                page.__modelManagerAssetFetches=0;
+                const guarded=(...args)=>{
                     const url=String(args[0]?.url||args[0]);
                     if(url.startsWith('https://huggingface.co/')||
                         url.startsWith('https://raw.githubusercontent.com/')){
-                        globalThis.__modelManagerAssetFetches++;
+                        page.__modelManagerAssetFetches++;
                         throw Error('Unexpected model fetch by manager UI');
                     }
-                    return original(...args);
+                    return original.apply(page,args);
                 };
+                if(typeof exportFunction==='function'){
+                    exportFunction(guarded,page,{defineAs:'fetch'});
+                }else{
+                    page.fetch=guarded;
+                }
+                if(typeof page.fetch!=='function')
+                    throw Error('Could not install page-window fetch guard');
             """)
             driver.find_element(By.ID, "refreshModelCache").click()
             WebDriverWait(driver, 30).until(
@@ -343,8 +354,9 @@ def main():
                         origin:browser.runtime.getURL('/'),cacheStorage:caches,
                         fetchImpl:()=>{throw Error('Unexpected removal fetch')},
                         responseClass:Response,streamClass:TransformStream});
+                    const page=window.wrappedJSObject||window;
                     return {...(await store.status(dictionaryManifest())),
-                        pageModelFetches:globalThis.__modelManagerAssetFetches};
+                        pageModelFetches:page.__modelManagerAssetFetches};
                 })().then(done,e=>done({error:String(e)}));
             """)
             if (after_ui_removal.get("ready") or after_ui_removal.get("storedBytes") != 0
@@ -358,6 +370,15 @@ def main():
                 "noUiModelFetches": True,
                 "uiRemovalVerifiedInCache": True,
             })
+            # Restore the original fetch before exercising the real packaged
+            # ONNX/MediaPipe runtime in this same temporary Firefox page.
+            driver.execute_script("""
+                const page=window.wrappedJSObject||window;
+                if(typeof page.__modelManagerOriginalFetch!=='function')
+                    throw Error('Missing original Firefox page fetch');
+                page.fetch=page.__modelManagerOriginalFetch;
+                delete page.__modelManagerOriginalFetch;
+            """)
             # Use only pinned bytes verified on the runner, and copy to the
             # extension's cache. The loopback server never receives TTS text.
             cache_result = driver.execute_async_script("""
