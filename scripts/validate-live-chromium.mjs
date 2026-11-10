@@ -246,7 +246,52 @@ async function downloadModelFromOfficialOrigin(page, manifest) {
         failure: request.failure() || null,
     }));
     const button = page.locator(rowSelector + ' .model-download');
+    const approvedHost = new URL(manifest.assets[0].url).origin + '/*';
+    if (approvedHost !== 'https://huggingface.co/*') {
+        throw Error('Unapproved origin for browser permission acceptance');
+    }
+    const initiallyGranted = await page.evaluate(host =>
+        chrome.permissions.contains({ origins: [host] }), approvedHost);
+    // An existing grant would skip the consent prompt and invalidate this test.
+    if (initiallyGranted) throw Error('Optional host already granted before user interaction');
+    await page.bringToFront();
     await button.click();
+
+    // Chromium's native optional-extension-permission prompt is not an HTML
+    // dialog. This manual-only Xvfb test uses an actual X11 keypress to
+    // interact with the real browser UI, not a permissions API stub.
+    await page.waitForTimeout(1200);
+    const pending = await page.locator(rowSelector + ' .model-status').textContent();
+    const afterClick = await page.evaluate(host =>
+        chrome.permissions.contains({ origins: [host] }), approvedHost);
+    if (afterClick || !pending.includes('Waiting for model download permission')) {
+        throw Error('Unexpected host-permission UI state before confirmation: ' +
+            JSON.stringify({ afterClick, pending }));
+    }
+    let activeWindow;
+    try {
+        activeWindow = execFileSync('xdotool', ['getactivewindow', 'getwindowname'],
+            { encoding: 'utf8', timeout: 4000 }).trim();
+        if (!activeWindow) throw Error('No active Chromium window');
+        execFileSync('xdotool', ['key', '--clearmodifiers', 'Return'],
+            { timeout: 4000 });
+    } catch (error) {
+        throw Error('Cannot interact with headed Chromium permission prompt: ' +
+            String(error.message || error));
+    }
+    try {
+        await page.waitForFunction(async host =>
+            await chrome.permissions.contains({ origins: [host] }),
+        approvedHost, { timeout: 10000 });
+    } catch (error) {
+        const snapshot = await captureOfficialOriginDownloadState(page, rowSelector, networkEvents);
+        throw Error('Chromium host permission was not granted after native UI input: ' +
+            JSON.stringify({ cause: String(error), activeWindow, ...snapshot }));
+    }
+    const hostGrantEvidence = {
+        host: approvedHost, initiallyGranted: false,
+        acceptedAfterNativeX11Input: true, grantedByBrowser: true,
+    };
     try {
         await page.waitForFunction(selector => {
             const row = document.querySelector(selector);
@@ -335,7 +380,8 @@ async function downloadModelFromOfficialOrigin(page, manifest) {
             report.requests[i] !== url || !report.completedUrls.includes(url))) {
         throw Error('Official ' + manifest.provider + ' UI transfer verification failed: ' + JSON.stringify(report));
     }
-    return { ...report, otherProviderStatusBefore: otherProviderBefore };
+    return { ...report, hostGrantEvidence,
+        otherProviderStatusBefore: otherProviderBefore };
 }
 
 let extensionOrigin = null;
