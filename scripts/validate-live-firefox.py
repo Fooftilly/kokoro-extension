@@ -263,21 +263,10 @@ def run_dictionary_ui_acceptance(driver):
             "uiProgressReached100": True, "uiRemoveClearedCache": True}
 
 
-def restore_onnx_dictionary_from_real_ui(driver):
-    """Install the pinned dictionary by an explicit Firefox UI click.
-
-    The preceding Download/Cancel/Retry/Remove dictionary test finishes with
-    an empty cache. ONNX English synthesis requires the dictionary installed.
-    """
-    row = '[data-variant="dictionary-english"]'
-    WebDriverWait(driver, 30).until(
-        lambda d: "Not installed" in d.find_element(
-            By.CSS_SELECTOR, row + " .model-status").text
-        and d.find_element(By.CSS_SELECTOR, row + " .model-download").is_enabled()
-    )
-    driver.find_element(By.CSS_SELECTOR, row + " .model-download").click()
+def wait_for_real_download_completion(driver, row, timeout, label):
+    """Wait for explicit Download to finish or fail; do not approve permissions."""
     try:
-        WebDriverWait(driver, 180).until(
+        WebDriverWait(driver, timeout).until(
             lambda d: (
                 ("Installed" in d.find_element(
                     By.CSS_SELECTOR, row + " .model-status").text
@@ -292,11 +281,29 @@ def restore_onnx_dictionary_from_real_ui(driver):
         )
     except Exception as exc:
         status = driver.find_element(By.CSS_SELECTOR, row + " .model-status").text
-        raise RuntimeError("Firefox dictionary was not restored by explicit UI: " +
+        raise RuntimeError("Firefox " + label +
+                           " download UI did not complete (permission or transfer): " +
                            status) from exc
-    if "Installed" not in driver.find_element(
-            By.CSS_SELECTOR, row + " .model-status").text:
-        raise RuntimeError("Firefox dictionary restoration failed")
+    status = driver.find_element(By.CSS_SELECTOR, row + " .model-status").text
+    if "Installed" not in status:
+        raise RuntimeError("Firefox " + label + " download UI failed: " + status)
+    return status
+
+
+def restore_onnx_dictionary_from_real_ui(driver):
+    """Install the pinned dictionary by an explicit Firefox UI click.
+
+    The preceding Download/Cancel/Retry/Remove dictionary test finishes with
+    an empty cache. ONNX English synthesis requires the dictionary installed.
+    """
+    row = '[data-variant="dictionary-english"]'
+    WebDriverWait(driver, 30).until(
+        lambda d: "Not installed" in d.find_element(
+            By.CSS_SELECTOR, row + " .model-status").text
+        and d.find_element(By.CSS_SELECTOR, row + " .model-download").is_enabled()
+    )
+    driver.find_element(By.CSS_SELECTOR, row + " .model-download").click()
+    wait_for_real_download_completion(driver, row, 180, "dictionary")
 
     report = driver.execute_async_script("""
         const done=arguments[arguments.length-1];
@@ -492,30 +499,8 @@ def run_model_origin_ui_acceptance(driver, manifest):
         """)
         driver.find_element(By.CSS_SELECTOR, button).click()
 
-    # In headless Firefox an optional-host dialog might not be approved.
-    # Never grant it from Selenium, and fail visibly on denied/stuck consent.
-    try:
-        WebDriverWait(driver, 480).until(
-            lambda d: (
-                ("Installed" in d.find_element(
-                    By.CSS_SELECTOR, row + " .model-status").text
-                 and d.find_element(
-                    By.CSS_SELECTOR, row + " .model-download-progress"
-                 ).get_attribute("value") == "100")
-                or any(word in d.find_element(
-                    By.CSS_SELECTOR, row + " .model-status").text.lower()
-                    for word in ("permission was denied", "permission failed",
-                                 "cannot request", "download failed"))
-            )
-        )
-    except Exception as exc:
-        status = driver.find_element(By.CSS_SELECTOR, row + " .model-status").text
-        raise RuntimeError("Firefox official " + provider + " UI did not complete "
-                           "(host permission or transfer): " + status) from exc
-
-    ui_status = driver.find_element(By.CSS_SELECTOR, row + " .model-status").text
-    if "Installed" not in ui_status:
-        raise RuntimeError("Firefox " + provider + " official-host Download failed: " + ui_status)
+    # Headless permission refusal must fail visibly; Selenium cannot grant it.
+    ui_status = wait_for_real_download_completion(driver, row, 480, provider)
 
     report = driver.execute_async_script("""
         const [provider,variant,done]=arguments;
