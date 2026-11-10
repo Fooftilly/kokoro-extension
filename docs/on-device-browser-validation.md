@@ -335,3 +335,48 @@ manual workflow produces a reproducible report. Firefox's headless optional
 permission prompt, official HTTPS CORS, interrupted transfer recovery, real
 storage quota pressure and true installed-addon process restart require
 separate live confirmation; the temporary add-on is not persistent.
+
+
+## Firefox persistently installed add-on across an actual browser restart (#55)
+
+Dispatch **Real Kokoro MV3 model acceptance** with
+`acceptance_scope: firefox-persistent-restart`. The dedicated path
+`KOKORO_FIREFOX_PERSISTENT_RESTART=1` uses `latest-devedition` rather
+than release Firefox because Mozilla's release channel requires signed
+add-ons, whereas an unsigned packaged extension can be installed
+non-temporarily for development in Developer Edition after disabling
+`xpinstall.signatures.required`.
+
+The acceptance script inspects the **packaged Firefox ZIP** and uses its
+manifest `browser_specific_settings.gecko.id` as the expected stable
+identity. Selenium installs the ZIP with `temporary=False`, explicitly
+reuses one Firefox profile via `-profile`, and records the first
+`moz:processID` and `moz-extension://` UUID. It fetches only the
+**pinned and checksum-verified** ONNX q8 graph, voice data, and CMUdict
+to a local authenticated loopback fixture, then populates extension-origin
+Cache Storage. Each asset is SHA-256 checked inside the extension and
+the provider and dictionary must report their full pinned byte counts.
+
+Next, the script **quits Firefox completely** and starts a separate
+WebDriver/Firefox process with exactly the same on-disk profile. It does
+not call any add-on install method on the second process. It requires
+a different parent process ID, the same installed Gecko ID and extension
+origin, and a normally loadable extension benchmark page. With Firefox
+networking explicitly disabled, it independently rechecks both cached
+manifests' full SHA-256 digests and sizes and performs real ONNX English
+dictionary speech synthesis. This distinguishes a true browser-process
+restart from a tab/page reload or a temporary add-on installation.
+
+The isolated report `dist/runtime-acceptance/firefox.json` records
+`browserProcessRestarted`, `temporaryAddon: false`, both PIDs,
+the persistent extension ID/origin, checksums and byte totals before
+and after restart, and `offlineInference`.
+
+**Evidence boundary:** This checks persistence of a permanently
+installed unsigned packaged add-on in **Firefox Developer Edition**
+using an isolated profile; it does **not** establish signing or restart
+behavior in release Firefox, nor user-facing origin HTTPS download
+consent, quota/eviction or real installation on a user's profile. The
+heavyweight test remains opt-in and needs a passing attached browser
+report before marking its acceptance evidence complete. The existing
+release-Firefox temporary-add-on tests remain unchanged.
