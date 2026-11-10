@@ -1,4 +1,5 @@
 // Live model-backed Chromium MV3 validation. Explicit opt-in and no model weights in git.
+import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
@@ -24,6 +25,11 @@ if (!['both', 'onnx', 'mediapipe', 'dictionary'].includes(providerFilter)) {
     throw Error('KOKORO_LIVE_PROVIDER must be both, onnx, mediapipe, or dictionary');
 }
 const originDownload = process.env.KOKORO_CHROMIUM_ORIGIN_DOWNLOAD === '1';
+const headedConsent = process.env.KOKORO_CHROMIUM_HEADFUL_CONSENT === '1';
+if (originDownload && (!headedConsent || !process.env.DISPLAY)) {
+    throw Error('Official-origin Chromium acceptance needs headed X11 consent; ' +
+        'run the manual scope with KOKORO_CHROMIUM_HEADFUL_CONSENT=1 under Xvfb');
+}
 if (originDownload && !['mediapipe', 'onnx'].includes(providerFilter)) {
     throw Error('Real origin-download acceptance requires KOKORO_LIVE_PROVIDER=mediapipe or onnx');
 }
@@ -137,6 +143,63 @@ async function captureOfficialOriginDownloadState(page, selector, events) {
 }
 
 /**
+ * Exercise the native optional-host permission confirmation in the isolated,
+ * headed Xvfb browser. Never pregrant the host or mock chrome.permissions.
+ */
+async function acceptOfficialOriginHostPermission(page, manifest, rowSelector, button, networkEvents) {
+    const approvedHost = new URL(manifest.assets[0].url).origin + '/*';
+    if (approvedHost !== 'https://huggingface.co/*') {
+        throw Error('Unapproved origin for browser permission acceptance');
+    }
+    const initiallyGranted = await page.evaluate(host =>
+        chrome.permissions.contains({ origins: [host] }), approvedHost);
+    // An existing grant would skip the consent prompt and invalidate this test.
+    if (initiallyGranted) throw Error('Optional host already granted before user interaction');
+    await page.bringToFront();
+    await button.click();
+
+    // Chromium's native optional-extension-permission prompt is not an HTML
+    // dialog. This manual-only Xvfb test uses an actual X11 keypress to
+    // interact with the real browser UI, not a permissions API stub.
+    await page.waitForTimeout(1200);
+    const pending = await page.locator(rowSelector + ' .model-status').textContent();
+    const afterClick = await page.evaluate(host =>
+        chrome.permissions.contains({ origins: [host] }), approvedHost);
+    if (afterClick || !pending.includes('Waiting for model download permission')) {
+        throw Error('Unexpected host-permission UI state before confirmation: ' +
+            JSON.stringify({ afterClick, pending }));
+    }
+    let activeWindow;
+    try {
+        activeWindow = execFileSync('/usr/bin/xdotool', ['getactivewindow', 'getwindowname'],
+            { encoding: 'utf8', timeout: 4000 }).trim();
+        if (!activeWindow) throw Error('No active Chromium window');
+        // Chromium's extension permission dialog defaults to Cancel. On
+        // Linux the dialog's focus order goes Cancel -> Allow (OK); Tab
+        // explicitly focuses Allow before Return confirms it.
+        execFileSync('/usr/bin/xdotool',
+            ['key', '--clearmodifiers', 'Tab', 'Return'], { timeout: 4000 });
+    } catch (error) {
+        throw Error('Cannot interact with headed Chromium permission prompt: ' +
+            String(error.message || error));
+    }
+    try {
+        await page.waitForFunction(async host =>
+            await chrome.permissions.contains({ origins: [host] }),
+        approvedHost, { timeout: 10000 });
+    } catch (error) {
+        const snapshot = await captureOfficialOriginDownloadState(page, rowSelector, networkEvents);
+        throw Error('Chromium host permission was not granted after native UI input: ' +
+            JSON.stringify({ cause: String(error), activeWindow, ...snapshot }));
+    }
+    const hostGrantEvidence = {
+        host: approvedHost, initiallyGranted: false,
+        acceptedAfterNativeX11Input: true, grantedByBrowser: true,
+    };
+    return hostGrantEvidence;
+}
+
+/**
  * Independently exercise the real packaged extension's local-model Download
  * control against its pinned upstream HTTPS URLs. Do not use the preloaded
  * loopback fixture: it would bypass consent, browser CORS and download UI.
@@ -240,7 +303,8 @@ async function downloadModelFromOfficialOrigin(page, manifest) {
         failure: request.failure() || null,
     }));
     const button = page.locator(rowSelector + ' .model-download');
-    await button.click();
+    const hostGrantEvidence = await acceptOfficialOriginHostPermission(
+        page, manifest, rowSelector, button, networkEvents);
     try {
         await page.waitForFunction(selector => {
             const row = document.querySelector(selector);
@@ -329,7 +393,8 @@ async function downloadModelFromOfficialOrigin(page, manifest) {
             report.requests[i] !== url || !report.completedUrls.includes(url))) {
         throw Error('Official ' + manifest.provider + ' UI transfer verification failed: ' + JSON.stringify(report));
     }
-    return { ...report, otherProviderStatusBefore: otherProviderBefore };
+    return { ...report, hostGrantEvidence,
+        otherProviderStatusBefore: otherProviderBefore };
 }
 
 let extensionOrigin = null;
@@ -365,7 +430,7 @@ try {
     const { chromium } = await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE_PATH).href);
     const extension = path.resolve('dist/chrome');
     context = await chromium.launchPersistentContext(path.join(sourceDir, 'profile'), {
-        channel: 'chromium', headless: true,
+        channel: 'chromium', headless: !originDownload,
         args: ['--disable-extensions-except=' + extension, '--load-extension=' + extension],
     });
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', { timeout: 30000 });
