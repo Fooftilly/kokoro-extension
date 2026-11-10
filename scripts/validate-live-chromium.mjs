@@ -139,14 +139,16 @@ async function downloadMediaPipeFromOfficialOrigin(page, manifest) {
     await button.click();
     await page.waitForFunction(selector => {
         const status = document.querySelector(selector)?.querySelector('.model-status')?.textContent || '';
-        return status.includes('Installed') || /permission.*(denied|failed)|Cannot request|Download failed/i.test(status);
+        return (status.includes('Installed') &&
+            document.querySelector(selector)?.querySelector('.model-download-progress')?.value === 100) ||
+            /permission.*(denied|failed)|Cannot request|Download failed/i.test(status);
     }, rowSelector, { timeout: 900000 });
     const uiStatus = await page.locator(rowSelector + ' .model-status').textContent();
     if (!uiStatus.includes('Installed')) {
         throw Error('MediaPipe official download did not complete through UI: ' + uiStatus);
     }
     const report = await page.evaluate(async ({ provider, variant, selector }) => {
-        const [{ ModelDataStore }, { manifestForVariant }] = await Promise.all([
+        const [{ ModelDataStore, formatModelSize }, { manifestForVariant }] = await Promise.all([
             import('./model-data-store.js'), import('./model-catalog.js'),
         ]);
         const m = manifestForVariant(provider, variant);
@@ -173,12 +175,17 @@ async function downloadMediaPipeFromOfficialOrigin(page, manifest) {
             unexpectedUrls: transfer.unexpectedUrls,
             fullSha256Verified: verified.ready && verified.removedAssets === 0 &&
                 verified.missingAssets === 0,
+            displayedSizeMatchesManifest: row.querySelector('.model-download').textContent
+                .includes(formatModelSize(status.totalBytes)) &&
+                row.querySelector('.model-status').textContent
+                    .includes(formatModelSize(status.totalBytes)),
             progressPercent: row.querySelector('.model-download-progress').value,
             uiStatus: row.querySelector('.model-status').textContent,
         };
     }, { provider: manifest.provider, variant: manifest.variant, selector: rowSelector });
     const expectedUrls = manifest.assets.map(asset => asset.url);
     if (!report.permission || !report.fullSha256Verified ||
+        !report.displayedSizeMatchesManifest ||
         report.receivedBytes !== report.expectedBytes ||
         report.cachedBytes !== report.expectedBytes || report.progressPercent !== 100 ||
         report.unexpectedUrls.length ||
