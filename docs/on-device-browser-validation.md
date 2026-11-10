@@ -292,3 +292,46 @@ Firefox), CORS, full transfer, and offline synthesis must be verified by
 running the workflow and inspecting its attachment. A temporary Firefox
 add-on survives page reload but **not** a browser-process restart; permanent
 installation and real quota/eviction remain separate issue #55 gates.
+
+
+## Firefox ONNX q8 official-host model/voice Cancel/Retry and offline synthesis (#55)
+
+Use the explicitly dispatched **Real Kokoro MV3 model acceptance** workflow with
+`acceptance_scope: firefox-onnx-origin`. Its isolated Firefox job sets
+`KOKORO_LIVE_DOWNLOAD=1`, `KOKORO_FIREFOX_PROVIDER=onnx`, and
+`KOKORO_FIREFOX_ORIGIN_DOWNLOAD=1`. It must **not** run in normal PR CI
+or automatically download weights on extension startup.
+
+The test uses the packaged Firefox add-on and the existing real CMUdict
+Download/Cancel/Retry/Remove acceptance. Because that dictionary test ends
+by removing the asset, the ONNX mode explicitly clicks its actual **Download**
+control again and verifies the restored pinned 3,618,488-byte dictionary
+with SHA-256 before testing ONNX. This is a separate user-initiated
+official-host download, not a hidden model dependency fetch. The tokenizer
+mapping is packaged in the extension.
+
+Next, the harness clears only the ONNX q8 cache and snapshots MediaPipe
+CPU/GPU cache status. It clicks the real ONNX **Download** control against
+the two pinned official Hugging Face assets: the 92,361,116-byte quantized
+graph and 524,288-byte voice embedding (92,885,404 bytes total, excluding
+the separate dictionary). The test intentionally stalls the second asset,
+clicks **Cancel**, and requires the first asset to remain checksum-verified
+and the second to remain absent. Only a second explicit click permits the
+real pinned voice fetch. It fails if the graph is fetched twice, an unpinned
+HTTP(S) URL is requested, the actual received/persisted byte counts disagree
+with the manifest, either SHA-256 fails, the narrow host permission is
+missing, or the UI size/progress do not match. MediaPipe cache must be
+unchanged.
+
+With networking disabled at the Firefox browser level, the harness then
+executes ONNX phoneme and English-dictionary synthesis, clicks the real ONNX
+**Remove** control, and checks that the dictionary remains verified and
+MediaPipe cache is still unchanged. The attached `firefox.json` distinguishes
+`originDownload`, `originModelAcceptance.cancelRetry`,
+`dictionaryReinstalledThroughUi`, `offlineInference`, and offline removal.
+
+This is **not evidence of a passing Firefox browser run** until the
+manual workflow produces a reproducible report. Firefox's headless optional
+permission prompt, official HTTPS CORS, interrupted transfer recovery, real
+storage quota pressure and true installed-addon process restart require
+separate live confirmation; the temporary add-on is not persistent.
