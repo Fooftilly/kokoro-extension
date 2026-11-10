@@ -615,6 +615,8 @@ def _persistent_firefox_extension_origin(browser, addon_id):
 
 
 def _pinned_firefox_handler(files, token, state):
+    from urllib.parse import parse_qs
+
     class PinnedTransfer(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             url = urlsplit(self.path)
@@ -650,7 +652,6 @@ def run_permanent_addon_restart_acceptance():
     Unsigned packaged add-ons require Firefox Developer Edition (or Nightly).
     The explicit profile path is reused by two separate browser processes.
     """
-    from urllib.parse import parse_qs, urlsplit
     from zipfile import ZipFile
 
     if os.environ.get("KOKORO_LIVE_DOWNLOAD") != "1":
