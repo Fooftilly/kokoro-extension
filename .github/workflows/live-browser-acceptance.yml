@@ -31,6 +31,7 @@ on:
           - firefox-persistent-restart
           - chromium-mediapipe-origin
           - chromium-onnx-origin
+          - chromium-quota-recovery
 
 permissions:
   contents: read
@@ -59,18 +60,28 @@ jobs:
           npm install --no-save --ignore-scripts --package-lock=false playwright@1.65.0
           ./node_modules/.bin/playwright install --with-deps chromium
       - name: Execute real model-backed Chrome extension inference
+        if: ${{ inputs.acceptance_scope != 'chromium-quota-recovery' }}
         env:
           KOKORO_LIVE_DOWNLOAD: '1'
           KOKORO_LIVE_PROVIDER: ${{ inputs.acceptance_scope == 'chromium-dictionary' && 'dictionary' || inputs.acceptance_scope == 'chromium-mediapipe-origin' && 'mediapipe' || inputs.acceptance_scope == 'chromium-onnx-origin' && 'onnx' || 'both' }}
           KOKORO_CHROMIUM_ORIGIN_DOWNLOAD: ${{ (inputs.acceptance_scope == 'chromium-mediapipe-origin' || inputs.acceptance_scope == 'chromium-onnx-origin') && '1' || '0' }}
           PLAYWRIGHT_MODULE_PATH: ${{ runner.temp }}/kokoro-playwright/node_modules/playwright/index.mjs
         run: node scripts/validate-live-chromium.mjs
+      - name: Execute Chromium real-quota, offline multi-asset recovery acceptance
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.acceptance_scope == 'chromium-quota-recovery' }}
+        env:
+          KOKORO_LIVE_DOWNLOAD: '1'
+          KOKORO_CHROMIUM_QUOTA_ACCEPTANCE: '1'
+          PLAYWRIGHT_MODULE_PATH: ${{ runner.temp }}/kokoro-playwright/node_modules/playwright/index.mjs
+        run: node scripts/validate-real-quota-chromium.mjs
       - name: Attach measured browser report (when available)
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kokoro-live-chromium-report
-          path: dist/runtime-acceptance/report.json
+          path: |
+            dist/runtime-acceptance/report.json
+            dist/runtime-acceptance/chromium-quota.json
           if-no-files-found: ignore
 
   firefox-local-inference:
