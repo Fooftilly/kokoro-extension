@@ -2,68 +2,7 @@
 // Unlike a simulated quota error, ModelDataStore and Cache Storage remain real.
 // Two calls in separate browser processes use exactly the same deterministic
 // synthetic asset digests; no model weights or official URLs are fetched.
-const [phase, done] = arguments;
-(async () => {
-    const { ModelDataStore, validateModelManifest } =
-        await import('./model-data-store.js');
-    const revision = 'b'.repeat(40);
-    const calls = [];
-    const samples = new Map();
-    const makeAsset = async (path, url, count, seed) => {
-        const bytes = new Uint8Array(count);
-        // High-entropy but reproducible: compression cannot make the 5 MiB
-        // voice fixture appear small enough to fit an 8 MiB global cap.
-        let value = seed >>> 0;
-        for (let i = 0; i < count; i++) {
-            value ^= value << 13;
-            value ^= value >>> 17;
-            value ^= value << 5;
-            bytes[i] = value & 255;
-        }
-        const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-        const integrity = 'sha256-' + btoa(String.fromCharCode(...digest));
-        samples.set(url, bytes);
-        return { path, url, bytes: count, integrity };
-    };
-    const dictionary = {
-        provider: 'dictionary', revision, variant: 'english',
-        assets: [await makeAsset('cmudict.dict',
-            'https://raw.githubusercontent.com/cmusphinx/cmudict/' +
-            revision + '/cmudict.dict', 16384, 0xfeed1234)],
-    };
-    const base = 'https://huggingface.co/onnx-community/' +
-        'Kokoro-82M-v1.0-ONNX/resolve/' + revision + '/';
-    const onnx = {
-        provider: 'onnx', revision, variant: 'q8',
-        assets: [
-            await makeAsset('onnx/model_quantized.onnx',
-                base + 'onnx/model_quantized.onnx', 98304, 0x13579bdf),
-            await makeAsset('voices/af.bin',
-                base + 'voices/af.bin', 5242880, 0xabcdef17),
-        ],
-    };
-    validateModelManifest(dictionary);
-    validateModelManifest(onnx);
-    const store = new ModelDataStore({
-        origin: browser.runtime.getURL('/'), cacheStorage: caches,
-        fetchImpl: async url => {
-            const bytes = samples.get(url);
-            if (!bytes) throw Error('Unpinned fixture URL: ' + url);
-            calls.push(url);
-            return new Response(bytes, { status: 200 });
-        },
-        responseClass: Response, streamClass: TransformStream,
-    });
-    const estimate = await navigator.storage.estimate();
-    if (!Number.isFinite(estimate?.quota) || !Number.isFinite(estimate?.usage)) {
-        throw Error('Firefox did not expose an actual StorageManager quota estimate');
-    }
-    const summary = {
-        phase, storageEstimate: { usage: estimate.usage, quota: estimate.quota },
-        modelBytes: onnx.assets.reduce((sum, asset) => sum + asset.bytes, 0),
-        protectedBytes: dictionary.assets[0].bytes,
-    };
-    if (phase === 'limited') {
+async function checkLimitedQuota({ store, dictionary, onnx, calls, summary }) {
         await store.remove(onnx);
         await store.remove(dictionary);
         // Separate protected provider: no model download is triggered by merely
@@ -102,7 +41,9 @@ const [phase, done] = arguments;
             throw Error('Actual Firefox quota rejection failed to preserve the ' +
                 'first asset and independent dictionary: ' + JSON.stringify(summary));
         }
-    } else if (phase === 'recovery') {
+}
+
+async function checkRecoveredQuota({ store, dictionary, onnx, calls, summary }) {
         const prior = await store.status(onnx);
         const dictionaryBefore = await store.verifyAndPruneCorrupt(dictionary);
         if (prior.ready || prior.storedBytes !== onnx.assets[0].bytes ||
@@ -136,10 +77,75 @@ const [phase, done] = arguments;
             otherProviderUnchanged: true,
             removedOnlySelectedModel: true, calls,
         });
+}
+
+globalThis.runFirefoxQuotaProbe = async phase => {
+    const { ModelDataStore, validateModelManifest } =
+        await import('./model-data-store.js');
+    const revision = 'b'.repeat(40);
+    const calls = [];
+    const samples = new Map();
+    const makeAsset = async (path, url, count, seed) => {
+        const bytes = new Uint8Array(count);
+        // High-entropy but reproducible: compression cannot make the 5 MiB
+        // voice fixture appear small enough to fit an 8 MiB global cap.
+        let value = seed >>> 0;
+        for (let i = 0; i < count; i++) {
+            value ^= value << 13;
+            value ^= value >>> 17;
+            value ^= value << 5;
+            bytes[i] = value & 255;
+        }
+        const digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', bytes));
+        const integrity = 'sha256-' + globalThis.btoa(String.fromCharCode(...digest));
+        samples.set(url, bytes);
+        return { path, url, bytes: count, integrity };
+    };
+    const dictionary = {
+        provider: 'dictionary', revision, variant: 'english',
+        assets: [await makeAsset('cmudict.dict',
+            'https://raw.githubusercontent.com/cmusphinx/cmudict/' +
+            revision + '/cmudict.dict', 16384, 0xfeed1234)],
+    };
+    const base = 'https://huggingface.co/onnx-community/' +
+        'Kokoro-82M-v1.0-ONNX/resolve/' + revision + '/';
+    const onnx = {
+        provider: 'onnx', revision, variant: 'q8',
+        assets: [
+            await makeAsset('onnx/model_quantized.onnx',
+                base + 'onnx/model_quantized.onnx', 98304, 0x13579bdf),
+            await makeAsset('voices/af.bin',
+                base + 'voices/af.bin', 5242880, 0xabcdef17),
+        ],
+    };
+    validateModelManifest(dictionary);
+    validateModelManifest(onnx);
+    const store = new ModelDataStore({
+        origin: globalThis.browser.runtime.getURL('/'), cacheStorage: globalThis.caches,
+        fetchImpl: async url => {
+            const bytes = samples.get(url);
+            if (!bytes) throw Error('Unpinned fixture URL: ' + url);
+            calls.push(url);
+            return new globalThis.Response(bytes, { status: 200 });
+        },
+        responseClass: globalThis.Response, streamClass: globalThis.TransformStream,
+    });
+    const estimate = await globalThis.navigator.storage.estimate();
+    if (!Number.isFinite(estimate?.quota) || !Number.isFinite(estimate?.usage)) {
+        throw Error('Firefox did not expose an actual StorageManager quota estimate');
+    }
+    const summary = {
+        phase, storageEstimate: { usage: estimate.usage, quota: estimate.quota },
+        modelBytes: onnx.assets.reduce((sum, asset) => sum + asset.bytes, 0),
+        protectedBytes: dictionary.assets[0].bytes,
+    };
+    const context = { store, dictionary, onnx, calls, summary };
+    if (phase === 'limited') {
+        await checkLimitedQuota(context);
+    } else if (phase === 'recovery') {
+        await checkRecoveredQuota(context);
     } else {
         throw Error('Unknown Firefox quota acceptance phase: ' + phase);
     }
-    done({ success: true, ...summary });
-})().catch(error => done({
-    success: false, phase, error: String(error?.stack || error),
-}));
+    return summary;
+};
