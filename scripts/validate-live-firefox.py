@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 import urllib3
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 
 
@@ -254,18 +255,54 @@ def main():
                     await store.install(manifest);
                     if(fetches!==1||(await store.verifyAndPruneCorrupt(manifest)).ready!==true)
                         throw Error('Explicit dictionary repair failed');
-                    await store.remove(manifest);
-                    if((await store.status(manifest)).ready)
-                        throw Error('Explicit dictionary removal failed');
+                    // Leave the verified dictionary for real UI removal below.
                     return {success:true,extensionPageReloaded:true,
                         browserProcessRestarted:false,
                         dictionarySha256Retained:true,simulatedEvictionDetected:true,
-                        explicitRepairFetches:fetches,explicitRemoval:true};
+                        explicitRepairFetches:fetches};
                 })().then(done,e=>done({success:false,error:String(e)}));
             """)
             if not dictionary_reload_acceptance.get("success"):
                 raise RuntimeError("Firefox dictionary reload/eviction acceptance failed: " +
                                    str(dictionary_reload_acceptance))
+            # Real Firefox extension-page Recheck and Remove buttons must
+            # observe the repaired dictionary and delete its cached bytes.
+            WebDriverWait(driver, 20).until(
+                lambda d: d.find_element(By.ID, "refreshModelCache").is_enabled()
+            )
+            driver.find_element(By.ID, "refreshModelCache").click()
+            row = '[data-variant="dictionary-english"]'
+            WebDriverWait(driver, 30).until(
+                lambda d: d.find_element(By.CSS_SELECTOR, row + " .model-remove").is_enabled()
+                and "Installed" in d.find_element(By.CSS_SELECTOR, row + " .model-status").text
+            )
+            driver.find_element(By.CSS_SELECTOR, row + " .model-remove").click()
+            WebDriverWait(driver, 30).until(
+                lambda d: "Not installed" in
+                d.find_element(By.CSS_SELECTOR, row + " .model-status").text
+                and not d.find_element(By.CSS_SELECTOR, row + " .model-remove").is_enabled()
+                and d.find_element(By.CSS_SELECTOR, row + " .model-download").is_enabled()
+            )
+            after_ui_removal = driver.execute_async_script("""
+                const done=arguments[arguments.length-1];
+                (async()=>{
+                    const [{ModelDataStore},{dictionaryManifest}]=await Promise.all([
+                        import('./model-data-store.js'),import('./model-catalog.js')]);
+                    const store=new ModelDataStore({
+                        origin:browser.runtime.getURL('/'),cacheStorage:caches,
+                        fetchImpl:()=>{throw Error('Unexpected removal fetch')},
+                        responseClass:Response,streamClass:TransformStream});
+                    return store.status(dictionaryManifest());
+                })().then(done,e=>done({error:String(e)}));
+            """)
+            if after_ui_removal.get("ready") or after_ui_removal.get("storedBytes") != 0:
+                raise RuntimeError("Firefox model-manager Remove left cached dictionary data: " +
+                                   str(after_ui_removal))
+            dictionary_reload_acceptance.update({
+                "modelManagerRecheckClicked": True,
+                "modelManagerRemoveClicked": True,
+                "uiRemovalVerifiedInCache": True,
+            })
             # Use only pinned bytes verified on the runner, and copy to the
             # extension's cache. The loopback server never receives TTS text.
             cache_result = driver.execute_async_script("""

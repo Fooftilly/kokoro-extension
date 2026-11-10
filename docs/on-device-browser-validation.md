@@ -103,3 +103,21 @@ The cache-eviction step deletes a known test entry deliberately; this checks
 recovery logic but **does not** simulate the browser's automatic quota-driven
 eviction heuristics. Neither script runs in normal PR CI or downloads real
 weights without the explicit manual live-acceptance workflow.
+
+
+## Real model-manager button acceptance (part of #55)
+
+After explicit dictionary recovery, both opt-in live browser harnesses now
+click the packaged extension's actual **Recheck installed models** and
+dictionary **Remove** buttons. The assertions require the repaired dictionary
+to appear installed and removable, then show Not installed with Download
+available and confirm that no dictionary bytes remain in extension Cache
+Storage. Chromium runs this after its true browser restart; Firefox runs it
+after its fresh extension-page reload. Results include
+`modelManagerRecheckClicked`, `modelManagerRemoveClicked`, and
+`uiRemovalVerifiedInCache`.
+
+These tests do not yet exercise the Download, Cancel, or Retry UI buttons or
+optional host-permission prompt (the dictionary is installed by an explicit
+test-harness data-store operation). No live-browser result is claimed until
+the manually dispatched workflow has actually passed.

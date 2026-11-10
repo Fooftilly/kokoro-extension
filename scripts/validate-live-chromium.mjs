@@ -429,18 +429,50 @@ try {
             if (fetches !== 1 || !verified.ready || verified.removedAssets) {
                 throw Error('Explicit post-eviction repair did not restore pinned bytes');
             }
-            await store.remove(manifest);
-            if ((await store.status(manifest)).ready) {
-                throw Error('Dictionary cache remained after explicit Remove');
-            }
-            return { explicitRepairFetches: fetches, repairedSha256: true,
-                explicitRemoval: true };
+            // The real model-manager Remove button is exercised below.
+            return { explicitRepairFetches: fetches, repairedSha256: true };
         });
         if (errors.length) {
             throw Error('Extension page errors after restart: ' + errors.join('; '));
         }
+        // Exercise real packaged-extension controls, not only the data-store
+        // API. Refresh the UI after the harness's explicit dictionary repair.
+        const recheck = reopened.locator('#refreshModelCache');
+        await recheck.click();
+        const dictionaryRow = reopened.locator('[data-variant="dictionary-english"]');
+        await reopened.waitForFunction(() => {
+            const row = document.querySelector('[data-variant="dictionary-english"]');
+            return row?.querySelector('.model-status')?.textContent?.includes('Installed') &&
+                row?.querySelector('.model-remove')?.disabled === false;
+        }, null, { timeout: 30000 });
+        await dictionaryRow.locator('.model-remove').click();
+        await reopened.waitForFunction(() => {
+            const row = document.querySelector('[data-variant="dictionary-english"]');
+            return row?.querySelector('.model-status')?.textContent?.includes('Not installed') &&
+                row?.querySelector('.model-remove')?.disabled === true &&
+                row?.querySelector('.model-download')?.disabled === false;
+        }, null, { timeout: 30000 });
+        const afterUiRemove = await reopened.evaluate(async () => {
+            const [{ ModelDataStore }, { dictionaryManifest }] = await Promise.all([
+                import('./model-data-store.js'), import('./model-catalog.js'),
+            ]);
+            const store = new ModelDataStore({
+                origin: chrome.runtime.getURL('/'), cacheStorage: caches,
+                fetchImpl: () => { throw Error('Removal unexpectedly fetched model data'); },
+                responseClass: Response, streamClass: TransformStream,
+            });
+            return store.status(dictionaryManifest());
+        });
+        if (afterUiRemove.ready || afterUiRemove.storedBytes !== 0) {
+            throw Error('Model-manager Remove left dictionary bytes installed');
+        }
+        if (errors.length) {
+            throw Error('Extension page errors after restart: ' + errors.join('; '));
+        }
         browserRestartAcceptance = { success: true, browserProcessRestarted: true,
-            networkDisabledDuringPersistenceChecks: true, ...persisted, ...repaired };
+            networkDisabledDuringPersistenceChecks: true,
+            modelManagerRecheckClicked: true, modelManagerRemoveClicked: true,
+            uiRemovalVerifiedInCache: true, ...persisted, ...repaired };
         await saveReport();
     } catch (error) {
         browserRestartAcceptance = { success: false, browserProcessRestarted: true,
