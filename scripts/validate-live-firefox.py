@@ -538,6 +538,29 @@ def main():
                 page.fetch=page.__modelManagerOriginalFetch;
                 delete page.__modelManagerOriginalFetch;
             """)
+            # Validate Download/Cancel/Retry through the real packaged
+            # Firefox UI, not a direct ModelDataStore.install() call.
+            try:
+                dictionary_ui_acceptance = run_dictionary_ui_acceptance(driver)
+            except Exception as exc:
+                dictionary_ui_acceptance = {"success": False, "error": str(exc)}
+                raise
+            if provider == "dictionary":
+                result = {
+                    "status": "passed",
+                    "browser": driver.capabilities.get("browserVersion"),
+                    "extensionId": addon_id,
+                    "preflight": preflight,
+                    "provider": "dictionary",
+                    "dictionaryCacheAcceptance": dictionary_cache_acceptance,
+                    "dictionaryReloadAcceptance": dictionary_reload_acceptance,
+                    "dictionaryUiDownloadAcceptance": dictionary_ui_acceptance,
+                    "offlineAttempted": False, "offlineInference": False,
+                    "scope": "Firefox temporary MV3 addon dictionary-only UI and "
+                             "integrity acceptance; no model-backed inference",
+                }
+                print("FIREFOX DICTIONARY UI ACCEPTANCE", json.dumps(result), flush=True)
+                return
             # Use only pinned bytes verified on the runner, and copy to the
             # extension's cache. The loopback server never receives TTS text.
             cache_result = driver.execute_async_script("""
@@ -635,7 +658,7 @@ def main():
                 "dictionaryUiDownloadAcceptance": dictionary_ui_acceptance,
                 "offlineAttempted": True,
                 "offlineInference": metrics.get("success") is True,
-                "cachePopulation": "model weights preloaded over loopback; dictionary tested with real pinned HTTPS CORS/SRI; Download UI not exercised",
+                "cachePopulation": "model weights preloaded over authenticated loopback; dictionary tested with pinned HTTPS CORS/SRI and real Download/Cancel/Retry/Remove UI",
                 "scope": "Firefox/Linux MV3 offline " + provider +
                          " CPU synthesis; no subjective audio-quality or long-form acceptance"}
             print("FIREFOX REAL INFERENCE", json.dumps(result), flush=True)
