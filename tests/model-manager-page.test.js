@@ -709,6 +709,71 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(removeModel).not.toHaveBeenCalled();
     });
 
+    test.each([
+        ['synchronous exception', () => { throw new Error('Permission API inaccessible'); },
+            'Cannot request model download permission'],
+        ['rejected promise', () => Promise.reject(new Error('Permission request rejected')),
+            'Model download permission failed'],
+    ])('permission-request %s restores controls and permits explicit retry',
+        async (_failure, failingRequest, expectedStatus) => {
+            const row = document.querySelector('[data-variant="mediapipe-cpu"]');
+            const other = document.querySelector('[data-variant="onnx-q8"]');
+            const download = row.querySelector('.model-download');
+            const progress = row.querySelector('.model-download-progress');
+            global.browser.permissions.request.mockImplementationOnce(failingRequest)
+                .mockResolvedValueOnce(true);
+            download.click();
+            await waitFor(() => row.querySelector('.model-status').textContent
+                .includes(expectedStatus));
+            expect(download.disabled).toBe(false);
+            expect(progress.hidden).toBe(true);
+            expect(other.querySelector('.model-test').disabled).toBe(false);
+            expect(installModel).not.toHaveBeenCalled();
+            expect(global.fetch).not.toHaveBeenCalled();
+            expect(global.browser.permissions.request).toHaveBeenCalledTimes(1);
+            // No implicit permission retry or download after an error.
+            await Promise.resolve();
+            expect(global.browser.permissions.request).toHaveBeenCalledTimes(1);
+            installModel.mockImplementationOnce(async () => {
+                installedModels.add('cpu');
+            });
+            download.click();
+            await waitFor(() => row.querySelector('.model-status').textContent
+                .includes('Installed'));
+            expect(global.browser.permissions.request).toHaveBeenCalledTimes(2);
+            expect(installModel).toHaveBeenCalledTimes(1);
+            expect(download.disabled).toBe(true);
+            expect(global.fetch).not.toHaveBeenCalled();
+        });
+
+    test('interrupted partial model install does not self-retry and preserves manual recovery', async () => {
+        partialModels.add('mediapipe-cpu'); // Represents an intact earlier asset.
+        global.browser.permissions.request.mockResolvedValue(true);
+        installModel.mockRejectedValueOnce(new Error('Simulated interrupted transfer'));
+        const row = document.querySelector('[data-variant="mediapipe-cpu"]');
+        const download = row.querySelector('.model-download');
+        const progress = row.querySelector('.model-download-progress');
+        download.click();
+        await waitFor(() => row.querySelector('.model-status').textContent
+            .includes('Simulated interrupted transfer'));
+        expect(progress.hidden).toBe(true);
+        expect(download.disabled).toBe(false);
+        expect(row.querySelector('.model-remove').disabled).toBe(false);
+        expect(installModel).toHaveBeenCalledTimes(1);
+        expect(global.browser.permissions.request).toHaveBeenCalledTimes(1);
+        await Promise.resolve();
+        expect(installModel).toHaveBeenCalledTimes(1);
+        installModel.mockImplementationOnce(async () => {
+            installedModels.add('cpu');
+            partialModels.delete('mediapipe-cpu');
+        });
+        download.click(); // Only a second explicit gesture may retry.
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('Installed'));
+        expect(installModel).toHaveBeenCalledTimes(2);
+        expect(global.browser.permissions.request).toHaveBeenCalledTimes(2);
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
     test('local benchmark takes a shared lease through inference and diagnostics', async () => {
         const { message } = await runProbe();
         expect(message).toContain('Full-clip synthesis p50');

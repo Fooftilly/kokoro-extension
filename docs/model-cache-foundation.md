@@ -53,3 +53,21 @@ automatic model download. Already confirmed corrupt bytes may have been
 removed before the user clicked Cancel, so the existing runtime invalidation
 still runs when a previous verified asset was deleted. Leaving the page also
 aborts active verification.
+
+
+### Deterministic denied-permission and interrupted-asset recovery regressions (#55)
+
+Normal CI now covers a browser permission request that throws synchronously
+or rejects asynchronously, followed by an explicit user retry. In either
+failure mode model-manager controls recover without starting a hidden download.
+A two-asset, four-byte-per-asset fixture simulates interruption during the
+second asset's response stream. The first fully committed asset remains
+cached, the interrupted asset is absent, metadata-only status checks do not
+fetch anything, and a subsequent explicit install verifies and reuses the
+first asset while downloading only the missing one. The corresponding UI
+regression checks that a failed partial install neither self-retries nor
+leaves the Download control unusable.
+
+These are simulated browser/storage conditions run by Jest, not proof that
+real optional-host permission prompts or browser-managed quota eviction work
+as expected. Both require separately reported live browser acceptance.
