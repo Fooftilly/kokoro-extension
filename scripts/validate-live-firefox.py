@@ -580,9 +580,276 @@ def run_model_origin_ui_acceptance(driver, manifest):
     return report
 
 
+
+def run_permanent_addon_restart_acceptance():
+    """Manual-only real Firefox process restart using an installed XPI and profile.
+
+    Unsigned packaged add-ons require Firefox Developer Edition (or Nightly).
+    The explicit profile path is reused by two separate browser processes.
+    """
+    from urllib.parse import parse_qs, urlsplit
+    from zipfile import ZipFile
+
+    if os.environ.get("KOKORO_LIVE_DOWNLOAD") != "1":
+        raise RuntimeError("Persistent Firefox acceptance requires explicit opt-in")
+
+    output = Path("dist/runtime-acceptance/firefox.json")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    result = {"status": "started", "browser": "Firefox Developer Edition",
+              "scope": "persistent-installed-addon-process-restart",
+              "browserProcessRestarted": False, "temporaryAddon": False,
+              "offlineAttempted": False}
+    driver = None
+    server = None
+    with tempfile.TemporaryDirectory(prefix="kokoro-firefox-persistent-") as tmp:
+        directory = Path(tmp)
+        profile = directory / "profile"
+        profile.mkdir()
+        # Using -profile rather than options.profile prevents Selenium from
+        # cloning the profile into a throwaway directory on each new session.
+        # On supported developer-channel binaries, disable unsigned-XPI checks.
+        (profile / "user.js").write_text(
+            'user_pref("xpinstall.signatures.required", false);\\n'
+            'user_pref("extensions.autoDisableScopes", 0);\\n',
+            encoding="utf-8",
+        )
+
+        def start_browser():
+            options = Options()
+            options.binary_location = os.environ["FIREFOX_BINARY"]
+            options.add_argument("-headless")
+            options.add_argument("-profile")
+            options.add_argument(str(profile))
+            options.set_preference("xpinstall.signatures.required", False)
+            browser = webdriver.Firefox(options=options)
+            browser.set_script_timeout(250)
+            if not isinstance(browser.capabilities.get("moz:processID"), int):
+                browser.quit()
+                raise RuntimeError("Firefox parent-process PID unavailable")
+            return browser
+
+        def extension_origin(browser, addon_id):
+            browser.set_context("chrome")
+            try:
+                mapping = json.loads(browser.execute_script(
+                    "return Services.prefs.getStringPref("
+                    "'extensions.webextensions.uuids', '{}');"
+                ))
+                unsigned_allowed = browser.execute_script(
+                    "return Services.prefs.getBoolPref('xpinstall.signatures.required');"
+                ) is False
+            finally:
+                browser.set_context("content")
+            if not unsigned_allowed:
+                raise RuntimeError("Firefox profile still enforces signed XPI files")
+            if not mapping.get(addon_id):
+                raise RuntimeError("Installed extension lacks a stable moz-extension UUID")
+            return "moz-extension://" + mapping[addon_id]
+
+        try:
+            manifests = pinned_manifest("onnx")
+            files = {}
+            for manifest in manifests:
+                files.update(verified_assets(manifest, directory))
+            expected_bytes = sum(asset["bytes"] for manifest in manifests
+                                 for asset in manifest["assets"])
+            version = json.loads(Path("package.json").read_text(encoding="utf-8"))["version"]
+            package = (Path("dist/package") /
+                       f"kokoro-extension-firefox-{version}.zip").resolve()
+            if not package.is_file():
+                raise FileNotFoundError("Packaged Firefox add-on missing: " + str(package))
+            with ZipFile(package) as archive:
+                gecko_id = json.loads(archive.read("manifest.json"))[
+                    "browser_specific_settings"]["gecko"]["id"]
+
+            state = {"origin": None}
+            token = secrets.token_hex(32)
+
+            class PinnedTransfer(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    url = urlsplit(self.path)
+                    if (self.command != "GET" or
+                            parse_qs(url.query).get("token") != [token] or
+                            self.client_address[0] != "127.0.0.1" or
+                            not state["origin"] or
+                            (self.headers.get("Origin") and
+                             self.headers["Origin"] != state["origin"])):
+                        self.send_error(403)
+                        return
+                    item = files.get(url.path.removeprefix("/"))
+                    if not item:
+                        self.send_error(404)
+                        return
+                    self.send_response(200)
+                    self.send_header("Access-Control-Allow-Origin", state["origin"])
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", str(item.stat().st_size))
+                    self.end_headers()
+                    with item.open("rb") as data:
+                        while piece := data.read(1024 * 1024):
+                            self.wfile.write(piece)
+
+                def log_message(self, *args):
+                    return
+
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), PinnedTransfer)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+
+            driver = start_browser()
+            first_pid = driver.capabilities["moz:processID"]
+            # Explicitly persistent: temporary=True would be unloaded on exit.
+            addon_id = driver.install_addon(str(package), temporary=False)
+            if addon_id != gecko_id:
+                raise RuntimeError("Firefox permanent XPI ID disagrees with manifest")
+            state["origin"] = extension_origin(driver, addon_id)
+            initial_origin = state["origin"]
+            driver.get(initial_origin + "/benchmark.html")
+            WebDriverWait(driver, 30).until(
+                lambda b: b.execute_script("return Boolean(window.KokoroBenchmark)")
+            )
+            installed = driver.execute_async_script("""
+                const [manifests,port,token,done]=arguments;
+                (async()=>{
+                    const {ModelDataStore}=await import('./model-data-store.js');
+                    const store=new ModelDataStore({
+                        origin:browser.runtime.getURL('/'),cacheStorage:caches,
+                        fetchImpl:fetch,responseClass:Response,streamClass:TransformStream
+                    });
+                    const cache=await caches.open('kokoro-model-data-v1');
+                    const statuses=[];
+                    for(const m of manifests){
+                        for(const asset of m.assets){
+                            const bytes=Uint8Array.from(atob(asset.integrity.slice(7)),
+                                c=>c.charCodeAt(0));
+                            const hash=Array.from(bytes).map(
+                                b=>b.toString(16).padStart(2,'0')).join('');
+                            const res=await fetch(
+                                'http://127.0.0.1:'+port+'/'+hash+'?token='+token);
+                            if(!res.ok||!res.body)
+                                throw Error('Pinned local asset handoff HTTP '+res.status);
+                            await cache.put(store.key(m,asset),new Response(res.body,{
+                                headers:{'x-kokoro-integrity':asset.integrity,
+                                         'x-kokoro-bytes':String(asset.bytes)}
+                            }));
+                        }
+                        const verified=await store.verifyAndPruneCorrupt(m);
+                        const status=await store.status(m);
+                        if(!verified.ready||verified.removedAssets||
+                            verified.missingAssets||!status.ready||
+                            status.storedBytes!==status.totalBytes)
+                            throw Error('Pre-restart pinned asset integrity failed');
+                        statuses.push({provider:m.provider,variant:m.variant,
+                            verified:true,storedBytes:status.storedBytes});
+                    }
+                    done({success:true,statuses});
+                })().catch(e=>done({success:false,error:String(e)}));
+            """, manifests, server.server_port, token)
+            if not installed.get("success") or sum(
+                    item["storedBytes"] for item in installed.get("statuses", [])) != expected_bytes:
+                raise RuntimeError("Installed Firefox model/dictionary cache invalid: " +
+                                   str(installed))
+            result["initialProcessId"] = first_pid
+            result["extensionId"] = addon_id
+            result["extensionOrigin"] = initial_origin
+            result["cacheBeforeRestart"] = installed["statuses"]
+            # Quit the real parent browser process, not merely its document.
+            driver.quit()
+            driver = None
+
+            driver = start_browser()
+            second_pid = driver.capabilities["moz:processID"]
+            if second_pid == first_pid:
+                raise RuntimeError("Firefox reused the previous parent-process PID")
+            persisted_origin = extension_origin(driver, addon_id)
+            if persisted_origin != initial_origin:
+                raise RuntimeError("Firefox changed extension UUID across process restart")
+            driver.get(persisted_origin + "/benchmark.html")
+            WebDriverWait(driver, 30).until(
+                lambda b: b.execute_script("return Boolean(window.KokoroBenchmark)")
+            )
+            result["restartedProcessId"] = second_pid
+            result["browserProcessRestarted"] = True
+            driver.set_context("chrome")
+            try:
+                went_offline = driver.execute_script("""
+                    Services.io.manageOfflineStatus=false;
+                    Services.io.offline=true;
+                    return Services.io.offline;
+                """)
+            finally:
+                driver.set_context("content")
+            if not went_offline or not driver.execute_script(
+                    "return navigator.onLine===false;"):
+                raise RuntimeError("Firefox failed to disable network after restart")
+            result["offlineAttempted"] = True
+            checked = driver.execute_async_script("""
+                const [manifests,done]=arguments;
+                (async()=>{
+                    if(navigator.onLine!==false)
+                        throw Error('Browser must be offline before cache checks');
+                    const [{ModelDataStore},{OnnxKokoroProvider}]=await Promise.all([
+                        import('./model-data-store.js'),import('./onnx-provider.js')]);
+                    const store=new ModelDataStore({
+                        origin:browser.runtime.getURL('/'),cacheStorage:caches,
+                        fetchImpl:()=>{throw Error('Unapproved network fetch after restart')},
+                        responseClass:Response,streamClass:TransformStream});
+                    const statuses=[];
+                    for(const m of manifests){
+                        const before=await store.status(m);
+                        const verification=await store.verifyAndPruneCorrupt(m);
+                        const after=await store.status(m);
+                        if(!before.ready||!verification.ready||!after.ready||
+                            verification.removedAssets||verification.missingAssets||
+                            before.storedBytes!==after.storedBytes)
+                            throw Error('Cached model or dictionary failed after restart');
+                        statuses.push({provider:m.provider,variant:m.variant,
+                            verified:true,storedBytes:after.storedBytes});
+                    }
+                    const engine=new OnnxKokoroProvider({variant:'q8'});
+                    try{
+                        await engine.initialize();
+                        const audio=await engine.synthesize('Hello world.');
+                        const sampleRate=audio.sampleRateHz;
+                        const duration=audio.samples.length/sampleRate;
+                        const rms=Math.sqrt(audio.samples.reduce(
+                            (n,v)=>n+v*v,0)/audio.samples.length);
+                        if(sampleRate!==24000||!(duration>=0.2&&duration<=30)||
+                            !(rms>0.0001)||!audio.samples.every(Number.isFinite))
+                            throw Error('Invalid offline ONNX English-dictionary audio');
+                        done({success:true,statuses,offlineSynthesis:{
+                            sampleRateHz:sampleRate,durationSec:duration,rms}});
+                    }finally{await engine.close()}
+                })().catch(e=>done({success:false,error:String(e)}));
+            """, manifests)
+            if (not checked.get("success") or
+                    checked.get("statuses") != installed["statuses"]):
+                raise RuntimeError("Firefox restart persistence or offline inference failed: " +
+                                   str(checked))
+            result.update({"status": "passed", "cacheAfterRestart": checked["statuses"],
+                           "offlineInference": True,
+                           "offlineSynthesis": checked["offlineSynthesis"],
+                           "noAutomaticRedownload": True,
+                           "sameExtensionOrigin": True})
+            print("FIREFOX PERSISTENT RESTART ACCEPTANCE", json.dumps(result), flush=True)
+        except Exception as exc:
+            result["status"] = "failed"
+            result["error"] = str(exc)
+            raise
+        finally:
+            output.write_text(json.dumps(result, indent=2), encoding="utf-8")
+            if driver:
+                driver.quit()
+            if server:
+                server.shutdown()
+                server.server_close()
+
+
 def main():
     if os.environ.get("KOKORO_LIVE_DOWNLOAD") != "1":
         raise RuntimeError("Explicit model download opt-in is required")
+    if os.environ.get("KOKORO_FIREFOX_PERSISTENT_RESTART") == "1":
+        run_permanent_addon_restart_acceptance()
+        return
     provider = os.environ.get("KOKORO_FIREFOX_PROVIDER", "onnx")
     origin_download = os.environ.get("KOKORO_FIREFOX_ORIGIN_DOWNLOAD") == "1"
     if origin_download and provider not in ("mediapipe", "onnx"):
