@@ -380,3 +380,51 @@ consent, quota/eviction or real installation on a user's profile. The
 heavyweight test remains opt-in and needs a passing attached browser
 report before marking its acceptance evidence complete. The existing
 release-Firefox temporary-add-on tests remain unchanged.
+
+
+## Chromium quota-manager multi-asset recovery (issue #55)
+
+Use a **manual-only** dispatch of **Real Kokoro MV3 model acceptance** with
+`acceptance_scope: chromium-quota-recovery`. This runs
+`scripts/validate-real-quota-chromium.mjs` with the explicit
+`KOKORO_CHROMIUM_QUOTA_ACCEPTANCE=1` and `KOKORO_LIVE_DOWNLOAD=1`
+opt-ins. The script uses a disposable persistent Chromium extension profile,
+the actual Cache Storage API and WebCrypto, and the browser's own DevTools
+Protocol `Storage.getUsageAndQuota` and `Storage.overrideQuotaForOrigin`
+commands. This is **not** a manually thrown/mock `QuotaExceededError`.
+
+Only deterministic in-memory fixtures are used: a 16-KiB dictionary from
+a separate provider and a two-asset ONNX-shaped fixture (64-KiB graph and
+2-MiB voice). They have valid pinned-repository URL **shapes** and computed
+SHA-256 digests, but **no real model data are downloaded or executed**.
+Their fetch adapter serves only the fixture bytes; the actual browser still
+performs the Cache Storage writes and quota enforcement.
+
+After installing/verifying the independent dictionary, the harness queries
+the real extension-origin usage and sets a temporary effective quota only
+512 KiB above that usage. It requires confirmation of the quota override,
+forces network-offline mode, then calls the production `ModelDataStore.install`
+with the two assets. It requires an actual browser quota/storage failure on
+the oversized **second** asset, the first asset still present and checksum
+verified, the dictionary still valid, and no supposedly complete model.
+A browser that does not enforce quotas on extension origins must **fail
+visibly**, not falsely report a passing test.
+
+Next, the harness **removes the quota override**, confirms it is inactive,
+and explicitly retries installation. The first asset must be reused from its
+SHA-256 verified browser cache without a network request; only the missing
+second asset is fetched again. Final full integrity verification, explicit
+removal, and preservation of the separate dictionary are checked. The
+isolated report is uploaded as `chromium-quota.json` alongside any normal
+Chromium acceptance report. All cache entries and the isolated browser
+profile are discarded when this probe ends. Browser quota overrides are
+removed in a `finally` block even if the test fails.
+
+**Evidence boundary:** This adds reproducible **real Chromium quota
+pressure** acceptance, not browser-managed automatic eviction and not
+Firefox quota acceptance. A manual successful run is required to establish
+that a particular Chromium version applies CDP quota overrides to
+`chrome-extension://` origins. Firefox quota pressure, browser-triggered
+eviction, and heavyweight model downloads remain open in issue #55. Ordinary
+PR CI checks the script's syntax only and never runs this heavyweight
+manual browser scope.
