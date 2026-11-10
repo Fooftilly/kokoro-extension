@@ -304,7 +304,13 @@ def run_mediapipe_origin_ui_acceptance(driver, manifest):
         if(typeof original!=='function')throw Error('Missing native model fetch');
         const stats={requests:[],bytesByUrl:{},completed:[],unexpected:[]};
         page.__originModelOriginalFetch=original;
-        page.__originModelStats=stats;
+        // Marionette's later commands use a different JS sandbox. Return a
+        // primitive JSON snapshot through an exported page function instead
+        // of exposing a cross-compartment mutable object to that sandbox.
+        const snapshot=()=>JSON.stringify(stats);
+        if(typeof exportFunction==='function')
+            exportFunction(snapshot,page,{defineAs:'__originModelStatsJson'});
+        else page.__originModelStatsJson=snapshot;
         const counted=async(input,options)=>{
             const url=String(input?.url||input);
             if(/^https?:/i.test(url)&&!expected.has(url)){
@@ -372,8 +378,9 @@ def run_mediapipe_origin_ui_acceptance(driver, manifest):
             const status=await store.status(manifest);
             const verified=await store.verifyAndPruneCorrupt(manifest);
             const page=window.wrappedJSObject||window;
-            const stats=page.__originModelStats;
-            if(!stats)throw Error('Lost real Firefox page transfer counters');
+            if(typeof page.__originModelStatsJson!=='function')
+                throw Error('Lost real Firefox page transfer counters');
+            const stats=JSON.parse(page.__originModelStatsJson());
             const urls=manifest.assets.map(a=>a.url);
             const expectedBytes=manifest.assets.reduce((n,a)=>n+a.bytes,0);
             const receivedBytes=urls.reduce(
