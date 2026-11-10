@@ -590,6 +590,13 @@ def _open_persistent_firefox(profile):
     options.set_preference("xpinstall.signatures.required", False)
     browser = webdriver.Firefox(options=options)
     browser.set_script_timeout(250)
+    # Geckodriver exposes the effective on-disk profile. Refuse a silently
+    # cloned/temporary profile: it would make the restart test meaningless.
+    effective_profile = browser.capabilities.get("moz:profile")
+    if (not effective_profile or
+            Path(effective_profile).resolve() != Path(profile).resolve()):
+        browser.quit()
+        raise RuntimeError("Firefox did not reuse the requested persistent profile")
     if not isinstance(browser.capabilities.get("moz:processID"), int):
         browser.quit()
         raise RuntimeError("Firefox parent-process PID unavailable")
