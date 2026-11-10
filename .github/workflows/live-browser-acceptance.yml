@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       acceptance_scope:
-        description: 'Select full inference, dictionary UI, or isolated Chromium official-origin model install'
+        description: 'Select full inference, dictionary UI, or manual official-origin browser model install'
         type: choice
         required: true
         default: full
@@ -27,6 +27,7 @@ on:
           - chromium-dictionary
           - firefox-dictionary
           - firefox-mediapipe-origin
+          - firefox-onnx-origin
           - chromium-mediapipe-origin
           - chromium-onnx-origin
 
@@ -36,7 +37,7 @@ permissions:
 jobs:
   chromium-model-inference:
     name: Real ONNX and MediaPipe Chromium MV3 synthesis
-    if: ${{ inputs.acceptance_scope != 'firefox-dictionary' && inputs.acceptance_scope != 'firefox-mediapipe-origin' }}
+    if: ${{ inputs.acceptance_scope != 'firefox-dictionary' && inputs.acceptance_scope != 'firefox-mediapipe-origin' && inputs.acceptance_scope != 'firefox-onnx-origin' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -163,9 +164,10 @@ jobs:
           path: dist/runtime-acceptance/firefox.json
           if-no-files-found: ignore
 
-  firefox-mediapipe-origin:
-    name: Firefox MV3 MediaPipe CPU official-host download and offline synthesis
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.acceptance_scope == 'firefox-mediapipe-origin' }}
+
+  firefox-model-origin:
+    name: Firefox MV3 official-host download, integrity and offline synthesis
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.acceptance_scope == 'firefox-mediapipe-origin' || inputs.acceptance_scope == 'firefox-onnx-origin') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -191,11 +193,11 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/firefox-selenium"
           "$RUNNER_TEMP/firefox-selenium/bin/python" -m pip install --disable-pip-version-check selenium==4.38.0
-      - name: Execute real Firefox MediaPipe origin-download acceptance
+      - name: Execute real Firefox model origin-download acceptance
         env:
           KOKORO_LIVE_DOWNLOAD: '1'
           KOKORO_FIREFOX_ORIGIN_DOWNLOAD: '1'
-          KOKORO_FIREFOX_PROVIDER: mediapipe
+          KOKORO_FIREFOX_PROVIDER: ${{ inputs.acceptance_scope == 'firefox-onnx-origin' && 'onnx' || 'mediapipe' }}
           FIREFOX_BINARY: ${{ steps.firefox.outputs.firefox-path }}
           MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: '1'
         run: |
@@ -204,6 +206,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: kokoro-live-firefox-mediapipe-origin-report
+          name: kokoro-live-${{ inputs.acceptance_scope }}-report
           path: dist/runtime-acceptance/firefox.json
           if-no-files-found: ignore
