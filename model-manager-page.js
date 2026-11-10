@@ -21,6 +21,7 @@ function entryManifest(entry) {
 }
 const engineByKey = new Map();
 const inFlightDownloads = new Map();
+const inFlightVerifications = new Map();
 const lastAudioUrl = new Map();
 const modelRows = new Map();
 let activeModelOperation = null; // one mutating/inference operation per manager page
@@ -183,7 +184,7 @@ function createModelRow(entry) {
     verify.textContent = 'Verify cached data';
     verify.className = 'model-verify';
     verify.disabled = true;
-    verify.title = 'Reads cached model bytes and removes confirmed corrupt files; may use significant memory.';
+    verify.title = 'Reads cached SHA-256. Click again during verification to cancel.';
     const test = document.createElement('button');
     test.type = 'button';
     test.textContent = 'Test synthesized audio (3 runs)';
@@ -565,16 +566,39 @@ async function invalidateRuntimeFor(entry) {
     }
 }
 
+function verificationResultMessage(result) {
+    if (result.removedAssets) {
+        return 'Removed ' + result.removedAssets +
+            ' corrupted cached asset(s). Click Download to repair the model.';
+    }
+    if (result.missingAssets) {
+        return 'Cache verification found ' + result.missingAssets +
+            ' missing asset(s). Click Download to repair the model.';
+    }
+    return 'Cached model data verified: ' +
+        formatModelSize(result.verifiedBytes) + ' matches its pinned SHA-256 hashes.';
+}
+
 // Explicit, offline SHA-256 verification. A mismatch is repaired only by
 // evicting the affected cached asset; downloading it again always requires the
 // user's separate Download action. The exclusive cache lease also prevents
 // reading or deleting a model during local inference in another extension tab.
 async function verifyCachedData(entry, ui) {
+    const running = inFlightVerifications.get(entry.key);
+    if (running) {
+        running.abort();
+        ui.verify.disabled = true;
+        setMessage(ui.status, 'Cancelling cache verification…');
+        return;
+    }
     if (!beginModelOperation(entry, ui, 'verify')) return;
+    const controller = new AbortController();
+    inFlightVerifications.set(entry.key, controller);
     const priorChooseEnabled = !ui.choose.disabled;
     ui.download.disabled = true;
     ui.remove.disabled = true;
-    ui.verify.disabled = true;
+    ui.verify.disabled = false;
+    ui.verify.textContent = 'Cancel verification';
     ui.test.disabled = true;
     ui.choose.disabled = true;
     let removed = 0;
@@ -583,6 +607,7 @@ async function verifyCachedData(entry, ui) {
     setMessage(ui.status, 'Checking cached SHA-256 integrity. This may use substantial memory…');
     try {
         result = await cacheStore().verifyAndPruneCorrupt(entryManifest(entry), {
+            signal: controller.signal,
             onProgress: progress => {
                 removed = progress.removedAssets;
                 setMessage(ui.status, 'Verified ' + formatModelSize(progress.verifiedBytes) +
@@ -590,20 +615,17 @@ async function verifyCachedData(entry, ui) {
             },
         });
         removed = result.removedAssets;
-        if (removed) {
-            message = 'Removed ' + removed +
-                ' corrupted cached asset(s). Click Download to repair the model.';
-        } else if (result.missingAssets) {
-            message = 'Cache verification found ' + result.missingAssets +
-                ' missing asset(s). Click Download to repair the model.';
-        } else {
-            message = 'Cached model data verified: ' +
-                formatModelSize(result.verifiedBytes) + ' matches its pinned SHA-256 hashes.';
-        }
+        message = verificationResultMessage(result);
     } catch (error) {
-        message = 'Cache verification failed without automatic download: ' +
-            String(error.message || error);
+        message = controller.signal.aborted
+            ? 'Cache verification cancelled. No model data was downloaded.'
+            : 'Cache verification failed without automatic download: ' +
+                String(error.message || error);
     } finally {
+        inFlightVerifications.delete(entry.key);
+        ui.verify.textContent = 'Verify cached data';
+        ui.verify.disabled = true;
+        ui.busy = 'finalizing';
         if (removed) {
             try {
                 await invalidateRuntimeFor(entry);
@@ -773,6 +795,7 @@ if (page) {
         document.removeEventListener('visibilitychange', onVisible);
         for (const url of lastAudioUrl.values()) URL.revokeObjectURL(url);
         for (const controller of inFlightDownloads.values()) controller.abort();
+        for (const controller of inFlightVerifications.values()) controller.abort();
         for (const engine of engineByKey.values()) void engine.close();
     });
 }
