@@ -581,6 +581,69 @@ def run_model_origin_ui_acceptance(driver, manifest):
 
 
 
+def _open_persistent_firefox(profile):
+    options = Options()
+    options.binary_location = os.environ["FIREFOX_BINARY"]
+    options.add_argument("-headless")
+    options.add_argument("-profile")
+    options.add_argument(str(profile))
+    options.set_preference("xpinstall.signatures.required", False)
+    browser = webdriver.Firefox(options=options)
+    browser.set_script_timeout(250)
+    if not isinstance(browser.capabilities.get("moz:processID"), int):
+        browser.quit()
+        raise RuntimeError("Firefox parent-process PID unavailable")
+    return browser
+
+def _persistent_firefox_extension_origin(browser, addon_id):
+    browser.set_context("chrome")
+    try:
+        mapping = json.loads(browser.execute_script(
+            "return Services.prefs.getStringPref("
+            "'extensions.webextensions.uuids', '{}');"
+        ))
+        unsigned_allowed = browser.execute_script(
+            "return Services.prefs.getBoolPref('xpinstall.signatures.required');"
+        ) is False
+    finally:
+        browser.set_context("content")
+    if not unsigned_allowed:
+        raise RuntimeError("Firefox profile still enforces signed XPI files")
+    if not mapping.get(addon_id):
+        raise RuntimeError("Installed extension lacks a stable moz-extension UUID")
+    return "moz-extension://" + mapping[addon_id]
+
+
+def _pinned_firefox_handler(files, token, state):
+    class PinnedTransfer(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            url = urlsplit(self.path)
+            if (self.command != "GET" or
+                    parse_qs(url.query).get("token") != [token] or
+                    self.client_address[0] != "127.0.0.1" or
+                    not state["origin"] or
+                    (self.headers.get("Origin") and
+                     self.headers["Origin"] != state["origin"])):
+                self.send_error(403)
+                return
+            item = files.get(url.path.removeprefix("/"))
+            if not item:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", state["origin"])
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(item.stat().st_size))
+            self.end_headers()
+            with item.open("rb") as data:
+                while piece := data.read(1024 * 1024):
+                    self.wfile.write(piece)
+
+        def log_message(self, *args):
+            return
+    return PinnedTransfer
+
+
 def run_permanent_addon_restart_acceptance():
     """Manual-only real Firefox process restart using an installed XPI and profile.
 
@@ -614,38 +677,6 @@ def run_permanent_addon_restart_acceptance():
             encoding="utf-8",
         )
 
-        def start_browser():
-            options = Options()
-            options.binary_location = os.environ["FIREFOX_BINARY"]
-            options.add_argument("-headless")
-            options.add_argument("-profile")
-            options.add_argument(str(profile))
-            options.set_preference("xpinstall.signatures.required", False)
-            browser = webdriver.Firefox(options=options)
-            browser.set_script_timeout(250)
-            if not isinstance(browser.capabilities.get("moz:processID"), int):
-                browser.quit()
-                raise RuntimeError("Firefox parent-process PID unavailable")
-            return browser
-
-        def extension_origin(browser, addon_id):
-            browser.set_context("chrome")
-            try:
-                mapping = json.loads(browser.execute_script(
-                    "return Services.prefs.getStringPref("
-                    "'extensions.webextensions.uuids', '{}');"
-                ))
-                unsigned_allowed = browser.execute_script(
-                    "return Services.prefs.getBoolPref('xpinstall.signatures.required');"
-                ) is False
-            finally:
-                browser.set_context("content")
-            if not unsigned_allowed:
-                raise RuntimeError("Firefox profile still enforces signed XPI files")
-            if not mapping.get(addon_id):
-                raise RuntimeError("Installed extension lacks a stable moz-extension UUID")
-            return "moz-extension://" + mapping[addon_id]
-
         try:
             manifests = pinned_manifest("onnx")
             files = {}
@@ -665,43 +696,17 @@ def run_permanent_addon_restart_acceptance():
             state = {"origin": None}
             token = secrets.token_hex(32)
 
-            class PinnedTransfer(http.server.BaseHTTPRequestHandler):
-                def do_GET(self):
-                    url = urlsplit(self.path)
-                    if (self.command != "GET" or
-                            parse_qs(url.query).get("token") != [token] or
-                            self.client_address[0] != "127.0.0.1" or
-                            not state["origin"] or
-                            (self.headers.get("Origin") and
-                             self.headers["Origin"] != state["origin"])):
-                        self.send_error(403)
-                        return
-                    item = files.get(url.path.removeprefix("/"))
-                    if not item:
-                        self.send_error(404)
-                        return
-                    self.send_response(200)
-                    self.send_header("Access-Control-Allow-Origin", state["origin"])
-                    self.send_header("Content-Type", "application/octet-stream")
-                    self.send_header("Content-Length", str(item.stat().st_size))
-                    self.end_headers()
-                    with item.open("rb") as data:
-                        while piece := data.read(1024 * 1024):
-                            self.wfile.write(piece)
-
-                def log_message(self, *args):
-                    return
-
-            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), PinnedTransfer)
+            server = http.server.ThreadingHTTPServer(
+                ("127.0.0.1", 0), _pinned_firefox_handler(files, token, state))
             threading.Thread(target=server.serve_forever, daemon=True).start()
 
-            driver = start_browser()
+            driver = _open_persistent_firefox(profile)
             first_pid = driver.capabilities["moz:processID"]
             # Explicitly persistent: temporary=True would be unloaded on exit.
             addon_id = driver.install_addon(str(package), temporary=False)
             if addon_id != gecko_id:
                 raise RuntimeError("Firefox permanent XPI ID disagrees with manifest")
-            state["origin"] = extension_origin(driver, addon_id)
+            state["origin"] = _persistent_firefox_extension_origin(driver, addon_id)
             initial_origin = state["origin"]
             driver.get(initial_origin + "/benchmark.html")
             WebDriverWait(driver, 30).until(
@@ -756,11 +761,11 @@ def run_permanent_addon_restart_acceptance():
             driver.quit()
             driver = None
 
-            driver = start_browser()
+            driver = _open_persistent_firefox(profile)
             second_pid = driver.capabilities["moz:processID"]
             if second_pid == first_pid:
                 raise RuntimeError("Firefox reused the previous parent-process PID")
-            persisted_origin = extension_origin(driver, addon_id)
+            persisted_origin = _persistent_firefox_extension_origin(driver, addon_id)
             if persisted_origin != initial_origin:
                 raise RuntimeError("Firefox changed extension UUID across process restart")
             driver.get(persisted_origin + "/benchmark.html")
