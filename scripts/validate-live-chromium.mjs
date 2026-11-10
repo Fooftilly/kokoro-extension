@@ -375,6 +375,12 @@ try {
     reopened.on('pageerror', error => errors.push(String(error)));
     try {
         await reopened.goto('chrome-extension://' + restartedId + '/benchmark.html');
+        // Prove the UI has observed the dictionary before deliberate eviction.
+        await reopened.waitForFunction(() => {
+            const row = document.querySelector('[data-variant="dictionary-english"]');
+            return row?.querySelector('.model-status')?.textContent?.includes('Installed') &&
+                row?.querySelector('.model-remove')?.disabled === false;
+        }, null, { timeout: 30000 });
         await context.setOffline(true);
         const persisted = await reopened.evaluate(async manifests => {
             const [{ ModelDataStore }, { dictionaryManifest }] = await Promise.all([
@@ -408,13 +414,14 @@ try {
             return { modelStatusRetained: manifests.length, dictionarySha256Retained: true,
                 simulatedEvictionDetected: true };
         }, variants);
-        // Require the real UI to observe eviction before external repair.
+        // Recheck uses an eviction-specific message for previously ready data.
         const dictionaryRow = reopened.locator('[data-variant="dictionary-english"]');
         const recheck = reopened.locator('#refreshModelCache');
         await recheck.click();
         await reopened.waitForFunction(() => {
             const row = document.querySelector('[data-variant="dictionary-english"]');
-            return row?.querySelector('.model-status')?.textContent?.includes('Not installed') &&
+            return row?.querySelector('.model-status')?.textContent
+                ?.includes('Cached model data is missing') &&
                 row?.querySelector('.model-remove')?.disabled === true &&
                 row?.querySelector('.model-download')?.disabled === false;
         }, null, { timeout: 30000 });

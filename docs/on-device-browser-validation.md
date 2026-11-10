@@ -107,10 +107,11 @@ weights without the explicit manual live-acceptance workflow.
 
 ## Real model-manager button acceptance (part of #55)
 
-Both opt-in live browser harnesses first click **Recheck installed
-models** with the dictionary deliberately evicted and require the real row
-to show **Not installed**. Only after this visible missing state do they
-explicitly repair the dictionary through the harness data-store API. A second
+Both opt-in live browser harnesses first require the UI to show **Installed**,
+then deliberately evict the dictionary and click **Recheck installed models**.
+The row must display **Cached model data is missing** with Remove disabled.
+Only after this visible transition do they explicitly repair the dictionary
+through the harness data-store API. A second
 Recheck must transition the row to **Installed**, after which the harness
 clicks the actual **Remove** button and confirms the row says Not installed
 with Download available and no dictionary bytes left in Cache Storage.

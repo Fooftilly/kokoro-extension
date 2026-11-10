@@ -231,6 +231,16 @@ def main():
             WebDriverWait(driver, 20).until(
                 lambda d: d.execute_script("return Boolean(window.KokoroBenchmark)")
             )
+            # First require the fresh UI to observe the retained dictionary.
+            WebDriverWait(driver, 30).until(
+                lambda d: "Installed" in d.find_element(
+                    By.CSS_SELECTOR,
+                    '[data-variant="dictionary-english"] .model-status'
+                ).text and d.find_element(
+                    By.CSS_SELECTOR,
+                    '[data-variant="dictionary-english"] .model-remove'
+                ).is_enabled()
+            )
             dictionary_reload_acceptance = driver.execute_async_script("""
                 const done=arguments[arguments.length-1];
                 (async()=>{
@@ -270,7 +280,7 @@ def main():
             row = '[data-variant="dictionary-english"]'
             driver.find_element(By.ID, "refreshModelCache").click()
             WebDriverWait(driver, 30).until(
-                lambda d: "Not installed" in
+                lambda d: "Cached model data is missing" in
                 d.find_element(By.CSS_SELECTOR, row + " .model-status").text
                 and not d.find_element(By.CSS_SELECTOR, row + " .model-remove").is_enabled()
                 and d.find_element(By.CSS_SELECTOR, row + " .model-download").is_enabled()
