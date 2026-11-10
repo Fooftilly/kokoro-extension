@@ -20,13 +20,14 @@ if (process.env.KOKORO_LIVE_DOWNLOAD !== '1' || !process.env.PLAYWRIGHT_MODULE_P
 // Test a single provider in isolation when diagnosing memory pressure. The
 // default still tests both providers and fails if either fails.
 const providerFilter = process.env.KOKORO_LIVE_PROVIDER || 'both';
-if (!['both', 'onnx', 'mediapipe'].includes(providerFilter)) {
-    throw Error('KOKORO_LIVE_PROVIDER must be both, onnx, or mediapipe');
+if (!['both', 'onnx', 'mediapipe', 'dictionary'].includes(providerFilter)) {
+    throw Error('KOKORO_LIVE_PROVIDER must be both, onnx, mediapipe, or dictionary');
 }
 const variants = [
-    ...(providerFilter === 'mediapipe' ? [] :
+    ...(providerFilter === 'mediapipe' || providerFilter === 'dictionary' ? [] :
         [dictionaryManifest(), manifestForVariant('onnx', 'q8')]),
-    ...(providerFilter === 'onnx' ? [] : [manifestForVariant('mediapipe', 'cpu')]),
+    ...(providerFilter === 'onnx' || providerFilter === 'dictionary' ? [] :
+        [manifestForVariant('mediapipe', 'cpu')]),
 ];
 const sourceDir = path.join(os.tmpdir(), 'kokoro-live-models');
 const resultsDir = path.resolve('dist/runtime-acceptance');
@@ -188,7 +189,9 @@ try {
         providerFilter,
         networkRequirement: 'offline during every local synthesis probe',
         cachePopulation: 'heavy weights preloaded from verified pinned bytes over authenticated loopback; dictionary official HTTPS verified and opt-in Chromium Download/Cancel/Retry UI exercised separately',
-        scope: 'Linux Chromium MV3 extension origin; no subjective audio-quality or complete download-manager acceptance',
+        scope: providerFilter === 'dictionary'
+            ? 'Chromium dictionary-only UI/Cache acceptance; no large speech models or audio synthesis'
+            : 'Linux Chromium MV3 extension origin; no subjective audio-quality or complete download-manager acceptance',
     }, null, 2));
     for (const manifest of variants) {
         const page = await context.newPage();

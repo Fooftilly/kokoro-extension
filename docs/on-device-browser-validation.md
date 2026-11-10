@@ -152,3 +152,20 @@ repeatable cancellation; the retry downloads the authentic pinned dictionary.
 Firefox Download/Cancel/Retry UI and real heavyweight model-host transfers
 remain separate gates. Browser native host-permission prompt behavior must be
 confirmed during actual run, not inferred from unit tests.
+
+### Lightweight manual execution
+
+For the Chromium dictionary-only UI path, dispatch the **Real Kokoro MV3 model
+acceptance** workflow with `acceptance_scope: chromium-dictionary`. This
+explicitly skips ONNX/MediaPipe weight downloads and both Firefox matrix jobs;
+it still packages the extension, runs Chromium preflight, verifies the real
+pinned dictionary URL and SHA-256, restarts its persistent browser profile,
+tests simulated eviction/recovery, and exercises the real Download/Cancel/Retry/
+Remove buttons. The normal `full` dispatch retains all heavy model-backed
+Chromium and Firefox acceptance jobs. Neither choice runs automatically on
+ordinary PRs or pushes to master.
+
+Direct local invocation can instead set `KOKORO_LIVE_PROVIDER=dictionary`
+alongside the existing explicit live-download flag and pinned Playwright
+module path. A dictionary-only pass is **not** evidence of offline TTS
+inference: the reported `providerFilter` and `scope` identify that limitation.
