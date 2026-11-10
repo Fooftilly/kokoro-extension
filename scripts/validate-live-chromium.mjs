@@ -88,8 +88,10 @@ function summarizedOriginRequest(url) {
 
 async function captureOfficialOriginDownloadState(page, selector, events) {
     let ui;
+    let watchdog;
     try {
-        ui = await page.evaluate(selector => {
+        ui = await Promise.race([
+            page.evaluate(selector => {
             const row = document.querySelector(selector);
             const status = row?.querySelector('.model-status');
             const progress = row?.querySelector('.model-download-progress');
@@ -120,9 +122,16 @@ async function captureOfficialOriginDownloadState(page, selector, events) {
                     unexpectedUrls: transfer.unexpectedUrls.map(scrub),
                 } : null,
             };
-        }, selector);
+            }, selector),
+            new Promise((_, reject) => {
+                watchdog = setTimeout(() => reject(Error(
+                    'UI diagnostic snapshot exceeded 5 seconds')), 5000);
+            }),
+        ]);
     } catch (error) {
         ui = { inspectionError: String(error) };
+    } finally {
+        clearTimeout(watchdog);
     }
     return { ui, networkEvents: [...events] };
 }
