@@ -408,6 +408,16 @@ try {
             return { modelStatusRetained: manifests.length, dictionarySha256Retained: true,
                 simulatedEvictionDetected: true };
         }, variants);
+        // Require the real UI to observe eviction before external repair.
+        const dictionaryRow = reopened.locator('[data-variant="dictionary-english"]');
+        const recheck = reopened.locator('#refreshModelCache');
+        await recheck.click();
+        await reopened.waitForFunction(() => {
+            const row = document.querySelector('[data-variant="dictionary-english"]');
+            return row?.querySelector('.model-status')?.textContent?.includes('Not installed') &&
+                row?.querySelector('.model-remove')?.disabled === true &&
+                row?.querySelector('.model-download')?.disabled === false;
+        }, null, { timeout: 30000 });
         // Restore network for an explicitly requested dictionary repair only.
         await context.setOffline(false);
         const repaired = await reopened.evaluate(async () => {
@@ -435,11 +445,23 @@ try {
         if (errors.length) {
             throw Error('Extension page errors after restart: ' + errors.join('; '));
         }
-        // Exercise real packaged-extension controls, not only the data-store
-        // API. Refresh the UI after the harness's explicit dictionary repair.
-        const recheck = reopened.locator('#refreshModelCache');
+        // Instrument the actual window.fetch which cacheStore() binds inside
+        // model-manager Recheck and Remove handlers, after explicit repair.
+        await reopened.evaluate(() => {
+            const originalFetch = globalThis.fetch.bind(globalThis);
+            globalThis.__modelManagerAssetFetches = 0;
+            globalThis.fetch = (...args) => {
+                const url = String(args[0]?.url || args[0]);
+                if (url.startsWith('https://huggingface.co/') ||
+                    url.startsWith('https://raw.githubusercontent.com/')) {
+                    globalThis.__modelManagerAssetFetches++;
+                    throw Error('Unexpected model fetch by manager UI');
+                }
+                return originalFetch(...args);
+            };
+        });
+        // This must transition from Not installed to Installed via Recheck.
         await recheck.click();
-        const dictionaryRow = reopened.locator('[data-variant="dictionary-english"]');
         await reopened.waitForFunction(() => {
             const row = document.querySelector('[data-variant="dictionary-english"]');
             return row?.querySelector('.model-status')?.textContent?.includes('Installed') &&
@@ -461,10 +483,14 @@ try {
                 fetchImpl: () => { throw Error('Removal unexpectedly fetched model data'); },
                 responseClass: Response, streamClass: TransformStream,
             });
-            return store.status(dictionaryManifest());
+            return {
+                ...(await store.status(dictionaryManifest())),
+                pageModelFetches: globalThis.__modelManagerAssetFetches,
+            };
         });
-        if (afterUiRemove.ready || afterUiRemove.storedBytes !== 0) {
-            throw Error('Model-manager Remove left dictionary bytes installed');
+        if (afterUiRemove.ready || afterUiRemove.storedBytes !== 0 ||
+            afterUiRemove.pageModelFetches !== 0) {
+            throw Error('Manager cache or fetch assertion failed: ' + JSON.stringify(afterUiRemove));
         }
         if (errors.length) {
             throw Error('Extension page errors after restart: ' + errors.join('; '));
@@ -472,6 +498,7 @@ try {
         browserRestartAcceptance = { success: true, browserProcessRestarted: true,
             networkDisabledDuringPersistenceChecks: true,
             modelManagerRecheckClicked: true, modelManagerRemoveClicked: true,
+            uiEvictionObservedBeforeRepair: true, noUiModelFetches: true,
             uiRemovalVerifiedInCache: true, ...persisted, ...repaired };
         await saveReport();
     } catch (error) {
