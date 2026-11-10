@@ -106,6 +106,163 @@ def verified_assets(manifest, directory):
     return files
 
 
+
+def run_dictionary_ui_acceptance(driver):
+    """Exercise genuine Firefox extension Download/Cancel/Retry/Remove UI."""
+    row = '[data-variant="dictionary-english"]'
+    driver.refresh()  # Remove the earlier page-window no-fetch assertion guard.
+    WebDriverWait(driver, 30).until(
+        lambda d: "Not installed" in
+        d.find_element(By.CSS_SELECTOR, row + " .model-status").text
+        and d.find_element(By.CSS_SELECTOR, row + " .model-download").is_enabled()
+    )
+    button = row + " .model-download"
+    # Each Marionette script has its own sandbox: install the fetch hook on the
+    # actual extension page and export the callback into that window.
+    driver.execute_script("""
+        const page=window.wrappedJSObject||window;
+        const original=page.fetch;
+        if(typeof original!=='function')throw Error('Missing page fetch');
+        page.__dictionaryUiOriginalFetch=original;
+        page.__dictionaryUiStalledFetches=0;
+        const stall=(input,options)=>{
+            const url=String(input?.url||input);
+            if(!url.includes('/cmudict.dict'))return original.apply(page,[input,options]);
+            page.__dictionaryUiStalledFetches++;
+            return new Promise((resolve,reject)=>{
+                const cancel=()=>reject(new DOMException('Download aborted','AbortError'));
+                if(options?.signal?.aborted)cancel();
+                else options?.signal?.addEventListener('abort',cancel,{once:true});
+            });
+        };
+        if(typeof exportFunction==='function')
+            exportFunction(stall,page,{defineAs:'fetch'});
+        else page.fetch=stall;
+    """)
+    driver.find_element(By.CSS_SELECTOR, button).click()
+    try:
+        WebDriverWait(driver, 45).until(
+            lambda d: d.find_element(By.CSS_SELECTOR, button).text == "Cancel download"
+            and d.find_element(By.CSS_SELECTOR, button).is_enabled()
+            and d.execute_script(
+                "return (window.wrappedJSObject||window).__dictionaryUiStalledFetches===1"
+            )
+        )
+    except Exception as exc:
+        status = driver.find_element(By.CSS_SELECTOR, row + " .model-status").text
+        raise RuntimeError("Firefox UI did not start the abortable pinned fetch; "
+                           "check headless optional host permission prompt: " + status) from exc
+    driver.find_element(By.CSS_SELECTOR, button).click()
+    WebDriverWait(driver, 30).until(
+        lambda d: "Download cancelled" in
+        d.find_element(By.CSS_SELECTOR, row + " .model-status").text
+        and d.find_element(By.CSS_SELECTOR, button).is_enabled()
+        and d.find_element(By.CSS_SELECTOR, button).text.startswith("Download")
+        and d.find_element(By.CSS_SELECTOR, row + " .model-download-progress")
+        .get_attribute("hidden") is not None
+    )
+    cancelled = driver.execute_async_script("""
+        const done=arguments[arguments.length-1];
+        (async()=>{
+            const [{ModelDataStore},{dictionaryManifest}]=await Promise.all([
+                import('./model-data-store.js'),import('./model-catalog.js')]);
+            const store=new ModelDataStore({
+                origin:browser.runtime.getURL('/'),cacheStorage:caches,
+                fetchImpl:()=>{throw Error('Cancelled download unexpectedly fetched')},
+                responseClass:Response,streamClass:TransformStream});
+            return {...(await store.status(dictionaryManifest())),
+                stalledFetches:(window.wrappedJSObject||window).__dictionaryUiStalledFetches};
+        })().then(done,e=>done({error:String(e)}));
+    """)
+    if (cancelled.get("ready") or cancelled.get("storedBytes") != 0 or
+            cancelled.get("stalledFetches") != 1):
+        raise RuntimeError("Firefox Cancel left cached bytes or skipped real fetch: " +
+                           str(cancelled))
+    # Only the explicit second click is permitted to fetch the actual HTTPS
+    # dictionary; preserve its count on the real page across Marionette calls.
+    driver.execute_script("""
+        const page=window.wrappedJSObject||window;
+        const original=page.__dictionaryUiOriginalFetch;
+        if(typeof original!=='function')throw Error('Missing native fetch');
+        page.__dictionaryUiRealFetches=0;
+        const tracked=(input,options)=>{
+            const url=String(input?.url||input);
+            if(url.includes('/cmudict.dict'))page.__dictionaryUiRealFetches++;
+            return original.apply(page,[input,options]);
+        };
+        if(typeof exportFunction==='function')
+            exportFunction(tracked,page,{defineAs:'fetch'});
+        else page.fetch=tracked;
+    """)
+    driver.find_element(By.CSS_SELECTOR, button).click()
+    WebDriverWait(driver, 120).until(
+        lambda d: "Installed" in
+        d.find_element(By.CSS_SELECTOR, row + " .model-status").text
+        and d.find_element(By.CSS_SELECTOR, row + " .model-remove").is_enabled()
+        and d.find_element(By.CSS_SELECTOR, row + " .model-download-progress")
+        .get_attribute("value") == "100"
+    )
+    installed = driver.execute_async_script("""
+        const done=arguments[arguments.length-1];
+        (async()=>{
+            const [{ModelDataStore},{dictionaryManifest}]=await Promise.all([
+                import('./model-data-store.js'),import('./model-catalog.js')]);
+            const manifest=dictionaryManifest();
+            const store=new ModelDataStore({
+                origin:browser.runtime.getURL('/'),cacheStorage:caches,
+                fetchImpl:()=>{throw Error('Post-download verification fetched data')},
+                responseClass:Response,streamClass:TransformStream});
+            const status=await store.status(manifest);
+            const verified=await store.verifyAndPruneCorrupt(manifest);
+            const permission=await browser.permissions.contains({
+                origins:[new URL(manifest.assets[0].url).origin+'/*']});
+            return {status,verified,permission,
+                actualHostFetches:(window.wrappedJSObject||window).__dictionaryUiRealFetches};
+        })().then(done,e=>done({error:String(e)}));
+    """)
+    status = installed.get("status") or {}
+    verified = installed.get("verified") or {}
+    if (not installed.get("permission") or installed.get("actualHostFetches") != 1 or
+            not status.get("ready") or status.get("storedBytes") != status.get("totalBytes") or
+            not verified.get("ready") or verified.get("removedAssets") != 0):
+        raise RuntimeError("Firefox UI retry permission/fetch/SHA-256 failed: " + str(installed))
+    driver.find_element(By.CSS_SELECTOR, row + " .model-remove").click()
+    WebDriverWait(driver, 30).until(
+        lambda d: "Not installed" in
+        d.find_element(By.CSS_SELECTOR, row + " .model-status").text
+        and not d.find_element(By.CSS_SELECTOR, row + " .model-remove").is_enabled()
+        and d.find_element(By.CSS_SELECTOR, button).is_enabled()
+    )
+    removed = driver.execute_async_script("""
+        const done=arguments[arguments.length-1];
+        (async()=>{
+            const [{ModelDataStore},{dictionaryManifest}]=await Promise.all([
+                import('./model-data-store.js'),import('./model-catalog.js')]);
+            const store=new ModelDataStore({
+                origin:browser.runtime.getURL('/'),cacheStorage:caches,
+                fetchImpl:()=>{throw Error('Removal unexpectedly fetched data')},
+                responseClass:Response,streamClass:TransformStream});
+            return store.status(dictionaryManifest());
+        })().then(done,e=>done({error:String(e)}));
+    """)
+    if removed.get("ready") or removed.get("storedBytes") != 0 or removed.get("error"):
+        raise RuntimeError("Firefox UI Remove left dictionary data: " + str(removed))
+    driver.execute_script("""
+        const page=window.wrappedJSObject||window;
+        if(typeof page.__dictionaryUiOriginalFetch!=='function')
+            throw Error('Lost page native fetch');
+        page.fetch=page.__dictionaryUiOriginalFetch;
+        delete page.__dictionaryUiOriginalFetch;
+    """)
+    return {"success": True, "browser": "firefox",
+            "cancelledStalledDownload": True, "cacheEmptyAfterCancel": True,
+            "realOfficialHttpsRetryFetches": installed["actualHostFetches"],
+            "narrowHostPermissionGranted": installed["permission"],
+            "fullPinnedBytes": status["totalBytes"],
+            "sha256VerifiedAfterUiRetry": True,
+            "uiProgressReached100": True, "uiRemoveClearedCache": True}
+
+
 def main():
     if os.environ.get("KOKORO_LIVE_DOWNLOAD") != "1":
         raise RuntimeError("Explicit model download opt-in is required")
