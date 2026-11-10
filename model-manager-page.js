@@ -566,6 +566,19 @@ async function invalidateRuntimeFor(entry) {
     }
 }
 
+function verificationResultMessage(result) {
+    if (result.removedAssets) {
+        return 'Removed ' + result.removedAssets +
+            ' corrupted cached asset(s). Click Download to repair the model.';
+    }
+    if (result.missingAssets) {
+        return 'Cache verification found ' + result.missingAssets +
+            ' missing asset(s). Click Download to repair the model.';
+    }
+    return 'Cached model data verified: ' +
+        formatModelSize(result.verifiedBytes) + ' matches its pinned SHA-256 hashes.';
+}
+
 // Explicit, offline SHA-256 verification. A mismatch is repaired only by
 // evicting the affected cached asset; downloading it again always requires the
 // user's separate Download action. The exclusive cache lease also prevents
@@ -602,16 +615,7 @@ async function verifyCachedData(entry, ui) {
             },
         });
         removed = result.removedAssets;
-        if (removed) {
-            message = 'Removed ' + removed +
-                ' corrupted cached asset(s). Click Download to repair the model.';
-        } else if (result.missingAssets) {
-            message = 'Cache verification found ' + result.missingAssets +
-                ' missing asset(s). Click Download to repair the model.';
-        } else {
-            message = 'Cached model data verified: ' +
-                formatModelSize(result.verifiedBytes) + ' matches its pinned SHA-256 hashes.';
-        }
+        message = verificationResultMessage(result);
     } catch (error) {
         message = controller.signal.aborted
             ? 'Cache verification cancelled. No model data was downloaded.'
