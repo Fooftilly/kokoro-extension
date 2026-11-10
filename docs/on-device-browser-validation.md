@@ -445,7 +445,7 @@ is injected by Selenium **only during the manual acceptance**; it does not
 ship in the add-on. The fixtures use deterministic, high-entropy *synthetic*
 bytes with pinned official-URL shapes and independently computed SHA-256.
 The 16-KiB dictionary is stored as an independent provider. An ONNX-shaped
-manifest has a 96-KiB first asset and a 5-MiB second asset. There are **no**
+manifest has a 96-KiB first asset and a 16-MiB second asset (larger than the deliberately constrained 8-MiB global storage cap). There are **no**
 external model fetches, real weights, production permissions or speech
 inputs in this test.
 
@@ -453,7 +453,9 @@ Firefox's Gecko QuotaManager preference
 `dom.quotaManager.temporaryStorage.fixedLimit` accepts a global temporary
 storage limit **in KiB**. The first Firefox process sets an 8-MiB global
 limit. The harness verifies the actual parent-process preference and
-`navigator.storage.estimate()` values, explicitly installs the separate
+records `navigator.storage.estimate()` for diagnostics. That estimate is an
+**origin-specific** quota and must not be compared with Firefox's global
+QuotaManager fixed limit. The harness explicitly installs the separate
 dictionary, then calls `ModelDataStore.install()` with both synthetic
 model assets. A passing limited phase requires Firefox's **real Cache
 Storage/QuotaManager** to reject the large second-asset write with a
@@ -467,8 +469,9 @@ profile* and installed XPI, resets the limit to 128 MiB, verifies the
 actual preference and extension identity, disables browser networking,
 and runs an **explicit** second install. It must reuse the first verified
 asset and fetch **only the absent synthetic voice**, verify both assets
-and the dictionary, then remove only the selected model. The browser's
-reported quota must increase across processes. The report is
+and the dictionary, then remove only the selected model. The browser's configured global quota preference must increase across
+processes; its per-origin `navigator.storage.estimate()` is recorded but
+need not change. The report is
 `dist/runtime-acceptance/firefox-quota.json`, uploaded independently of
 `firefox.json`.
 
@@ -490,3 +493,7 @@ Developer Edition unsigned-addon behavior is not proof of signed Release
 Firefox installation or profile persistence. Full heavyweight model
 origin-download reports, Chrome quota execution, and any supportable
 browser-managed eviction acceptance remain separate issue #55 gates.
+
+### Firefox quota live failure (2026-11-10)
+
+[Workflow run 42895307873](https://github.com/Fooftilly/kokoro-extension/actions/runs/42895307873) failed during the limited-quota phase. The initial test used a 5-MiB voice fixture and a 96-KiB model fixture under an 8-MiB global cap, so the asset was **too small to guarantee quota pressure**. The original Selenium error wrapper additionally returned Firefox's JavaScript stack without its exception message, obscuring the failed assertion. This is a defect in the acceptance harness, not proven production cache corruption. The next test revision uses a 16-MiB high-entropy voice fixture, asserts it exceeds the global cap before running the write, removes invalid comparisons between per-origin estimates and the global pref, and retains the browser's full exception text. Re-run the manual scope after merging that change; do not treat the original failed run as quota acceptance.

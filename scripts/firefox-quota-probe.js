@@ -115,7 +115,7 @@ globalThis.runFirefoxQuotaProbe = async phase => {
             await makeAsset('onnx/model_quantized.onnx',
                 base + 'onnx/model_quantized.onnx', 98304, 0x13579bdf),
             await makeAsset('voices/af.bin',
-                base + 'voices/af.bin', 5242880, 0xabcdef17),
+                base + 'voices/af.bin', 16777216, 0xabcdef17),
         ],
     };
     validateModelManifest(dictionary);
@@ -139,6 +139,15 @@ globalThis.runFirefoxQuotaProbe = async phase => {
         modelBytes: onnx.assets.reduce((sum, asset) => sum + asset.bytes, 0),
         protectedBytes: dictionary.assets[0].bytes,
     };
+    // This *global* Firefox QuotaManager cap is different from the per-origin
+    // navigator.storage.estimate() quota. Require the synthetic installation
+    // to exceed the configured global cap before attempting quota enforcement.
+    const limitedGlobalCapBytes = 8192 * 1024;
+    summary.limitedGlobalCapBytes = limitedGlobalCapBytes;
+    if (phase === 'limited' && summary.modelBytes <= limitedGlobalCapBytes) {
+        throw Error('Quota fixture too small to exceed Firefox global cap: ' +
+            JSON.stringify(summary));
+    }
     const context = { store, dictionary, onnx, calls, summary };
     if (phase === 'limited') {
         await checkLimitedQuota(context);
