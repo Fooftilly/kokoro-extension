@@ -713,7 +713,15 @@ def run_firefox_quota_acceptance():
             with ZipFile(package) as archive:
                 expected_id = json.loads(archive.read("manifest.json"))[
                     "browser_specific_settings"]["gecko"]["id"]
-            probe = Path("scripts/firefox-quota-probe.js").read_text(encoding="utf-8")
+            probe_source = Path("scripts/firefox-quota-probe.js").read_text(encoding="utf-8")
+            # Selenium supplies `arguments` when it wraps execute_async_script;
+            # the standalone probe stays lint-clean and accepts just a phase.
+            probe = probe_source + """
+                const done=arguments[arguments.length-1];
+                globalThis.runFirefoxQuotaProbe(arguments[0])
+                    .then(report=>done({success:true,...report}),
+                        error=>done({success:false,error:String(error.stack||error)}));
+            """
             driver = _open_persistent_firefox(profile, quota_limit_kib=8192)
             first_pid = driver.capabilities["moz:processID"]
             if _firefox_actual_quota_pref(driver) != 8192:
