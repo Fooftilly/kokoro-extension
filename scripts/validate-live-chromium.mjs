@@ -1021,8 +1021,13 @@ try {
         }
 
     } catch (error) {
-        browserRestartAcceptance = { success: false, browserProcessRestarted: true,
-            error: String(error) };
+        // A later dictionary UI failure must not overwrite a *passing*,
+        // previously saved browser-restart/cache-persistence verification.
+        // The dictionary UI reports its own failure independently above.
+        if (!browserRestartAcceptance?.success) {
+            browserRestartAcceptance = { success: false, browserProcessRestarted: true,
+                error: String(error) };
+        }
         await saveReport();
         throw error;
     } finally {
