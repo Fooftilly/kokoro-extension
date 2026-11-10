@@ -96,6 +96,14 @@ async function captureOfficialOriginDownloadState(page, selector, events) {
             const button = row?.querySelector('.model-download');
             const warning = row?.querySelector('.model-storage-warning');
             const transfer = globalThis.__officialModelTransfer;
+            const scrub = url => {
+                try {
+                    const parsed = new URL(url);
+                    return parsed.origin + parsed.pathname.slice(0, 180);
+                } catch {
+                    return '[unparseable URL]';
+                }
+            };
             return {
                 rowFound: !!row,
                 status: status?.textContent || null,
@@ -105,10 +113,11 @@ async function captureOfficialOriginDownloadState(page, selector, events) {
                 buttonDisabled: button?.disabled ?? null,
                 warning: warning && !warning.hidden ? warning.textContent : null,
                 transfer: transfer ? {
-                    requests: [...transfer.requests],
-                    receivedBytesByUrl: { ...transfer.bytesByUrl },
-                    completedUrls: [...transfer.completedUrls],
-                    unexpectedUrls: [...transfer.unexpectedUrls],
+                    requests: transfer.requests.map(scrub),
+                    receivedBytesByUrl: Object.fromEntries(Object.entries(
+                        transfer.bytesByUrl).map(([url, bytes]) => [scrub(url), bytes])),
+                    completedUrls: transfer.completedUrls.map(scrub),
+                    unexpectedUrls: transfer.unexpectedUrls.map(scrub),
                 } : null,
             };
         }, selector);
