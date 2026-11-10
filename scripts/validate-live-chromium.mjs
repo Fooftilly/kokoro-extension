@@ -219,7 +219,7 @@ async function downloadModelFromOfficialOrigin(page, manifest) {
     }));
     page.on('requestfinished', request => record('finished', request));
     page.on('requestfailed', request => record('failed', request, {
-        failure: request.failure()?.errorText || null,
+        failure: request.failure() || null,
     }));
     const button = page.locator(rowSelector + ' .model-download');
     await button.click();
