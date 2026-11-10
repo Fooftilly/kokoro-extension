@@ -158,13 +158,11 @@ try {
             if (networkFetches !== 1) {
                 throw Error('Checksum-matching retry made an unnecessary network request');
             }
-            await store.remove(manifest);
-            if ((await store.status(manifest)).ready) {
-                throw Error('Dictionary remained installed after removal');
-            }
+            // Keep verified bytes in extension storage for a real browser
+            // process restart. The restart probe will delete/repair/remove them.
             return { success: true, provider: 'dictionary', byteCount: reportedBytes,
                 directOfficialHttpsFetches: networkFetches, verifiedSha256: true,
-                cachedRetryWithoutFetch: true, explicitRemoval: true };
+                cachedRetryWithoutFetch: true, retainedForRestart: true };
         } catch (error) {
             return { success: false, error: String(error) };
         }
@@ -181,9 +179,10 @@ try {
     // Storage persistent across pages so the test still uses real cached data.
     await preflightPage.close();
     const results = [];
+    let browserRestartAcceptance = null;
     const saveReport = () => writeFile(path.join(resultsDir, 'report.json'), JSON.stringify({
         testedAt: new Date().toISOString(), browser: preflight.browser, preflight,
-        dictionaryCacheAcceptance, results,
+        dictionaryCacheAcceptance, browserRestartAcceptance, results,
         providerFilter,
         networkRequirement: 'offline during every local synthesis probe',
         cachePopulation: 'model weights preloaded from verified pinned files over authenticated loopback; dictionary separately tested using real pinned HTTPS CORS/SRI; user-facing Download button not exercised',
@@ -356,6 +355,101 @@ try {
     if (errors.length) throw Error('Extension errors: ' + errors.join('; '));
     if (results.some(result => !result.success)) {
         throw Error('One or more actual model integrations failed: see attached report.json');
+    }
+
+    // The persistent Chromium profile is reused across an actual browser
+    // process shutdown/startup. No network model re-download may be needed.
+    await context.close();
+    context = null;
+    context = await chromium.launchPersistentContext(path.join(sourceDir, 'profile'), {
+        channel: 'chromium', headless: true,
+        args: ['--disable-extensions-except=' + extension, '--load-extension=' + extension],
+    });
+    const restartedWorker = context.serviceWorkers()[0] ||
+        await context.waitForEvent('serviceworker', { timeout: 30000 });
+    const restartedId = new URL(restartedWorker.url()).hostname;
+    if (restartedId !== extensionId) {
+        throw Error('Chromium extension identity changed across browser restart');
+    }
+    const reopened = await context.newPage();
+    reopened.on('pageerror', error => errors.push(String(error)));
+    try {
+        await reopened.goto('chrome-extension://' + restartedId + '/benchmark.html');
+        await context.setOffline(true);
+        const persisted = await reopened.evaluate(async manifests => {
+            const [{ ModelDataStore }, { dictionaryManifest }] = await Promise.all([
+                import('./model-data-store.js'), import('./model-catalog.js'),
+            ]);
+            if (navigator.onLine !== false) throw Error('Browser is not offline after restart');
+            const store = new ModelDataStore({
+                origin: chrome.runtime.getURL('/'), cacheStorage: caches,
+                fetchImpl: () => { throw Error('Unexpected fetch while testing persisted cache'); },
+                responseClass: Response, streamClass: TransformStream,
+            });
+            for (const m of manifests) {
+                // Metadata-only: does not claim full weight SHA-256 validation.
+                if (!(await store.status(m)).ready) {
+                    throw Error('Model cache missing after Chromium restart: ' +
+                        m.provider + '/' + m.variant);
+                }
+            }
+            const dictionary = dictionaryManifest();
+            const actual = await store.verifyAndPruneCorrupt(dictionary);
+            if (!actual.ready || actual.removedAssets || actual.missingAssets) {
+                throw Error('Dictionary failed offline SHA-256 verification after restart');
+            }
+            const cache = await caches.open('kokoro-model-data-v1');
+            if (!await cache.delete(store.key(dictionary, dictionary.assets[0]))) {
+                throw Error('Unable to simulate dictionary cache eviction');
+            }
+            if ((await store.status(dictionary)).ready) {
+                throw Error('Evicted dictionary still reported installed');
+            }
+            return { modelStatusRetained: manifests.length, dictionarySha256Retained: true,
+                simulatedEvictionDetected: true };
+        }, variants);
+        // Restore network for an explicitly requested dictionary repair only.
+        await context.setOffline(false);
+        const repaired = await reopened.evaluate(async () => {
+            const [{ ModelDataStore }, { dictionaryManifest }] = await Promise.all([
+                import('./model-data-store.js'), import('./model-catalog.js'),
+            ]);
+            const manifest = dictionaryManifest();
+            let fetches = 0;
+            const store = new ModelDataStore({
+                origin: chrome.runtime.getURL('/'), cacheStorage: caches,
+                fetchImpl: (...args) => { fetches++; return fetch(...args); },
+                responseClass: Response, streamClass: TransformStream,
+            });
+            if ((await store.status(manifest)).ready || fetches) {
+                throw Error('Eviction unexpectedly repaired itself');
+            }
+            await store.install(manifest); // Only the harness explicitly requests repair.
+            const verified = await store.verifyAndPruneCorrupt(manifest);
+            if (fetches !== 1 || !verified.ready || verified.removedAssets) {
+                throw Error('Explicit post-eviction repair did not restore pinned bytes');
+            }
+            await store.remove(manifest);
+            if ((await store.status(manifest)).ready) {
+                throw Error('Dictionary cache remained after explicit Remove');
+            }
+            return { explicitRepairFetches: fetches, repairedSha256: true,
+                explicitRemoval: true };
+        });
+        if (errors.length) {
+            throw Error('Extension page errors after restart: ' + errors.join('; '));
+        }
+        browserRestartAcceptance = { success: true, browserProcessRestarted: true,
+            networkDisabledDuringPersistenceChecks: true, ...persisted, ...repaired };
+        await saveReport();
+    } catch (error) {
+        browserRestartAcceptance = { success: false, browserProcessRestarted: true,
+            error: String(error) };
+        await saveReport();
+        throw error;
+    } finally {
+        await context.setOffline(false);
+        if (!reopened.isClosed()) await reopened.close();
     }
 } finally {
     if (context) await context.close();

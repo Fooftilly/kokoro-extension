@@ -50,8 +50,10 @@ does **not** run on ordinary master pushes or PRs because the live models are
 large. CI only syntax-checks the harnesses. The tests still use a runner-side
 authenticated loopback transfer of pinned model bytes: they **do not** yet
 exercise the actual Download/Cancel/Retry/Remove UI, upstream fetch CORS/SRI,
-cache persistence after a browser restart, storage eviction, browser quota,
-or user-perceived audio quality. Those remain separate #55 acceptance gates.
+real Firefox browser-restart persistence, browser-managed storage eviction,
+quota behavior, or user-perceived audio quality. Those remain separate #55
+acceptance gates; the Chromium restart test below is manual-only and has
+not yet been executed.
 
 
 ## Direct pinned-asset browser download smoke test (#55)
@@ -68,5 +70,36 @@ the normal heavy-model cache-preload/offline-inference stages.
 This validates the data-store API in packaged browser contexts, not user
 gestures or the model-manager Download/Remove controls. Live workflow
 execution remains necessary; ordinary PR CI only syntax-checks these harnesses.
-Browser restarts, cancellation, quota, eviction, full model downloads via
-official host permissions, and user-facing progress remain outstanding.
+The new opt-in tests cover a Chromium process restart and page reload in
+Firefox, plus simulated dictionary eviction. Genuine Firefox process restart,
+browser-managed quota eviction, full model downloads through official host
+permissions, cancellation UI, and user-facing progress still require acceptance.
+
+
+## Persistence and simulated eviction acceptance (#55)
+
+The manual-only Chromium harness now keeps a verified official dictionary in
+Cache Storage until it shuts down the **actual Chromium browser process** and
+starts a new persistent context using the same profile and unpacked extension.
+With network access disabled, it verifies the extension ID did not change,
+checks that all previously populated model entries are still present (fast
+metadata-only status), and verifies the dictionary's actual SHA-256. It then
+simulates storage eviction of the dictionary, checks that missing data is
+detected without any automatic network access, explicitly re-downloads and
+verifies only that dictionary, and finally removes it. The result is recorded
+as `browserRestartAcceptance` in the report. Model weight byte-for-byte
+integrity after restart is **not** established by these metadata-only checks.
+
+Firefox's live harness uses a **temporary** add-on, which is not retained
+across browser-process restart. It therefore verifies the dictionary after
+reloading the extension page within the same Firefox process, then exercises
+the same simulated eviction/explicit SHA-256 repair/removal sequence. It reports
+`dictionaryReloadAcceptance.browserProcessRestarted: false` to avoid conflating
+page reload with a true restart. Genuine Firefox browser-restart persistence,
+model-manager UI interactions, actual browser quota eviction, and full-model
+direct host-permission downloads still need their own acceptance runs.
+
+The cache-eviction step deletes a known test entry deliberately; this checks
+recovery logic but **does not** simulate the browser's automatic quota-driven
+eviction heuristics. Neither script runs in normal PR CI or downloads real
+weights without the explicit manual live-acceptance workflow.
