@@ -169,3 +169,25 @@ Direct local invocation can instead set `KOKORO_LIVE_PROVIDER=dictionary`
 alongside the existing explicit live-download flag and pinned Playwright
 module path. A dictionary-only pass is **not** evidence of offline TTS
 inference: the reported `providerFilter` and `scope` identify that limitation.
+
+### Firefox dictionary Download/Cancel/Retry controls
+
+An explicit manual `acceptance_scope: firefox-dictionary` workflow dispatch
+packages a temporary Firefox extension and runs only pinned CMUdict smoke
+checks; it skips Chrome and heavyweight ONNX/MediaPipe models. The Firefox
+harness also supports `KOKORO_FIREFOX_PROVIDER=dictionary` in local opt-in
+runs. After the existing pinned HTTPS integrity, page-reload persistence and
+eviction checks, it clicks the actual Download button, intercepts only the
+dictionary request with an abort-aware stalled fetch, clicks Cancel, checks
+that no bytes remain, and retries via the real HTTPS origin. It requires
+exactly one official-host fetch, narrow optional host permission, full
+manifest byte count in Cache Storage, SHA-256 integrity, 100% displayed
+progress, and real UI Remove clearing the cached entry.
+
+In Firefox the fetch guard is exported to the actual extension-page window
+so Selenium's per-call Marionette sandbox does not hide fetch counts. The
+report records `dictionaryUiDownloadAcceptance` separately, with
+`offlineAttempted: false` for dictionary-only runs. A headless optional
+host-permission dialog may block permission approval; the acceptance run
+must **fail visibly** rather than silently bypass user consent or claim
+success. Manual real-browser execution is still required.
