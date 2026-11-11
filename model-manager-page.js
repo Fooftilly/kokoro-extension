@@ -453,6 +453,25 @@ function currentEngine(entry) {
     return provider;
 }
 
+// ONNX IPA benchmark timings must not be mistaken for ordinary-text
+// readiness. A missing dictionary or out-of-vocabulary word leaves the
+// successful IPA sample playable, but does not enable q8 selection.
+async function testOnnxEnglishText(engine, text) {
+    if (!(await cacheStore().status(dictionaryManifest())).ready) {
+        return { ready: false, audio: null,
+            message: ' English text not tested: download the pronunciation dictionary first.' };
+    }
+    try {
+        const audio = await engine.synthesize(text);
+        return { ready: true, audio,
+            message: ' Experimental dictionary-backed English text audio is ready to listen to.' };
+    } catch (error) {
+        return { ready: false, audio: null,
+            message: ' English text synthesis failed: ' +
+                String(error.message || error) + '. Playing the IPA probe instead.' };
+    }
+}
+
 async function testEngine(entry, ui) {
     if (entry.provider === 'dictionary' ||
         !beginModelOperation(entry, ui, 'test')) return;
@@ -507,19 +526,10 @@ async function testEngine(entry, ui) {
             let englishResult = '';
             let englishReady = false;
             if (entry.provider === 'onnx') {
-                if (!(await cacheStore().status(dictionaryManifest())).ready) {
-                    englishResult = ' English text not tested: download the pronunciation dictionary first.';
-                } else {
-                    try {
-                        const textAudio = await engine.synthesize(text);
-                        last = textAudio;
-                        englishReady = true;
-                        englishResult = ' Experimental dictionary-backed English text audio is ready to listen to.';
-                    } catch (error) {
-                        englishResult = ' English text synthesis failed: ' +
-                            String(error.message || error) + '. Playing the IPA probe instead.';
-                    }
-                }
+                const english = await testOnnxEnglishText(engine, text);
+                englishResult = english.message;
+                englishReady = english.ready;
+                if (english.audio) last = english.audio;
             }
             const metrics = window.KokoroBenchmark.summarizeRuns(runs);
             const previous = lastAudioUrl.get(entry.key);
