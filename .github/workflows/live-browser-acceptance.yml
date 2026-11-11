@@ -78,6 +78,10 @@ jobs:
           node -e 'const fs = require("node:fs"); const browser = require("playwright").chromium.executablePath(); if (!fs.existsSync(browser)) throw Error("Pinned Chromium binary missing: " + browser)'
           test -x /usr/bin/Xvfb
           /usr/bin/python3 -c 'import ctypes; ctypes.CDLL("libX11.so.6"); ctypes.CDLL("libXtst.so.6")'
+          # Fail early unless native input reaches a focused X11 window; this
+          # does not simulate or pregrant any Chromium extension permissions.
+          xvfb-run -a -s '-screen 0 640x480x24' \
+            /usr/bin/python3 scripts/test-native-chromium-dialog-key.py
       - name: Execute real model-backed Chrome extension inference
         if: ${{ inputs.acceptance_scope != 'chromium-quota-recovery' }}
         env:
