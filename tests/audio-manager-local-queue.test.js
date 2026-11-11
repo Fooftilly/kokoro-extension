@@ -2,10 +2,12 @@
 import { installImmediateModelLocks } from './helpers/model-locks.js';
 import { AudioManager } from '../audio-manager.js';
 import { MediaPipeKokoroProvider } from '../mediapipe-provider.js';
+import { OnnxKokoroProvider } from '../onnx-provider.js';
 
 jest.mock('../mediapipe-provider.js', () => ({
     MediaPipeKokoroProvider: jest.fn(),
 }));
+jest.mock('../onnx-provider.js', () => ({ OnnxKokoroProvider: jest.fn() }));
 
 const pcm = () => ({ samples: new Float32Array([0.2, -0.15, 0.1]), sampleRateHz: 24000 });
 function deferred() {
@@ -165,6 +167,68 @@ describe('local Kokoro synthesis is serialized across reading-session resets (#5
             'session one', 'session three',
         ]);
         expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    });
+
+    test('switching from ONNX to MediaPipe waits for old WASM work and releases ONNX', async () => {
+        const onnxStarted = deferred();
+        const onnxFinished = deferred();
+        const releaseOld = deferred();
+        const onnx = {
+            synthesize: jest.fn(() => { onnxStarted.resolve(); return onnxFinished.promise; }),
+            cancel: jest.fn(async () => {}), // ONNX cannot interrupt an active run.
+            close: jest.fn(() => releaseOld.promise),
+        };
+        OnnxKokoroProvider.mockImplementation(() => onnx);
+        provider.synthesize.mockResolvedValue(pcm());
+        browser.storage.local.get
+            .mockResolvedValueOnce({ pendingTtsBackend: 'onnx' })
+            .mockResolvedValueOnce({ pendingTtsBackend: 'mediapipe', pendingMediaPipeVariant: 'cpu' });
+        manager.setSentences([{ text: 'First ONNX sentence' }]);
+        const old = manager.getAudio(0);
+        await onnxStarted.promise;
+        manager.clear();
+        manager.setSentences([{ text: 'New MediaPipe sentence' }]);
+        const newer = manager.getAudio(0);
+        await nextTick();
+        expect(onnx.cancel).toHaveBeenCalledTimes(1);
+        expect(provider.synthesize).not.toHaveBeenCalled();
+        expect(onnx.close).not.toHaveBeenCalled();
+
+        onnxFinished.resolve(pcm());
+        await expect(old).rejects.toMatchObject({ name: 'AbortError' });
+        await nextTick();
+        expect(onnx.close).toHaveBeenCalledTimes(1);
+        expect(provider.synthesize).not.toHaveBeenCalled();
+
+        releaseOld.resolve();
+        await expect(newer).resolves.toBe('blob:next');
+        expect(OnnxKokoroProvider).toHaveBeenCalledWith({ variant: 'q8' });
+        expect(MediaPipeKokoroProvider).toHaveBeenCalledWith({ variant: 'cpu' });
+        expect(provider.synthesize).toHaveBeenCalledWith('New MediaPipe sentence',
+            { voiceId: 'af_heart' });
+        expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+        expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
+    });
+
+    test('ONNX provider remains warm for consecutive sentences without remote calls', async () => {
+        const onnx = {
+            synthesize: jest.fn().mockImplementation(async () => pcm()),
+            cancel: jest.fn(async () => {}),
+            close: jest.fn(async () => {}),
+        };
+        OnnxKokoroProvider.mockImplementation(() => onnx);
+        browser.storage.local.get.mockResolvedValue({ pendingTtsBackend: 'onnx' });
+        manager.setSentences([{ text: 'Hello world.' }, { text: 'Good morning.' }]);
+        await manager.getAudio(0);
+        await manager.getAudio(1);
+        expect(OnnxKokoroProvider).toHaveBeenCalledTimes(1);
+        expect(onnx.synthesize.mock.calls).toEqual([
+            ['Hello world.', { speed: 1 }],
+            ['Good morning.', { speed: 1 }],
+        ]);
+        expect(onnx.close).not.toHaveBeenCalled();
+        expect(MediaPipeKokoroProvider).not.toHaveBeenCalled();
+        expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
     });
 
     test('a prior failed local inference does not poison later generation', async () => {

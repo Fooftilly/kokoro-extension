@@ -531,8 +531,40 @@ async function validateSelectedMediaPipe() {
     }
 }
 
+// Only an installed, checksum-verified ONNX q8 model plus dictionary and a
+// successful plain-English test can be activated. Revalidate this on all popup
+// paths (including generic autosave) rather than trusting the checked radio.
+async function validateSelectedOnnx() {
+    const key = 'onnxValidatedRevision:q8';
+    const validated = await browser.storage.local.get({ [key]: null });
+    if (!validated[key]) throw new Error('Test ONNX q8 with English text first.');
+
+    const { manifestForVariant, dictionaryManifest } = await import('./model-catalog.js');
+    const { ModelDataStore } = await import('./model-data-store.js');
+    const model = manifestForVariant('onnx', 'q8');
+    if (validated[key] !== model.revision) {
+        throw new Error('The ONNX model revision changed. Repeat the English TTS test.');
+    }
+    const store = new ModelDataStore({
+        origin: browser.runtime.getURL('/'), cacheStorage: caches,
+        fetchImpl: fetch.bind(globalThis),
+        responseClass: Response, streamClass: TransformStream,
+    });
+    const [modelState, dictionaryState] = await Promise.all([
+        store.status(model), store.status(dictionaryManifest()),
+    ]);
+    if (!modelState.ready || !dictionaryState.ready) {
+        throw new Error('ONNX q8 or the English dictionary is no longer installed. Repair and retest.');
+    }
+}
+
+async function validateSelectedLocalBackend(backend) {
+    if (backend === 'mediapipe') return validateSelectedMediaPipe();
+    if (backend === 'onnx') return validateSelectedOnnx();
+}
+
 // All popup storage writes that include a backend choice share one ordered lane.
-// Otherwise an earlier async MediaPipe validation can finish after a later radio
+// Otherwise an earlier async local model validation can finish after a later radio
 // change and overwrite the user's newer choice. Unrelated settings still save.
 let backendSelectionVersion = 0;
 let backendWriteTail = Promise.resolve();
@@ -623,9 +655,9 @@ const saveOptions = async (isDebounced = false, options = {}) => {
 
     try {
         let localValidationError = null;
-        if (ttsBackend === 'mediapipe') {
+        if (ttsBackend === 'mediapipe' || ttsBackend === 'onnx') {
             try {
-                await validateSelectedMediaPipe();
+                await validateSelectedLocalBackend(ttsBackend);
             } catch (error) {
                 // An untested radio must never activate MediaPipe, but invalidated
                 // validation must not prevent saving unrelated options either.
@@ -664,8 +696,8 @@ const saveOptions = async (isDebounced = false, options = {}) => {
         // Show generic saving toast
         const status = document.getElementById('status');
         status.textContent = localValidationError
-            ? 'Other settings saved, but MediaPipe was not activated: ' +
-                String(localValidationError.message || localValidationError)
+            ? 'Other settings saved, but ' + (ttsBackend === 'onnx' ? 'ONNX' : 'MediaPipe') +
+                ' was not activated: ' + String(localValidationError.message || localValidationError)
             : 'Settings saved.';
         status.style.color = localValidationError ? 'var(--status-error)' : 'var(--status-success)';
         status.style.display = 'block';
@@ -724,7 +756,7 @@ const restoreOptions = async () => {
         if (items.ttsBackend === 'mediapipe') {
             backendExplanation.textContent = 'MediaPipe runs locally after installing and testing a model. Use the TTS test page to manage downloads.';
         } else if (items.ttsBackend === 'onnx') {
-            backendExplanation.textContent = 'ONNX is an experimental phoneme-only engine. Plain-text TTS is blocked until G2P is implemented; no server fallback.';
+            backendExplanation.textContent = 'ONNX q8 supports experimental dictionary-backed English text after installing its model and CMUdict. Unknown words fail locally; there is no server fallback. Long-form reading is not yet verified.';
         } else if (items.ttsBackend !== 'fastapi') {
             backendExplanation.textContent = 'Unknown saved backend. Select one explicitly; no server requests will run.';
         }
@@ -870,9 +902,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const isCurrentSelection = () => version === backendSelectionVersion &&
                 radio.checked && selectedBackendValue() === radio.value;
             const explanation = document.getElementById('backendExplanation');
-            if (radio.value === 'mediapipe') {
+            if (radio.value === 'mediapipe' || radio.value === 'onnx') {
                 try {
-                    await validateSelectedMediaPipe();
+                    await validateSelectedLocalBackend(radio.value);
                 } catch (error) {
                     if (!isCurrentSelection()) return;
                     // Read the final persisted selection after earlier writes.
@@ -884,8 +916,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     for (const item of document.querySelectorAll('input[name="ttsBackend"]')) {
                         item.checked = item.value === saved;
                     }
-                    explanation.textContent = 'MediaPipe unavailable: ' +
-                        String(error.message || error) + ' Use the TTS test page to install and validate it.';
+                    explanation.textContent = (radio.value === 'onnx' ? 'ONNX' : 'MediaPipe') +
+                        ' unavailable: ' + String(error.message || error) +
+                        ' Use the TTS test page to install and validate it.';
                     return;
                 }
             }
@@ -905,7 +938,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (activeRefreshAbort) activeRefreshAbort.abort();
                 explanation.textContent = radio.value === 'mediapipe'
                     ? 'Local MediaPipe requires a downloaded model. Manage and test it on the TTS test page.'
-                    : 'Local ONNX supports only an IPA probe for now. Plain-text generation is not installed.';
+                    : 'Local ONNX q8 supports dictionary-backed English sentences. Install ONNX q8 and CMUdict on the browser TTS test page first; unknown words fail locally.';
                 const status = document.getElementById('apiStatusRow');
                 if (status) status.style.display = 'none';
             }

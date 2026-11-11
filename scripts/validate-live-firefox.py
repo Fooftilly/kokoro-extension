@@ -1495,6 +1495,72 @@ def main():
                 })().catch(e=>done({success:false,provider,error:String(e)}));
             """, provider)
 
+            # ONNX has passed the isolated engine check. Exercise the *actual*
+            # AudioManager route as a separate opt-in, offline browser gate:
+            # ordinary English -> serialized ONNX q8 -> locally generated WAV.
+            # Unsupported English must fail closed rather than contact FastAPI.
+            playback_acceptance = None
+            if origin_download and provider == "onnx" and metrics.get("success"):
+                playback_acceptance = driver.execute_async_script("""
+                    const done=arguments[arguments.length-1];
+                    (async()=>{
+                        const {AudioManager}=await import('./audio-manager.js');
+                        const page=window.wrappedJSObject||window;
+                        const counters=()=>{
+                            if(typeof page.__originModelStatsJson!=='function')
+                                throw Error('Missing official-origin fetch counters');
+                            return JSON.parse(page.__originModelStatsJson()).requests.length;
+                        };
+                        const requestsBefore=counters();
+                        const manager=new AudioManager();
+                        try{
+                            await browser.storage.local.set({pendingTtsBackend:'onnx',pendingApiUrl:''});
+                            manager.setSentences([
+                                {text:'Hello world.'},
+                                {text:'zzzzqwertyword.'},
+                            ]);
+                            const url=await manager.getAudio(0);
+                            if(!url.startsWith('blob:'))throw Error('ONNX did not create a local WAV Blob');
+                            const response=await fetch(url);
+                            if(!response.ok)throw Error('Unable to read local WAV Blob');
+                            const bytes=new Uint8Array(await response.arrayBuffer());
+                            if(bytes.length<46)throw Error('WAV audio was empty');
+                            const h=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+                            const tag=(offset,length)=>String.fromCharCode(
+                                ...bytes.subarray(offset,offset+length));
+                            const sampleRateHz=h.getUint32(24,true);
+                            const audioBytes=h.getUint32(40,true);
+                            if(tag(0,4)!=='RIFF'||tag(8,4)!=='WAVE'||
+                                sampleRateHz!==24000||audioBytes<2||
+                                bytes.length!==44+audioBytes)
+                                throw Error('Invalid generated ONNX WAV header/data');
+                            let unsupported=null;
+                            try{await manager.getAudio(1)}catch(e){unsupported=String(e)}
+                            if(!unsupported||!/Missing English pronunciation|Unsupported English text/.test(unsupported))
+                                throw Error('ONNX unknown word did not fail closed: '+unsupported);
+                            const requestsAfter=counters();
+                            if(requestsAfter!==requestsBefore)
+                                throw Error('ONNX playback unexpectedly fetched model data');
+                            return {
+                                success:true,engine:'onnx',backend:'onnx',
+                                sampleRateHz,audioBytes,
+                                unknownWordsRejected:true,remoteFallback:false,
+                                modelFetchesDuringPlayback:requestsAfter-requestsBefore,
+                                networkOffline:navigator.onLine===false,
+                            };
+                        }finally{
+                            manager.clear();
+                            if(manager.localProvider)await manager.localProvider.close();
+                        }
+                    })().then(done,e=>done({success:false,error:String(e),stack:String(e.stack||'')}));
+                """)
+                if (not playback_acceptance.get("success") or
+                        not playback_acceptance.get("networkOffline") or
+                        playback_acceptance.get("modelFetchesDuringPlayback") != 0 or
+                        not playback_acceptance.get("unknownWordsRejected")):
+                    raise RuntimeError("Firefox ONNX AudioManager offline playback acceptance failed: " +
+                                       str(playback_acceptance))
+
             if origin_download and metrics.get("success"):
                 # Close the active engine before Remove; no re-download may
                 # occur and other-provider assets must not be modified.
@@ -1556,6 +1622,7 @@ def main():
                 "dictionaryUiDownloadAcceptance": dictionary_ui_acceptance,
                 "originDownload": origin_download,
                 "originModelAcceptance": origin_model_acceptance,
+                "onnxPlaybackAcceptance": playback_acceptance,
                 "offlineAttempted": True,
                 "offlineInference": metrics.get("success") is True,
                 "cachePopulation": (
@@ -1583,6 +1650,8 @@ def main():
                 result["dictionaryUiDownloadAcceptance"] = dictionary_ui_acceptance
             if "origin_model_acceptance" in locals() and origin_model_acceptance is not None:
                 result["originModelAcceptance"] = origin_model_acceptance
+            if "playback_acceptance" in locals() and playback_acceptance is not None:
+                result["onnxPlaybackAcceptance"] = playback_acceptance
             raise
         finally:
             output.write_text(json.dumps(result, indent=2), encoding="utf-8")

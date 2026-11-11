@@ -96,6 +96,23 @@ describe('popup backend-loss resilience (#4)', () => {
         await new Promise((r) => setTimeout(r, 0));
     }
 
+    function allowOnnxSelection({ modelReady = true, dictionaryReady = true,
+        revision = null } = {}) {
+        const { manifestForVariant } = require('../model-catalog.js');
+        const { ModelDataStore } = require('../model-data-store.js');
+        const approved = revision ?? manifestForVariant('onnx', 'q8').revision;
+        browser.storage.local.get.mockImplementation(async defaults => ({
+            ...defaults, 'onnxValidatedRevision:q8': approved,
+        }));
+        browser.runtime.getURL = jest.fn(() => 'moz-extension://test/');
+        global.caches = { open: jest.fn() };
+        global.Response = class {};
+        global.TransformStream = class {};
+        jest.spyOn(ModelDataStore.prototype, 'status').mockImplementation(async manifest => ({
+            ready: manifest.provider === 'dictionary' ? dictionaryReady : modelReady,
+        }));
+    }
+
     test('popup renders and settings remain editable when backend is down', async () => {
         document.dispatchEvent(new Event('DOMContentLoaded'));
         await flushAsync();
@@ -172,7 +189,7 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(document.getElementById('status').textContent).toMatch(/MediaPipe was not activated/i);
     });
 
-    test('stale failing MediaPipe validation cannot reset a newer ONNX selection', async () => {
+    test('stale failing MediaPipe validation cannot reset a newer server selection', async () => {
         document.dispatchEvent(new Event('DOMContentLoaded'));
         await flushAsync();
         browser.storage.sync.set.mockClear();
@@ -182,24 +199,61 @@ describe('popup backend-loss resilience (#4)', () => {
             releaseValidation = resolve;
         }));
         const mediapipe = document.querySelector('input[name="ttsBackend"][value="mediapipe"]');
-        const onnx = document.querySelector('input[name="ttsBackend"][value="onnx"]');
+        const fastapi = document.querySelector('input[name="ttsBackend"][value="fastapi"]');
         mediapipe.checked = true;
         mediapipe.dispatchEvent(new Event('change'));
         await flushAsync();
         expect(typeof releaseValidation).toBe('function');
 
-        onnx.checked = true;
-        onnx.dispatchEvent(new Event('change'));
+        fastapi.checked = true;
+        fastapi.dispatchEvent(new Event('change'));
         await flushAsync();
         releaseValidation({ 'mediapipeValidatedRevision:cpu': null });
         await flushAsync();
 
-        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('onnx');
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('fastapi');
         expect(browser.storage.sync.set.mock.calls
             .some(([value]) => value.ttsBackend === 'mediapipe')).toBe(false);
         expect(browser.storage.sync.set.mock.calls
-            .some(([value]) => value.ttsBackend === 'onnx')).toBe(true);
-        expect(document.getElementById('backendExplanation').textContent).toContain('Local ONNX');
+            .some(([value]) => value.ttsBackend === 'fastapi')).toBe(true);
+    });
+
+    test('refuses untested ONNX q8 in popup radio selection and generic autosave', async () => {
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        browser.storage.sync.set.mockClear();
+        const onnx = document.querySelector('input[name="ttsBackend"][value="onnx"]');
+        onnx.checked = true;
+        onnx.dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('fastapi');
+        expect(browser.storage.sync.set.mock.calls.some(([v]) => v.ttsBackend === 'onnx')).toBe(false);
+        expect(document.getElementById('backendExplanation').textContent)
+            .toMatch(/Test ONNX q8 with English text first/);
+
+        onnx.checked = true; // Autosave must not bypass the same gate.
+        document.getElementById('defaultSpeed').dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(browser.storage.sync.set.mock.calls.some(([v]) => v.ttsBackend === 'onnx')).toBe(false);
+        expect(browser.storage.sync.set.mock.calls.some(([v]) =>
+            v.defaultSpeed !== undefined && !Object.hasOwn(v, 'ttsBackend'))).toBe(true);
+    });
+
+    test.each([
+        { modelReady: false, dictionaryReady: true },
+        { modelReady: true, dictionaryReady: false },
+        { modelReady: true, dictionaryReady: true, revision: '0'.repeat(40) },
+    ])('blocks ONNX if required model, dictionary or revision is missing: %j', async options => {
+        allowOnnxSelection(options);
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        browser.storage.sync.set.mockClear();
+        const onnx = document.querySelector('input[name="ttsBackend"][value="onnx"]');
+        onnx.checked = true;
+        onnx.dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('fastapi');
+        expect(browser.storage.sync.set.mock.calls.some(([v]) => v.ttsBackend === 'onnx')).toBe(false);
     });
 
     test('serializes backend writes when an earlier storage operation is delayed', async () => {
@@ -218,6 +272,7 @@ describe('popup backend-loss resilience (#4)', () => {
             return Promise.resolve();
         });
 
+        allowOnnxSelection();
         const onnx = document.querySelector('input[name="ttsBackend"][value="onnx"]');
         const fastapi = document.querySelector('input[name="ttsBackend"][value="fastapi"]');
         onnx.checked = true;
@@ -251,15 +306,15 @@ describe('popup backend-loss resilience (#4)', () => {
         await flushAsync();
         expect(typeof releaseValidation).toBe('function');
 
-        const onnx = document.querySelector('input[name="ttsBackend"][value="onnx"]');
-        onnx.checked = true;
-        onnx.dispatchEvent(new Event('change'));
+        const fastapi = document.querySelector('input[name="ttsBackend"][value="fastapi"]');
+        fastapi.checked = true;
+        fastapi.dispatchEvent(new Event('change'));
         releaseValidation({ 'mediapipeValidatedRevision:cpu': null });
         await flushAsync();
 
         const stored = browser.storage.sync.set.mock.calls;
         expect(stored.some(([value]) => value.ttsBackend === 'mediapipe')).toBe(false);
-        expect(stored.some(([value]) => value.ttsBackend === 'onnx')).toBe(true);
+        expect(stored.some(([value]) => value.ttsBackend === 'fastapi')).toBe(true);
         expect(stored.some(([value]) => value.defaultSpeed !== undefined &&
             Object.hasOwn(value, 'ttsBackend'))).toBe(false);
     });

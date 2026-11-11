@@ -162,18 +162,45 @@ describe('background.js logic', () => {
         expect(files.indexOf('overlay-position.js')).toBeLessThan(files.indexOf('content.js'));
     });
 
-    test('local engine selection does not send selected text to the server', async () => {
+    test.each(['', 'not a valid server URL', undefined])(
+        'ONNX selection routes to local overlay without a usable server (%s)', async apiUrl => {
+            browser.storage.sync.get.mockResolvedValue({
+                ttsBackend: 'onnx', apiUrl,
+                voice: 'af_sarah', mode: 'stream', normalizationOptions: {},
+            });
+            const listener = browser.contextMenus.onClicked.addListener.mock.calls[0][0];
+            await listener(
+                { menuItemId: 'send-to-kokoro', selectionText: 'Private selection' },
+                { id: 7, title: 'Private page' }
+            );
+            expect(browser.storage.local.set).toHaveBeenCalledWith(expect.objectContaining({
+                pendingTtsBackend: 'onnx', pendingText: 'Private selection',
+                pendingApiUrl: null,
+            }));
+            expect(browser.tabs.sendMessage).toHaveBeenCalledWith(
+                7, expect.objectContaining({ action: 'SHOW_PLAYER' })
+            );
+            expect(fetch.mock.calls.some(([url]) => String(url).includes('/audio/speech'))).toBe(false);
+        }
+    );
+
+    test('ONNX article action opens full local player and never sends server audio', async () => {
         browser.storage.sync.get.mockResolvedValue({
-            ttsBackend: 'onnx', apiUrl: 'http://localhost:8880/v1/',
-            voice: 'af_sarah', mode: 'stream', normalizationOptions: {},
+            ttsBackend: 'onnx', apiUrl: 'http://private-server.example/v1/',
+            mode: 'stream', normalizationOptions: {},
         });
+        browser.tabs.sendMessage.mockResolvedValue({ text: 'Hello world.',
+            content: [{ type: 'text', content: 'Hello world.' }] });
         const listener = browser.contextMenus.onClicked.addListener.mock.calls[0][0];
-        await listener(
-            { menuItemId: 'send-to-kokoro', selectionText: 'Private selection' },
-            { id: 7, title: 'Private page' }
+        await listener({ menuItemId: 'read-article-kokoro' },
+            { id: 19, title: 'Article' });
+        expect(browser.storage.local.set).toHaveBeenCalledWith(expect.objectContaining({
+            pendingTtsBackend: 'onnx', pendingText: 'Hello world.',
+            pendingApiUrl: null,
+        }));
+        expect(browser.tabs.sendMessage).toHaveBeenCalledWith(
+            19, { action: 'SHOW_PLAYER', mode: 'full' }
         );
-        expect(browser.storage.local.set).not.toHaveBeenCalled();
-        expect(browser.notifications.create).toHaveBeenCalled();
         expect(fetch.mock.calls.some(([url]) => String(url).includes('/audio/speech'))).toBe(false);
     });
 
