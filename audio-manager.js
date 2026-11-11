@@ -1,5 +1,6 @@
 import './tts-providers.js';
 import { MediaPipeKokoroProvider } from './mediapipe-provider.js';
+import { OnnxKokoroProvider } from './onnx-provider.js';
 import { withModelDataLock } from './model-data-lock.js';
 import { pcmToWavBlob } from './pcm-wav.js';
 
@@ -15,6 +16,7 @@ export class AudioManager {
         // with another invocation on the same WASM engine after clear().
         this.localInferenceQueue = Promise.resolve();
         this.localProvider = null;
+        this.localBackend = null;
         this.localVariant = null;
         this.objectUrls = new Set();
         this.generation = 0;
@@ -181,7 +183,7 @@ export class AudioManager {
         }
     }
 
-    async localAudio(text, data, isStale = () => false, onSynthesisStart = () => {}) {
+    async localAudio(text, data, backend, isStale = () => false, onSynthesisStart = () => {}) {
         // Local PCM synthesis runs only in the extension-owned playback page.
         // A clear() starts a new session, but the previous WASM synthesis may
         // still be running even after cancel() returns. Serialize local jobs
@@ -199,13 +201,22 @@ export class AudioManager {
                 if (generation !== this.generation || isStale()) {
                     throw new DOMException('Local generation cancelled', 'AbortError');
                 }
-                const variant = data.pendingMediaPipeVariant || 'cpu';
-                if (!this.localProvider || this.localVariant !== variant) {
+                // Both official WASM runtimes share a single serialized lane;
+                // never keep the large ONNX and MediaPipe engines initialized
+                // simultaneously. Only expose ONNX q8 for regular playback;
+                // alternate precision still needs separate product acceptance.
+                const variant = backend === globalThis.KokoroTtsProviders.MEDIAPIPE
+                    ? (data.pendingMediaPipeVariant || 'cpu') : 'q8';
+                if (!this.localProvider || this.localBackend !== backend ||
+                    this.localVariant !== variant) {
                     if (this.localProvider) await this.localProvider.close();
                     if (generation !== this.generation || isStale()) {
                         throw new DOMException('Local generation cancelled', 'AbortError');
                     }
-                    this.localProvider = new MediaPipeKokoroProvider({ variant });
+                    this.localProvider = backend === globalThis.KokoroTtsProviders.MEDIAPIPE
+                        ? new MediaPipeKokoroProvider({ variant })
+                        : new OnnxKokoroProvider({ variant });
+                    this.localBackend = backend;
                     this.localVariant = variant;
                 }
                 let result;
@@ -213,9 +224,10 @@ export class AudioManager {
                     // Mark the request only when it actually reaches the official
                     // engine, not while waiting behind prior queued work.
                     onSynthesisStart();
-                    result = await this.localProvider.synthesize(text, {
-                        voiceId: data.pendingLocalVoice || 'af_heart',
-                    });
+                    result = await this.localProvider.synthesize(text,
+                        backend === globalThis.KokoroTtsProviders.MEDIAPIPE
+                            ? { voiceId: data.pendingLocalVoice || 'af_heart' }
+                            : { speed: 1 });
                 } catch (error) {
                     // A best-effort cancel() may make the SDK throw its own error.
                     // The caller requested cancellation; never misreport the stale
@@ -268,13 +280,13 @@ export class AudioManager {
         // Resolve through the same strict IDs as the background dispatcher.
         // An unknown explicit value must NEVER be interpreted as FastAPI.
         const backend = globalThis.KokoroTtsProviders.resolveBackend(data.pendingTtsBackend);
-        if (backend === globalThis.KokoroTtsProviders.MEDIAPIPE) {
-            return this.localAudio(text, data, isStale, onSynthesisStart);
+        if (backend === globalThis.KokoroTtsProviders.MEDIAPIPE ||
+            backend === globalThis.KokoroTtsProviders.ONNX) {
+            return this.localAudio(text, data, backend, isStale, onSynthesisStart);
         }
         if (backend === globalThis.KokoroTtsProviders.FASTAPI) {
             return this.remoteAudio(text, data, onSynthesisStart);
         }
-        throw new Error('Local TTS backend ONNX plain-text synthesis is not yet available. No text was sent to Kokoro-FastAPI.');
     }
 
     async fetchAudio(text, generation = this.generation, entry = null) {
