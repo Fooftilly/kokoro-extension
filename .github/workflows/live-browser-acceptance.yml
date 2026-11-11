@@ -47,6 +47,13 @@ jobs:
     # Keep this heavyweight browser job on a stable, explicitly supported
     # LTS image until 26.04 package resolution is validated separately.
     runs-on: ubuntu-24.04
+    # Version- and digest-pinned Playwright image has Chromium, Xvfb, fonts
+    # and required shared libraries preinstalled. Hosted Ubuntu apt DNS failed
+    # on both 24.04 and 26.04 before any browser acceptance could run.
+    # The image and npm Playwright package must stay at the same version.
+    container:
+      image: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:6e3fb709361521eb27161606e6da6d2674e5e89fa16516cb37d6fdd91372273d
+      options: --ipc=host
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -54,17 +61,33 @@ jobs:
         with:
           node-version: '22'
           cache: npm
+      # Python is provisioned explicitly; the Node Playwright image does not
+      # guarantee a Python interpreter is installed.
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        id: native-python
+        with:
+          python-version: '3.12'
       - name: Install extension dependencies
         run: npm ci --ignore-scripts
       - name: Package extension for Chrome and Firefox
         run: npm run package:ci
-      - name: Install pinned Playwright Chromium (isolated from lockfile)
+      - name: Verify preinstalled pinned Playwright Chromium (isolated from lockfile)
         run: |
           mkdir -p "$RUNNER_TEMP/kokoro-playwright"
           cd "$RUNNER_TEMP/kokoro-playwright"
           npm init -y
           npm install --no-save --ignore-scripts --package-lock=false playwright@1.65.0
-          ./node_modules/.bin/playwright install --with-deps chromium
+          # The official version-matched container has already installed both
+          # the browser binaries and their full Linux/system/font dependencies.
+          # Fail if the exact Playwright browser or the native X11 input
+          # libraries are absent; do not download/skip dependencies silently.
+          node -e 'const fs = require("node:fs"); const browser = require("playwright").chromium.executablePath(); if (!fs.existsSync(browser)) throw Error("Pinned Chromium binary missing: " + browser)'
+          test -x /usr/bin/Xvfb
+          "${{ steps.native-python.outputs.python-path }}" -c 'import ctypes; ctypes.CDLL("libX11.so.6"); ctypes.CDLL("libXtst.so.6")'
+          # Fail early unless native input reaches a focused X11 window; this
+          # does not simulate or pregrant any Chromium extension permissions.
+          xvfb-run -a -s '-screen 0 640x480x24' \
+            "${{ steps.native-python.outputs.python-path }}" "$GITHUB_WORKSPACE/scripts/test-native-chromium-dialog-key.py"
       - name: Execute real model-backed Chrome extension inference
         if: ${{ inputs.acceptance_scope != 'chromium-quota-recovery' }}
         env:
@@ -72,6 +95,7 @@ jobs:
           KOKORO_LIVE_PROVIDER: ${{ inputs.acceptance_scope == 'chromium-dictionary' && 'dictionary' || inputs.acceptance_scope == 'chromium-mediapipe-origin' && 'mediapipe' || inputs.acceptance_scope == 'chromium-onnx-origin' && 'onnx' || 'both' }}
           KOKORO_CHROMIUM_ORIGIN_DOWNLOAD: ${{ (inputs.acceptance_scope == 'chromium-mediapipe-origin' || inputs.acceptance_scope == 'chromium-onnx-origin') && '1' || '0' }}
           KOKORO_CHROMIUM_HEADFUL_CONSENT: '1'
+          KOKORO_NATIVE_PYTHON: ${{ steps.native-python.outputs.python-path }}
           PLAYWRIGHT_MODULE_PATH: ${{ runner.temp }}/kokoro-playwright/node_modules/playwright/index.mjs
         run: |
           # Every live Chromium scope also tests optional dictionary Download,
@@ -79,10 +103,11 @@ jobs:
           # browser across both processes so native consent is interactive.
           # This workflow is explicitly opt-in (or limited to the experimental
           # branch) and is not part of routine extension CI.
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq xvfb openbox xdotool
+          # The pinned image already includes Xvfb and browser dependencies.
+          # Native optional-host dialog input uses libX11/libXtst via a small
+          # standard-library Python helper; no mutable apt mirror is required.
           xvfb-run -a -s '-screen 0 1440x900x24' \
-            bash -c 'openbox >/dev/null 2>&1 & exec node scripts/validate-live-chromium.mjs'
+            node scripts/validate-live-chromium.mjs
       - name: Execute Chromium real-quota, offline multi-asset recovery acceptance
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.acceptance_scope == 'chromium-quota-recovery' }}
         env:

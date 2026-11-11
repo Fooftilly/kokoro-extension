@@ -167,8 +167,8 @@ async function acceptOfficialOriginHostPermission(page, manifest, rowSelector, b
     await button.click();
 
     // Chromium's native optional-extension-permission prompt is not an HTML
-    // dialog. This manual-only Xvfb test uses an actual X11 keypress to
-    // interact with the real browser UI, not a permissions API stub.
+    // dialog. This manually scoped Xvfb test uses actual X11 XTest key events
+    // to interact with the real browser UI, not a permissions API stub.
     await page.waitForTimeout(1200);
     const pending = await page.locator(rowSelector + ' .model-status').textContent();
     const afterClick = await page.evaluate(host =>
@@ -177,16 +177,22 @@ async function acceptOfficialOriginHostPermission(page, manifest, rowSelector, b
         throw Error('Unexpected host-permission UI state before confirmation: ' +
             JSON.stringify({ afterClick, pending }));
     }
-    let activeWindow;
+    let nativeInput;
     try {
-        activeWindow = execFileSync('/usr/bin/xdotool', ['getactivewindow', 'getwindowname'],
-            { encoding: 'utf8', timeout: 4000 }).trim();
-        if (!activeWindow) throw Error('No active Chromium window');
-        // Chromium's extension permission dialog defaults to Cancel. On
-        // Linux the dialog's focus order goes Cancel -> Allow (OK); Tab
-        // explicitly focuses Allow before Return confirms it.
-        execFileSync('/usr/bin/xdotool',
-            ['key', '--clearmodifiers', 'Tab', 'Return'], { timeout: 4000 });
+        // The prebuilt Playwright image provides Chromium and its exact Linux
+        // dependencies, but does not bundle xdotool or an X11 window manager.
+        // Send the same native Tab/Return events via XTest in the installed
+        // libX11/libXtst libraries, without relying on apt mirrors.
+        const nativePython = process.env.KOKORO_NATIVE_PYTHON;
+        if (!nativePython || !path.isAbsolute(nativePython)) {
+            throw Error('Pinned setup-python absolute interpreter path is required');
+        }
+        nativeInput = JSON.parse(execFileSync(nativePython, [
+            path.resolve('scripts/native-chromium-dialog-key.py'),
+        ], { encoding: 'utf8', timeout: 5000 }).trim());
+        if (nativeInput.x11XTest !== true || nativeInput.nativeKeys !== 'Tab Return') {
+            throw Error('Native X11 input did not confirm both dialog keys');
+        }
     } catch (error) {
         throw Error('Cannot interact with headed Chromium permission prompt: ' +
             String(error.message || error));
@@ -198,7 +204,7 @@ async function acceptOfficialOriginHostPermission(page, manifest, rowSelector, b
     } catch (error) {
         const snapshot = await captureOfficialOriginDownloadState(page, rowSelector, networkEvents);
         throw Error('Chromium host permission was not granted after native UI input: ' +
-            JSON.stringify({ cause: String(error), activeWindow, ...snapshot }));
+            JSON.stringify({ cause: String(error), nativeInput, ...snapshot }));
     }
     const hostGrantEvidence = {
         host: approvedHost, initiallyGranted: false,
