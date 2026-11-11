@@ -339,6 +339,16 @@ def restore_onnx_dictionary_from_real_ui(driver):
     return report
 
 
+class FirefoxOriginModelVerificationError(RuntimeError):
+    """Preserve structured verification evidence when a full-model gate fails."""
+
+    def __init__(self, report):
+        self.report = report
+        super().__init__(
+            "Firefox official-origin model verification failed: " +
+            json.dumps(report, sort_keys=True))
+
+
 def run_model_origin_ui_acceptance(driver, manifest):
     """Real Firefox model-manager Download with pinned HTTPS data, not loopback preload.
 
@@ -624,7 +634,7 @@ def run_model_origin_ui_acceptance(driver, manifest):
             sorted(report.get("completedUrls", [])) != sorted(expected_urls) or
             report.get("otherProviderAfter") != prior["otherProviderBefore"] or
             (provider == "onnx" and not report.get("dictionaryIntegrityVerified"))):
-        raise RuntimeError("Firefox official-origin model verification failed: " + str(report))
+        raise FirefoxOriginModelVerificationError(report)
     report["otherProviderBefore"] = prior["otherProviderBefore"]
     if cancelled_retry:
         report["cancelRetry"] = {
@@ -1560,13 +1570,18 @@ def main():
         except Exception as exc:
             result["status"] = "failed"
             result["error"] = str(exc)
+            if isinstance(exc, FirefoxOriginModelVerificationError):
+                # Preserve full typed cache-verifier results even if the
+                # high-level model origin acceptance gate rejects the run.
+                result["originModelAcceptance"] = {
+                    **exc.report, "acceptancePassed": False}
             if "dictionary_cache_acceptance" in locals():
                 result["dictionaryCacheAcceptance"] = dictionary_cache_acceptance
             if "dictionary_reload_acceptance" in locals():
                 result["dictionaryReloadAcceptance"] = dictionary_reload_acceptance
             if "dictionary_ui_acceptance" in locals():
                 result["dictionaryUiDownloadAcceptance"] = dictionary_ui_acceptance
-            if "origin_model_acceptance" in locals():
+            if "origin_model_acceptance" in locals() and origin_model_acceptance is not None:
                 result["originModelAcceptance"] = origin_model_acceptance
             raise
         finally:
