@@ -3,6 +3,10 @@
  */
 
 import { AudioManager } from '../audio-manager.js';
+import { OnnxKokoroProvider } from '../onnx-provider.js';
+import { installImmediateModelLocks } from './helpers/model-locks.js';
+
+jest.mock('../onnx-provider.js', () => ({ OnnxKokoroProvider: jest.fn() }));
 
 // Mock browser API
 global.browser = {
@@ -32,17 +36,51 @@ describe('AudioManager', () => {
             };
         });
 
+        installImmediateModelLocks();
         audioManager = new AudioManager();
     });
 
-    test('local selection never dispatches to remote audio fetch', async () => {
+    test('ONNX selection plays local WAV without contacting FastAPI', async () => {
+        const synthesize = jest.fn(async () => ({
+            samples: new Float32Array([0.2, -0.1, 0.3]), sampleRateHz: 24000,
+        }));
+        OnnxKokoroProvider.mockImplementation(() => ({
+            synthesize, cancel: jest.fn(async () => {}), close: jest.fn(async () => {}),
+        }));
+        URL.createObjectURL = jest.fn(() => 'blob:onnx-offline');
         browser.storage.local.get.mockResolvedValue({
             pendingTtsBackend: 'onnx', pendingVoice: 'af_heart',
             pendingApiUrl: 'http://localhost:8880',
         });
         audioManager.setSentences([{ text: 'Private text' }]);
-        await expect(audioManager.getAudio(0)).rejects.toThrow(/Local TTS backend/);
+        await expect(audioManager.getAudio(0)).resolves.toBe('blob:onnx-offline');
+        expect(OnnxKokoroProvider).toHaveBeenCalledWith({ variant: 'q8' });
+        expect(synthesize).toHaveBeenCalledWith('Private text', { speed: 1 });
+        expect(URL.createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
         expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
+    });
+
+    test('ONNX missing data or dictionary fails closed without server fallback', async () => {
+        const synthesize = jest.fn().mockRejectedValue(new Error(
+            'English dictionary missing; use model manager to install it.'));
+        OnnxKokoroProvider.mockImplementation(() => ({
+            synthesize, cancel: jest.fn(async () => {}), close: jest.fn(async () => {}),
+        }));
+        URL.createObjectURL = jest.fn();
+        browser.storage.local.get.mockResolvedValue({
+            pendingTtsBackend: 'onnx', pendingApiUrl: 'http://localhost:8880',
+        });
+        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+            audioManager.setSentences([{ text: 'Unsupported English sentence' }]);
+            await expect(audioManager.getAudio(0)).rejects.toThrow(/English dictionary missing/);
+            await expect(audioManager.getAudio(0)).rejects.toThrow(/English dictionary missing/);
+            expect(synthesize).toHaveBeenCalledTimes(2); // User can retry after repair.
+            expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
+            expect(URL.createObjectURL).not.toHaveBeenCalled();
+        } finally {
+            errorSpy.mockRestore();
+        }
     });
 
     test('unknown explicit backend fails closed rather than contacting FastAPI', async () => {
