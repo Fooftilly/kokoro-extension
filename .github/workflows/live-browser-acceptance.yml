@@ -87,7 +87,7 @@ jobs:
           # Fail early unless native input reaches a focused X11 window; this
           # does not simulate or pregrant any Chromium extension permissions.
           xvfb-run -a -s '-screen 0 640x480x24' \
-            "${{ steps.native-python.outputs.python-path }}" scripts/test-native-chromium-dialog-key.py
+            "${{ steps.native-python.outputs.python-path }}" "$GITHUB_WORKSPACE/scripts/test-native-chromium-dialog-key.py"
       - name: Execute real model-backed Chrome extension inference
         if: ${{ inputs.acceptance_scope != 'chromium-quota-recovery' }}
         env:
