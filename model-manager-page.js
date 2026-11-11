@@ -472,6 +472,25 @@ async function testOnnxEnglishText(engine, text) {
     }
 }
 
+// Clear stale approval before a retest, then write it back only when the
+// actual backend-specific text test passes. The IPA-only ONNX q8f16 probe
+// never grants regular playback privileges.
+async function clearModelTestApproval(entry, validationKey) {
+    if (entry.provider === 'mediapipe' ||
+        (entry.provider === 'onnx' && entry.variant === 'q8')) {
+        await browser.storage.local.remove(validationKey);
+    }
+}
+
+async function approveTestedBackend(entry, ui, validationKey, englishReady) {
+    if (entry.provider !== 'mediapipe' &&
+        !(entry.provider === 'onnx' && entry.variant === 'q8' && englishReady)) return;
+    await browser.storage.local.set({
+        [validationKey]: manifestForVariant(entry.provider, entry.variant).revision,
+    });
+    ui.choose.disabled = false;
+}
+
 async function testEngine(entry, ui) {
     if (entry.provider === 'dictionary' ||
         !beginModelOperation(entry, ui, 'test')) return;
@@ -487,12 +506,7 @@ async function testEngine(entry, ui) {
     setMessage(ui.status, 'Loading locally packaged runtime and cached model…');
     try {
         await withModelDataLock(async () => {
-            if (entry.provider === 'mediapipe' ||
-                (entry.provider === 'onnx' && entry.variant === 'q8')) {
-                // A failing re-test cannot leave a previous text-capable
-                // backend approval active, even when its IPA probe succeeds.
-                await browser.storage.local.remove(validationKey);
-            }
+            await clearModelTestApproval(entry, validationKey);
             // An installed GPU model is not proof that this browser has a usable
             // GPU delegate. Do not initialize the official GPU runtime when the
             // browser cannot provide a WebGPU adapter; show a clear unavailable
@@ -547,16 +561,7 @@ async function testEngine(entry, ui) {
                     ? ' Benchmark used IPA; English synthesis is a separate, unmeasured check.' +
                       englishResult + ' Unknown English words are not supported and never fall back to FastAPI.'
                     : ' Listen before choosing.'));
-            // ONNX regular reading is deliberately limited to the validated
-            // q8 + cached English dictionary path, not IPA-only probes or
-            // unverified q8f16/GPU variants. Test failures never enable it.
-            if (entry.provider === 'mediapipe' ||
-                (entry.provider === 'onnx' && entry.variant === 'q8' && englishReady)) {
-                await browser.storage.local.set({
-                    [validationKey]: manifestForVariant(entry.provider, entry.variant).revision,
-                });
-                ui.choose.disabled = false;
-            }
+            await approveTestedBackend(entry, ui, validationKey, englishReady);
 
         }, { mode: 'shared' });
     } catch (error) {
