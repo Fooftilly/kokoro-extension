@@ -462,12 +462,16 @@ async function testEngine(entry, ui) {
     ui.verify.disabled = true;
     ui.test.disabled = true;
     ui.choose.disabled = true;
-    const validationKey = 'mediapipeValidatedRevision:' + entry.variant;
+    const validationKey = entry.provider === 'mediapipe'
+        ? 'mediapipeValidatedRevision:' + entry.variant
+        : 'onnxValidatedRevision:q8';
     setMessage(ui.status, 'Loading locally packaged runtime and cached model…');
     try {
         await withModelDataLock(async () => {
-            if (entry.provider === 'mediapipe') {
-                // A failing re-test cannot leave its previous approval active.
+            if (entry.provider === 'mediapipe' ||
+                (entry.provider === 'onnx' && entry.variant === 'q8')) {
+                // A failing re-test cannot leave a previous text-capable
+                // backend approval active, even when its IPA probe succeeds.
                 await browser.storage.local.remove(validationKey);
             }
             // An installed GPU model is not proof that this browser has a usable
@@ -501,6 +505,7 @@ async function testEngine(entry, ui) {
             // Keep the IPA measurements distinct from dictionary-backed text synthesis.
             // A failed or missing English lexicon must not erase a valid IPA probe.
             let englishResult = '';
+            let englishReady = false;
             if (entry.provider === 'onnx') {
                 if (!(await cacheStore().status(dictionaryManifest())).ready) {
                     englishResult = ' English text not tested: download the pronunciation dictionary first.';
@@ -508,7 +513,8 @@ async function testEngine(entry, ui) {
                     try {
                         const textAudio = await engine.synthesize(text);
                         last = textAudio;
-                        englishResult = ' Experimental English text audio is ready to listen to.';
+                        englishReady = true;
+                        englishResult = ' Experimental dictionary-backed English text audio is ready to listen to.';
                     } catch (error) {
                         englishResult = ' English text synthesis failed: ' +
                             String(error.message || error) + '. Playing the IPA probe instead.';
@@ -529,13 +535,15 @@ async function testEngine(entry, ui) {
                 '. Streaming time-to-first-audio was not measured.' +
                 (entry.provider === 'onnx'
                     ? ' Benchmark used IPA; English synthesis is a separate, unmeasured check.' +
-                      englishResult + ' ONNX article/EPUB backend is not yet enabled.'
+                      englishResult + ' Unknown English words are not supported and never fall back to FastAPI.'
                     : ' Listen before choosing.'));
-            // The ONNX text check is experimental, not an approval for general
-            // article/EPUB usage. Keep its backend chooser disabled.
-            if (entry.provider === 'mediapipe') {
+            // ONNX regular reading is deliberately limited to the validated
+            // q8 + cached English dictionary path, not IPA-only probes or
+            // unverified q8f16/GPU variants. Test failures never enable it.
+            if (entry.provider === 'mediapipe' ||
+                (entry.provider === 'onnx' && entry.variant === 'q8' && englishReady)) {
                 await browser.storage.local.set({
-                    [validationKey]: manifestForVariant('mediapipe', entry.variant).revision,
+                    [validationKey]: manifestForVariant(entry.provider, entry.variant).revision,
                 });
                 ui.choose.disabled = false;
             }
@@ -563,6 +571,10 @@ async function invalidateRuntimeFor(entry) {
     }
     if (entry.provider === 'mediapipe') {
         await browser.storage.local.remove('mediapipeValidatedRevision:' + entry.variant);
+    }
+    if (entry.provider === 'dictionary' ||
+        (entry.provider === 'onnx' && entry.variant === 'q8')) {
+        await browser.storage.local.remove('onnxValidatedRevision:q8');
     }
 }
 
@@ -713,9 +725,24 @@ function registerModel(entry) {
         void testEngine(entry, ui);
     });
     ui.choose.addEventListener('click', async () => {
-        if (entry.provider !== 'mediapipe' || ui.choose.disabled) return;
-        await browser.storage.sync.set({ ttsBackend: 'mediapipe', mediaPipeVariant: entry.variant });
-        setMessage(ui.status, 'MediaPipe selected for future article and EPUB TTS.');
+        if (ui.choose.disabled || (entry.provider !== 'mediapipe' &&
+            !(entry.provider === 'onnx' && entry.variant === 'q8'))) return;
+        if (entry.provider === 'onnx') {
+            const [model, dictionary] = await Promise.all([
+                cacheStore().status(entryManifest(entry)),
+                cacheStore().status(dictionaryManifest()),
+            ]);
+            if (!model.ready || !dictionary.ready) {
+                ui.choose.disabled = true;
+                setMessage(ui.status, 'ONNX q8 or English dictionary is missing. Download and retest before selecting.');
+                return;
+            }
+            await browser.storage.sync.set({ ttsBackend: 'onnx' });
+            setMessage(ui.status, 'ONNX q8 selected for dictionary-supported English reading. Unknown words fail without server fallback.');
+        } else {
+            await browser.storage.sync.set({ ttsBackend: 'mediapipe', mediaPipeVariant: entry.variant });
+            setMessage(ui.status, 'MediaPipe selected for future article and EPUB TTS.');
+        }
     });
     return refresh(entry, ui).catch(error => {
         setMessage(ui.status, 'Cannot inspect extension Cache Storage: ' + String(error.message || error));
