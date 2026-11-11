@@ -786,6 +786,9 @@ async function navigate(index, forcePlay = null) {
     }
 
     statusEl.textContent = `Playing sentence ${currentIndex + 1}/${sentences.length}`;
+    // Retry is only actionable after a current playback failure, never during
+    // navigation to a different sentence or a successful reinitialization.
+    retryBtn.style.display = 'none';
 
     try {
         // Suppress obsolete queued prefetch and navigation work *before* the
@@ -828,7 +831,12 @@ async function navigate(index, forcePlay = null) {
         spinnerEl.style.display = 'none';
         if (e.name === 'AbortError') return;
         console.error("Playback error", e);
+        // The previous audio source must not look like the failed sentence is
+        // playing, and the existing Retry action must be discoverable.
+        isPaused = true;
+        playPauseBtn.textContent = "Play";
         statusEl.textContent = "Error playing audio.";
+        retryBtn.style.display = 'inline-flex';
     }
 }
 
