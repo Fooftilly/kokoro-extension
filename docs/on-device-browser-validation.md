@@ -553,3 +553,47 @@ Only the manual official-origin scopes use Xvfb; normal CI remains
 unchanged. The actual browser-dialog interaction must be validated in
 a new manual run after this patch merges. A failed Xvfb grant must not
 be silently converted into a test pass or a broader permission grant.
+
+
+### Chromium MediaPipe official-origin success and separate post-restart dictionary failure (2026-11-10)
+
+[Workflow run 42912054417](https://github.com/Fooftilly/kokoro-extension/actions/runs/42912054417)
+on `master` `0835d9e00561f49717db06f6f358a158fda58dbd`
+returned a **failed overall workflow** because an unrelated dictionary UI
+Download/Cancel/Retry check timed out at `validate-live-chromium.mjs:899`,
+*after* real MediaPipe model inference. Its
+[report artifact](https://github.com/Fooftilly/kokoro-extension/actions/runs/42912054417/artifacts/13808286611)
+separately proves successful optional `https://huggingface.co/*` browser
+host consent (`initiallyGranted: false`, `grantedByBrowser: true`),
+receipt and cache storage of **294,783,298 bytes** from the pinned official
+MediaPipe source, matching UI size and 100% progress, full SHA-256 verification,
+no unexpected requested upstream URLs, and offline CPU speech synthesis
+(24 kHz, 3.05 seconds, nonzero RMS, three warm timings). The separate pinned
+CMUdict direct HTTPS/integrity check also passed.
+
+The failed dictionary UI check ran **after an actual Chromium process restart**.
+The script relaunched that second browser in headless mode despite having
+needed headed Chromium for the first optional host permission. Unlike the
+MediaPipe host, the dictionary Download button requests a *different*
+optional `https://raw.githubusercontent.com/*` browser permission, and
+the test had no way to confirm its native prompt. The dictionary UI test
+never reached its deliberately stalled fetch; the reported timeout was the
+consequence. The old outer error handler additionally replaced the already
+successful browser-restart verification with a generic failure, making the
+summary misleading.
+
+The follow-up keeps **both** Chromium processes headed for all live inference
+scopes that exercise native optional permissions; it requests dictionary
+permission exclusively via the real Download button, confirms native Allow,
+and checks the exact new host grant before the stalled-fetch cancellation
+probe. Both host grants must initially be absent; neither is injected,
+pregranted or mocked. Existing cancellation, real pinned HTTPS retry,
+SHA-256/cache checks, and offline requirements remain intact. The recorded
+successful browser-restart evidence is retained even if the independent
+dictionary UI stage subsequently fails. Normal package CI, release
+configurations and production extension code remain unchanged.
+
+The successful MediaPipe *subtests* are documented here, but a fresh manual
+run after the harness correction is still required for the **complete green
+workflow** and dictionary UI acceptance. Do not treat this run as a green
+overall workflow or as Firefox/ONNX acceptance.

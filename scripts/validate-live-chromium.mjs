@@ -26,9 +26,13 @@ if (!['both', 'onnx', 'mediapipe', 'dictionary'].includes(providerFilter)) {
 }
 const originDownload = process.env.KOKORO_CHROMIUM_ORIGIN_DOWNLOAD === '1';
 const headedConsent = process.env.KOKORO_CHROMIUM_HEADFUL_CONSENT === '1';
-if (originDownload && (!headedConsent || !process.env.DISPLAY)) {
-    throw Error('Official-origin Chromium acceptance needs headed X11 consent; ' +
-        'run the manual scope with KOKORO_CHROMIUM_HEADFUL_CONSENT=1 under Xvfb');
+// All live model validation scopes eventually exercise the real dictionary
+// Download button, including after an actual browser process restart. Optional
+// host consent requires native browser UI even when the heavyweight model was
+// preloaded only for a local inference test.
+if (!headedConsent || !process.env.DISPLAY) {
+    throw Error('Chromium live model acceptance requires headed X11 consent; ' +
+        'run with KOKORO_CHROMIUM_HEADFUL_CONSENT=1 under Xvfb');
 }
 if (originDownload && !['mediapipe', 'onnx'].includes(providerFilter)) {
     throw Error('Real origin-download acceptance requires KOKORO_LIVE_PROVIDER=mediapipe or onnx');
@@ -148,7 +152,11 @@ async function captureOfficialOriginDownloadState(page, selector, events) {
  */
 async function acceptOfficialOriginHostPermission(page, manifest, rowSelector, button, networkEvents) {
     const approvedHost = new URL(manifest.assets[0].url).origin + '/*';
-    if (approvedHost !== 'https://huggingface.co/*') {
+    const allowedHosts = new Set([
+        'https://huggingface.co/*',
+        'https://raw.githubusercontent.com/*',
+    ]);
+    if (!allowedHosts.has(approvedHost)) {
         throw Error('Unapproved origin for browser permission acceptance');
     }
     const initiallyGranted = await page.evaluate(host =>
@@ -430,7 +438,7 @@ try {
     const { chromium } = await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE_PATH).href);
     const extension = path.resolve('dist/chrome');
     context = await chromium.launchPersistentContext(path.join(sourceDir, 'profile'), {
-        channel: 'chromium', headless: !originDownload,
+        channel: 'chromium', headless: !headedConsent,
         args: ['--disable-extensions-except=' + extension, '--load-extension=' + extension],
     });
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', { timeout: 30000 });
@@ -715,7 +723,7 @@ try {
     await context.close();
     context = null;
     context = await chromium.launchPersistentContext(path.join(sourceDir, 'profile'), {
-        channel: 'chromium', headless: true,
+        channel: 'chromium', headless: !headedConsent,
         args: ['--disable-extensions-except=' + extension, '--load-extension=' + extension],
     });
     const restartedWorker = context.serviceWorkers()[0] ||
@@ -895,7 +903,13 @@ try {
                     return original(input, options);
                 };
             });
-            await downloadButton.click();
+            // A direct pinned CORS dictionary fetch earlier in the harness
+            // is not a user-granted optional host permission. This separate
+            // host must be authorized via the real Download button and native
+            // Chromium dialog, including after a true browser restart.
+            const dictionaryHostGrant = await acceptOfficialOriginHostPermission(
+                reopened, dictionaryManifest(), '[data-variant="dictionary-english"]',
+                downloadButton, []);
             await reopened.waitForFunction(() => {
                 const row = document.querySelector('[data-variant="dictionary-english"]');
                 return row?.querySelector('.model-download')?.textContent ===
@@ -994,6 +1008,7 @@ try {
                 cancelledStalledDownload: true, cacheEmptyAfterCancel: true,
                 realOfficialHttpsRetryFetches: installed.actualHostFetches,
                 requestedNarrowHostPermission: installed.permission,
+                nativePermissionGrant: dictionaryHostGrant,
                 fullPinnedBytes: installed.status.totalBytes,
                 sha256VerifiedAfterUiRetry: true,
                 uiProgressReached100: true, uiRemoveClearedCache: true,
@@ -1006,8 +1021,13 @@ try {
         }
 
     } catch (error) {
-        browserRestartAcceptance = { success: false, browserProcessRestarted: true,
-            error: String(error) };
+        // A later dictionary UI failure must not overwrite a *passing*,
+        // previously saved browser-restart/cache-persistence verification.
+        // The dictionary UI reports its own failure independently above.
+        if (!browserRestartAcceptance?.success) {
+            browserRestartAcceptance = { success: false, browserProcessRestarted: true,
+                error: String(error) };
+        }
         await saveReport();
         throw error;
     } finally {
