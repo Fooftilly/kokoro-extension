@@ -709,7 +709,7 @@ try {
                     try {
                         // This is a disposable extension profile; verify the
                         // actual reader queue and storage-selected backend.
-                        await chrome.storage.local.set({ pendingTtsBackend: 'onnx' });
+                        await chrome.storage.local.set({ pendingTtsBackend: 'onnx', pendingApiUrl: '' });
                         manager.setSentences([
                             { text: 'Hello world.' },
                             { text: 'zzzzqwertyword.' },
