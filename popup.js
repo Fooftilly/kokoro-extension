@@ -724,7 +724,7 @@ const restoreOptions = async () => {
         if (items.ttsBackend === 'mediapipe') {
             backendExplanation.textContent = 'MediaPipe runs locally after installing and testing a model. Use the TTS test page to manage downloads.';
         } else if (items.ttsBackend === 'onnx') {
-            backendExplanation.textContent = 'ONNX is an experimental phoneme-only engine. Plain-text TTS is blocked until G2P is implemented; no server fallback.';
+            backendExplanation.textContent = 'ONNX q8 supports experimental dictionary-backed English text after installing its model and CMUdict. Unknown words fail locally; there is no server fallback. Long-form reading is not yet verified.';
         } else if (items.ttsBackend !== 'fastapi') {
             backendExplanation.textContent = 'Unknown saved backend. Select one explicitly; no server requests will run.';
         }
@@ -905,7 +905,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (activeRefreshAbort) activeRefreshAbort.abort();
                 explanation.textContent = radio.value === 'mediapipe'
                     ? 'Local MediaPipe requires a downloaded model. Manage and test it on the TTS test page.'
-                    : 'Local ONNX supports only an IPA probe for now. Plain-text generation is not installed.';
+                    : 'Local ONNX q8 supports dictionary-backed English sentences. Install ONNX q8 and CMUdict on the browser TTS test page first; unknown words fail locally.';
                 const status = document.getElementById('apiStatusRow');
                 if (status) status.style.display = 'none';
             }
