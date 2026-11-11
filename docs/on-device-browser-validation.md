@@ -597,3 +597,49 @@ The successful MediaPipe *subtests* are documented here, but a fresh manual
 run after the harness correction is still required for the **complete green
 workflow** and dictionary UI acceptance. Do not treat this run as a green
 overall workflow or as Firefox/ONNX acceptance.
+
+
+### Playwright runner dependency failure on both GitHub Ubuntu images (2026-11-11)
+
+[Manual Chromium run 43056438566](https://github.com/Fooftilly/kokoro-extension/actions/runs/43056438566)
+used PR #125's explicit Ubuntu **24.04.5** runner on
+`master` `98b64a72ea94dc710739307a4678209c0540cdea`, yet
+`playwright install --with-deps chromium` failed **before browser launch**.
+The root cause matched earlier Ubuntu 26.04 failures: the runner resolved
+Microsoft's package repository but could not resolve the Ubuntu mirror
+hosts needed for nine additional Playwright font/X11 packages, including
+`azure.archive.ubuntu.com`, `archive.ubuntu.com` and
+`security.ubuntu.com`. Apt exited 100. The extensions packaged
+successfully; no model or dictionary acceptance report was generated.
+
+A browser-acceptance job must not depend on installing font packages from
+mutable apt mirrors during each dispatch. Use Microsoft's published
+**version- and image-digest-pinned**
+`mcr.microsoft.com/playwright:v1.65.0-noble` image instead, with the
+exact `playwright@1.65.0` Node driver. The official image provides
+Playwright's browsers, the full system library/font dependency set, and
+Xvfb preinstalled. The workflow verifies the binary, Xvfb and the real
+X11 shared libraries before running, without disabling OS dependency
+verification or silently skipping missing browser requirements.
+No container or browser changes are made to routine CI or Firefox jobs.
+
+The previous script relied on apt-provided `openbox` and `xdotool`
+to interact with Chromium's **native optional host-permission dialog**.
+A small Python standard-library helper now sends the *same* real X11
+Tab/Return key events through the already installed X11/XTest shared
+libraries. The harness still requires the pinned host permission to be
+initially absent, presses the real Download button, and confirms the
+browser grants only the expected host after native UI input. The
+helper was smoke-checked under a local Xvfb server with a focused X11
+test window: all four key press/release events were observed. This
+does **not** demonstrate the full Chromium dialog flow, which must
+still be verified in a new manual `chromium-mediapipe-origin` run
+after the change is available on `master`.
+
+The Playwright image's default root container execution disables
+Chromium's OS sandbox; this is a trade-off specific to the heavyweight,
+explicitly enabled trusted acceptance job. The browser permission,
+full pinned HTTPS asset, integrity, offline inference, real process
+restart and dictionary Download/Cancel/Retry assertions remain
+mandatory. No successful acceptance is claimed until a full report
+demonstrates it.
