@@ -183,7 +183,11 @@ async function acceptOfficialOriginHostPermission(page, manifest, rowSelector, b
         // dependencies, but does not bundle xdotool or an X11 window manager.
         // Send the same native Tab/Return events via XTest in the installed
         // libX11/libXtst libraries, without relying on apt mirrors.
-        nativeInput = JSON.parse(execFileSync('/usr/bin/python3', [
+        const nativePython = process.env.KOKORO_NATIVE_PYTHON;
+        if (!nativePython || !path.isAbsolute(nativePython)) {
+            throw Error('Pinned setup-python absolute interpreter path is required');
+        }
+        nativeInput = JSON.parse(execFileSync(nativePython, [
             path.resolve('scripts/native-chromium-dialog-key.py'),
         ], { encoding: 'utf8', timeout: 5000 }).trim());
         if (nativeInput.x11XTest !== true || nativeInput.nativeKeys !== 'Tab Return') {
