@@ -553,6 +553,7 @@ try {
         let crashed = false;
         let stage = 'model-cache-population';
         let originModelAcceptance = null;
+        let onnxPlaybackAcceptance = null;
         page.on('pageerror', error => errors.push(String(error)));
         page.on('crash', () => { crashed = true; });
         try {
@@ -700,14 +701,66 @@ try {
             result.bufferedModelDiagnostic = bufferedDiagnostic;
             console.log('MEDIAPIPE MODEL BUFFER DIAGNOSTIC', bufferedDiagnostic);
         }
+            if (originDownload && manifest.provider === 'onnx' && result.success) {
+                stage = 'offline-audio-manager-onnx-english-wav-playback';
+                onnxPlaybackAcceptance = await page.evaluate(async () => {
+                    const { AudioManager } = await import('./audio-manager.js');
+                    const manager = new AudioManager();
+                    try {
+                        // This is a disposable extension profile; verify the
+                        // actual reader queue and storage-selected backend.
+                        await chrome.storage.local.set({ pendingTtsBackend: 'onnx' });
+                        manager.setSentences([
+                            { text: 'Hello world.' },
+                            { text: 'zzzzqwertyword.' },
+                        ]);
+                        const url = await manager.getAudio(0);
+                        if (!url.startsWith('blob:')) throw Error('ONNX did not return local WAV URL');
+                        const response = await fetch(url);
+                        if (!response.ok) throw Error('Unable to read local WAV Blob');
+                        const bytes = new Uint8Array(await response.arrayBuffer());
+                        if (bytes.length < 46) throw Error('ONNX WAV was empty');
+                        const wav = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+                        const tag = (start, count) =>
+                            String.fromCharCode(...bytes.subarray(start, start + count));
+                        const sampleRateHz = wav.getUint32(24, true);
+                        const audioBytes = wav.getUint32(40, true);
+                        if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
+                            sampleRateHz !== 24000 || audioBytes < 2 ||
+                            bytes.length !== 44 + audioBytes) {
+                            throw Error('ONNX AudioManager output is not a valid 24-kHz WAV');
+                        }
+                        let unsupported = null;
+                        try { await manager.getAudio(1); }
+                        catch (error) { unsupported = String(error); }
+                        if (!unsupported || !/Missing English pronunciation|Unsupported English text/.test(unsupported)) {
+                            throw Error('Unknown English word did not fail closed: ' + unsupported);
+                        }
+                        if (navigator.onLine !== false) throw Error('ONNX playback was not offline');
+                        return { success: true, backend: 'onnx', sampleRateHz, audioBytes,
+                            unknownWordsRejected: true, networkOffline: true };
+                    } catch (error) {
+                        return { success: false, error: String(error),
+                            stack: String(error.stack || '') };
+                    } finally {
+                        manager.clear();
+                        if (manager.localProvider) await manager.localProvider.close();
+                    }
+                });
+                if (!onnxPlaybackAcceptance.success) {
+                    throw Error('Chromium ONNX real reading-path acceptance failed: ' +
+                        JSON.stringify(onnxPlaybackAcceptance));
+                }
+            }
             console.log(result.success ? 'REAL MODEL INFERENCE' : 'MODEL INFERENCE FAILURE', result);
             results.push({ provider: manifest.provider, variant: manifest.variant,
                 offlineAttempted: true, offlineInference: result.success === true,
-                originModelAcceptance, ...result });
+                originModelAcceptance, onnxPlaybackAcceptance, ...result });
             await saveReport();
         } catch (error) {
             const failure = { provider: manifest.provider, variant: manifest.variant,
-                success: false, crashed, stage, originModelAcceptance, error: String(error) };
+                success: false, crashed, stage, originModelAcceptance,
+                onnxPlaybackAcceptance, error: String(error) };
             results.push(failure);
             await saveReport();
             console.error('MODEL VALIDATION ABORTED', failure);
