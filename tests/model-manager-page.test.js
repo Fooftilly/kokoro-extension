@@ -474,14 +474,23 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(global.browser.permissions.request).not.toHaveBeenCalled();
     });
 
-    test('checks English output separately from IPA measurements without enabling general ONNX', async () => {
+    test('verified ONNX q8 English text enables explicit selection while IPA timings stay separate', async () => {
         const { row, message } = await runProbe();
         expect(engine.synthesizePhonemes).toHaveBeenCalledTimes(3);
         expect(engine.synthesize).toHaveBeenCalledWith('Hello world.');
         expect(message).toContain('Benchmark used IPA');
-        expect(message).toContain('Experimental English text audio is ready');
+        expect(message).toContain('Experimental dictionary-backed English text audio is ready');
+        expect(message).toContain('Unknown English words are not supported');
         expect(row.querySelector('audio').hidden).toBe(false);
-        expect(row.querySelector('.model-choose').disabled).toBe(true);
+        await waitFor(() => row.querySelector('.model-choose').disabled === false);
+        expect(browser.storage.local.set).toHaveBeenCalledWith({
+            'onnxValidatedRevision:q8': expect.any(String),
+        });
+        row.querySelector('.model-choose').click();
+        await waitFor(() => browser.storage.sync.set.mock.calls
+            .some(([value]) => value.ttsBackend === 'onnx'));
+        expect(row.querySelector('.model-status').textContent).toContain('dictionary-supported English reading');
+        expect(global.fetch).not.toHaveBeenCalled();
     });
 
     test('missing dictionary is never downloaded implicitly and IPA remains testable', async () => {
@@ -492,6 +501,10 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(global.fetch).not.toHaveBeenCalled();
         expect(global.browser.permissions.request).not.toHaveBeenCalled();
         expect(message).toContain('download the pronunciation dictionary first');
+        expect(document.querySelector('[data-variant="onnx-q8"] .model-choose').disabled).toBe(true);
+        expect(browser.storage.local.set).not.toHaveBeenCalledWith({
+            'onnxValidatedRevision:q8': expect.any(String),
+        });
     });
 
     async function waitFor(predicate) {
@@ -1026,5 +1039,9 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(message).toContain('Playing the IPA probe instead');
         expect(row.querySelector('audio').src).toBe('blob:test-audio');
         expect(row.querySelector('.model-choose').disabled).toBe(true);
+        expect(browser.storage.local.set).not.toHaveBeenCalledWith({
+            'onnxValidatedRevision:q8': expect.any(String),
+        });
+        expect(browser.storage.local.remove).toHaveBeenCalledWith('onnxValidatedRevision:q8');
     });
 });
