@@ -514,7 +514,60 @@ def run_model_origin_ui_acceptance(driver, manifest):
                 fetchImpl:()=>{throw Error('Verification unexpectedly fetched model')},
                 responseClass:Response,streamClass:TransformStream});
             const status=await store.status(manifest);
+            // The previous real Firefox MediaPipe run stored the exact pinned
+            // byte count but reported fullSha256Verified:false. Capture a
+            // bounded-memory, non-destructive SHA-256 diagnosis BEFORE the
+            // user-facing verifier may prune a genuinely corrupt cache entry.
+            // Never accept the diagnostic digest as a substitute for the real
+            // ModelDataStore.verifyAndPruneCorrupt() integrity gate.
+            let cachedModelDigestDiagnostic=null;
+            if(manifest.assets.some(asset=>asset.path.endsWith('.litertlm'))){
+                try{
+                    const asset=manifest.assets.find(a=>a.path.endsWith('.litertlm'));
+                    const cache=await caches.open('kokoro-model-data-v1');
+                    const entry=await cache.match(store.key(manifest,asset));
+                    cachedModelDigestDiagnostic={
+                        entryFound:!!entry,
+                        metadataMatches:store.isCurrent(entry,asset),
+                    };
+                    if(entry){
+                        const {IncrementalSha256}=await import('./sha256-stream.js');
+                        const blob=await entry.blob();
+                        const reader=blob.stream().getReader();
+                        const hasher=new IncrementalSha256();
+                        let chunks=0,nonUint8Chunks=0;
+                        let firstChunkLength=null;
+                        try{
+                            for(;;){
+                                const {done,value}=await reader.read();
+                                if(done)break;
+                                if(!ArrayBuffer.isView(value)||typeof value.byteLength!=='number'){
+                                    throw Error('Cached Blob yielded non-byte stream chunk');
+                                }
+                                if(!(value instanceof Uint8Array))nonUint8Chunks++;
+                                const bytes=new Uint8Array(
+                                    value.buffer,value.byteOffset,value.byteLength);
+                                firstChunkLength??=bytes.byteLength;
+                                hasher.update(bytes);
+                                chunks++;
+                            }
+                        }finally{
+                            reader.releaseLock();
+                        }
+                        const actual='sha256-'+btoa(String.fromCharCode(...hasher.digest()));
+                        Object.assign(cachedModelDigestDiagnostic,{
+                            blobBytes:blob.size,bytesHashed:hasher.totalBytes,
+                            chunks,nonUint8Chunks,firstChunkLength,
+                            computedSha256:actual,expectedSha256:asset.integrity,
+                            digestMatchesPinned:actual===asset.integrity,
+                        });
+                    }
+                }catch(error){
+                    cachedModelDigestDiagnostic={error:String(error)};
+                }
+            }
             const verified=await store.verifyAndPruneCorrupt(manifest);
+            const afterVerification=await store.status(manifest);
             const page=window.wrappedJSObject||window;
             if(typeof page.__originModelStatsJson!=='function')
                 throw Error('Lost real Firefox page transfer counters');
@@ -541,6 +594,9 @@ def run_model_origin_ui_acceptance(driver, manifest):
                 unexpectedUrls:stats.unexpected,
                 fullSha256Verified:verified.ready&&verified.removedAssets===0&&
                     verified.missingAssets===0,
+                sha256Verification:verified,
+                statusAfterVerification:afterVerification,
+                cachedModelDigestDiagnostic,
                 progressPercent:row.querySelector('.model-download-progress').value,
                 displayedSizeMatchesManifest:row.querySelector('.model-download')
                     .textContent.includes(formatModelSize(expectedBytes))&&
