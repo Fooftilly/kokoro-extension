@@ -41,7 +41,12 @@ jobs:
   chromium-model-inference:
     name: Real ONNX and MediaPipe Chromium MV3 synthesis
     if: ${{ inputs.acceptance_scope != 'firefox-dictionary' && inputs.acceptance_scope != 'firefox-mediapipe-origin' && inputs.acceptance_scope != 'firefox-onnx-origin' && inputs.acceptance_scope != 'firefox-persistent-restart' && inputs.acceptance_scope != 'firefox-quota-recovery' }}
-    runs-on: ubuntu-latest
+    # ubuntu-latest migrated to 26.04 during Oct-Nov 2026. The manual
+    # acceptance job failed before browser launch when its new image could
+    # not resolve apt mirrors during Playwright install --with-deps.
+    # Keep this heavyweight browser job on a stable, explicitly supported
+    # LTS image until 26.04 package resolution is validated separately.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
