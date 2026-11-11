@@ -239,17 +239,13 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
         notify('Kokoro TTS Error', error.message);
         return;
     }
-    if (backend === TtsProviders.ONNX) {
-        notify('Kokoro TTS', 'ONNX requires a validated grapheme-to-phoneme frontend. No text was sent to a server.');
-        return;
-    }
-    // MediaPipe runs directly in the extension's audio player from cached model bytes.
-    // It must never probe or request audio from FastAPI while selected.
+    // Both local engines run in the extension-owned audio player. Selected
+    // text stays local; do not probe FastAPI or request server audio.
 
     // The shared resolver strips the server URL for both local providers.
     // Preserve the existing overlay behavior in download mode until local
     // full-selection export is implemented; saving in the player exports WAV.
-    if (backend === TtsProviders.MEDIAPIPE && settings.mode === 'download' && !isArticleMode) {
+    if (backend !== TtsProviders.FASTAPI && settings.mode === 'download' && !isArticleMode) {
         notify('Kokoro TTS',
             'Local download opens the player. Use Save audio there to download a WAV sentence.');
     }
