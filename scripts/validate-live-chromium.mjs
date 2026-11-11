@@ -754,17 +754,19 @@ try {
                 }
 
                 // Exercise the real packaged overlay page, not just AudioManager.
-                // Use two distinct content blocks to avoid sentence-merging heuristics.
+                // Use three distinct blocks to avoid sentence-merging heuristics:
+                // the third contains an unsupported word to expose real Retry.
                 // Autoplay is deliberately disabled so navigation is deterministic
                 // even on CI runners without an audio output device.
                 stage = 'offline-onnx-overlay-controls';
                 await page.evaluate(async () => {
                     await chrome.storage.local.set({
                         pendingTtsBackend: 'onnx', pendingApiUrl: null,
-                        pendingText: 'Hello world. Hello world.',
+                        pendingText: 'Hello world. Hello world. zzzzqwertyword.',
                         pendingContent: [
                             { type: 'text', content: 'Hello world.' },
                             { type: 'text', content: 'Hello world.' },
+                            { type: 'text', content: 'zzzzqwertyword.' },
                         ],
                         pendingTitle: 'ONNX overlay acceptance',
                         pendingAutoplay: false,
@@ -773,7 +775,7 @@ try {
                 await page.goto('chrome-extension://' + extensionId + '/overlay.html');
                 const overlayReady = index => {
                     const spans = document.querySelectorAll('.sentence');
-                    return spans.length === 2 && spans[index]?.classList.contains('highlight') &&
+                    return spans.length === 3 && spans[index]?.classList.contains('highlight') &&
                         document.getElementById('audio')?.src.startsWith('blob:') &&
                         document.getElementById('loadingSpinner')?.style.display === 'none';
                 };
@@ -814,17 +816,43 @@ try {
                     throw Error('Overlay speed/volume or paused navigation state failed: ' +
                         JSON.stringify(settings));
                 }
+                // Retry must not be clickable in a healthy session. Navigate
+                // into a genuinely unsupported English sentence to exercise
+                // the player failure state, then repair the input and Retry.
+                await page.locator('#seekFwd').click();
+                await page.waitForFunction(overlayReady, 1, { timeout: 180000 });
+                await page.locator('#seekFwd').click();
+                await page.waitForFunction(() => {
+                    const retry = document.getElementById('retry');
+                    const spans = document.querySelectorAll('.sentence');
+                    return spans.length === 3 && spans[2].classList.contains('highlight') &&
+                        document.getElementById('status')?.textContent === 'Error playing audio.' &&
+                        getComputedStyle(retry).display !== 'none' &&
+                        document.getElementById('loadingSpinner')?.style.display === 'none';
+                }, null, { timeout: 180000 });
+                await page.evaluate(async () => {
+                    await chrome.storage.local.set({
+                        pendingText: 'Hello world. Hello world. Hello world.',
+                        pendingContent: [
+                            { type: 'text', content: 'Hello world.' },
+                            { type: 'text', content: 'Hello world.' },
+                            { type: 'text', content: 'Hello world.' },
+                        ],
+                    });
+                });
                 await page.locator('#retry').click();
                 await page.waitForFunction(oldUrl => {
                     const spans = document.querySelectorAll('.sentence');
                     const audio = document.getElementById('audio');
-                    return spans.length === 2 && spans[0].classList.contains('highlight') &&
+                    return spans.length === 3 && spans[0].classList.contains('highlight') &&
                         audio?.src.startsWith('blob:') && audio.src !== oldUrl &&
+                        getComputedStyle(document.getElementById('retry')).display === 'none' &&
                         document.getElementById('loadingSpinner')?.style.display === 'none';
                 }, firstUrl, { timeout: 180000 });
                 onnxOverlayAcceptance = {
-                    success: true, controls: ['next', 'previous', 'speed', 'volume', 'retry'],
-                    sentences: 2, ...firstWav, rate: settings.rate, volume: settings.volume,
+                    success: true, controls: ['next', 'previous', 'speed', 'volume', 'retry-after-error'],
+                    sentences: 3, unsupportedSentenceRejected: true, retryRestoredAudio: true,
+                    ...firstWav, rate: settings.rate, volume: settings.volume,
                     networkOffline: true,
                 };
             }
