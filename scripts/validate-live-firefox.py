@@ -1562,18 +1562,20 @@ def main():
                                        str(playback_acceptance))
 
             # Real extension overlay UI acceptance, not a direct provider call.
-            # Two text blocks guarantee two separate selectable sentences;
-            # autoplay is disabled for deterministic controls on headless CI.
+            # Three separate blocks prevent accidental sentence merging;
+            # the last unsupported English sentence must expose real Retry.
+            # Autoplay is disabled for deterministic headless controls.
             overlay_acceptance = None
             if origin_download and provider == "onnx" and metrics.get("success"):
                 saved = driver.execute_async_script("""
                     const done=arguments[arguments.length-1];
                     browser.storage.local.set({
                         pendingTtsBackend:'onnx',pendingApiUrl:null,
-                        pendingText:'Hello world. Hello world.',
+                        pendingText:'Hello world. Hello world. zzzzqwertyword.',
                         pendingContent:[
                             {type:'text',content:'Hello world.'},
-                            {type:'text',content:'Hello world.'}
+                            {type:'text',content:'Hello world.'},
+                            {type:'text',content:'zzzzqwertyword.'}
                         ],
                         pendingTitle:'ONNX overlay acceptance',
                         pendingAutoplay:false
@@ -1586,7 +1588,7 @@ def main():
                     return driver.execute_script("""
                         const spans=document.querySelectorAll('.sentence');
                         const audio=document.getElementById('audio');
-                        return spans.length===2 &&
+                        return spans.length===3 &&
                             spans[arguments[0]]?.classList.contains('highlight') &&
                             audio?.src.startsWith('blob:') &&
                             document.getElementById('loadingSpinner')?.style.display==='none';
@@ -1632,19 +1634,47 @@ def main():
                         abs(settings["volume"] - 0.4) > 0.001 or
                         not settings["paused"]):
                     raise RuntimeError("Firefox ONNX overlay controls failed: " + str(settings))
+                # Trigger a real unsupported-word playback error before Retry.
+                # A healthy player intentionally keeps Retry hidden.
+                driver.find_element(By.ID, "seekFwd").click()
+                WebDriverWait(driver, 180).until(lambda d: overlay_ready(1))
+                driver.find_element(By.ID, "seekFwd").click()
+                WebDriverWait(driver, 180).until(lambda d: d.execute_script("""
+                    const retry=document.getElementById('retry');
+                    const spans=document.querySelectorAll('.sentence');
+                    return spans.length===3&&spans[2].classList.contains('highlight')&&
+                        document.getElementById('status')?.textContent==='Error playing audio.'&&
+                        getComputedStyle(retry).display!=='none'&&
+                        document.getElementById('loadingSpinner')?.style.display==='none';
+                """))
+                repaired = driver.execute_async_script("""
+                    const done=arguments[arguments.length-1];
+                    browser.storage.local.set({
+                        pendingText:'Hello world. Hello world. Hello world.',
+                        pendingContent:[
+                            {type:'text',content:'Hello world.'},
+                            {type:'text',content:'Hello world.'},
+                            {type:'text',content:'Hello world.'}
+                        ]
+                    }).then(()=>done({success:true}),e=>done({success:false,error:String(e)}));
+                """)
+                if not repaired.get("success"):
+                    raise RuntimeError("Cannot repair Firefox overlay input: " + str(repaired))
                 driver.find_element(By.ID, "retry").click()
                 WebDriverWait(driver, 180).until(lambda d: d.execute_script("""
                     const spans=document.querySelectorAll('.sentence');
                     const audio=document.getElementById('audio');
-                    return spans.length===2&&spans[0].classList.contains('highlight')&&
+                    return spans.length===3&&spans[0].classList.contains('highlight')&&
                         audio?.src.startsWith('blob:')&&audio.src!==arguments[0]&&
+                        getComputedStyle(document.getElementById('retry')).display==='none'&&
                         document.getElementById('loadingSpinner')?.style.display==='none';
                 """, first_wav["firstUrl"]))
                 overlay_acceptance = {
-                    "success": True, "sentences": 2, "initiallyPaused": True,
+                    "success": True, "sentences": 3, "initiallyPaused": True,
+                    "unsupportedSentenceRejected": True, "retryRestoredAudio": True,
                     "sampleRateHz": first_wav["sampleRateHz"],
                     "audioBytes": first_wav["audioBytes"],
-                    "controls": ["next", "previous", "speed", "volume", "retry"],
+                    "controls": ["next", "previous", "speed", "volume", "retry-after-error"],
                     "rate": settings["rate"], "volume": settings["volume"],
                     "networkOffline": True,
                 }
