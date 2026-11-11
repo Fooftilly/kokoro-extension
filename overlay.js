@@ -831,9 +831,11 @@ async function navigate(index, forcePlay = null) {
         spinnerEl.style.display = 'none';
         if (e.name === 'AbortError') return;
         console.error("Playback error", e);
-        // The previous audio source must not look like the failed sentence is
-        // playing, and the existing Retry action must be discoverable.
+        // Do not let Play resume the preceding sentence under the failed one's
+        // highlight. Clear the stale media source and expose the recovery action.
         isPaused = true;
+        audioEl.removeAttribute('src');
+        audioEl.load();
         playPauseBtn.textContent = "Play";
         statusEl.textContent = "Error playing audio.";
         retryBtn.style.display = 'inline-flex';
