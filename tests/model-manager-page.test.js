@@ -602,7 +602,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
     test('unlocking other rows preserves previous ONNX synthesis diagnostics', async () => {
         const { row, message } = await runProbe();
         expect(message).toContain('Full-clip synthesis p50');
-        expect(message).toContain('Experimental English text audio is ready');
+        expect(message).toContain('Experimental dictionary-backed English text audio is ready');
         global.browser.permissions.request.mockResolvedValue(false);
         const other = document.querySelector('[data-variant="mediapipe-cpu"]');
         other.querySelector('.model-download').click();
