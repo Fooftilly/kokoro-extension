@@ -646,3 +646,38 @@ full pinned HTTPS asset, integrity, offline inference, real process
 restart and dictionary Download/Cancel/Retry assertions remain
 mandatory. No successful acceptance is claimed until a full report
 demonstrates it.
+
+
+### Firefox MediaPipe actual-origin integrity failure, diagnostic follow-up (2026-11-11)
+
+[Manual run 43070463817](https://github.com/Fooftilly/kokoro-extension/actions/runs/43070463817)
+on master `924d15d2f379e6c336933ac0810edc26bb183ea8` **failed** in
+`run_model_origin_ui_acceptance` **before offline model inference**.
+Firefox 160.0 downloaded one pinned MediaPipe CPU model asset via the
+packaged extension's real user-facing Download control; host permission
+was true, the single expected HTTPS transfer completed, the transfer and
+Cache Storage *metadata* reported the expected **294,783,298 bytes**,
+UI progress was 100%, and neither ONNX variant was installed.
+However `fullSha256Verified` was **false** after a call to
+`ModelDataStore.verifyAndPruneCorrupt`. No offline inference was
+attempted; these facts do not constitute acceptance.
+
+[Firefox report artifact 13877587044](https://github.com/Fooftilly/kokoro-extension/actions/runs/43070463817/artifacts/13877587044)
+also documents **passing independent dictionary** direct HTTPS/SHA-256,
+page-reload/cache repair, and native Download/Cancel/Retry/Remove stages.
+The model failure must not invalidate those distinct passing observations.
+
+The report currently records only a boolean for the failed full-model
+SHA-256 gate. This cannot distinguish a confirmed digest mismatch,
+a missing cache entry, or other verifier state. A manual-only follow-up
+records a **non-destructive bounded-memory hash of the cached MediaPipe
+Blob before the production verifier can prune it**, including bytes read,
+stream-chunk type, expected/observed pinned digest and metadata status.
+It also retains the real `verifyAndPruneCorrupt` result and cache status
+after that call in the failure artifact as structured JSON.
+
+This diagnostic never bypasses the checksum, prevents cache pruning,
+pregrants a host, changes the model manifest, alters runtime logic or
+marks a nonmatching digest successful. A subsequent [diagnostic run 43072034984](https://github.com/Fooftilly/kokoro-extension/actions/runs/43072034984) conclusively identified the failure: the cached model's independent bounded-memory SHA-256 **matched the pinned digest**, with all 294,783,298 bytes read in 4,499 chunks. Each chunk was an actual byte-array view (`ArrayBuffer.isView` true), but **none** passed `value instanceof Uint8Array` in the model verifier because Firefox returned chunks from another JavaScript realm. The production `blobMatchesSha256()` helper therefore returned false and `verifyAndPruneCorrupt()` mistakenly pruned an intact cached entry (`removedAssets: 1`, then `storedBytes: 0`). This is a cross-realm type-check defect, not an upstream checksum mismatch.
+
+The follow-up in PR #127 accepts only genuine `Uint8Array` views from either realm (`ArrayBuffer.isView` plus the built-in Uint8Array tag), hashes their underlying bytes through a zero-copy local `Uint8Array` view, and **retains the exact byte-count bounds and pinned SHA-256 equality**. Unit regressions cover valid cross-realm bytes, wrong digests, unsupported typed views and actual cache eviction behavior; production code does not grant permissions, skip hashes or download replacement data automatically. A new manual `firefox-mediapipe-origin` run on the fixed commit is still required for true full-model offline-synthesis acceptance.

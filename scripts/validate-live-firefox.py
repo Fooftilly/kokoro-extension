@@ -339,6 +339,16 @@ def restore_onnx_dictionary_from_real_ui(driver):
     return report
 
 
+class FirefoxOriginModelVerificationError(RuntimeError):
+    """Preserve structured verification evidence when a full-model gate fails."""
+
+    def __init__(self, report):
+        self.report = report
+        super().__init__(
+            "Firefox official-origin model verification failed: " +
+            json.dumps(report, sort_keys=True))
+
+
 def run_model_origin_ui_acceptance(driver, manifest):
     """Real Firefox model-manager Download with pinned HTTPS data, not loopback preload.
 
@@ -514,7 +524,60 @@ def run_model_origin_ui_acceptance(driver, manifest):
                 fetchImpl:()=>{throw Error('Verification unexpectedly fetched model')},
                 responseClass:Response,streamClass:TransformStream});
             const status=await store.status(manifest);
+            // The previous real Firefox MediaPipe run stored the exact pinned
+            // byte count but reported fullSha256Verified:false. Capture a
+            // bounded-memory, non-destructive SHA-256 diagnosis BEFORE the
+            // user-facing verifier may prune a genuinely corrupt cache entry.
+            // Never accept the diagnostic digest as a substitute for the real
+            // ModelDataStore.verifyAndPruneCorrupt() integrity gate.
+            let cachedModelDigestDiagnostic=null;
+            if(manifest.assets.some(asset=>asset.path.endsWith('.litertlm'))){
+                try{
+                    const asset=manifest.assets.find(a=>a.path.endsWith('.litertlm'));
+                    const cache=await caches.open('kokoro-model-data-v1');
+                    const entry=await cache.match(store.key(manifest,asset));
+                    cachedModelDigestDiagnostic={
+                        entryFound:!!entry,
+                        metadataMatches:store.isCurrent(entry,asset),
+                    };
+                    if(entry){
+                        const {IncrementalSha256}=await import('./sha256-stream.js');
+                        const blob=await entry.blob();
+                        const reader=blob.stream().getReader();
+                        const hasher=new IncrementalSha256();
+                        let chunks=0,nonUint8Chunks=0;
+                        let firstChunkLength=null;
+                        try{
+                            for(;;){
+                                const {done,value}=await reader.read();
+                                if(done)break;
+                                if(!ArrayBuffer.isView(value)||typeof value.byteLength!=='number'){
+                                    throw Error('Cached Blob yielded non-byte stream chunk');
+                                }
+                                if(!(value instanceof Uint8Array))nonUint8Chunks++;
+                                const bytes=new Uint8Array(
+                                    value.buffer,value.byteOffset,value.byteLength);
+                                firstChunkLength??=bytes.byteLength;
+                                hasher.update(bytes);
+                                chunks++;
+                            }
+                        }finally{
+                            reader.releaseLock();
+                        }
+                        const actual='sha256-'+btoa(String.fromCharCode(...hasher.digest()));
+                        Object.assign(cachedModelDigestDiagnostic,{
+                            blobBytes:blob.size,bytesHashed:hasher.totalBytes,
+                            chunks,nonUint8Chunks,firstChunkLength,
+                            computedSha256:actual,expectedSha256:asset.integrity,
+                            digestMatchesPinned:actual===asset.integrity,
+                        });
+                    }
+                }catch(error){
+                    cachedModelDigestDiagnostic={error:String(error)};
+                }
+            }
             const verified=await store.verifyAndPruneCorrupt(manifest);
+            const afterVerification=await store.status(manifest);
             const page=window.wrappedJSObject||window;
             if(typeof page.__originModelStatsJson!=='function')
                 throw Error('Lost real Firefox page transfer counters');
@@ -541,6 +604,9 @@ def run_model_origin_ui_acceptance(driver, manifest):
                 unexpectedUrls:stats.unexpected,
                 fullSha256Verified:verified.ready&&verified.removedAssets===0&&
                     verified.missingAssets===0,
+                sha256Verification:verified,
+                statusAfterVerification:afterVerification,
+                cachedModelDigestDiagnostic,
                 progressPercent:row.querySelector('.model-download-progress').value,
                 displayedSizeMatchesManifest:row.querySelector('.model-download')
                     .textContent.includes(formatModelSize(expectedBytes))&&
@@ -568,7 +634,7 @@ def run_model_origin_ui_acceptance(driver, manifest):
             sorted(report.get("completedUrls", [])) != sorted(expected_urls) or
             report.get("otherProviderAfter") != prior["otherProviderBefore"] or
             (provider == "onnx" and not report.get("dictionaryIntegrityVerified"))):
-        raise RuntimeError("Firefox official-origin model verification failed: " + str(report))
+        raise FirefoxOriginModelVerificationError(report)
     report["otherProviderBefore"] = prior["otherProviderBefore"]
     if cancelled_retry:
         report["cancelRetry"] = {
@@ -1504,13 +1570,18 @@ def main():
         except Exception as exc:
             result["status"] = "failed"
             result["error"] = str(exc)
+            if isinstance(exc, FirefoxOriginModelVerificationError):
+                # Preserve full typed cache-verifier results even if the
+                # high-level model origin acceptance gate rejects the run.
+                result["originModelAcceptance"] = {
+                    **exc.report, "acceptancePassed": False}
             if "dictionary_cache_acceptance" in locals():
                 result["dictionaryCacheAcceptance"] = dictionary_cache_acceptance
             if "dictionary_reload_acceptance" in locals():
                 result["dictionaryReloadAcceptance"] = dictionary_reload_acceptance
             if "dictionary_ui_acceptance" in locals():
                 result["dictionaryUiDownloadAcceptance"] = dictionary_ui_acceptance
-            if "origin_model_acceptance" in locals():
+            if "origin_model_acceptance" in locals() and origin_model_acceptance is not None:
                 result["originModelAcceptance"] = origin_model_acceptance
             raise
         finally:

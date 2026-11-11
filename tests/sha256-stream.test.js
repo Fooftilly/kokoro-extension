@@ -1,5 +1,6 @@
 /** @jest-environment node */
 import { createHash, randomBytes } from 'node:crypto';
+import { runInNewContext } from 'node:vm';
 import { IncrementalSha256, blobMatchesSha256 } from '../sha256-stream.js';
 import { MediaPipeKokoroProvider } from '../mediapipe-provider.js';
 import { manifestForVariant } from '../model-catalog.js';
@@ -83,6 +84,56 @@ describe('bounded-memory SHA-256 from locally cached MediaPipe Blob', () => {
         expect(await blobMatchesSha256(blob, {
             bytes: data.length - 1, integrity: digest(data),
         })).toBe(false);
+    });
+
+    test('valid cross-realm Uint8Array stream chunks pass pinned SHA-256 without copying the Blob', async () => {
+        const first = runInNewContext('new Uint8Array([1, 2, 3, 4])');
+        const second = runInNewContext('new Uint8Array([5, 6, 7])');
+        for (const bytes of [first, second]) {
+            expect(ArrayBuffer.isView(bytes)).toBe(true);
+            expect(bytes instanceof Uint8Array).toBe(false);
+            expect(Object.prototype.toString.call(bytes)).toBe('[object Uint8Array]');
+        }
+        const blob = {
+            size: 7,
+            arrayBuffer: jest.fn(() => { throw Error('Unwanted duplicate allocation'); }),
+            stream: () => new ReadableStream({
+                start(controller) {
+                    controller.enqueue(first);
+                    controller.enqueue(second);
+                    controller.close();
+                },
+            }),
+        };
+        const expected = new Uint8Array([1, 2, 3, 4, 5, 6, 7]);
+        expect(await blobMatchesSha256(blob, {
+            bytes: expected.length, integrity: digest(expected),
+        })).toBe(true);
+        expect(blob.arrayBuffer).not.toHaveBeenCalled();
+        expect(await blobMatchesSha256(blob, {
+            bytes: expected.length, integrity: digest(new Uint8Array(7)),
+        })).toBe(false);
+    });
+
+    test('cross-realm byte chunks still reject corruption, nonbytes and excess length', async () => {
+        const valid = runInNewContext('new Uint8Array([1, 2, 3, 4])');
+        const altered = runInNewContext('new Uint8Array([1, 2, 3, 5])');
+        const invalidView = runInNewContext('new Uint16Array([513, 1027])');
+        const blobFor = chunk => ({
+            size: 4,
+            stream: () => new ReadableStream({
+                start(controller) {
+                    controller.enqueue(chunk);
+                    controller.close();
+                },
+            }),
+        });
+        const asset = { bytes: 4, integrity: digest(new Uint8Array([1, 2, 3, 4])) };
+        expect(await blobMatchesSha256(blobFor(valid), asset)).toBe(true);
+        expect(await blobMatchesSha256(blobFor(altered), asset)).toBe(false);
+        expect(await blobMatchesSha256(blobFor(invalidView), asset)).toBe(false);
+        const oversized = { ...asset, bytes: 3 };
+        expect(await blobMatchesSha256(blobFor(valid), oversized)).toBe(false);
     });
 
     test('stream verification respects abort before and during the streamed hash', async () => {
