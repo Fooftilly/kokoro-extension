@@ -4,6 +4,7 @@
 import { validateModelManifest, formatModelSize, assessStorageHeadroom, ModelDataStore } from '../model-data-store.js';
 import { dictionaryManifest } from '../model-catalog.js';
 import { createHash, webcrypto } from 'node:crypto';
+import { runInNewContext } from 'node:vm';
 
 const sha = 'a'.repeat(40);
 const sample = new Uint8Array([1, 2, 3, 4]);
@@ -214,6 +215,64 @@ describe('opt-in cached model data (#55)', () => {
         expect(forbiddenArrayBuffer).not.toHaveBeenCalled();
         expect(fetchImpl).toHaveBeenCalledTimes(1);
         expect(entries.size).toBe(1);
+    });
+
+    test('Firefox cross-realm MediaPipe cache bytes remain installed after a genuine matching SHA-256', async () => {
+        const { store, cache, entries, fetchImpl } = setup();
+        const manifest = mediapipeManifest();
+        await store.install(manifest);
+        const key = store.key(manifest, manifest.assets[0]);
+        const stored = entries.get(key);
+        const deletionsBefore = cache.delete.mock.calls.length;
+        const foreignBytes = runInNewContext('new Uint8Array([1, 2, 3, 4])');
+        expect(ArrayBuffer.isView(foreignBytes)).toBe(true);
+        expect(foreignBytes instanceof Uint8Array).toBe(false);
+        cache.match.mockImplementation(async () => ({
+            headers: stored.headers,
+            blob: async () => ({
+                size: foreignBytes.byteLength,
+                stream: () => new ReadableStream({
+                    start(controller) {
+                        controller.enqueue(foreignBytes);
+                        controller.close();
+                    },
+                }),
+            }),
+        }));
+        expect(await store.verifyAndPruneCorrupt(manifest)).toEqual({
+            ready: true, verifiedBytes: 4, totalBytes: 4,
+            removedAssets: 0, missingAssets: 0,
+        });
+        expect(cache.delete).toHaveBeenCalledTimes(deletionsBefore);
+        await store.install(manifest);
+        expect(fetchImpl).toHaveBeenCalledTimes(1); // No unnecessary official re-download.
+        expect(entries.size).toBe(1);
+    });
+
+    test('Firefox cross-realm MediaPipe bytes with a different digest are still pruned', async () => {
+        const { store, cache, entries } = setup();
+        const manifest = mediapipeManifest();
+        await store.install(manifest);
+        const key = store.key(manifest, manifest.assets[0]);
+        const stored = entries.get(key);
+        const foreignBytes = runInNewContext('new Uint8Array([1, 2, 3, 5])');
+        cache.match.mockImplementation(async () => ({
+            headers: stored.headers,
+            blob: async () => ({
+                size: foreignBytes.byteLength,
+                stream: () => new ReadableStream({
+                    start(controller) {
+                        controller.enqueue(foreignBytes);
+                        controller.close();
+                    },
+                }),
+            }),
+        }));
+        expect(await store.verifyAndPruneCorrupt(manifest)).toEqual({
+            ready: false, verifiedBytes: 0, totalBytes: 4,
+            removedAssets: 1, missingAssets: 0,
+        });
+        expect(entries.has(key)).toBe(false);
     });
 
     test('explicit MediaPipe verification removes only confirmed corrupted bytes', async () => {
