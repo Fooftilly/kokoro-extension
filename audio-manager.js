@@ -183,6 +183,22 @@ export class AudioManager {
         }
     }
 
+    // One large WASM engine at a time. Switching happens inside the serialized
+    // cache-read lease, so native teardown completes before another model loads.
+    async switchLocalProvider(backend, variant, generation, isStale) {
+        if (this.localProvider && this.localBackend === backend &&
+            this.localVariant === variant) return;
+        if (this.localProvider) await this.localProvider.close();
+        if (generation !== this.generation || isStale()) {
+            throw new DOMException('Local generation cancelled', 'AbortError');
+        }
+        this.localProvider = backend === globalThis.KokoroTtsProviders.MEDIAPIPE
+            ? new MediaPipeKokoroProvider({ variant })
+            : new OnnxKokoroProvider({ variant });
+        this.localBackend = backend;
+        this.localVariant = variant;
+    }
+
     async localAudio(text, data, backend, isStale = () => false, onSynthesisStart = () => {}) {
         // Local PCM synthesis runs only in the extension-owned playback page.
         // A clear() starts a new session, but the previous WASM synthesis may
@@ -190,6 +206,12 @@ export class AudioManager {
         // across sessions; never concurrently invoke the same engine.
         const generation = this.generation;
         const abortSignal = this.abortController.signal;
+        // q8 is the only ONNX model accepted for regular text playback. Model
+        // manager still permits separate diagnostic tests of q8f16.
+        const variant = backend === globalThis.KokoroTtsProviders.MEDIAPIPE
+            ? (data.pendingMediaPipeVariant || 'cpu') : 'q8';
+        const synthesisOptions = backend === globalThis.KokoroTtsProviders.MEDIAPIPE
+            ? { voiceId: data.pendingLocalVoice || 'af_heart' } : { speed: 1 };
         const work = this.localInferenceQueue.catch(() => {}).then(async () => {
             if (generation !== this.generation || isStale()) {
                 throw new DOMException('Local generation cancelled', 'AbortError');
@@ -201,33 +223,13 @@ export class AudioManager {
                 if (generation !== this.generation || isStale()) {
                     throw new DOMException('Local generation cancelled', 'AbortError');
                 }
-                // Both official WASM runtimes share a single serialized lane;
-                // never keep the large ONNX and MediaPipe engines initialized
-                // simultaneously. Only expose ONNX q8 for regular playback;
-                // alternate precision still needs separate product acceptance.
-                const variant = backend === globalThis.KokoroTtsProviders.MEDIAPIPE
-                    ? (data.pendingMediaPipeVariant || 'cpu') : 'q8';
-                if (!this.localProvider || this.localBackend !== backend ||
-                    this.localVariant !== variant) {
-                    if (this.localProvider) await this.localProvider.close();
-                    if (generation !== this.generation || isStale()) {
-                        throw new DOMException('Local generation cancelled', 'AbortError');
-                    }
-                    this.localProvider = backend === globalThis.KokoroTtsProviders.MEDIAPIPE
-                        ? new MediaPipeKokoroProvider({ variant })
-                        : new OnnxKokoroProvider({ variant });
-                    this.localBackend = backend;
-                    this.localVariant = variant;
-                }
+                await this.switchLocalProvider(backend, variant, generation, isStale);
                 let result;
                 try {
                     // Mark the request only when it actually reaches the official
                     // engine, not while waiting behind prior queued work.
                     onSynthesisStart();
-                    result = await this.localProvider.synthesize(text,
-                        backend === globalThis.KokoroTtsProviders.MEDIAPIPE
-                            ? { voiceId: data.pendingLocalVoice || 'af_heart' }
-                            : { speed: 1 });
+                    result = await this.localProvider.synthesize(text, synthesisOptions);
                 } catch (error) {
                     // A best-effort cancel() may make the SDK throw its own error.
                     // The caller requested cancellation; never misreport the stale
