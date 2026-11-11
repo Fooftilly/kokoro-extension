@@ -431,6 +431,9 @@ describe('overlay.js logic', () => {
 
             expect(document.getElementById('status').textContent).toBe('Error playing audio.');
             expect(document.getElementById('playPause').textContent).toBe('Play');
+            // Play must not resume the preceding sentence under the failed
+            // sentence's highlight.
+            expect(document.getElementById('audio').hasAttribute('src')).toBe(false);
             expect(retry.style.display).toBe('inline-flex');
 
             // Clicking the visible recovery control reinitializes the session.
