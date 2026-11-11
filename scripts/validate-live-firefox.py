@@ -1561,6 +1561,100 @@ def main():
                     raise RuntimeError("Firefox ONNX AudioManager offline playback acceptance failed: " +
                                        str(playback_acceptance))
 
+            # Real extension overlay UI acceptance, not a direct provider call.
+            # Two text blocks guarantee two separate selectable sentences;
+            # autoplay is disabled for deterministic controls on headless CI.
+            overlay_acceptance = None
+            if origin_download and provider == "onnx" and metrics.get("success"):
+                saved = driver.execute_async_script("""
+                    const done=arguments[arguments.length-1];
+                    browser.storage.local.set({
+                        pendingTtsBackend:'onnx',pendingApiUrl:null,
+                        pendingText:'Hello world. Hello world.',
+                        pendingContent:[
+                            {type:'text',content:'Hello world.'},
+                            {type:'text',content:'Hello world.'}
+                        ],
+                        pendingTitle:'ONNX overlay acceptance',
+                        pendingAutoplay:false
+                    }).then(()=>done({success:true}),e=>done({success:false,error:String(e)}));
+                """)
+                if not saved.get("success"):
+                    raise RuntimeError("Cannot seed Firefox ONNX overlay: " + str(saved))
+                driver.get(state["origin"] + "/overlay.html")
+                def overlay_ready(index):
+                    return driver.execute_script("""
+                        const spans=document.querySelectorAll('.sentence');
+                        const audio=document.getElementById('audio');
+                        return spans.length===2 &&
+                            spans[arguments[0]]?.classList.contains('highlight') &&
+                            audio?.src.startsWith('blob:') &&
+                            document.getElementById('loadingSpinner')?.style.display==='none';
+                    """, index)
+                WebDriverWait(driver, 180).until(lambda d: overlay_ready(0))
+                first_wav = driver.execute_async_script("""
+                    const done=arguments[arguments.length-1];
+                    (async()=>{
+                        const audio=document.getElementById('audio');
+                        const bytes=new Uint8Array(await (await fetch(audio.src)).arrayBuffer());
+                        const h=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+                        const tag=(offset,length)=>String.fromCharCode(
+                            ...bytes.subarray(offset,offset+length));
+                        const audioBytes=h.getUint32(40,true);
+                        if(tag(0,4)!=='RIFF'||tag(8,4)!=='WAVE'||
+                            h.getUint32(24,true)!==24000||audioBytes<2||
+                            bytes.length!==44+audioBytes)
+                            throw Error('Firefox overlay returned malformed ONNX WAV');
+                        if(!audio.paused||document.getElementById('playPause').textContent!=='Play')
+                            throw Error('Autoplay-disabled Firefox overlay unexpectedly started playing');
+                        if(navigator.onLine!==false)throw Error('Firefox overlay not offline');
+                        return {success:true,firstUrl:audio.src,sampleRateHz:24000,
+                            audioBytes,initiallyPaused:true};
+                    })().then(done,e=>done({success:false,error:String(e)}));
+                """)
+                if not first_wav.get("success"):
+                    raise RuntimeError("Firefox ONNX overlay WAV invalid: " + str(first_wav))
+                driver.find_element(By.ID, "seekFwd").click()
+                WebDriverWait(driver, 180).until(lambda d: overlay_ready(1))
+                driver.find_element(By.ID, "seekBack").click()
+                WebDriverWait(driver, 180).until(lambda d: overlay_ready(0))
+                settings = driver.execute_script("""
+                    const speed=document.getElementById('speed');
+                    speed.value='1.25';
+                    speed.dispatchEvent(new Event('change',{bubbles:true}));
+                    const volume=document.getElementById('volumeControl');
+                    volume.value='0.4';
+                    volume.dispatchEvent(new Event('input',{bubbles:true}));
+                    const audio=document.getElementById('audio');
+                    return {rate:audio.playbackRate,volume:audio.volume,paused:audio.paused};
+                """)
+                if (abs(settings["rate"] - 1.25) > 0.001 or
+                        abs(settings["volume"] - 0.4) > 0.001 or
+                        not settings["paused"]):
+                    raise RuntimeError("Firefox ONNX overlay controls failed: " + str(settings))
+                driver.find_element(By.ID, "retry").click()
+                WebDriverWait(driver, 180).until(lambda d: d.execute_script("""
+                    const spans=document.querySelectorAll('.sentence');
+                    const audio=document.getElementById('audio');
+                    return spans.length===2&&spans[0].classList.contains('highlight')&&
+                        audio?.src.startsWith('blob:')&&audio.src!==arguments[0]&&
+                        document.getElementById('loadingSpinner')?.style.display==='none';
+                """, first_wav["firstUrl"]))
+                overlay_acceptance = {
+                    "success": True, "sentences": 2, "initiallyPaused": True,
+                    "sampleRateHz": first_wav["sampleRateHz"],
+                    "audioBytes": first_wav["audioBytes"],
+                    "controls": ["next", "previous", "speed", "volume", "retry"],
+                    "rate": settings["rate"], "volume": settings["volume"],
+                    "networkOffline": True,
+                }
+                # Remove must still be driven by the existing manager UI.
+                driver.get(state["origin"] + "/benchmark.html")
+                WebDriverWait(driver, 30).until(
+                    lambda d: d.execute_script("return Boolean(window.KokoroBenchmark)") and
+                    d.find_element(By.CSS_SELECTOR, '[data-variant="onnx-q8"] .model-remove').is_enabled()
+                )
+
             if origin_download and metrics.get("success"):
                 # Close the active engine before Remove; no re-download may
                 # occur and other-provider assets must not be modified.
@@ -1623,6 +1717,7 @@ def main():
                 "originDownload": origin_download,
                 "originModelAcceptance": origin_model_acceptance,
                 "onnxPlaybackAcceptance": playback_acceptance,
+                "onnxOverlayAcceptance": overlay_acceptance,
                 "offlineAttempted": True,
                 "offlineInference": metrics.get("success") is True,
                 "cachePopulation": (
@@ -1652,6 +1747,8 @@ def main():
                 result["originModelAcceptance"] = origin_model_acceptance
             if "playback_acceptance" in locals() and playback_acceptance is not None:
                 result["onnxPlaybackAcceptance"] = playback_acceptance
+            if "overlay_acceptance" in locals() and overlay_acceptance is not None:
+                result["onnxOverlayAcceptance"] = overlay_acceptance
             raise
         finally:
             output.write_text(json.dumps(result, indent=2), encoding="utf-8")
