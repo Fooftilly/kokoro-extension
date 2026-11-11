@@ -646,3 +646,39 @@ full pinned HTTPS asset, integrity, offline inference, real process
 restart and dictionary Download/Cancel/Retry assertions remain
 mandatory. No successful acceptance is claimed until a full report
 demonstrates it.
+
+
+### Firefox MediaPipe actual-origin integrity failure, diagnostic follow-up (2026-11-11)
+
+[Manual run 43070463817](https://github.com/Fooftilly/kokoro-extension/actions/runs/43070463817)
+on master `924d15d2f379e6c336933ac0810edc26bb183ea8` **failed** in
+`run_model_origin_ui_acceptance` **before offline model inference**.
+Firefox 160.0 downloaded one pinned MediaPipe CPU model asset via the
+packaged extension's real user-facing Download control; host permission
+was true, the single expected HTTPS transfer completed, the transfer and
+Cache Storage *metadata* reported the expected **294,783,298 bytes**,
+UI progress was 100%, and neither ONNX variant was installed.
+However `fullSha256Verified` was **false** after a call to
+`ModelDataStore.verifyAndPruneCorrupt`. No offline inference was
+attempted; these facts do not constitute acceptance.
+
+[Firefox report artifact 13877587044](https://github.com/Fooftilly/kokoro-extension/actions/runs/43070463817/artifacts/13877587044)
+also documents **passing independent dictionary** direct HTTPS/SHA-256,
+page-reload/cache repair, and native Download/Cancel/Retry/Remove stages.
+The model failure must not invalidate those distinct passing observations.
+
+The report currently records only a boolean for the failed full-model
+SHA-256 gate. This cannot distinguish a confirmed digest mismatch,
+a missing cache entry, or other verifier state. A manual-only follow-up
+records a **non-destructive bounded-memory hash of the cached MediaPipe
+Blob before the production verifier can prune it**, including bytes read,
+stream-chunk type, expected/observed pinned digest and metadata status.
+It also retains the real `verifyAndPruneCorrupt` result and cache status
+after that call in the failure artifact as structured JSON.
+
+This diagnostic never bypasses the checksum, prevents cache pruning,
+pregrants a host, changes the model manifest, alters runtime logic or
+marks a nonmatching digest successful. The confirmed root cause remains
+unknown until the next manual Firefox `firefox-mediapipe-origin`
+run on the modified harness. Neither a corrupt download nor a Firefox
+browser bug can be concluded from the original boolean alone.
