@@ -1,6 +1,7 @@
 // Original ONNX Runtime Web Kokoro adapter. Only documented model interfaces and
 // the official, packaged onnxruntime-web engine are used; no unofficial wrapper.
-// Plain text synthesis remains unavailable until a reviewed G2P frontend exists.
+// Plain English text synthesis uses the existing strict, cached CMUdict frontend.
+// Out-of-vocabulary words fail closed; do not silently send text to FastAPI.
 import { manifestForVariant } from './model-catalog.js';
 import { ModelDataStore } from './model-data-store.js';
 import { prepareKokoroOnnxInputs, asOnnxRuntimeFeeds } from './onnx-kokoro-inputs.js';
@@ -131,6 +132,14 @@ export class OnnxKokoroProvider {
         await this.initialize();
         const dictionary = await this.englishLexicon();
         return this.synthesizePhonemes(phonemizeEnglish(text, dictionary), { speed });
+    }
+
+    async cancel() {
+        // ONNX Runtime Web does not expose an AbortSignal for an active
+        // InferenceSession.run(). The playback manager invalidates the old
+        // generation and waits for the current run to settle before starting
+        // another, so stale PCM is never played or converted to a WAV URL.
+        // Do not release the session here while native WASM inference runs.
     }
 
     async close() {
