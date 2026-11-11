@@ -417,6 +417,59 @@ describe('overlay.js logic', () => {
         }
     });
 
+    test('Retry appears for current playback failure and recovers after user action', async () => {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const { AudioManager } = require('../audio-manager.js');
+        const manager = AudioManager.mock.results[0].value;
+        const retry = document.getElementById('retry');
+        const logger = jest.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+            expect(retry.style.display).toBe('none');
+            manager.getAudio.mockRejectedValueOnce(new Error('Unsupported English word'));
+            document.getElementById('seekFwd').click();
+            await new Promise(resolve => setTimeout(resolve, 0));
+
+            expect(document.getElementById('status').textContent).toBe('Error playing audio.');
+            expect(document.getElementById('playPause').textContent).toBe('Play');
+            expect(retry.style.display).toBe('inline-flex');
+
+            // Clicking the visible recovery control reinitializes the session.
+            manager.getAudio.mockResolvedValueOnce('blob:recovered-after-error');
+            const initialClearCount = manager.clear.mock.calls.length;
+            retry.click();
+            await new Promise(resolve => setTimeout(resolve, 0));
+
+            expect(manager.clear.mock.calls.length).toBe(initialClearCount + 1);
+            expect(document.getElementById('audio').getAttribute('src'))
+                .toBe('blob:recovered-after-error');
+            expect(retry.style.display).toBe('none');
+        } finally {
+            logger.mockRestore();
+        }
+    });
+
+    test('successful navigation dismisses Retry after a failed sentence', async () => {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const { AudioManager } = require('../audio-manager.js');
+        const manager = AudioManager.mock.results[0].value;
+        const logger = jest.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+            manager.getAudio.mockRejectedValueOnce(new Error('Unsupported English word'));
+            document.getElementById('seekFwd').click();
+            await new Promise(resolve => setTimeout(resolve, 0));
+            expect(document.getElementById('retry').style.display).toBe('inline-flex');
+
+            manager.getAudio.mockResolvedValueOnce('blob:previous-good-sentence');
+            document.getElementById('seekBack').click();
+            await new Promise(resolve => setTimeout(resolve, 0));
+            expect(document.getElementById('retry').style.display).toBe('none');
+            expect(document.getElementById('audio').getAttribute('src'))
+                .toBe('blob:previous-good-sentence');
+        } finally {
+            logger.mockRestore();
+        }
+    });
+
     test('stale success cannot replace playback after navigating back to the same index', async () => {
         await new Promise(resolve => setTimeout(resolve, 100));
         const { AudioManager } = require('../audio-manager.js');
