@@ -143,9 +143,18 @@ export async function blobMatchesSha256(blob, asset, signal) {
             const { done, value } = await reader.read();
             if (signal?.aborted) throw new globalThis.DOMException('Verification cancelled', 'AbortError');
             if (done) { completed = true; break; }
-            if (!(value instanceof Uint8Array) ||
+            // Blob.stream() can cross Firefox extension/Marionette realms:
+            // its chunks are real Uint8Array views, but instanceof checks
+            // against this realm's constructor return false. Only accept
+            // genuine Uint8Array views, then make a zero-copy local view of
+            // their underlying bytes before calling the incremental hasher.
+            // Keep size bounds and the final pinned SHA-256 comparison strict.
+            if (!ArrayBuffer.isView(value) ||
+                Object.prototype.toString.call(value) !== '[object Uint8Array]' ||
                 hash.totalBytes + value.byteLength > asset.bytes) return false;
-            hash.update(value);
+            const bytes = value instanceof Uint8Array ? value :
+                new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+            hash.update(bytes);
         }
     } finally {
         signal?.removeEventListener('abort', cancelPendingRead);
