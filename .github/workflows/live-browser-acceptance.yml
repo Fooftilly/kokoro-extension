@@ -47,6 +47,13 @@ jobs:
     # Keep this heavyweight browser job on a stable, explicitly supported
     # LTS image until 26.04 package resolution is validated separately.
     runs-on: ubuntu-24.04
+    # Version- and digest-pinned Playwright image has Chromium, Xvfb, fonts
+    # and required shared libraries preinstalled. Hosted Ubuntu apt DNS failed
+    # on both 24.04 and 26.04 before any browser acceptance could run.
+    # The image and npm Playwright package must stay at the same version.
+    container:
+      image: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:6e3fb709361521eb27161606e6da6d2674e5e89fa16516cb37d6fdd91372273d
+      options: --ipc=host
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,13 +65,19 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Package extension for Chrome and Firefox
         run: npm run package:ci
-      - name: Install pinned Playwright Chromium (isolated from lockfile)
+      - name: Verify preinstalled pinned Playwright Chromium (isolated from lockfile)
         run: |
           mkdir -p "$RUNNER_TEMP/kokoro-playwright"
           cd "$RUNNER_TEMP/kokoro-playwright"
           npm init -y
           npm install --no-save --ignore-scripts --package-lock=false playwright@1.65.0
-          ./node_modules/.bin/playwright install --with-deps chromium
+          # The official version-matched container has already installed both
+          # the browser binaries and their full Linux/system/font dependencies.
+          # Fail if the exact Playwright browser or the native X11 input
+          # libraries are absent; do not download/skip dependencies silently.
+          node -e 'const fs = require("node:fs"); const browser = require("playwright").chromium.executablePath(); if (!fs.existsSync(browser)) throw Error("Pinned Chromium binary missing: " + browser)'
+          test -x /usr/bin/Xvfb
+          /usr/bin/python3 -c 'import ctypes; ctypes.CDLL("libX11.so.6"); ctypes.CDLL("libXtst.so.6")'
       - name: Execute real model-backed Chrome extension inference
         if: ${{ inputs.acceptance_scope != 'chromium-quota-recovery' }}
         env:
@@ -79,10 +92,11 @@ jobs:
           # browser across both processes so native consent is interactive.
           # This workflow is explicitly opt-in (or limited to the experimental
           # branch) and is not part of routine extension CI.
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq xvfb openbox xdotool
+          # The pinned image already includes Xvfb and browser dependencies.
+          # Native optional-host dialog input uses libX11/libXtst via a small
+          # standard-library Python helper; no mutable apt mirror is required.
           xvfb-run -a -s '-screen 0 1440x900x24' \
-            bash -c 'openbox >/dev/null 2>&1 & exec node scripts/validate-live-chromium.mjs'
+            node scripts/validate-live-chromium.mjs
       - name: Execute Chromium real-quota, offline multi-asset recovery acceptance
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.acceptance_scope == 'chromium-quota-recovery' }}
         env:
