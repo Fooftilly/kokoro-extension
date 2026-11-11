@@ -1514,7 +1514,7 @@ def main():
                         const requestsBefore=counters();
                         const manager=new AudioManager();
                         try{
-                            await browser.storage.local.set({pendingTtsBackend:'onnx'});
+                            await browser.storage.local.set({pendingTtsBackend:'onnx',pendingApiUrl:''});
                             manager.setSentences([
                                 {text:'Hello world.'},
                                 {text:'zzzzqwertyword.'},
