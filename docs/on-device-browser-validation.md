@@ -627,7 +627,10 @@ The previous script relied on apt-provided `openbox` and `xdotool`
 to interact with Chromium's **native optional host-permission dialog**.
 A small Python standard-library helper now sends the *same* real X11
 Tab/Return key events through the already installed X11/XTest shared
-libraries. The harness still requires the pinned host permission to be
+libraries. Python 3.12 is explicitly provisioned using a SHA-pinned
+`actions/setup-python` action because the Node Playwright image does
+not guarantee `/usr/bin/python3`; no Python system packages are fetched
+from apt. The harness still requires the pinned host permission to be
 initially absent, presses the real Download button, and confirms the
 browser grants only the expected host after native UI input. The
 helper was smoke-checked under a local Xvfb server with a focused X11
