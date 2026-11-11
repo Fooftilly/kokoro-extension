@@ -184,6 +184,26 @@ describe('background.js logic', () => {
         }
     );
 
+    test('ONNX article action opens full local player and never sends server audio', async () => {
+        browser.storage.sync.get.mockResolvedValue({
+            ttsBackend: 'onnx', apiUrl: 'http://private-server.example/v1/',
+            mode: 'stream', normalizationOptions: {},
+        });
+        browser.tabs.sendMessage.mockResolvedValue({ text: 'Hello world.',
+            content: [{ type: 'text', content: 'Hello world.' }] });
+        const listener = browser.contextMenus.onClicked.addListener.mock.calls[0][0];
+        await listener({ menuItemId: 'read-article-kokoro' },
+            { id: 19, title: 'Article' });
+        expect(browser.storage.local.set).toHaveBeenCalledWith(expect.objectContaining({
+            pendingTtsBackend: 'onnx', pendingText: 'Hello world.',
+            pendingApiUrl: null,
+        }));
+        expect(browser.tabs.sendMessage).toHaveBeenCalledWith(
+            19, { action: 'SHOW_PLAYER', mode: 'full' }
+        );
+        expect(fetch.mock.calls.some(([url]) => String(url).includes('/audio/speech'))).toBe(false);
+    });
+
     test.each(['', 'not a valid server URL', undefined])(
         'MediaPipe selection works without a usable server URL (%s)', async apiUrl => {
             browser.storage.sync.get.mockResolvedValue({
