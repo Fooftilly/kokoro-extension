@@ -610,13 +610,19 @@ function renderChapterList(toc) {
     };
 
     toc.forEach(item => createItem(item));
+    // No chapter is active yet: keep Prev/Next disabled until activation below
+    // sets currentActiveHref. Relying on a synthetic .click() alone can leave
+    // Next disabled if the listener fails to run for a detached/replaced node.
     updateNavButtons();
 
     // Expand parent TOC groups of the selected chapter, including when
     // a non-linked group label contains the first playable chapter.
     const firstItem = chapterList.querySelector('.playable-chapter');
-    if (firstItem) {
-        firstItem.click();
+    if (firstItem && flatToc[0]) {
+        // Activate through the same path as a user click, but call the
+        // handler directly so first-chapter Prev/Next state cannot depend on
+        // dispatching a DOM click against a just-mounted button.
+        activateChapter(flatToc[0], firstItem);
         let group = firstItem.closest('.chapter-group');
         while (group && chapterList.contains(group)) {
             setChapterGroupExpanded(group, true);
@@ -661,8 +667,16 @@ nextChapterBtn.addEventListener('click', () => {
 
 function updateNavButtons() {
     const currentIndex = flatToc.findIndex(item => item.href === currentActiveHref);
-    prevChapterBtn.disabled = currentIndex <= 0;
-    nextChapterBtn.disabled = currentIndex === -1 || currentIndex >= flatToc.length - 1;
+    // Treat a missing/unmatched selection like the start of the list for Prev
+    // (disabled), but keep Next disabled until a real flatToc entry is active.
+    // Empty TOCs and single-chapter documents must not leave the HTML default
+    // enabled state visible after renderChapterList().
+    const atOrBeforeFirst = currentIndex <= 0;
+    const atOrPastLast = currentIndex === -1 || currentIndex >= flatToc.length - 1;
+    prevChapterBtn.disabled = atOrBeforeFirst;
+    nextChapterBtn.disabled = atOrPastLast;
+    prevChapterBtn.setAttribute('aria-disabled', String(prevChapterBtn.disabled));
+    nextChapterBtn.setAttribute('aria-disabled', String(nextChapterBtn.disabled));
 }
 
 // A prior book may still have section.load() in progress when its successor

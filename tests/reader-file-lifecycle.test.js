@@ -1174,6 +1174,57 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(source.querySelector('label[for="fileInput"]')).not.toBeNull();
     });
 
+    test('acceptance-style two-chapter publisher TOC enables Next only after first chapter activates', async () => {
+        // Mirrors the live Chromium EPUB fixture: two spine files, publisher
+        // nav labels First/Second Chapter, no heading scan.
+        const candidate = createMockBook('Acceptance');
+        candidate.packaging = { navPath: 'nav.xhtml' };
+        candidate.sections[0].href = 'first.xhtml';
+        candidate.sections[0].url = 'first.xhtml';
+        candidate.sections[1].href = 'second.xhtml';
+        candidate.sections[1].url = 'second.xhtml';
+        candidate.sections[0].load.mockResolvedValue(
+            new DOMParser().parseFromString(
+                '<body><p id="first">Hello world.</p></body>', 'text/html'));
+        candidate.sections[1].load.mockResolvedValue(
+            new DOMParser().parseFromString(
+                '<body><p id="second">Hello world.</p></body>', 'text/html'));
+        candidate.navigation.toc = [
+            { href: 'first.xhtml', label: 'First Chapter' },
+            { href: 'second.xhtml', label: 'Second Chapter' },
+        ];
+        books.push(candidate);
+        selectFile('offline-reader-acceptance.epub').succeed();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) {
+            await tick();
+        }
+
+        expect(document.querySelectorAll('.playable-chapter')).toHaveLength(2);
+        expect(Array.from(document.querySelectorAll('.playable-chapter'),
+            el => el.dataset.href)).toEqual(['first.xhtml', 'second.xhtml']);
+        expect(document.querySelector('.playable-chapter.active .chapter-label').textContent)
+            .toBe('First Chapter');
+        expect(document.getElementById('prevChapter').disabled).toBe(true);
+        expect(document.getElementById('nextChapter').disabled).toBe(false);
+        expect(document.getElementById('prevChapter').getAttribute('aria-disabled'))
+            .toBe('true');
+        expect(document.getElementById('nextChapter').getAttribute('aria-disabled'))
+            .toBe('false');
+        expect(browser.storage.local.set.mock.lastCall[0].pendingTitle).toBe('First Chapter');
+        expect(browser.storage.local.set.mock.lastCall[0].pendingContent
+            .some(block => block.content?.includes('Hello world.'))).toBe(true);
+
+        document.getElementById('nextChapter').click();
+        for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length < 2; i++) {
+            await tick();
+        }
+        expect(browser.storage.local.set.mock.lastCall[0].pendingTitle).toBe('Second Chapter');
+        expect(document.querySelector('.playable-chapter.active .chapter-label').textContent)
+            .toBe('Second Chapter');
+        expect(document.getElementById('prevChapter').disabled).toBe(false);
+        expect(document.getElementById('nextChapter').disabled).toBe(true);
+    });
+
     test('non-linked publisher TOC groups are preserved but skipped by playback and Prev/Next', async () => {
         const candidate = createMockBook('Publisher');
         candidate.navigation.toc = [
