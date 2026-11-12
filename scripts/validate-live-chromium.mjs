@@ -411,6 +411,72 @@ async function downloadModelFromOfficialOrigin(page, manifest) {
         otherProviderStatusBefore: otherProviderBefore };
 }
 
+// Real packaged benchmark-page test using downloaded, SHA-verified models.
+// No model test is started by visiting the page; each inference is a UI click.
+async function acceptLocalBenchmarkUi(page, extensionId, manifest) {
+    const key = manifest.provider + '-' + manifest.variant;
+    const rowSelector = '[data-variant="' + key + '"]';
+    await page.goto('chrome-extension://' + extensionId + '/benchmark.html');
+    await page.waitForFunction(selector => {
+        const row = document.querySelector(selector);
+        return !!row && row.querySelector('.model-test')?.disabled === false;
+    }, rowSelector, { timeout: 30000 });
+    const readEnglishRow = async () => page.evaluate(key => {
+        const row = document.querySelector('#sharedEnglishComparisonRows tr[data-backend="' + key + '"]');
+        const rows = document.querySelectorAll('#sharedEnglishComparisonRows tr');
+        const model = document.querySelector('[data-variant="' + key + '"]');
+        if (!row || rows.length !== 1 ||
+            !model?.querySelector('.model-status')?.textContent.includes('warm (3 runs, shared English text)') ||
+            model.querySelector('.model-choose')?.disabled ||
+            document.querySelector('#serverStatus')?.textContent !== 'Not tested' ||
+            !document.querySelector('#serverAudio')?.hidden ||
+            navigator.onLine !== false) {
+            throw Error('Packaged local English benchmark did not produce an isolated offline row');
+        }
+        const cells = Array.from(row.cells, cell => cell.textContent.trim());
+        const values = cells.slice(1).map(Number.parseFloat);
+        if (values.length !== 3 || values.some(v => !Number.isFinite(v) || v <= 0)) {
+            throw Error('Local comparison displayed invalid measured timings: ' + JSON.stringify(cells));
+        }
+        return { cells, p50Ms: values[0], p95Ms: values[1], rtfP50: values[2] };
+    }, key);
+    await page.locator(rowSelector + ' .model-test').click();
+    await page.waitForFunction(key => {
+        const model = document.querySelector('[data-variant="' + key + '"]');
+        return document.querySelector('#sharedEnglishComparisonRows tr[data-backend="' + key + '"]') &&
+            model?.querySelector('.model-choose')?.disabled === false;
+    }, key, { timeout: 180000 });
+    const first = await readEnglishRow();
+    await page.locator('#benchmarkText').fill('zzzzqwertyword.');
+    const afterEdit = await page.locator('#sharedEnglishComparisonRows tr').count();
+    if (afterEdit !== 0) throw Error('Benchmark kept stale result after user edited English sample');
+    let ipaOnlyExcluded = null;
+    if (manifest.provider === 'onnx') {
+        await page.locator(rowSelector + ' .model-test').click();
+        await page.waitForFunction(selector => {
+            const model = document.querySelector(selector);
+            return model?.querySelector('.model-status')?.textContent.includes('IPA-only diagnostic') &&
+                model.querySelector('.model-choose')?.disabled === true;
+        }, rowSelector, { timeout: 180000 });
+        if (await page.locator('#sharedEnglishComparisonRows tr').count() !== 0) {
+            throw Error('IPA-only ONNX fallback entered shared-English comparison');
+        }
+        ipaOnlyExcluded = true;
+    }
+    await page.locator('#benchmarkText').fill('Hello world.');
+    await page.locator(rowSelector + ' .model-test').click();
+    await page.waitForFunction(key => {
+        const model = document.querySelector('[data-variant="' + key + '"]');
+        return document.querySelector('#sharedEnglishComparisonRows tr[data-backend="' + key + '"]') &&
+            model?.querySelector('.model-choose')?.disabled === false;
+    }, key, { timeout: 180000 });
+    const restored = await readEnglishRow();
+    return { success: true, provider: manifest.provider, variant: manifest.variant,
+        sharedSample: 'Hello world.', first, restored, clearedOnEdit: true,
+        ipaOnlyExcluded, backendSelectionTested: true, networkOffline: true,
+        noImplicitFastApi: true, rows: 1 };
+}
+
 let extensionOrigin = null;
 // A random per-run URL token authenticates Chrome requests, including MV3 GET
 // requests for which Chrome intentionally omits the Origin header.
@@ -555,6 +621,7 @@ try {
         let originModelAcceptance = null;
         let onnxPlaybackAcceptance = null;
         let onnxOverlayAcceptance = null;
+        let localBenchmarkAcceptance = null;
         page.on('pageerror', error => errors.push(String(error)));
         page.on('crash', () => { crashed = true; });
         try {
@@ -856,15 +923,21 @@ try {
                     networkOffline: true,
                 };
             }
+            if (originDownload && result.success) {
+                stage = 'offline-real-benchmark-page-controls';
+                localBenchmarkAcceptance = await acceptLocalBenchmarkUi(page, extensionId, manifest);
+            }
             console.log(result.success ? 'REAL MODEL INFERENCE' : 'MODEL INFERENCE FAILURE', result);
             results.push({ provider: manifest.provider, variant: manifest.variant,
                 offlineAttempted: true, offlineInference: result.success === true,
-                originModelAcceptance, onnxPlaybackAcceptance, onnxOverlayAcceptance, ...result });
+                originModelAcceptance, onnxPlaybackAcceptance, onnxOverlayAcceptance,
+                localBenchmarkAcceptance, ...result });
             await saveReport();
         } catch (error) {
             const failure = { provider: manifest.provider, variant: manifest.variant,
                 success: false, crashed, stage, originModelAcceptance,
-                onnxPlaybackAcceptance, onnxOverlayAcceptance, error: String(error) };
+                onnxPlaybackAcceptance, onnxOverlayAcceptance,
+                localBenchmarkAcceptance, error: String(error) };
             results.push(failure);
             await saveReport();
             console.error('MODEL VALIDATION ABORTED', failure);
