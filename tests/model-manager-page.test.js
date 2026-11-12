@@ -1111,7 +1111,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
 
         expect(comparison.querySelector('[data-backend="mediapipe-cpu"]')).not.toBeNull();
         expect(comparison.querySelector('[data-backend="onnx-q8"]')).not.toBeNull();
-        expect(status.textContent).toContain('two'); // informative shared-sample result
+        expect(status.textContent).toContain('Measured 2 local backend paths');
         expect(status.textContent).toContain('No ranking is inferred');
         expect(engine.synthesize).toHaveBeenCalledTimes(8); // two untimed + six measured
         expect(global.fetch).not.toHaveBeenCalled();
