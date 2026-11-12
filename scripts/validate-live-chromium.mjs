@@ -779,48 +779,60 @@ async function acceptRealEpubReader(page, extensionId) {
         return null;
     };
     const waitForChapter = async (title, previousRevision = 0, previousAudioUrl = null) => {
-        // Poll the *real* iframe and read the captured Blob URL during the
-        // same asynchronous browser operation. A separate wait followed by
-        // page.evaluate can race with initialize(), which clears audio.src:
-        // fetch('') would then return reader.html instead of synthesized WAV.
-        // Chapter readiness also requires Prev/Next + active TOC state so a
-        // later Playwright isEnabled probe cannot observe a transitional nav.
-        let snapshot;
-        try {
-            snapshot = await page.waitForFunction(
-                pollRealEpubChapterReady,
-                { title, previousRevision, previousAudioUrl },
-                { timeout: 180000 },
-            );
-        } catch (error) {
-            const diagnostics = await readReaderNavDiagnostics().catch(() => null);
-            throw Error('Reader chapter readiness failed for ' + title + ': ' +
-                String(error) + '; nav=' + JSON.stringify(diagnostics));
+        // Playwright 1.65 treats an *async* waitForFunction predicate that
+        // resolves to false/null as success (returns that falsy value). The
+        // EPUB readiness poll must await chrome.storage + iframe WAV fetch, so
+        // it cannot be a sync predicate. Drive the same atomic browser-side
+        // poll via page.evaluate in Node until it returns a chapter snapshot.
+        // WAV header mismatches fail closed immediately; transient not-ready
+        // results retry until the deadline.
+        const deadline = Date.now() + 180000;
+        let lastError = null;
+        while (Date.now() < deadline) {
+            try {
+                const snapshot = await page.evaluate(
+                    pollRealEpubChapterReady,
+                    { title, previousRevision, previousAudioUrl },
+                );
+                if (snapshot && typeof snapshot === 'object' &&
+                    snapshot.title === title && snapshot.nav) {
+                    return snapshot;
+                }
+            } catch (error) {
+                const message = String(error);
+                if (message.includes('Real EPUB reader WAV mismatch')) {
+                    const diagnostics = await readReaderNavDiagnostics().catch(() => null);
+                    throw Error('Reader chapter readiness failed for ' + title + ': ' +
+                        message + '; nav=' + JSON.stringify(diagnostics));
+                }
+                lastError = error;
+            }
+            await new Promise(resolve => setTimeout(resolve, 100));
         }
-        try {
-            return await snapshot.jsonValue();
-        } finally {
-            await snapshot.dispose();
-        }
+        const diagnostics = await readReaderNavDiagnostics().catch(() => null);
+        throw Error('Reader chapter readiness failed for ' + title + ': ' +
+            String(lastError || 'timeout') + '; nav=' + JSON.stringify(diagnostics));
     };
     const first = await waitForChapter('First Chapter');
     const firstExpected = expectedNavForTitle(first.title);
-    if (!first.nav || first.nav.prevDisabled !== firstExpected.prevDisabled ||
+    if (!firstExpected || !first.nav ||
+        first.nav.prevDisabled !== firstExpected.prevDisabled ||
         first.nav.nextDisabled !== firstExpected.nextDisabled ||
         first.nav.activeLabel !== 'First Chapter') {
         throw Error('EPUB first chapter navigation controls incorrect: ' +
-            JSON.stringify({ expected: firstExpected, nav: first.nav,
+            JSON.stringify({ expected: firstExpected, snapshot: first, nav: first.nav,
                 live: await readReaderNavDiagnostics() }));
     }
     await page.locator('#nextChapter').click();
     const second = await waitForChapter('Second Chapter', first.revision, first.audioUrl);
     const secondExpected = expectedNavForTitle(second.title);
-    if (!second.nav || second.nav.prevDisabled !== secondExpected.prevDisabled ||
+    if (!secondExpected || !second.nav ||
+        second.nav.prevDisabled !== secondExpected.prevDisabled ||
         second.nav.nextDisabled !== secondExpected.nextDisabled ||
         second.nav.activeLabel !== 'Second Chapter' ||
         first.audioUrl === second.audioUrl) {
         throw Error('EPUB navigation failed to replace audio or update chapter controls: ' +
-            JSON.stringify({ expected: secondExpected, nav: second.nav,
+            JSON.stringify({ expected: secondExpected, snapshot: second, nav: second.nav,
                 firstAudioUrl: first.audioUrl, secondAudioUrl: second.audioUrl,
                 live: await readReaderNavDiagnostics() }));
     }
@@ -832,12 +844,13 @@ async function acceptRealEpubReader(page, extensionId) {
     const plainText = await waitForChapter('acceptance.txt', second.revision, second.audioUrl);
     const txtExpected = expectedNavForTitle(plainText.title);
     if (plainText.audioUrl === second.audioUrl ||
-        !plainText.nav || plainText.nav.prevDisabled !== txtExpected.prevDisabled ||
+        !txtExpected || !plainText.nav ||
+        plainText.nav.prevDisabled !== txtExpected.prevDisabled ||
         plainText.nav.nextDisabled !== txtExpected.nextDisabled ||
         plainText.nav.activeLabel !== 'acceptance.txt' ||
         plainText.nav.entries.length !== 1) {
         throw Error('TXT document replacement retained stale EPUB audio or navigation: ' +
-            JSON.stringify({ expected: txtExpected, nav: plainText.nav,
+            JSON.stringify({ expected: txtExpected, snapshot: plainText, nav: plainText.nav,
                 secondAudioUrl: second.audioUrl, txtAudioUrl: plainText.audioUrl,
                 live: await readReaderNavDiagnostics() }));
     }
