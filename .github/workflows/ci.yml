@@ -35,6 +35,7 @@ jobs:
 
       - name: Compile-check opt-in browser acceptance scripts
         run: |
+          python3 -m py_compile scripts/reader_acceptance_epub.py
           python3 -m py_compile scripts/validate-live-firefox.py
           node --check scripts/validate-live-chromium.mjs
           node --check scripts/validate-real-quota-chromium.mjs
