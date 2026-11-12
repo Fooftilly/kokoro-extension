@@ -453,20 +453,43 @@ function currentEngine(entry) {
     return provider;
 }
 
-// ONNX IPA benchmark timings must not be mistaken for ordinary-text
-// readiness. A missing dictionary or out-of-vocabulary word leaves the
-// successful IPA sample playable, but does not enable q8 selection.
+// Measure full-clip synthesis, not streaming time-to-first-audio. Only group
+// runs for the *same input and provider path*; a failed English run must never
+// be mixed with IPA timings or count towards backend approval.
+async function measureWarmClip(synthesize) {
+    const runs = [];
+    let audio = null;
+    for (let n = 0; n < 3; n++) {
+        const started = performance.now();
+        audio = await synthesize();
+        const elapsed = performance.now() - started;
+        runs.push({ kind: 'warm', firstAudioMs: null, synthesisMs: elapsed,
+            audioDurationSec: audio.samples.length / audio.sampleRateHz });
+    }
+    return { runs, audio };
+}
+
+// ONNX q8 can benchmark the *same English input* as MediaPipe only when its
+// verified dictionary resolves every word. Otherwise use an explicitly
+// non-comparable IPA diagnostic without authorizing regular English playback.
 async function testOnnxEnglishText(engine, text) {
-    if (!(await cacheStore().status(dictionaryManifest())).ready) {
-        return { ready: false, audio: null,
-            message: ' English text not tested: download the pronunciation dictionary first.' };
+    if (!text || !(await cacheStore().status(dictionaryManifest())).ready) {
+        return { ready: false, measured: null,
+            message: !text
+                ? ' English text not tested: enter an English sample.'
+                : ' English text not tested: download the pronunciation dictionary first.' };
     }
     try {
-        const audio = await engine.synthesize(text);
-        return { ready: true, audio,
-            message: ' Experimental dictionary-backed English text audio is ready to listen to.' };
+        // The first English synthesis lazily reads, verifies and parses the
+        // dictionary, and may warm up the ONNX runtime. Exclude all such cold
+        // preparation from the three runs labeled as warm measurements.
+        // A failed warm-up must still lead to IPA-only diagnostics, not approval.
+        await engine.synthesize(text);
+        const measured = await measureWarmClip(() => engine.synthesize(text));
+        return { ready: true, measured,
+            message: ' Measured the shared English text through the dictionary-backed ONNX path (after untimed warm-up).' };
     } catch (error) {
-        return { ready: false, audio: null,
+        return { ready: false, measured: null,
             message: ' English text synthesis failed: ' +
                 String(error.message || error) + '. Playing the IPA probe instead.' };
     }
@@ -524,42 +547,38 @@ async function testEngine(entry, ui) {
             await engine.initialize(); // Initialize outside warm-run timings.
             const text = document.getElementById('benchmarkText').value.trim();
             const ipa = document.getElementById('benchmarkIpa').value.trim();
-            const runs = [];
-            let last = null;
-            for (let n = 0; n < 3; n++) {
-                const started = performance.now();
-                last = entry.provider === 'mediapipe'
-                    ? await engine.synthesize(text)
-                    : await engine.synthesizePhonemes(ipa);
-                const elapsed = performance.now() - started;
-                runs.push({ kind: 'warm', firstAudioMs: null, synthesisMs: elapsed,
-                    audioDurationSec: last.samples.length / last.sampleRateHz });
-            }
-            // Keep the IPA measurements distinct from dictionary-backed text synthesis.
-            // A failed or missing English lexicon must not erase a valid IPA probe.
-            let englishResult = '';
-            let englishReady = false;
-            if (entry.provider === 'onnx') {
-                const english = await testOnnxEnglishText(engine, text);
-                englishResult = english.message;
-                englishReady = english.ready;
-                if (english.audio) last = english.audio;
-            }
-            const metrics = window.KokoroBenchmark.summarizeRuns(runs);
+            // When supported, measure ONNX q8 with the same ordinary English
+            // text used by MediaPipe. Unknown words/missing dictionary fall
+            // back to a separately labeled IPA-only diagnostic, never to FastAPI.
+            const english = entry.provider === 'onnx' && entry.variant === 'q8'
+                ? await testOnnxEnglishText(engine, text) : null;
+            const englishReady = english?.ready === true;
+            const measured = english?.measured || await measureWarmClip(
+                entry.provider === 'mediapipe'
+                    ? () => engine.synthesize(text)
+                    : () => engine.synthesizePhonemes(ipa));
+            const isEnglishMeasurement = entry.provider === 'mediapipe' || englishReady;
+            const metrics = window.KokoroBenchmark.summarizeRuns(measured.runs);
             const previous = lastAudioUrl.get(entry.key);
             if (previous) URL.revokeObjectURL(previous);
-            const audioUrl = URL.createObjectURL(pcmToWavBlob(last.samples, last.sampleRateHz));
+            const audioUrl = URL.createObjectURL(
+                pcmToWavBlob(measured.audio.samples, measured.audio.sampleRateHz));
             lastAudioUrl.set(entry.key, audioUrl);
             ui.audio.src = audioUrl;
             ui.audio.hidden = false;
-            setMessage(ui.status, 'Real local inference, warm (3 runs). Full-clip synthesis p50: ' +
+            setMessage(ui.status, 'Real local inference, warm (3 runs, ' +
+                (isEnglishMeasurement ? 'shared English text' : 'IPA-only diagnostic') +
+                '). Full-clip synthesis p50: ' +
                 metrics.synthesisP50Ms.toFixed(0) + ' ms, p95: ' +
                 metrics.synthesisP95Ms.toFixed(0) + ' ms; RTF p50: ' +
                 metrics.realTimeFactorP50.toFixed(2) +
                 '. Streaming time-to-first-audio was not measured.' +
                 (entry.provider === 'onnx'
-                    ? ' Benchmark used IPA; English synthesis is a separate, unmeasured check.' +
-                      englishResult + ' Unknown English words are not supported and never fall back to FastAPI.'
+                    ? (isEnglishMeasurement
+                        ? ' Same English text as MediaPipe; voices and phonemization may differ.'
+                        : ' IPA timings are not comparable with English-text timings.') +
+                      (english?.message || ' This ONNX variant is IPA-only; regular English playback is not validated.') +
+                      ' Unknown English words are not supported and never fall back to FastAPI.'
                     : ' Listen before choosing.'));
             await approveTestedBackend(entry, ui, validationKey, englishReady);
 
