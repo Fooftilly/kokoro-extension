@@ -627,7 +627,11 @@ async function acceptRealEpubReader(page, extensionId) {
     });
 
     const waitForChapter = async (title, previousRevision = 0, previousAudioUrl = null) => {
-        await page.waitForFunction(async ({ title, previousRevision, previousAudioUrl }) => {
+        // Poll the *real* iframe and read the captured Blob URL during the
+        // same asynchronous browser operation. A separate wait followed by
+        // page.evaluate can race with initialize(), which clears audio.src:
+        // fetch('') would then return reader.html instead of synthesized WAV.
+        const snapshot = await page.waitForFunction(async ({ title, previousRevision, previousAudioUrl }) => {
             const frame = document.getElementById('playerFrame')?.contentDocument;
             const audio = frame?.getElementById('audio');
             const status = frame?.getElementById('status');
@@ -635,71 +639,79 @@ async function acceptRealEpubReader(page, extensionId) {
                 'pendingTitle', 'pendingTtsBackend', 'pendingApiUrl',
                 'pendingReaderReloadRevision', 'pendingContent', 'pendingAutoplay',
             ]);
+            const revision = stored.pendingReaderReloadRevision;
+            const audioUrl = audio?.src;
             const entries = document.querySelectorAll('.playable-chapter');
-            return document.getElementById('filePickerOverlay')?.style.display === 'none' &&
-                entries.length === (title === 'acceptance.txt' ? 1 : 2) &&
-                stored.pendingTitle === title &&
-                stored.pendingTtsBackend === 'onnx' &&
-                (stored.pendingApiUrl === null || stored.pendingApiUrl === '') &&
-                stored.pendingAutoplay === false &&
-                Number.isSafeInteger(stored.pendingReaderReloadRevision) &&
-                stored.pendingReaderReloadRevision > previousRevision &&
-                stored.pendingContent?.some(b => b.content?.includes('Hello world.')) &&
-                audio?.src.startsWith('blob:') &&
-                (!previousAudioUrl || audio.src !== previousAudioUrl) &&
-                audio.paused &&
-                frame.getElementById('loadingSpinner')?.style.display === 'none' &&
-                status?.textContent !== 'Error playing audio.' &&
-                frame.querySelectorAll('.sentence').length >= 1 &&
-                navigator.onLine === false;
-        }, { title, previousRevision, previousAudioUrl }, { timeout: 180000 });
-        return page.evaluate(async () => {
-            const frame = document.getElementById('playerFrame').contentDocument;
-            const audio = frame.getElementById('audio');
-            // The Blob was created inside the embedded extension player.
-            // Read it from that same frame rather than relying on a parent
-            // document's cross-realm blob URL lifetime or fetch partition.
-            const response = await frame.defaultView.fetch(audio.src);
-            if (!response.ok) throw Error('Reader WAV Blob unavailable: HTTP ' + response.status);
-            const bytes = new Uint8Array(await response.arrayBuffer());
-            const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-            const tag = (offset, length) =>
-                String.fromCharCode(...bytes.subarray(offset, offset + length));
-            const stored = await chrome.storage.local.get([
-                'pendingTitle', 'pendingReaderReloadRevision', 'pendingContent',
-                'pendingTtsBackend', 'pendingApiUrl',
+            if (document.getElementById('filePickerOverlay')?.style.display !== 'none' ||
+                entries.length !== (title === 'acceptance.txt' ? 1 : 2) ||
+                stored.pendingTitle !== title ||
+                stored.pendingTtsBackend !== 'onnx' ||
+                (stored.pendingApiUrl !== null && stored.pendingApiUrl !== '') ||
+                stored.pendingAutoplay !== false ||
+                !Number.isSafeInteger(revision) || revision <= previousRevision ||
+                !stored.pendingContent?.some(b => b.content?.includes('Hello world.')) ||
+                !audioUrl?.startsWith('blob:') ||
+                (previousAudioUrl && audioUrl === previousAudioUrl) ||
+                !audio.paused ||
+                frame.getElementById('loadingSpinner')?.style.display !== 'none' ||
+                status?.textContent === 'Error playing audio.' ||
+                frame.getElementById('pageTitle')?.textContent !== title ||
+                frame.querySelectorAll('.sentence').length < 1 ||
+                navigator.onLine !== false) return false;
+
+            let response;
+            let bytes;
+            try {
+                // The iframe owns this Blob URL; capture it before awaiting.
+                response = await frame.defaultView.fetch(audioUrl);
+                if (!response.ok) return false;
+                bytes = new Uint8Array(await response.arrayBuffer());
+            } catch {
+                // The player may revoke the URL while switching chapters.
+                return false;
+            }
+            // Reject transitional snapshots rather than letting them pass or
+            // fetching the newly cleared audio.src as a document URL.
+            const latest = await chrome.storage.local.get([
+                'pendingReaderReloadRevision', 'pendingTitle', 'pendingTtsBackend',
             ]);
-            const audioBytes = header.getUint32(40, true);
+            if (audio.src !== audioUrl ||
+                latest.pendingReaderReloadRevision !== revision ||
+                latest.pendingTitle !== title || latest.pendingTtsBackend !== 'onnx' ||
+                frame.getElementById('loadingSpinner')?.style.display !== 'none' ||
+                frame.getElementById('pageTitle')?.textContent !== title) return false;
+
+            const tag = (offset, count) =>
+                String.fromCharCode(...bytes.subarray(offset, offset + count));
+            const header = bytes.byteLength >= 44
+                ? new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength) : null;
+            const audioBytes = header?.getUint32(40, true) ?? 0;
             if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
-                header.getUint32(24, true) !== 24000 || audioBytes < 2 ||
+                header?.getUint32(24, true) !== 24000 || audioBytes < 2 ||
                 bytes.length !== 44 + audioBytes) {
-                // Keep the *actual* browser failure observable. The normal
-                // AudioManager/overlay tests previously passed, so don't
-                // guess whether this is a stale source or a format mismatch.
                 throw Error('Real EPUB reader WAV mismatch: ' + JSON.stringify({
-                    title: stored.pendingTitle,
-                    revision: stored.pendingReaderReloadRevision,
-                    backend: stored.pendingTtsBackend,
-                    dataUrlKind: audio.src.split(':', 1)[0],
+                    title, revision, backend: stored.pendingTtsBackend,
+                    sourceKind: audioUrl.split(':', 1)[0],
                     mime: response.headers.get('content-type'),
-                    length: bytes.length,
-                    riff: tag(0, 4), wave: tag(8, 4),
-                    rate: header.getUint32(24, true),
+                    length: bytes.length, riff: tag(0, 4), wave: tag(8, 4),
+                    rate: header?.getUint32(24, true) ?? null,
                     audioBytes, expectedLength: 44 + audioBytes,
                     leadBytes: [...bytes.subarray(0, 12)],
                 }));
             }
             return {
-                title: stored.pendingTitle,
-                revision: stored.pendingReaderReloadRevision,
-                audioUrl: audio.src,
-                bytes: audioBytes,
+                title, revision, audioUrl, bytes: audioBytes,
                 blockCount: stored.pendingContent.length,
                 backend: stored.pendingTtsBackend,
                 serverUrl: stored.pendingApiUrl,
                 paused: audio.paused,
             };
-        });
+        }, { title, previousRevision, previousAudioUrl }, { timeout: 180000 });
+        try {
+            return await snapshot.jsonValue();
+        } finally {
+            await snapshot.dispose();
+        }
     };
     const first = await waitForChapter('First Chapter');
     if (await page.locator('#prevChapter').isEnabled() ||
