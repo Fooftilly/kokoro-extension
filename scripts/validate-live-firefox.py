@@ -1484,17 +1484,19 @@ def _wait_for_epub_chapter(driver, title, previous_revision=0, previous_audio_ur
         json.dumps(_safe_reader_nav_diagnostics(driver)))
 
 
+def _epub_button_nav_matches(nav, expected, expected_label):
+    return (nav.get("prevDisabled") == expected["prevDisabled"] and
+            nav.get("nextDisabled") == expected["nextDisabled"] and
+            nav.get("activeLabel") == expected_label)
+
+
 def _epub_nav_matches(snapshot, expected_label, previous_audio_url=None,
                       require_single_entry=False):
     expected = _expected_nav_for_title(snapshot.get("title"))
     nav = snapshot.get("nav")
     if expected is None or nav is None:
         return False
-    if nav.get("prevDisabled") != expected["prevDisabled"]:
-        return False
-    if nav.get("nextDisabled") != expected["nextDisabled"]:
-        return False
-    if nav.get("activeLabel") != expected_label:
+    if not _epub_button_nav_matches(nav, expected, expected_label):
         return False
     if previous_audio_url is not None and snapshot.get("audioUrl") == previous_audio_url:
         return False
