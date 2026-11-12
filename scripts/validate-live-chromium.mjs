@@ -656,7 +656,10 @@ async function acceptRealEpubReader(page, extensionId) {
         return page.evaluate(async () => {
             const frame = document.getElementById('playerFrame').contentDocument;
             const audio = frame.getElementById('audio');
-            const response = await fetch(audio.src);
+            // The Blob was created inside the embedded extension player.
+            // Read it from that same frame rather than relying on a parent
+            // document's cross-realm blob URL lifetime or fetch partition.
+            const response = await frame.defaultView.fetch(audio.src);
             if (!response.ok) throw Error('Reader WAV Blob unavailable: HTTP ' + response.status);
             const bytes = new Uint8Array(await response.arrayBuffer());
             const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
