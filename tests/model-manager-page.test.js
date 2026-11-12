@@ -17,6 +17,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
     let engine;
     let dictionaryReady;
     let installedModels;
+    let installedOnnxVariants;
     let partialModels;
     let installModel;
     let removeModel;
@@ -28,6 +29,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         jest.resetModules();
         dictionaryReady = true;
         installedModels = new Set();
+        installedOnnxVariants = new Set(['q8']);
         partialModels = new Set();
         installModel = jest.fn();
         removeModel = jest.fn();
@@ -84,7 +86,8 @@ describe('ONNX model manager English synthesis diagnostics', () => {
                 }
                 if (delayedCpuStatus && manifest.provider === 'mediapipe' &&
                     manifest.variant === 'cpu') await delayedCpuStatus;
-                const ready = (manifest.provider === 'onnx' && manifest.variant === 'q8') ||
+                const ready = (manifest.provider === 'onnx' &&
+                    installedOnnxVariants.has(manifest.variant)) ||
                     (manifest.provider === 'dictionary' && dictionaryReady) ||
                     (manifest.provider === 'mediapipe' && installedModels.has(manifest.variant));
                 const totalBytes = manifest.assets.reduce((sum, a) => sum + a.bytes, 0);
@@ -476,10 +479,16 @@ describe('ONNX model manager English synthesis diagnostics', () => {
 
     test('verified ONNX q8 English text enables explicit selection while IPA timings stay separate', async () => {
         const { row, message } = await runProbe();
-        expect(engine.synthesizePhonemes).toHaveBeenCalledTimes(3);
+        expect(engine.synthesizePhonemes).not.toHaveBeenCalled();
+        expect(engine.synthesize).toHaveBeenCalledTimes(3);
         expect(engine.synthesize).toHaveBeenCalledWith('Hello world.');
-        expect(message).toContain('Benchmark used IPA');
-        expect(message).toContain('Experimental dictionary-backed English text audio is ready');
+        expect(message).toContain('warm (3 runs, shared English text)');
+        expect(message).toContain('Measured the shared English text through the dictionary-backed ONNX path');
+        expect(message).not.toContain('IPA-only diagnostic');
+        expect(window.KokoroBenchmark.summarizeRuns).toHaveBeenCalledWith(
+            expect.arrayContaining([expect.objectContaining({
+                kind: 'warm', firstAudioMs: null,
+            })]));
         expect(message).toContain('Unknown English words are not supported');
         expect(row.querySelector('audio').hidden).toBe(false);
         await waitFor(() => row.querySelector('.model-choose').disabled === false);
@@ -501,6 +510,8 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(global.fetch).not.toHaveBeenCalled();
         expect(global.browser.permissions.request).not.toHaveBeenCalled();
         expect(message).toContain('download the pronunciation dictionary first');
+        expect(message).toContain('IPA-only diagnostic');
+        expect(message).toContain('not comparable with English-text timings');
         expect(document.querySelector('[data-variant="onnx-q8"] .model-choose').disabled).toBe(true);
         expect(browser.storage.local.set).not.toHaveBeenCalledWith({
             'onnxValidatedRevision:q8': expect.any(String),
@@ -602,7 +613,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
     test('unlocking other rows preserves previous ONNX synthesis diagnostics', async () => {
         const { row, message } = await runProbe();
         expect(message).toContain('Full-clip synthesis p50');
-        expect(message).toContain('Experimental dictionary-backed English text audio is ready');
+        expect(message).toContain('Measured the shared English text through the dictionary-backed ONNX path');
         global.browser.permissions.request.mockResolvedValue(false);
         const other = document.querySelector('[data-variant="mediapipe-cpu"]');
         other.querySelector('.model-download').click();
@@ -637,7 +648,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(dictionary.querySelector('.model-remove').disabled).toBe(false);
         expect(mediapipe.querySelector('.model-download').disabled).toBe(false);
         let finishInference;
-        engine.synthesizePhonemes.mockImplementationOnce(() => new Promise(resolve => {
+        engine.synthesize.mockImplementationOnce(() => new Promise(resolve => {
             finishInference = resolve;
         }));
         onnx.querySelector('.model-test').click();
@@ -792,7 +803,8 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(message).toContain('Full-clip synthesis p50');
         expect(navigator.locks.request).toHaveBeenCalledWith(
             'kokoro-model-data-v1', { mode: 'shared' }, expect.any(Function));
-        expect(engine.synthesizePhonemes).toHaveBeenCalledTimes(3);
+        expect(engine.synthesize).toHaveBeenCalledTimes(3);
+        expect(engine.synthesizePhonemes).not.toHaveBeenCalled();
     });
 
     test('a model removal blocks inference until cache mutation completes', async () => {
@@ -831,7 +843,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         const remove = row.querySelector('.model-remove');
         expect(remove.disabled).toBe(false);
         let finishProbe;
-        engine.synthesizePhonemes.mockImplementationOnce(() =>
+        engine.synthesize.mockImplementationOnce(() =>
             new Promise(resolve => { finishProbe = resolve; }));
         row.querySelector('.model-test').click();
         await waitFor(() => typeof finishProbe === 'function');
@@ -1032,11 +1044,53 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(installModel).toHaveBeenCalledTimes(1);
     });
 
+    test('partial ONNX English synthesis never mixes its timings into the IPA fallback', async () => {
+        engine.synthesize
+            .mockResolvedValueOnce(audio())
+            .mockRejectedValueOnce(new Error('Unsupported sentence'));
+        const { row, message } = await runProbe();
+        expect(message).toContain('English text synthesis failed: Unsupported sentence');
+        expect(message).toContain('IPA-only diagnostic');
+        expect(engine.synthesize).toHaveBeenCalledTimes(2);
+        expect(engine.synthesizePhonemes).toHaveBeenCalledTimes(3);
+        expect(window.KokoroBenchmark.summarizeRuns).toHaveBeenCalledTimes(1);
+        expect(window.KokoroBenchmark.summarizeRuns.mock.calls[0][0]).toHaveLength(3);
+        expect(row.querySelector('.model-choose').disabled).toBe(true);
+        expect(browser.storage.local.set).not.toHaveBeenCalledWith({
+            'onnxValidatedRevision:q8': expect.any(String),
+        });
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('q8f16 stays IPA-only and cannot authorize ordinary English reading', async () => {
+        installedOnnxVariants.add('q8f16');
+        const row = document.querySelector('[data-variant="onnx-q8f16"]');
+        row.querySelector('.model-test').disabled = false;
+        row.querySelector('.model-test').click();
+        await waitFor(() => row.querySelector('.model-status').textContent.includes(
+            'Streaming time-to-first-audio was not measured'));
+        expect(row.querySelector('.model-status').textContent)
+            .toContain('IPA-only diagnostic');
+        expect(row.querySelector('.model-status').textContent)
+            .toContain('This ONNX variant is IPA-only');
+        expect(engine.synthesizePhonemes).toHaveBeenCalledTimes(3);
+        expect(engine.synthesize).not.toHaveBeenCalled();
+        expect(row.querySelector('.model-choose').disabled).toBe(true);
+        expect(browser.storage.local.set).not.toHaveBeenCalledWith({
+            'onnxValidatedRevision:q8': expect.any(String),
+        });
+    });
+
     test('an English G2P error leaves the valid IPA audio available', async () => {
         engine.synthesize.mockRejectedValueOnce(new Error('Unknown English word'));
         const { row, message } = await runProbe();
         expect(message).toContain('English text synthesis failed: Unknown English word');
         expect(message).toContain('Playing the IPA probe instead');
+        expect(message).toContain('warm (3 runs, IPA-only diagnostic)');
+        expect(engine.synthesizePhonemes).toHaveBeenCalledTimes(3);
+        expect(engine.synthesize).toHaveBeenCalledTimes(1);
+        expect(window.KokoroBenchmark.summarizeRuns).toHaveBeenCalledTimes(1);
+        expect(window.KokoroBenchmark.summarizeRuns.mock.calls[0][0]).toHaveLength(3);
         expect(row.querySelector('audio').src).toBe('blob:test-audio');
         expect(row.querySelector('.model-choose').disabled).toBe(true);
         expect(browser.storage.local.set).not.toHaveBeenCalledWith({
