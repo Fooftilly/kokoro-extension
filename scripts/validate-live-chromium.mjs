@@ -554,6 +554,7 @@ try {
         let stage = 'model-cache-population';
         let originModelAcceptance = null;
         let onnxPlaybackAcceptance = null;
+        let onnxOverlayAcceptance = null;
         page.on('pageerror', error => errors.push(String(error)));
         page.on('crash', () => { crashed = true; });
         try {
@@ -751,16 +752,119 @@ try {
                     throw Error('Chromium ONNX real reading-path acceptance failed: ' +
                         JSON.stringify(onnxPlaybackAcceptance));
                 }
+
+                // Exercise the real packaged overlay page, not just AudioManager.
+                // Use three distinct blocks to avoid sentence-merging heuristics:
+                // the third contains an unsupported word to expose real Retry.
+                // Autoplay is deliberately disabled so navigation is deterministic
+                // even on CI runners without an audio output device.
+                stage = 'offline-onnx-overlay-controls';
+                await page.evaluate(async () => {
+                    await chrome.storage.local.set({
+                        pendingTtsBackend: 'onnx', pendingApiUrl: null,
+                        pendingText: 'Hello world. Hello world. zzzzqwertyword.',
+                        pendingContent: [
+                            { type: 'text', content: 'Hello world.' },
+                            { type: 'text', content: 'Hello world.' },
+                            { type: 'text', content: 'zzzzqwertyword.' },
+                        ],
+                        pendingTitle: 'ONNX overlay acceptance',
+                        pendingAutoplay: false,
+                    });
+                });
+                await page.goto('chrome-extension://' + extensionId + '/overlay.html');
+                const overlayReady = index => {
+                    const spans = document.querySelectorAll('.sentence');
+                    return spans.length === 3 && spans[index]?.classList.contains('highlight') &&
+                        document.getElementById('audio')?.src.startsWith('blob:') &&
+                        document.getElementById('loadingSpinner')?.style.display === 'none';
+                };
+                await page.waitForFunction(overlayReady, 0, { timeout: 180000 });
+                const firstUrl = await page.locator('#audio').evaluate(audio => audio.src);
+                const firstWav = await page.evaluate(async () => {
+                    const audio = document.getElementById('audio');
+                    const bytes = new Uint8Array(await (await fetch(audio.src)).arrayBuffer());
+                    const wav = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+                    const tag = (start, length) =>
+                        String.fromCharCode(...bytes.subarray(start, start + length));
+                    const audioBytes = wav.getUint32(40, true);
+                    if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
+                        wav.getUint32(24, true) !== 24000 || audioBytes < 2 ||
+                        bytes.length !== 44 + audioBytes) throw Error('Overlay emitted malformed ONNX WAV');
+                    if (!audio.paused || document.getElementById('playPause').textContent !== 'Play') {
+                        throw Error('Autoplay-disabled overlay unexpectedly started playing');
+                    }
+                    if (navigator.onLine !== false) throw Error('Overlay was not offline');
+                    return { sampleRateHz: 24000, audioBytes, initiallyPaused: true };
+                });
+                await page.locator('#seekFwd').click();
+                await page.waitForFunction(overlayReady, 1, { timeout: 180000 });
+                await page.locator('#seekBack').click();
+                await page.waitForFunction(overlayReady, 0, { timeout: 180000 });
+                await page.locator('#speed').selectOption('1.25');
+                await page.evaluate(() => {
+                    const slider = document.getElementById('volumeControl');
+                    slider.value = '0.4';
+                    slider.dispatchEvent(new Event('input', { bubbles: true }));
+                });
+                const settings = await page.evaluate(() => {
+                    const audio = document.getElementById('audio');
+                    return { rate: audio.playbackRate, volume: audio.volume, paused: audio.paused };
+                });
+                if (Math.abs(settings.rate - 1.25) > 0.001 ||
+                    Math.abs(settings.volume - 0.4) > 0.001 || !settings.paused) {
+                    throw Error('Overlay speed/volume or paused navigation state failed: ' +
+                        JSON.stringify(settings));
+                }
+                // Retry must not be clickable in a healthy session. Navigate
+                // into a genuinely unsupported English sentence to exercise
+                // the player failure state, then repair the input and Retry.
+                await page.locator('#seekFwd').click();
+                await page.waitForFunction(overlayReady, 1, { timeout: 180000 });
+                await page.locator('#seekFwd').click();
+                await page.waitForFunction(() => {
+                    const retry = document.getElementById('retry');
+                    const spans = document.querySelectorAll('.sentence');
+                    return spans.length === 3 && spans[2].classList.contains('highlight') &&
+                        document.getElementById('status')?.textContent === 'Error playing audio.' &&
+                        getComputedStyle(retry).display !== 'none' &&
+                        document.getElementById('loadingSpinner')?.style.display === 'none';
+                }, null, { timeout: 180000 });
+                await page.evaluate(async () => {
+                    await chrome.storage.local.set({
+                        pendingText: 'Hello world. Hello world. Hello world.',
+                        pendingContent: [
+                            { type: 'text', content: 'Hello world.' },
+                            { type: 'text', content: 'Hello world.' },
+                            { type: 'text', content: 'Hello world.' },
+                        ],
+                    });
+                });
+                await page.locator('#retry').click();
+                await page.waitForFunction(oldUrl => {
+                    const spans = document.querySelectorAll('.sentence');
+                    const audio = document.getElementById('audio');
+                    return spans.length === 3 && spans[0].classList.contains('highlight') &&
+                        audio?.src.startsWith('blob:') && audio.src !== oldUrl &&
+                        getComputedStyle(document.getElementById('retry')).display === 'none' &&
+                        document.getElementById('loadingSpinner')?.style.display === 'none';
+                }, firstUrl, { timeout: 180000 });
+                onnxOverlayAcceptance = {
+                    success: true, controls: ['next', 'previous', 'speed', 'volume', 'retry-after-error'],
+                    sentences: 3, unsupportedSentenceRejected: true, retryRestoredAudio: true,
+                    ...firstWav, rate: settings.rate, volume: settings.volume,
+                    networkOffline: true,
+                };
             }
             console.log(result.success ? 'REAL MODEL INFERENCE' : 'MODEL INFERENCE FAILURE', result);
             results.push({ provider: manifest.provider, variant: manifest.variant,
                 offlineAttempted: true, offlineInference: result.success === true,
-                originModelAcceptance, onnxPlaybackAcceptance, ...result });
+                originModelAcceptance, onnxPlaybackAcceptance, onnxOverlayAcceptance, ...result });
             await saveReport();
         } catch (error) {
             const failure = { provider: manifest.provider, variant: manifest.variant,
                 success: false, crashed, stage, originModelAcceptance,
-                onnxPlaybackAcceptance, error: String(error) };
+                onnxPlaybackAcceptance, onnxOverlayAcceptance, error: String(error) };
             results.push(failure);
             await saveReport();
             console.error('MODEL VALIDATION ABORTED', failure);
