@@ -35,4 +35,16 @@ describe('chromium EPUB acceptance backend wiring', () => {
             /if \(originDownload && manifest\.provider === 'onnx' && result\.success\) \{\s*stage = 'offline-real-epub/,
         );
     });
+
+    test('EPUB fixture uses distinct speech and WAV content hashes', () => {
+        expect(source).toContain("Hello first chapter.");
+        expect(source).toContain("Hello second chapter.");
+        expect(source).toContain("Hello plain text.");
+        expect(source).toMatch(/blocks\[0\]\.content === expectedSpeech/);
+        expect(source).toMatch(/crypto\.subtle\.digest\('SHA-256'/);
+        expect(source).toMatch(/differentAudioPerChapter = new Set\(\[/);
+        expect(source).not.toMatch(
+            /pendingContent\?\.some\(b => b\.content\?\.includes\('Hello world\.'\)\)/,
+        );
+    });
 });
