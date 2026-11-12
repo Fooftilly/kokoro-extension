@@ -33,8 +33,10 @@ def pinned_manifest(provider):
         "const source = 'data:text/javascript;base64,' + catalog.toString('base64'); "
         "const {manifestForVariant,dictionaryManifest} = await import(source); "
         "const provider = process.argv[1]; "
-        "console.log(JSON.stringify(provider === 'dictionary' "
-        " ? [dictionaryManifest()] : provider === 'mediapipe' "
+        "console.log(JSON.stringify(provider === 'both' "
+        " ? [manifestForVariant('onnx', 'q8'), "
+        "manifestForVariant('mediapipe', 'cpu'), dictionaryManifest()] "
+        " : provider === 'dictionary' ? [dictionaryManifest()] : provider === 'mediapipe' "
         " ? [manifestForVariant('mediapipe', 'cpu')] "
         " : [manifestForVariant('onnx', 'q8'), dictionaryManifest()]));"
     )
@@ -1170,6 +1172,100 @@ def accept_local_benchmark_ui(driver, origin, provider):
     }
 
 
+
+def accept_two_backend_comparison(driver, origin):
+    """Measure ONNX q8 and MediaPipe CPU sequentially on one real, offline page."""
+    keys = ("onnx-q8", "mediapipe-cpu")
+    driver.get(origin + "/benchmark.html")
+    WebDriverWait(driver, 45).until(lambda d: d.execute_script("""
+        return arguments[0].every(key=>{
+            const row=document.querySelector('[data-variant="'+key+'"]');
+            return row?.querySelector('.model-test')?.disabled===false &&
+                row?.querySelector('.model-remove')?.disabled===false;
+        });
+    """, list(keys)))
+    if not driver.execute_script("return navigator.onLine===false;"):
+        raise RuntimeError("Firefox dual comparison was not fully offline")
+
+    def selected_backend():
+        value = driver.execute_async_script("""
+            const done=arguments[arguments.length-1];
+            browser.storage.sync.get({ttsBackend:'fastapi'}).then(
+                data=>done({backend:data.ttsBackend}),
+                e=>done({error:String(e)}));
+        """)
+        if value.get("error"):
+            raise RuntimeError("Cannot inspect selected TTS backend: " + value["error"])
+        return value["backend"]
+
+    before = selected_backend()
+    measurements = []
+    for key in keys:
+        row_selector = f'[data-variant="{key}"]'
+        driver.find_element(By.CSS_SELECTOR, row_selector + " .model-test").click()
+        WebDriverWait(driver, 280).until(lambda d: d.execute_script("""
+            const key=arguments[0];
+            const row=document.querySelector('[data-variant="'+key+'"]');
+            return row?.querySelector('.model-test')?.disabled===false &&
+                row?.querySelector('.model-choose')?.disabled===false &&
+                row?.querySelector('.model-status')?.textContent.includes(
+                    'warm (3 runs, shared English text)') &&
+                Boolean(document.querySelector(
+                    '#sharedEnglishComparisonRows tr[data-backend="'+key+'"]'));
+        """, key))
+        measurement = driver.execute_script("""
+            const key=arguments[0];
+            const model=document.querySelector('[data-variant="'+key+'"]');
+            const tbody=document.getElementById('sharedEnglishComparisonRows');
+            const row=tbody?.querySelector('tr[data-backend="'+key+'"]');
+            if(!row || !model?.querySelector('audio')?.src.startsWith('blob:') ||
+                document.getElementById('serverStatus')?.textContent!=='Not tested' ||
+                !document.getElementById('serverAudio')?.hidden ||
+                navigator.onLine!==false)
+                throw Error('Firefox dual comparison missing real offline audio/row');
+            const cells=Array.from(row.cells,c=>c.textContent.trim());
+            const values=cells.slice(1).map(Number.parseFloat);
+            if(values.length!==3 || values.some(v=>!Number.isFinite(v)||v<=0) ||
+                values[1]<values[0])
+                throw Error('Invalid Firefox dual timings: '+JSON.stringify(cells));
+            return {key,label:cells[0],p50Ms:values[0],p95Ms:values[1],
+                rtfP50:values[2],rowCount:tbody.rows.length};
+        """, key)
+        measurements.append(measurement)
+    if ([item["rowCount"] for item in measurements] != [1, 2]):
+        raise RuntimeError("Firefox dual comparison did not retain both measured rows")
+
+    summary = driver.execute_script("""
+        const rows=[...document.querySelectorAll('#sharedEnglishComparisonRows tr')];
+        const labels=rows.map(row=>row.dataset.backend);
+        const summary=document.getElementById('sharedEnglishComparisonStatus')?.textContent;
+        if(rows.length!==2 || new Set(labels).size!==2 ||
+            !labels.includes('onnx-q8') || !labels.includes('mediapipe-cpu') ||
+            !summary?.includes('Measured 2 local backend paths') ||
+            !summary.includes('No ranking is inferred'))
+            throw Error('Firefox dual provider rows/summary did not match expectations');
+        return summary;
+    """)
+    remaining = driver.execute_script("""
+        const text=document.getElementById('benchmarkText');
+        text.value='Another shared English sample.';
+        text.dispatchEvent(new Event('input',{bubbles:true}));
+        return document.querySelectorAll('#sharedEnglishComparisonRows tr').length;
+    """)
+    if remaining != 0:
+        raise RuntimeError("Firefox dual comparison retained stale rows after sample edit")
+    after = selected_backend()
+    if after != before:
+        raise RuntimeError("Firefox dual comparison silently changed the selected backend")
+    return {
+        "success": True, "providers": list(keys), "sharedSample": "Hello world.",
+        "measurements": measurements, "rowsBeforeEdit": 2, "rowsAfterEdit": 0,
+        "bothRetainedOnOnePage": True, "backendSelectionUnchanged": True,
+        "selectedBackend": after, "networkOffline": True,
+        "serverTestNotTriggered": True, "noAutomaticRanking": True, "summary": summary,
+    }
+
+
 def main():
     if os.environ.get("KOKORO_LIVE_DOWNLOAD") != "1":
         raise RuntimeError("Explicit model download opt-in is required")
@@ -1181,10 +1277,13 @@ def main():
         return
     provider = os.environ.get("KOKORO_FIREFOX_PROVIDER", "onnx")
     origin_download = os.environ.get("KOKORO_FIREFOX_ORIGIN_DOWNLOAD") == "1"
+    dual_comparison = os.environ.get("KOKORO_FIREFOX_DUAL_COMPARISON") == "1"
     if origin_download and provider not in ("mediapipe", "onnx"):
         raise ValueError("Official-origin Firefox acceptance requires MediaPipe CPU or ONNX q8")
-    if provider not in ("onnx", "mediapipe", "dictionary"):
-        raise ValueError("KOKORO_FIREFOX_PROVIDER must be onnx, mediapipe, or dictionary")
+    if provider not in ("onnx", "mediapipe", "dictionary", "both"):
+        raise ValueError("KOKORO_FIREFOX_PROVIDER must be onnx, mediapipe, dictionary, or both")
+    if dual_comparison != (provider == "both") or (dual_comparison and origin_download):
+        raise ValueError("Firefox both-provider comparison requires explicit dual opt-in and verified local preload")
     output = Path("dist/runtime-acceptance/firefox.json")
     output.parent.mkdir(parents=True, exist_ok=True)
     result = {"status": "started", "browser": "Firefox MV3",
@@ -1535,6 +1634,25 @@ def main():
                 driver.set_context("content")
             if not browser_offline or not driver.execute_script("return navigator.onLine === false;"):
                 raise RuntimeError("Firefox did not enter offline mode before inference")
+            if dual_comparison:
+                result["stage"] = "offline-two-provider-same-page-benchmark"
+                comparison = accept_two_backend_comparison(driver, state["origin"])
+                result.update({
+                    "status": "passed",
+                    "browser": driver.capabilities.get("browserVersion"),
+                    "extensionId": addon_id,
+                    "preflight": preflight,
+                    "dictionaryCacheAcceptance": dictionary_cache_acceptance,
+                    "dictionaryReloadAcceptance": dictionary_reload_acceptance,
+                    "dictionaryUiDownloadAcceptance": dictionary_ui_acceptance,
+                    "dualComparisonAcceptance": comparison,
+                    "offlineAttempted": True,
+                    "offlineInference": True,
+                    "cachePopulation": "two models and dictionary SHA-256 verified from pinned official sources; authenticated loopback preload, offline same-page synthesis",
+                    "scope": "Firefox/Linux MV3 sequential dual local backend comparison, no subjective quality or EPUB acceptance",
+                })
+                print("FIREFOX DUAL BENCHMARK ACCEPTANCE", json.dumps(result), flush=True)
+                return
             metrics = driver.execute_async_script("""
                 const provider=arguments[0];
                 const done=arguments[arguments.length-1];
