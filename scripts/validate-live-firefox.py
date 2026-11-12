@@ -1081,6 +1081,95 @@ def run_permanent_addon_restart_acceptance():
                 server.server_close()
 
 
+
+def accept_local_benchmark_ui(driver, origin, provider):
+    """Exercise real packaged benchmark controls with an installed, offline model."""
+    variant = "q8" if provider == "onnx" else "cpu"
+    key = provider + "-" + variant
+    selector = f'[data-variant="{key}"]'
+    driver.get(origin + "/benchmark.html")
+    WebDriverWait(driver, 30).until(
+        lambda d: d.find_element(By.CSS_SELECTOR, selector + " .model-test").is_enabled()
+    )
+
+    def completed_english_row():
+        return driver.execute_script("""
+            const key=arguments[0];
+            const model=document.querySelector('[data-variant="'+key+'"]');
+            const row=document.querySelector(
+                '#sharedEnglishComparisonRows tr[data-backend="'+key+'"]');
+            return Boolean(row && model?.querySelector('.model-choose')?.disabled===false &&
+                model?.querySelector('.model-status')?.textContent.includes(
+                    'warm (3 runs, shared English text)'));
+        """, key)
+
+    def read_row():
+        value = driver.execute_script("""
+            const key=arguments[0];
+            const row=document.querySelector(
+                '#sharedEnglishComparisonRows tr[data-backend="'+key+'"]');
+            const rows=document.querySelectorAll('#sharedEnglishComparisonRows tr');
+            const model=document.querySelector('[data-variant="'+key+'"]');
+            if(!row || rows.length!==1 ||
+                !model?.querySelector('.model-status')?.textContent.includes(
+                    'warm (3 runs, shared English text)') ||
+                model.querySelector('.model-choose')?.disabled ||
+                document.getElementById('serverStatus')?.textContent!=='Not tested' ||
+                !document.getElementById('serverAudio')?.hidden ||
+                navigator.onLine!==false)
+                throw Error('Real Firefox local-English comparison row invalid');
+            const cells=Array.from(row.cells,c=>c.textContent.trim());
+            const values=cells.slice(1).map(Number.parseFloat);
+            if(values.length!==3 || values.some(v=>!Number.isFinite(v)||v<=0))
+                throw Error('Invalid synthesis measurements: '+JSON.stringify(cells));
+            return {cells,p50Ms:values[0],p95Ms:values[1],rtfP50:values[2]};
+        """, key)
+        return value
+
+    def edit_sample(text):
+        return driver.execute_script("""
+            const input=document.getElementById('benchmarkText');
+            input.value=arguments[0];
+            input.dispatchEvent(new Event('input',{bubbles:true}));
+            return document.querySelectorAll('#sharedEnglishComparisonRows tr').length;
+        """, text)
+
+    if not driver.execute_script("return navigator.onLine===false;"):
+        raise RuntimeError("Firefox benchmark must remain offline")
+    driver.find_element(By.CSS_SELECTOR, selector + " .model-test").click()
+    WebDriverWait(driver, 180).until(lambda d: completed_english_row())
+    first = read_row()
+
+    if edit_sample("zzzzqwertyword.") != 0:
+        raise RuntimeError("Firefox benchmark did not clear stale results on text edit")
+    ipa_only_excluded = None
+    if provider == "onnx":
+        driver.find_element(By.CSS_SELECTOR, selector + " .model-test").click()
+        WebDriverWait(driver, 180).until(lambda d: d.execute_script("""
+            const model=document.querySelector(arguments[0]);
+            return model?.querySelector('.model-status')?.textContent.includes(
+                'IPA-only diagnostic') &&
+                model.querySelector('.model-choose')?.disabled===true;
+        """, selector))
+        if driver.execute_script(
+                "return document.querySelectorAll('#sharedEnglishComparisonRows tr').length;") != 0:
+            raise RuntimeError("Firefox ONNX IPA fallback was included in English comparison")
+        ipa_only_excluded = True
+
+    if edit_sample("Hello world.") != 0:
+        raise RuntimeError("Firefox stale comparison appeared before retesting")
+    driver.find_element(By.CSS_SELECTOR, selector + " .model-test").click()
+    WebDriverWait(driver, 180).until(lambda d: completed_english_row())
+    restored = read_row()
+    return {
+        "success": True, "provider": provider, "variant": variant,
+        "sharedSample": "Hello world.", "first": first, "restored": restored,
+        "clearedOnEdit": True, "ipaOnlyExcluded": ipa_only_excluded,
+        "backendSelectionTested": True, "networkOffline": True,
+        "noImplicitFastApi": True, "rows": 1,
+    }
+
+
 def main():
     if os.environ.get("KOKORO_LIVE_DOWNLOAD") != "1":
         raise RuntimeError("Explicit model download opt-in is required")
@@ -1685,6 +1774,13 @@ def main():
                     d.find_element(By.CSS_SELECTOR, '[data-variant="onnx-q8"] .model-remove').is_enabled()
                 )
 
+            benchmark_acceptance = None
+            if origin_download and metrics.get("success"):
+                # Exercise the actual benchmark comparison UI with cached
+                # official-origin model bytes and no network access.
+                benchmark_acceptance = accept_local_benchmark_ui(
+                    driver, state["origin"], provider)
+
             if origin_download and metrics.get("success"):
                 # Close the active engine before Remove; no re-download may
                 # occur and other-provider assets must not be modified.
@@ -1748,6 +1844,7 @@ def main():
                 "originModelAcceptance": origin_model_acceptance,
                 "onnxPlaybackAcceptance": playback_acceptance,
                 "onnxOverlayAcceptance": overlay_acceptance,
+                "localBenchmarkAcceptance": benchmark_acceptance,
                 "offlineAttempted": True,
                 "offlineInference": metrics.get("success") is True,
                 "cachePopulation": (
@@ -1779,6 +1876,8 @@ def main():
                 result["onnxPlaybackAcceptance"] = playback_acceptance
             if "overlay_acceptance" in locals() and overlay_acceptance is not None:
                 result["onnxOverlayAcceptance"] = overlay_acceptance
+            if "benchmark_acceptance" in locals() and benchmark_acceptance is not None:
+                result["localBenchmarkAcceptance"] = benchmark_acceptance
             raise
         finally:
             output.write_text(json.dumps(result, indent=2), encoding="utf-8")
