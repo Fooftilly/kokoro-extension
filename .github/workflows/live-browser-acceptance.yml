@@ -28,6 +28,7 @@ on:
           - firefox-dictionary
           - firefox-mediapipe-origin
           - firefox-onnx-origin
+          - firefox-dual-comparison
           - firefox-persistent-restart
           - firefox-quota-recovery
           - chromium-mediapipe-origin
@@ -41,7 +42,7 @@ permissions:
 jobs:
   chromium-model-inference:
     name: Real ONNX and MediaPipe Chromium MV3 synthesis
-    if: ${{ inputs.acceptance_scope != 'firefox-dictionary' && inputs.acceptance_scope != 'firefox-mediapipe-origin' && inputs.acceptance_scope != 'firefox-onnx-origin' && inputs.acceptance_scope != 'firefox-persistent-restart' && inputs.acceptance_scope != 'firefox-quota-recovery' }}
+    if: ${{ inputs.acceptance_scope != 'firefox-dictionary' && inputs.acceptance_scope != 'firefox-mediapipe-origin' && inputs.acceptance_scope != 'firefox-onnx-origin' && inputs.acceptance_scope != 'firefox-dual-comparison' && inputs.acceptance_scope != 'firefox-persistent-restart' && inputs.acceptance_scope != 'firefox-quota-recovery' }}
     # ubuntu-latest migrated to 26.04 during Oct-Nov 2026. The manual
     # acceptance job failed before browser launch when its new image could
     # not resolve apt mirrors during Playwright install --with-deps.
@@ -221,7 +222,7 @@ jobs:
 
   firefox-model-origin:
     name: Firefox MV3 model download and persistent restart acceptance
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.acceptance_scope == 'firefox-mediapipe-origin' || inputs.acceptance_scope == 'firefox-onnx-origin' || inputs.acceptance_scope == 'firefox-persistent-restart' || inputs.acceptance_scope == 'firefox-quota-recovery') }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.acceptance_scope == 'firefox-mediapipe-origin' || inputs.acceptance_scope == 'firefox-onnx-origin' || inputs.acceptance_scope == 'firefox-dual-comparison' || inputs.acceptance_scope == 'firefox-persistent-restart' || inputs.acceptance_scope == 'firefox-quota-recovery') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -250,10 +251,11 @@ jobs:
       - name: Execute manually scoped Firefox acceptance
         env:
           KOKORO_LIVE_DOWNLOAD: '1'
-          KOKORO_FIREFOX_ORIGIN_DOWNLOAD: ${{ inputs.acceptance_scope == 'firefox-persistent-restart' && '0' || '1' }}
+          KOKORO_FIREFOX_ORIGIN_DOWNLOAD: ${{ (inputs.acceptance_scope == 'firefox-persistent-restart' || inputs.acceptance_scope == 'firefox-dual-comparison') && '0' || '1' }}
           KOKORO_FIREFOX_PERSISTENT_RESTART: ${{ inputs.acceptance_scope == 'firefox-persistent-restart' && '1' || '0' }}
           KOKORO_FIREFOX_QUOTA_ACCEPTANCE: ${{ inputs.acceptance_scope == 'firefox-quota-recovery' && '1' || '0' }}
-          KOKORO_FIREFOX_PROVIDER: ${{ inputs.acceptance_scope == 'firefox-onnx-origin' && 'onnx' || 'mediapipe' }}
+          KOKORO_FIREFOX_PROVIDER: ${{ inputs.acceptance_scope == 'firefox-dual-comparison' && 'both' || inputs.acceptance_scope == 'firefox-onnx-origin' && 'onnx' || 'mediapipe' }}
+          KOKORO_FIREFOX_DUAL_COMPARISON: ${{ inputs.acceptance_scope == 'firefox-dual-comparison' && '1' || '0' }}
           FIREFOX_BINARY: ${{ steps.firefox.outputs.firefox-path }}
           MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: '1'
         run: |
