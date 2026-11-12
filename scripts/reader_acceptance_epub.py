@@ -7,7 +7,7 @@ contract. No browser or Selenium imports.
 import zipfile
 
 # Distinct dictionary-friendly English per document. Chromium harness must
-# use the same map (see validate-live-chromium.mjs READER_ACCEPTANCE_SPEECH).
+# use the same map (see scripts/reader-acceptance-epub.mjs).
 READER_ACCEPTANCE_SPEECH = {
     "First Chapter": "Hello first chapter.",
     "Second Chapter": "Hello second chapter.",

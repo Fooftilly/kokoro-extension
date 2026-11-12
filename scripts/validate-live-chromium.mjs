@@ -9,6 +9,10 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
+import {
+    READER_ACCEPTANCE_SPEECH,
+    buildReaderAcceptanceEpub,
+} from './reader-acceptance-epub.mjs';
 // The extension's .js modules are ESM while package.json is CommonJS for the
 // build tool. Copy the pure catalog into a temporary .mjs file for the Node harness.
 const catalogFile = path.join(os.tmpdir(), 'kokoro-runtime-model-catalog.mjs');
@@ -558,59 +562,6 @@ async function acceptTwoBackendComparison(page, extensionId) {
         bothRetainedOnOnePage: true, backendSelectionUnchanged: true,
         selectedBackend: selectedAfter, offline: true,
         serverTestNotTriggered: true, noAutomaticRanking: true, summary };
-}
-
-// Keep in sync with scripts/reader_acceptance_epub.py READER_ACCEPTANCE_SPEECH.
-const READER_ACCEPTANCE_SPEECH = {
-    'First Chapter': 'Hello first chapter.',
-    'Second Chapter': 'Hello second chapter.',
-    'acceptance.txt': 'Hello plain text.',
-};
-
-// A minimal, valid EPUB 3 archive is generated in-memory for the opt-in
-// browser test. No downloaded fixture, external content or test-only
-// production API: the packaged reader handles a real file selection.
-async function buildReaderAcceptanceEpub() {
-    const { default: JSZip } = await import('jszip');
-    const zip = new JSZip();
-    zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
-    zip.file('META-INF/container.xml',
-        '<?xml version="1.0" encoding="UTF-8"?>' +
-        '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">' +
-        '<rootfiles><rootfile full-path="OEBPS/content.opf" ' +
-        'media-type="application/oebps-package+xml"/></rootfiles></container>');
-    zip.file('OEBPS/content.opf',
-        '<?xml version="1.0" encoding="UTF-8"?>' +
-        '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" ' +
-        'unique-identifier="book-id" xml:lang="en">' +
-        '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">' +
-        '<dc:identifier id="book-id">urn:uuid:01234567-89ab-4cde-8012-3456789abcde</dc:identifier>' +
-        '<dc:title>Local Reader Acceptance</dc:title><dc:language>en</dc:language>' +
-        '<meta property="dcterms:modified">2026-11-12T00:00:00Z</meta></metadata>' +
-        '<manifest>' +
-        '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>' +
-        '<item id="first" href="first.xhtml" media-type="application/xhtml+xml"/>' +
-        '<item id="second" href="second.xhtml" media-type="application/xhtml+xml"/>' +
-        '</manifest><spine><itemref idref="first"/><itemref idref="second"/></spine></package>');
-    zip.file('OEBPS/nav.xhtml',
-        '<?xml version="1.0" encoding="UTF-8"?>' +
-        '<html xmlns="http://www.w3.org/1999/xhtml" ' +
-        'xmlns:epub="http://www.idpf.org/2007/ops"><head>' +
-        '<title>Contents</title></head><body><nav epub:type="toc">' +
-        '<ol><li><a href="first.xhtml">First Chapter</a></li>' +
-        '<li><a href="second.xhtml">Second Chapter</a></li>' +
-        '</ol></nav></body></html>');
-    for (const [name, title] of [
-        ['first', 'First Chapter'], ['second', 'Second Chapter'],
-    ]) {
-        const speech = READER_ACCEPTANCE_SPEECH[title];
-        zip.file('OEBPS/' + name + '.xhtml',
-            '<?xml version="1.0" encoding="UTF-8"?>' +
-            '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>' +
-            name + '</title></head><body><p id="' + name +
-            '">' + speech + '</p></body></html>');
-    }
-    return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 
 // Browser-side readiness poll serialized by Playwright into the reader page.
