@@ -1150,6 +1150,49 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(global.fetch).not.toHaveBeenCalled();
     });
 
+    test('missing dictionary assets invalidate ONNX comparison without a corrupt-file deletion', async () => {
+        await runProbe();
+        const comparison = document.getElementById('sharedEnglishComparisonRows');
+        expect(comparison.children).toHaveLength(1);
+
+        verifyModel.mockImplementationOnce(async () => {
+            dictionaryReady = false;
+            return { ready: false, verifiedBytes: 0, totalBytes: 3618488,
+                removedAssets: 0, missingAssets: 1 };
+        });
+        const dictionary = document.querySelector('[data-variant="dictionary-english"]');
+        dictionary.querySelector('.model-verify').click();
+        await waitFor(() => dictionary.querySelector('.model-status').textContent
+            .includes('missing asset(s)'));
+        expect(comparison.children).toHaveLength(0);
+        expect(engine.close).toHaveBeenCalledTimes(1);
+        expect(browser.storage.local.remove).toHaveBeenCalledWith(
+            'onnxValidatedRevision:q8');
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('missing ONNX model assets revoke comparison and selection even if cache status is stale', async () => {
+        const { row } = await runProbe();
+        const comparison = document.getElementById('sharedEnglishComparisonRows');
+        expect(comparison.children).toHaveLength(1);
+        expect(row.querySelector('.model-choose').disabled).toBe(false);
+
+        // Verify detects missing bytes before the mock status view catches up.
+        verifyModel.mockResolvedValueOnce({
+            ready: false, verifiedBytes: 0, totalBytes: 92885404,
+            removedAssets: 0, missingAssets: 1,
+        });
+        row.querySelector('.model-verify').click();
+        await waitFor(() => row.querySelector('.model-status').textContent
+            .includes('missing asset(s)'));
+        expect(comparison.children).toHaveLength(0);
+        expect(row.querySelector('.model-choose').disabled).toBe(true);
+        expect(engine.close).toHaveBeenCalledTimes(1);
+        expect(browser.storage.local.remove).toHaveBeenCalledWith(
+            'onnxValidatedRevision:q8');
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
     test('IPA-only results never enter the English comparison', async () => {
         dictionaryReady = false;
         const { message } = await runProbe();
