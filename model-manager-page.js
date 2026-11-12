@@ -480,9 +480,14 @@ async function testOnnxEnglishText(engine, text) {
                 : ' English text not tested: download the pronunciation dictionary first.' };
     }
     try {
+        // The first English synthesis lazily reads, verifies and parses the
+        // dictionary, and may warm up the ONNX runtime. Exclude all such cold
+        // preparation from the three runs labeled as warm measurements.
+        // A failed warm-up must still lead to IPA-only diagnostics, not approval.
+        await engine.synthesize(text);
         const measured = await measureWarmClip(() => engine.synthesize(text));
         return { ready: true, measured,
-            message: ' Measured the shared English text through the dictionary-backed ONNX path.' };
+            message: ' Measured the shared English text through the dictionary-backed ONNX path (after untimed warm-up).' };
     } catch (error) {
         return { ready: false, measured: null,
             message: ' English text synthesis failed: ' +
