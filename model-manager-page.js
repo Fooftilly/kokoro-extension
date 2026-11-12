@@ -770,7 +770,8 @@ async function verifyCachedData(entry, ui) {
             applyModelStatus(entry, ui, state);
             // Preserve a prior user-validated backend only if no bytes were
             // removed and the model remains installed.
-            ui.choose.disabled = !priorChooseEnabled || removed > 0 || !state.ready;
+            ui.choose.disabled = !priorChooseEnabled ||
+                removed > 0 || result?.missingAssets > 0 || !state.ready;
         } else {
             ui.lastStatus = null;
             ui.download.disabled = false;
