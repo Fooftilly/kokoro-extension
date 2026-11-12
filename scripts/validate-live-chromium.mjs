@@ -626,8 +626,8 @@ async function acceptRealEpubReader(page, extensionId) {
         buffer: epub,
     });
 
-    const waitForChapter = async (title, previousRevision = 0) => {
-        await page.waitForFunction(async ({ title, previousRevision }) => {
+    const waitForChapter = async (title, previousRevision = 0, previousAudioUrl = null) => {
+        await page.waitForFunction(async ({ title, previousRevision, previousAudioUrl }) => {
             const frame = document.getElementById('playerFrame')?.contentDocument;
             const audio = frame?.getElementById('audio');
             const status = frame?.getElementById('status');
@@ -646,11 +646,13 @@ async function acceptRealEpubReader(page, extensionId) {
                 stored.pendingReaderReloadRevision > previousRevision &&
                 stored.pendingContent?.some(b => b.content?.includes('Hello world.')) &&
                 audio?.src.startsWith('blob:') &&
+                (!previousAudioUrl || audio.src !== previousAudioUrl) &&
                 audio.paused &&
+                frame.getElementById('loadingSpinner')?.style.display === 'none' &&
                 status?.textContent !== 'Error playing audio.' &&
                 frame.querySelectorAll('.sentence').length >= 1 &&
                 navigator.onLine === false;
-        }, { title, previousRevision }, { timeout: 180000 });
+        }, { title, previousRevision, previousAudioUrl }, { timeout: 180000 });
         return page.evaluate(async () => {
             const frame = document.getElementById('playerFrame').contentDocument;
             const audio = frame.getElementById('audio');
@@ -686,7 +688,7 @@ async function acceptRealEpubReader(page, extensionId) {
         throw Error('EPUB first chapter navigation controls incorrect');
     }
     await page.locator('#nextChapter').click();
-    const second = await waitForChapter('Second Chapter', first.revision);
+    const second = await waitForChapter('Second Chapter', first.revision, first.audioUrl);
     if (!await page.locator('#prevChapter').isEnabled() ||
         await page.locator('#nextChapter').isEnabled() ||
         first.audioUrl === second.audioUrl) {
@@ -697,7 +699,7 @@ async function acceptRealEpubReader(page, extensionId) {
         name: 'acceptance.txt', mimeType: 'text/plain',
         buffer: Buffer.from('Hello world.', 'utf8'),
     });
-    const plainText = await waitForChapter('acceptance.txt', second.revision);
+    const plainText = await waitForChapter('acceptance.txt', second.revision, second.audioUrl);
     if (plainText.audioUrl === second.audioUrl ||
         !await page.locator('#prevChapter').isDisabled() ||
         !await page.locator('#nextChapter').isDisabled()) {
