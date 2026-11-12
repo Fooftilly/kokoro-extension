@@ -535,8 +535,9 @@ async function acceptTwoBackendComparison(page, extensionId) {
     const summary = await page.evaluate(() => {
         const rows = [...document.querySelectorAll('#sharedEnglishComparisonRows tr')];
         const summary = document.getElementById('sharedEnglishComparisonStatus')?.textContent;
-        if (rows.length !== 2 || rows[0].dataset.backend !== 'onnx-q8' ||
-            rows[1].dataset.backend !== 'mediapipe-cpu' ||
+        const keys = rows.map(row => row.dataset.backend);
+        if (rows.length !== 2 || new Set(keys).size !== 2 ||
+            !keys.includes('onnx-q8') || !keys.includes('mediapipe-cpu') ||
             !summary?.includes('Measured 2 local backend paths') ||
             !summary.includes('No ranking is inferred')) {
             throw Error('Shared comparison did not preserve both measured rows');
