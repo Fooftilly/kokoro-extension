@@ -611,6 +611,9 @@ async function testEngine(entry, ui) {
             const english = entry.provider === 'onnx' && entry.variant === 'q8'
                 ? await testOnnxEnglishText(engine, text) : null;
             const englishReady = english?.ready === true;
+            // Match ONNX's explicit warm-up: MediaPipe can also perform lazy
+            // work during its first inference despite initialize() completing.
+            if (entry.provider === 'mediapipe') await engine.synthesize(text);
             const measured = english?.measured || await measureWarmClip(
                 entry.provider === 'mediapipe'
                     ? () => engine.synthesize(text)
