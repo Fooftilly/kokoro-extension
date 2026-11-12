@@ -560,6 +560,316 @@ async function acceptTwoBackendComparison(page, extensionId) {
         serverTestNotTriggered: true, noAutomaticRanking: true, summary };
 }
 
+// A minimal, valid EPUB 3 archive is generated in-memory for the opt-in
+// browser test. No downloaded fixture, external content or test-only
+// production API: the packaged reader handles a real file selection.
+async function buildReaderAcceptanceEpub() {
+    const { default: JSZip } = await import('jszip');
+    const zip = new JSZip();
+    zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
+    zip.file('META-INF/container.xml',
+        '<?xml version="1.0" encoding="UTF-8"?>' +
+        '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">' +
+        '<rootfiles><rootfile full-path="OEBPS/content.opf" ' +
+        'media-type="application/oebps-package+xml"/></rootfiles></container>');
+    zip.file('OEBPS/content.opf',
+        '<?xml version="1.0" encoding="UTF-8"?>' +
+        '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" ' +
+        'unique-identifier="book-id" xml:lang="en">' +
+        '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">' +
+        '<dc:identifier id="book-id">urn:uuid:01234567-89ab-4cde-8012-3456789abcde</dc:identifier>' +
+        '<dc:title>Local Reader Acceptance</dc:title><dc:language>en</dc:language>' +
+        '<meta property="dcterms:modified">2026-11-12T00:00:00Z</meta></metadata>' +
+        '<manifest>' +
+        '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>' +
+        '<item id="first" href="first.xhtml" media-type="application/xhtml+xml"/>' +
+        '<item id="second" href="second.xhtml" media-type="application/xhtml+xml"/>' +
+        '</manifest><spine><itemref idref="first"/><itemref idref="second"/></spine></package>');
+    zip.file('OEBPS/nav.xhtml',
+        '<?xml version="1.0" encoding="UTF-8"?>' +
+        '<html xmlns="http://www.w3.org/1999/xhtml" ' +
+        'xmlns:epub="http://www.idpf.org/2007/ops"><head>' +
+        '<title>Contents</title></head><body><nav epub:type="toc">' +
+        '<ol><li><a href="first.xhtml">First Chapter</a></li>' +
+        '<li><a href="second.xhtml">Second Chapter</a></li>' +
+        '</ol></nav></body></html>');
+    for (const [name, id] of [['first', 'first'], ['second', 'second']]) {
+        zip.file('OEBPS/' + name + '.xhtml',
+            '<?xml version="1.0" encoding="UTF-8"?>' +
+            '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>' +
+            name + '</title></head><body><p id="' + id +
+            '">Hello world.</p></body></html>');
+    }
+    return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+}
+
+// Browser-side readiness poll serialized by Playwright into the reader page.
+// Nested helpers keep CodeFactor method complexity under the gate while the
+// WAV fetch, revision recheck, and Prev/Next assertions stay atomic.
+async function pollRealEpubChapterReady({ title, previousRevision, previousAudioUrl }) {
+    const expectedNav = (chapterTitle) => ({
+        entries: chapterTitle === 'acceptance.txt' ? 1 : 2,
+        prevDisabled: chapterTitle !== 'Second Chapter',
+        nextDisabled: chapterTitle !== 'First Chapter',
+    });
+    const collectNav = () => {
+        const active = document.querySelector('.playable-chapter.active');
+        return {
+            activeLabel: active?.querySelector('.chapter-label')?.textContent ?? null,
+            activeHref: active?.dataset.href ?? null,
+            entries: [...document.querySelectorAll('.playable-chapter')].map(el => ({
+                label: el.querySelector('.chapter-label')?.textContent ?? null,
+                href: el.dataset.href ?? null,
+                active: el.classList.contains('active'),
+            })),
+            prevDisabled: document.getElementById('prevChapter').disabled,
+            nextDisabled: document.getElementById('nextChapter').disabled,
+        };
+    };
+    const navMatches = (chapterTitle) => {
+        const expected = expectedNav(chapterTitle);
+        const active = document.querySelector('.playable-chapter.active');
+        const prev = document.getElementById('prevChapter');
+        const next = document.getElementById('nextChapter');
+        return document.querySelectorAll('.playable-chapter').length === expected.entries &&
+            active?.querySelector('.chapter-label')?.textContent === chapterTitle &&
+            prev?.disabled === expected.prevDisabled &&
+            next?.disabled === expected.nextDisabled;
+    };
+    const shellReady = (frame, audio, status, stored, revision, audioUrl) => [
+        () => Boolean(frame && audio),
+        () => document.getElementById('filePickerOverlay')?.style.display === 'none',
+        () => navMatches(title),
+        () => stored.pendingTitle === title && stored.pendingTtsBackend === 'onnx',
+        () => stored.pendingApiUrl === null || stored.pendingApiUrl === '',
+        () => stored.pendingAutoplay === false,
+        () => Number.isSafeInteger(revision) && revision > previousRevision,
+        () => Boolean(stored.pendingContent?.some(b => b.content?.includes('Hello world.'))),
+        () => Boolean(audioUrl?.startsWith('blob:')),
+        () => !previousAudioUrl || audioUrl !== previousAudioUrl,
+        () => audio.paused,
+        () => frame.getElementById('loadingSpinner')?.style.display === 'none',
+        () => status?.textContent !== 'Error playing audio.',
+        () => frame.getElementById('pageTitle')?.textContent === title,
+        () => frame.querySelectorAll('.sentence').length >= 1,
+        () => navigator.onLine === false,
+    ].every(check => check());
+    const stillStable = (frame, audio, audioUrl) => [
+        () => audio.src === audioUrl,
+        () => frame.getElementById('loadingSpinner')?.style.display === 'none',
+        () => frame.getElementById('pageTitle')?.textContent === title,
+        () => navMatches(title),
+    ].every(check => check());
+    const assertValidWav = (bytes, response, audioUrl, revision, backend) => {
+        const tag = (offset, count) =>
+            String.fromCharCode(...bytes.subarray(offset, offset + count));
+        const header = bytes.byteLength >= 44
+            ? new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength) : null;
+        const audioBytes = header?.getUint32(40, true) ?? 0;
+        if (tag(0, 4) === 'RIFF' && tag(8, 4) === 'WAVE' &&
+            header?.getUint32(24, true) === 24000 && audioBytes >= 2 &&
+            bytes.length === 44 + audioBytes) {
+            return audioBytes;
+        }
+        throw Error('Real EPUB reader WAV mismatch: ' + JSON.stringify({
+            title, revision, backend,
+            sourceKind: audioUrl.split(':', 1)[0],
+            mime: response.headers.get('content-type'),
+            length: bytes.length, riff: tag(0, 4), wave: tag(8, 4),
+            rate: header?.getUint32(24, true) ?? null,
+            audioBytes, expectedLength: 44 + audioBytes,
+            leadBytes: [...bytes.subarray(0, 12)],
+        }));
+    };
+
+    const frame = document.getElementById('playerFrame')?.contentDocument;
+    const audio = frame?.getElementById('audio');
+    const status = frame?.getElementById('status');
+    const stored = await chrome.storage.local.get([
+        'pendingTitle', 'pendingTtsBackend', 'pendingApiUrl',
+        'pendingReaderReloadRevision', 'pendingContent', 'pendingAutoplay',
+    ]);
+    const revision = stored.pendingReaderReloadRevision;
+    const audioUrl = audio?.src;
+    if (!shellReady(frame, audio, status, stored, revision, audioUrl)) return false;
+
+    let response;
+    let bytes;
+    try {
+        // The iframe owns this Blob URL; capture it before awaiting.
+        response = await frame.defaultView.fetch(audioUrl);
+        if (!response.ok) return false;
+        bytes = new Uint8Array(await response.arrayBuffer());
+    } catch {
+        // The player may revoke the URL while switching chapters.
+        return false;
+    }
+    // Reject transitional snapshots rather than letting them pass or
+    // fetching the newly cleared audio.src as a document URL.
+    const latest = await chrome.storage.local.get([
+        'pendingReaderReloadRevision', 'pendingTitle', 'pendingTtsBackend',
+    ]);
+    if (latest.pendingReaderReloadRevision !== revision ||
+        latest.pendingTitle !== title || latest.pendingTtsBackend !== 'onnx' ||
+        !stillStable(frame, audio, audioUrl)) {
+        return false;
+    }
+    const audioBytes = assertValidWav(
+        bytes, response, audioUrl, revision, stored.pendingTtsBackend);
+    return {
+        title, revision, audioUrl, bytes: audioBytes,
+        blockCount: stored.pendingContent.length,
+        backend: stored.pendingTtsBackend,
+        serverUrl: stored.pendingApiUrl,
+        paused: audio.paused,
+        nav: collectNav(),
+    };
+}
+
+// Verify that the real EPUB.js reader and embedded overlay—not a seeded
+// pendingContent shortcut—create a local offline WAV for both chapters.
+// Also cover replacing the book with a TXT file through the same UI.
+async function acceptRealEpubReader(page, extensionId) {
+    await page.evaluate(async () => {
+        await chrome.storage.sync.set({
+            ttsBackend: 'onnx', autoplayReader: false, continuousReader: false,
+            mediaPipeVariant: 'cpu', localVoice: 'af_heart',
+        });
+    });
+    await page.goto('chrome-extension://' + extensionId + '/reader.html');
+    await page.waitForFunction(() =>
+        document.querySelector('#fileInput') &&
+        document.querySelector('#playerFrame')?.contentDocument?.getElementById('status'),
+    null, { timeout: 30000 });
+
+    const epub = await buildReaderAcceptanceEpub();
+    await page.locator('#fileInput').setInputFiles({
+        name: 'offline-reader-acceptance.epub',
+        mimeType: 'application/epub+zip',
+        buffer: epub,
+    });
+
+    const readReaderNavDiagnostics = async () => page.evaluate(() => {
+        const prev = document.getElementById('prevChapter');
+        const next = document.getElementById('nextChapter');
+        const active = document.querySelector('.playable-chapter.active');
+        return {
+            activeLabel: active?.querySelector('.chapter-label')?.textContent ?? null,
+            activeHref: active?.dataset.href ?? null,
+            entries: [...document.querySelectorAll('.playable-chapter')].map(el => ({
+                label: el.querySelector('.chapter-label')?.textContent ?? null,
+                href: el.dataset.href ?? null,
+                active: el.classList.contains('active'),
+            })),
+            prevDisabled: prev?.disabled ?? null,
+            nextDisabled: next?.disabled ?? null,
+            prevAriaDisabled: prev?.getAttribute('aria-disabled') ?? null,
+            nextAriaDisabled: next?.getAttribute('aria-disabled') ?? null,
+            pageTitle: document.getElementById('playerFrame')?.contentDocument
+                ?.getElementById('pageTitle')?.textContent ?? null,
+            status: document.getElementById('playerFrame')?.contentDocument
+                ?.getElementById('status')?.textContent ?? null,
+            pickerVisible: document.getElementById('filePickerOverlay')?.style.display !== 'none',
+        };
+    });
+    const expectedNavForTitle = (title) => {
+        if (title === 'First Chapter') return { prevDisabled: true, nextDisabled: false };
+        if (title === 'Second Chapter') return { prevDisabled: false, nextDisabled: true };
+        if (title === 'acceptance.txt') return { prevDisabled: true, nextDisabled: true };
+        return null;
+    };
+    const waitForChapter = async (title, previousRevision = 0, previousAudioUrl = null) => {
+        // Playwright 1.65 treats an *async* waitForFunction predicate that
+        // resolves to false/null as success (returns that falsy value). The
+        // EPUB readiness poll must await chrome.storage + iframe WAV fetch, so
+        // it cannot be a sync predicate. Drive the same atomic browser-side
+        // poll via page.evaluate in Node until it returns a chapter snapshot.
+        // WAV header mismatches fail closed immediately; transient not-ready
+        // results retry until the deadline.
+        const deadline = Date.now() + 180000;
+        let lastError = null;
+        while (Date.now() < deadline) {
+            try {
+                const snapshot = await page.evaluate(
+                    pollRealEpubChapterReady,
+                    { title, previousRevision, previousAudioUrl },
+                );
+                if (snapshot && typeof snapshot === 'object' &&
+                    snapshot.title === title && snapshot.nav) {
+                    return snapshot;
+                }
+            } catch (error) {
+                const message = String(error);
+                if (message.includes('Real EPUB reader WAV mismatch')) {
+                    const diagnostics = await readReaderNavDiagnostics().catch(() => null);
+                    throw Error('Reader chapter readiness failed for ' + title + ': ' +
+                        message + '; nav=' + JSON.stringify(diagnostics));
+                }
+                lastError = error;
+            }
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        const diagnostics = await readReaderNavDiagnostics().catch(() => null);
+        throw Error('Reader chapter readiness failed for ' + title + ': ' +
+            String(lastError || 'timeout') + '; nav=' + JSON.stringify(diagnostics));
+    };
+    const first = await waitForChapter('First Chapter');
+    const firstExpected = expectedNavForTitle(first.title);
+    if (!firstExpected || !first.nav ||
+        first.nav.prevDisabled !== firstExpected.prevDisabled ||
+        first.nav.nextDisabled !== firstExpected.nextDisabled ||
+        first.nav.activeLabel !== 'First Chapter') {
+        throw Error('EPUB first chapter navigation controls incorrect: ' +
+            JSON.stringify({ expected: firstExpected, snapshot: first, nav: first.nav,
+                live: await readReaderNavDiagnostics() }));
+    }
+    await page.locator('#nextChapter').click();
+    const second = await waitForChapter('Second Chapter', first.revision, first.audioUrl);
+    const secondExpected = expectedNavForTitle(second.title);
+    if (!secondExpected || !second.nav ||
+        second.nav.prevDisabled !== secondExpected.prevDisabled ||
+        second.nav.nextDisabled !== secondExpected.nextDisabled ||
+        second.nav.activeLabel !== 'Second Chapter' ||
+        first.audioUrl === second.audioUrl) {
+        throw Error('EPUB navigation failed to replace audio or update chapter controls: ' +
+            JSON.stringify({ expected: secondExpected, snapshot: second, nav: second.nav,
+                firstAudioUrl: first.audioUrl, secondAudioUrl: second.audioUrl,
+                live: await readReaderNavDiagnostics() }));
+    }
+    await page.locator('#openAnotherDocument').click();
+    await page.locator('#fileInput').setInputFiles({
+        name: 'acceptance.txt', mimeType: 'text/plain',
+        buffer: Buffer.from('Hello world.', 'utf8'),
+    });
+    const plainText = await waitForChapter('acceptance.txt', second.revision, second.audioUrl);
+    const txtExpected = expectedNavForTitle(plainText.title);
+    if (plainText.audioUrl === second.audioUrl ||
+        !txtExpected || !plainText.nav ||
+        plainText.nav.prevDisabled !== txtExpected.prevDisabled ||
+        plainText.nav.nextDisabled !== txtExpected.nextDisabled ||
+        plainText.nav.activeLabel !== 'acceptance.txt' ||
+        plainText.nav.entries.length !== 1) {
+        throw Error('TXT document replacement retained stale EPUB audio or navigation: ' +
+            JSON.stringify({ expected: txtExpected, snapshot: plainText, nav: plainText.nav,
+                secondAudioUrl: second.audioUrl, txtAudioUrl: plainText.audioUrl,
+                live: await readReaderNavDiagnostics() }));
+    }
+    const selected = await page.evaluate(async () =>
+        (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
+    if (selected !== 'onnx') throw Error('Reader silently switched local TTS backend');
+    return {
+        success: true, browser: 'Chromium', backend: 'onnx',
+        epubFileSelectedThroughUi: true, chapterCount: 2,
+        first: { title: first.title, revision: first.revision, audioBytes: first.bytes },
+        second: { title: second.title, revision: second.revision, audioBytes: second.bytes },
+        txtReplacement: { title: plainText.title, revision: plainText.revision,
+            audioBytes: plainText.bytes },
+        local24kHzWav: true, differentAudioPerChapter: true,
+        offline: true, noServerFallback: true, autoplayDisabled: true,
+        userBackendUnchanged: true,
+    };
+}
+
 let extensionOrigin = null;
 // A random per-run URL token authenticates Chrome requests, including MV3 GET
 // requests for which Chrome intentionally omits the Origin header.
@@ -706,6 +1016,7 @@ try {
         let onnxPlaybackAcceptance = null;
         let onnxOverlayAcceptance = null;
         let localBenchmarkAcceptance = null;
+        let epubReaderAcceptance = null;
         page.on('pageerror', error => errors.push(String(error)));
         page.on('crash', () => { crashed = true; });
         try {
@@ -1011,17 +1322,21 @@ try {
                 stage = 'offline-real-benchmark-page-controls';
                 localBenchmarkAcceptance = await acceptLocalBenchmarkUi(page, extensionId, manifest);
             }
+            if (originDownload && manifest.provider === 'onnx' && result.success) {
+                stage = 'offline-real-epub-chapters-and-txt-reader';
+                epubReaderAcceptance = await acceptRealEpubReader(page, extensionId);
+            }
             console.log(result.success ? 'REAL MODEL INFERENCE' : 'MODEL INFERENCE FAILURE', result);
             results.push({ provider: manifest.provider, variant: manifest.variant,
                 offlineAttempted: true, offlineInference: result.success === true,
                 originModelAcceptance, onnxPlaybackAcceptance, onnxOverlayAcceptance,
-                localBenchmarkAcceptance, ...result });
+                localBenchmarkAcceptance, epubReaderAcceptance, ...result });
             await saveReport();
         } catch (error) {
             const failure = { provider: manifest.provider, variant: manifest.variant,
                 success: false, crashed, stage, originModelAcceptance,
                 onnxPlaybackAcceptance, onnxOverlayAcceptance,
-                localBenchmarkAcceptance, error: String(error) };
+                localBenchmarkAcceptance, epubReaderAcceptance, error: String(error) };
             results.push(failure);
             await saveReport();
             console.error('MODEL VALIDATION ABORTED', failure);
