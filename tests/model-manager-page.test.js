@@ -480,9 +480,11 @@ describe('ONNX model manager English synthesis diagnostics', () => {
     test('verified ONNX q8 English text enables explicit selection while IPA timings stay separate', async () => {
         const { row, message } = await runProbe();
         expect(engine.synthesizePhonemes).not.toHaveBeenCalled();
-        expect(engine.synthesize).toHaveBeenCalledTimes(3);
-        expect(engine.synthesize).toHaveBeenCalledWith('Hello world.');
+        expect(engine.synthesize).toHaveBeenCalledTimes(4); // 1 untimed warm-up + 3 timed
+        expect(engine.synthesize.mock.calls.every(([input]) => input === 'Hello world.'))
+            .toBe(true);
         expect(message).toContain('warm (3 runs, shared English text)');
+        expect(message).toContain('after untimed warm-up');
         expect(message).toContain('Measured the shared English text through the dictionary-backed ONNX path');
         expect(message).not.toContain('IPA-only diagnostic');
         expect(window.KokoroBenchmark.summarizeRuns).toHaveBeenCalledWith(
@@ -803,7 +805,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(message).toContain('Full-clip synthesis p50');
         expect(navigator.locks.request).toHaveBeenCalledWith(
             'kokoro-model-data-v1', { mode: 'shared' }, expect.any(Function));
-        expect(engine.synthesize).toHaveBeenCalledTimes(3);
+        expect(engine.synthesize).toHaveBeenCalledTimes(4);
         expect(engine.synthesizePhonemes).not.toHaveBeenCalled();
     });
 
@@ -1046,12 +1048,13 @@ describe('ONNX model manager English synthesis diagnostics', () => {
 
     test('partial ONNX English synthesis never mixes its timings into the IPA fallback', async () => {
         engine.synthesize
-            .mockResolvedValueOnce(audio())
+            .mockResolvedValueOnce(audio()) // untimed English warm-up succeeded
+            .mockResolvedValueOnce(audio()) // first timed trial succeeded
             .mockRejectedValueOnce(new Error('Unsupported sentence'));
         const { row, message } = await runProbe();
         expect(message).toContain('English text synthesis failed: Unsupported sentence');
         expect(message).toContain('IPA-only diagnostic');
-        expect(engine.synthesize).toHaveBeenCalledTimes(2);
+        expect(engine.synthesize).toHaveBeenCalledTimes(3);
         expect(engine.synthesizePhonemes).toHaveBeenCalledTimes(3);
         expect(window.KokoroBenchmark.summarizeRuns).toHaveBeenCalledTimes(1);
         expect(window.KokoroBenchmark.summarizeRuns.mock.calls[0][0]).toHaveLength(3);
