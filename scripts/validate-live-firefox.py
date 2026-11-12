@@ -1268,134 +1268,266 @@ def accept_two_backend_comparison(driver, origin):
     }
 
 
+# Browser-side readiness poll kept as one string so CodeFactor scores the
+# Python orchestration helpers, not the embedded Chromium-parity JS.
+_EPUB_CHAPTER_READY_SCRIPT = """
+const [title, previousRevision, previousAudioUrl, done] = arguments;
+(async () => {
+    const expectedNav = (chapterTitle) => ({
+        entries: chapterTitle === 'acceptance.txt' ? 1 : 2,
+        prevDisabled: chapterTitle !== 'Second Chapter',
+        nextDisabled: chapterTitle !== 'First Chapter',
+    });
+    const collectNav = () => {
+        const active = document.querySelector('.playable-chapter.active');
+        return {
+            activeLabel: active?.querySelector('.chapter-label')?.textContent ?? null,
+            activeHref: active?.dataset.href ?? null,
+            entries: [...document.querySelectorAll('.playable-chapter')].map(el => ({
+                label: el.querySelector('.chapter-label')?.textContent ?? null,
+                href: el.dataset.href ?? null,
+                active: el.classList.contains('active'),
+            })),
+            prevDisabled: document.getElementById('prevChapter').disabled,
+            nextDisabled: document.getElementById('nextChapter').disabled,
+        };
+    };
+    const navMatches = (chapterTitle) => {
+        const expected = expectedNav(chapterTitle);
+        const active = document.querySelector('.playable-chapter.active');
+        const prev = document.getElementById('prevChapter');
+        const next = document.getElementById('nextChapter');
+        return document.querySelectorAll('.playable-chapter').length === expected.entries &&
+            active?.querySelector('.chapter-label')?.textContent === chapterTitle &&
+            prev?.disabled === expected.prevDisabled &&
+            next?.disabled === expected.nextDisabled;
+    };
+    const shellReady = (frame, audio, status, stored, revision, audioUrl) => [
+        () => Boolean(frame && audio),
+        () => document.getElementById('filePickerOverlay')?.style.display === 'none',
+        () => navMatches(title),
+        () => stored.pendingTitle === title && stored.pendingTtsBackend === 'onnx',
+        () => stored.pendingApiUrl === null || stored.pendingApiUrl === '',
+        () => stored.pendingAutoplay === false,
+        () => Number.isSafeInteger(revision) && revision > previousRevision,
+        () => Boolean(stored.pendingContent?.some(b => b.content?.includes('Hello world.'))),
+        () => Boolean(audioUrl?.startsWith('blob:')),
+        () => !previousAudioUrl || audioUrl !== previousAudioUrl,
+        () => audio.paused,
+        () => frame.getElementById('loadingSpinner')?.style.display === 'none',
+        () => status?.textContent !== 'Error playing audio.',
+        () => frame.getElementById('pageTitle')?.textContent === title,
+        () => frame.querySelectorAll('.sentence').length >= 1,
+        () => navigator.onLine === false,
+    ].every(check => check());
+    const stillStable = (frame, audio, audioUrl) => [
+        () => audio.src === audioUrl,
+        () => frame.getElementById('loadingSpinner')?.style.display === 'none',
+        () => frame.getElementById('pageTitle')?.textContent === title,
+        () => navMatches(title),
+    ].every(check => check());
+    const assertValidWav = (bytes, response, audioUrl, revision, backend) => {
+        const tag = (offset, count) =>
+            String.fromCharCode(...bytes.subarray(offset, offset + count));
+        const header = bytes.byteLength >= 44
+            ? new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength) : null;
+        const audioBytes = header?.getUint32(40, true) ?? 0;
+        if (tag(0, 4) === 'RIFF' && tag(8, 4) === 'WAVE' &&
+            header?.getUint32(24, true) === 24000 && audioBytes >= 2 &&
+            bytes.length === 44 + audioBytes) {
+            return audioBytes;
+        }
+        throw Error('Real EPUB reader WAV mismatch: ' + JSON.stringify({
+            title, revision, backend,
+            sourceKind: audioUrl.split(':', 1)[0],
+            mime: response.headers.get('content-type'),
+            length: bytes.length, riff: tag(0, 4), wave: tag(8, 4),
+            rate: header?.getUint32(24, true) ?? null,
+            audioBytes, expectedLength: 44 + audioBytes,
+            leadBytes: [...bytes.subarray(0, 12)],
+        }));
+    };
+    const frame = document.getElementById('playerFrame')?.contentDocument;
+    const audio = frame?.getElementById('audio');
+    const status = frame?.getElementById('status');
+    const stored = await browser.storage.local.get([
+        'pendingTitle', 'pendingTtsBackend', 'pendingApiUrl',
+        'pendingReaderReloadRevision', 'pendingContent', 'pendingAutoplay',
+    ]);
+    const revision = stored.pendingReaderReloadRevision;
+    const audioUrl = audio?.src;
+    if (!shellReady(frame, audio, status, stored, revision, audioUrl)) {
+        done(false);
+        return;
+    }
+    let response;
+    let bytes;
+    try {
+        response = await frame.defaultView.fetch(audioUrl);
+        if (!response.ok) { done(false); return; }
+        bytes = new Uint8Array(await response.arrayBuffer());
+    } catch {
+        done(false);
+        return;
+    }
+    const latest = await browser.storage.local.get([
+        'pendingReaderReloadRevision', 'pendingTitle', 'pendingTtsBackend',
+    ]);
+    if (latest.pendingReaderReloadRevision !== revision ||
+        latest.pendingTitle !== title || latest.pendingTtsBackend !== 'onnx' ||
+        !stillStable(frame, audio, audioUrl)) {
+        done(false);
+        return;
+    }
+    const audioBytes = assertValidWav(
+        bytes, response, audioUrl, revision, stored.pendingTtsBackend);
+    done({
+        title, revision, audioUrl, bytes: audioBytes,
+        blockCount: stored.pendingContent.length,
+        backend: stored.pendingTtsBackend,
+        serverUrl: stored.pendingApiUrl,
+        paused: audio.paused,
+        nav: collectNav(),
+    });
+})().catch(error => done({ __error: String(error) }));
+"""
+
+
 def _poll_real_epub_chapter_ready(driver, title, previous_revision, previous_audio_url):
     """Atomic reader+iframe WAV readiness poll (Firefox port of Chromium helper)."""
-    return driver.execute_async_script("""
-        const [title, previousRevision, previousAudioUrl, done] = arguments;
-        (async () => {
-            const expectedNav = (chapterTitle) => ({
-                entries: chapterTitle === 'acceptance.txt' ? 1 : 2,
-                prevDisabled: chapterTitle !== 'Second Chapter',
-                nextDisabled: chapterTitle !== 'First Chapter',
-            });
-            const collectNav = () => {
-                const active = document.querySelector('.playable-chapter.active');
-                return {
-                    activeLabel: active?.querySelector('.chapter-label')?.textContent ?? null,
-                    activeHref: active?.dataset.href ?? null,
-                    entries: [...document.querySelectorAll('.playable-chapter')].map(el => ({
-                        label: el.querySelector('.chapter-label')?.textContent ?? null,
-                        href: el.dataset.href ?? null,
-                        active: el.classList.contains('active'),
-                    })),
-                    prevDisabled: document.getElementById('prevChapter').disabled,
-                    nextDisabled: document.getElementById('nextChapter').disabled,
-                };
-            };
-            const navMatches = (chapterTitle) => {
-                const expected = expectedNav(chapterTitle);
-                const active = document.querySelector('.playable-chapter.active');
-                const prev = document.getElementById('prevChapter');
-                const next = document.getElementById('nextChapter');
-                return document.querySelectorAll('.playable-chapter').length === expected.entries &&
-                    active?.querySelector('.chapter-label')?.textContent === chapterTitle &&
-                    prev?.disabled === expected.prevDisabled &&
-                    next?.disabled === expected.nextDisabled;
-            };
-            const shellReady = (frame, audio, status, stored, revision, audioUrl) => [
-                () => Boolean(frame && audio),
-                () => document.getElementById('filePickerOverlay')?.style.display === 'none',
-                () => navMatches(title),
-                () => stored.pendingTitle === title && stored.pendingTtsBackend === 'onnx',
-                () => stored.pendingApiUrl === null || stored.pendingApiUrl === '',
-                () => stored.pendingAutoplay === false,
-                () => Number.isSafeInteger(revision) && revision > previousRevision,
-                () => Boolean(stored.pendingContent?.some(b => b.content?.includes('Hello world.'))),
-                () => Boolean(audioUrl?.startsWith('blob:')),
-                () => !previousAudioUrl || audioUrl !== previousAudioUrl,
-                () => audio.paused,
-                () => frame.getElementById('loadingSpinner')?.style.display === 'none',
-                () => status?.textContent !== 'Error playing audio.',
-                () => frame.getElementById('pageTitle')?.textContent === title,
-                () => frame.querySelectorAll('.sentence').length >= 1,
-                () => navigator.onLine === false,
-            ].every(check => check());
-            const stillStable = (frame, audio, audioUrl) => [
-                () => audio.src === audioUrl,
-                () => frame.getElementById('loadingSpinner')?.style.display === 'none',
-                () => frame.getElementById('pageTitle')?.textContent === title,
-                () => navMatches(title),
-            ].every(check => check());
-            const assertValidWav = (bytes, response, audioUrl, revision, backend) => {
-                const tag = (offset, count) =>
-                    String.fromCharCode(...bytes.subarray(offset, offset + count));
-                const header = bytes.byteLength >= 44
-                    ? new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength) : null;
-                const audioBytes = header?.getUint32(40, true) ?? 0;
-                if (tag(0, 4) === 'RIFF' && tag(8, 4) === 'WAVE' &&
-                    header?.getUint32(24, true) === 24000 && audioBytes >= 2 &&
-                    bytes.length === 44 + audioBytes) {
-                    return audioBytes;
-                }
-                throw Error('Real EPUB reader WAV mismatch: ' + JSON.stringify({
-                    title, revision, backend,
-                    sourceKind: audioUrl.split(':', 1)[0],
-                    mime: response.headers.get('content-type'),
-                    length: bytes.length, riff: tag(0, 4), wave: tag(8, 4),
-                    rate: header?.getUint32(24, true) ?? null,
-                    audioBytes, expectedLength: 44 + audioBytes,
-                    leadBytes: [...bytes.subarray(0, 12)],
-                }));
-            };
-
-            const frame = document.getElementById('playerFrame')?.contentDocument;
-            const audio = frame?.getElementById('audio');
-            const status = frame?.getElementById('status');
-            const stored = await browser.storage.local.get([
-                'pendingTitle', 'pendingTtsBackend', 'pendingApiUrl',
-                'pendingReaderReloadRevision', 'pendingContent', 'pendingAutoplay',
-            ]);
-            const revision = stored.pendingReaderReloadRevision;
-            const audioUrl = audio?.src;
-            if (!shellReady(frame, audio, status, stored, revision, audioUrl)) {
-                done(false);
-                return;
-            }
-            let response;
-            let bytes;
-            try {
-                response = await frame.defaultView.fetch(audioUrl);
-                if (!response.ok) { done(false); return; }
-                bytes = new Uint8Array(await response.arrayBuffer());
-            } catch {
-                done(false);
-                return;
-            }
-            const latest = await browser.storage.local.get([
-                'pendingReaderReloadRevision', 'pendingTitle', 'pendingTtsBackend',
-            ]);
-            if (latest.pendingReaderReloadRevision !== revision ||
-                latest.pendingTitle !== title || latest.pendingTtsBackend !== 'onnx' ||
-                !stillStable(frame, audio, audioUrl)) {
-                done(false);
-                return;
-            }
-            const audioBytes = assertValidWav(
-                bytes, response, audioUrl, revision, stored.pendingTtsBackend);
-            done({
-                title, revision, audioUrl, bytes: audioBytes,
-                blockCount: stored.pendingContent.length,
-                backend: stored.pendingTtsBackend,
-                serverUrl: stored.pendingApiUrl,
-                paused: audio.paused,
-                nav: collectNav(),
-            });
-        })().catch(error => done({ __error: String(error) }));
-    """, title, previous_revision, previous_audio_url)
+    return driver.execute_async_script(
+        _EPUB_CHAPTER_READY_SCRIPT, title, previous_revision, previous_audio_url)
 
 
-def accept_real_epub_reader(driver, origin):
-    """Real Firefox file picker → EPUB.js → chapter nav → overlay → offline WAV."""
+def _read_reader_nav_diagnostics(driver):
+    return driver.execute_script("""
+        const prev = document.getElementById('prevChapter');
+        const next = document.getElementById('nextChapter');
+        const active = document.querySelector('.playable-chapter.active');
+        return {
+            activeLabel: active?.querySelector('.chapter-label')?.textContent ?? null,
+            activeHref: active?.dataset.href ?? null,
+            entries: [...document.querySelectorAll('.playable-chapter')].map(el => ({
+                label: el.querySelector('.chapter-label')?.textContent ?? null,
+                href: el.dataset.href ?? null,
+                active: el.classList.contains('active'),
+            })),
+            prevDisabled: prev?.disabled ?? null,
+            nextDisabled: next?.disabled ?? null,
+            prevAriaDisabled: prev?.getAttribute('aria-disabled') ?? null,
+            nextAriaDisabled: next?.getAttribute('aria-disabled') ?? null,
+            pageTitle: document.getElementById('playerFrame')?.contentDocument
+                ?.getElementById('pageTitle')?.textContent ?? null,
+            status: document.getElementById('playerFrame')?.contentDocument
+                ?.getElementById('status')?.textContent ?? null,
+            pickerVisible: document.getElementById('filePickerOverlay')?.style.display !== 'none',
+        };
+    """)
+
+
+def _expected_nav_for_title(title):
+    if title == "First Chapter":
+        return {"prevDisabled": True, "nextDisabled": False}
+    if title == "Second Chapter":
+        return {"prevDisabled": False, "nextDisabled": True}
+    if title == "acceptance.txt":
+        return {"prevDisabled": True, "nextDisabled": True}
+    return None
+
+
+def _safe_reader_nav_diagnostics(driver):
+    try:
+        return _read_reader_nav_diagnostics(driver)
+    except Exception:
+        return None
+
+
+def _epub_chapter_poll_result(driver, title, previous_revision, previous_audio_url):
+    """Return a ready snapshot, raise on WAV mismatch, else None to retry."""
+    snapshot = _poll_real_epub_chapter_ready(
+        driver, title, previous_revision, previous_audio_url)
+    if isinstance(snapshot, dict) and snapshot.get("__error"):
+        message = snapshot["__error"]
+        if "Real EPUB reader WAV mismatch" in message:
+            raise RuntimeError(
+                "Reader chapter readiness failed for " + title + ": " +
+                message + "; nav=" +
+                json.dumps(_safe_reader_nav_diagnostics(driver)))
+        return None, message
+    if (isinstance(snapshot, dict) and snapshot.get("title") == title and
+            snapshot.get("nav")):
+        return snapshot, None
+    return None, None
+
+
+def _wait_for_epub_chapter(driver, title, previous_revision=0, previous_audio_url=None):
+    # Drive the async storage+WAV poll from Python: Selenium's until() cannot
+    # await browser.storage, and a falsy snapshot must retry.
+    deadline = time.time() + 180
+    last_error = None
+    while time.time() < deadline:
+        try:
+            snapshot, poll_error = _epub_chapter_poll_result(
+                driver, title, previous_revision, previous_audio_url)
+            if snapshot is not None:
+                return snapshot
+            if poll_error is not None:
+                last_error = poll_error
+        except RuntimeError:
+            raise
+        except Exception as error:
+            last_error = error
+        time.sleep(0.1)
+    raise RuntimeError(
+        "Reader chapter readiness failed for " + title + ": " +
+        str(last_error or "timeout") + "; nav=" +
+        json.dumps(_safe_reader_nav_diagnostics(driver)))
+
+
+def _epub_nav_matches(snapshot, expected_label, previous_audio_url=None,
+                      require_single_entry=False):
+    expected = _expected_nav_for_title(snapshot.get("title"))
+    nav = snapshot.get("nav")
+    if expected is None or nav is None:
+        return False
+    if nav.get("prevDisabled") != expected["prevDisabled"]:
+        return False
+    if nav.get("nextDisabled") != expected["nextDisabled"]:
+        return False
+    if nav.get("activeLabel") != expected_label:
+        return False
+    if previous_audio_url is not None and snapshot.get("audioUrl") == previous_audio_url:
+        return False
+    if require_single_entry and len(nav.get("entries") or []) != 1:
+        return False
+    return True
+
+
+def _epub_nav_failure_message(expected_label):
+    if expected_label == "First Chapter":
+        return "EPUB first chapter navigation controls incorrect: "
+    if expected_label == "Second Chapter":
+        return ("EPUB navigation failed to replace audio or update "
+                "chapter controls: ")
+    return "TXT document replacement retained stale EPUB audio or navigation: "
+
+
+def _assert_epub_chapter_nav(driver, snapshot, expected_label, previous_audio_url=None,
+                             require_single_entry=False):
+    if _epub_nav_matches(
+            snapshot, expected_label, previous_audio_url, require_single_entry):
+        return
+    detail = {
+        "expected": _expected_nav_for_title(snapshot.get("title")),
+        "snapshot": snapshot, "nav": snapshot.get("nav"),
+        "previousAudioUrl": previous_audio_url,
+        "live": _safe_reader_nav_diagnostics(driver),
+    }
+    raise RuntimeError(
+        _epub_nav_failure_message(expected_label) + json.dumps(detail))
+
+
+def _open_firefox_reader_for_onnx(driver, origin):
     configured = driver.execute_async_script("""
         const done = arguments[arguments.length - 1];
         browser.storage.sync.set({
@@ -1405,140 +1537,14 @@ def accept_real_epub_reader(driver, origin):
     """)
     if not configured.get("success"):
         raise RuntimeError("Cannot configure Firefox ONNX reader backend: " + str(configured))
-
     driver.get(origin + "/reader.html")
     WebDriverWait(driver, 30).until(lambda d: d.execute_script("""
         return Boolean(document.querySelector('#fileInput') &&
             document.querySelector('#playerFrame')?.contentDocument?.getElementById('status'));
     """))
 
-    def read_reader_nav_diagnostics():
-        return driver.execute_script("""
-            const prev = document.getElementById('prevChapter');
-            const next = document.getElementById('nextChapter');
-            const active = document.querySelector('.playable-chapter.active');
-            return {
-                activeLabel: active?.querySelector('.chapter-label')?.textContent ?? null,
-                activeHref: active?.dataset.href ?? null,
-                entries: [...document.querySelectorAll('.playable-chapter')].map(el => ({
-                    label: el.querySelector('.chapter-label')?.textContent ?? null,
-                    href: el.dataset.href ?? null,
-                    active: el.classList.contains('active'),
-                })),
-                prevDisabled: prev?.disabled ?? null,
-                nextDisabled: next?.disabled ?? null,
-                prevAriaDisabled: prev?.getAttribute('aria-disabled') ?? null,
-                nextAriaDisabled: next?.getAttribute('aria-disabled') ?? null,
-                pageTitle: document.getElementById('playerFrame')?.contentDocument
-                    ?.getElementById('pageTitle')?.textContent ?? null,
-                status: document.getElementById('playerFrame')?.contentDocument
-                    ?.getElementById('status')?.textContent ?? null,
-                pickerVisible: document.getElementById('filePickerOverlay')?.style.display !== 'none',
-            };
-        """)
 
-    def expected_nav_for_title(title):
-        if title == "First Chapter":
-            return {"prevDisabled": True, "nextDisabled": False}
-        if title == "Second Chapter":
-            return {"prevDisabled": False, "nextDisabled": True}
-        if title == "acceptance.txt":
-            return {"prevDisabled": True, "nextDisabled": True}
-        return None
-
-    def wait_for_chapter(title, previous_revision=0, previous_audio_url=None):
-        # Drive the async storage+WAV poll from Python: Selenium's until()
-        # cannot await chrome.storage, and a falsy snapshot must retry.
-        deadline = time.time() + 180
-        last_error = None
-        while time.time() < deadline:
-            try:
-                snapshot = _poll_real_epub_chapter_ready(
-                    driver, title, previous_revision, previous_audio_url)
-                if isinstance(snapshot, dict) and snapshot.get("__error"):
-                    message = snapshot["__error"]
-                    if "Real EPUB reader WAV mismatch" in message:
-                        diagnostics = None
-                        try:
-                            diagnostics = read_reader_nav_diagnostics()
-                        except Exception:
-                            diagnostics = None
-                        raise RuntimeError(
-                            "Reader chapter readiness failed for " + title + ": " +
-                            message + "; nav=" + json.dumps(diagnostics))
-                    last_error = message
-                elif (isinstance(snapshot, dict) and snapshot.get("title") == title and
-                        snapshot.get("nav")):
-                    return snapshot
-            except RuntimeError:
-                raise
-            except Exception as error:
-                last_error = error
-            time.sleep(0.1)
-        diagnostics = None
-        try:
-            diagnostics = read_reader_nav_diagnostics()
-        except Exception:
-            diagnostics = None
-        raise RuntimeError(
-            "Reader chapter readiness failed for " + title + ": " +
-            str(last_error or "timeout") + "; nav=" + json.dumps(diagnostics))
-
-    with tempfile.TemporaryDirectory(prefix="kokoro-firefox-epub-") as tmp:
-        epub_path = Path(tmp) / "offline-reader-acceptance.epub"
-        txt_path = Path(tmp) / "acceptance.txt"
-        build_reader_acceptance_epub(epub_path)
-        txt_path.write_text("Hello world.", encoding="utf-8")
-
-        driver.find_element(By.ID, "fileInput").send_keys(str(epub_path))
-        first = wait_for_chapter("First Chapter")
-        first_expected = expected_nav_for_title(first["title"])
-        if (not first_expected or not first.get("nav") or
-                first["nav"]["prevDisabled"] != first_expected["prevDisabled"] or
-                first["nav"]["nextDisabled"] != first_expected["nextDisabled"] or
-                first["nav"]["activeLabel"] != "First Chapter"):
-            raise RuntimeError(
-                "EPUB first chapter navigation controls incorrect: " +
-                json.dumps({"expected": first_expected, "snapshot": first,
-                            "nav": first.get("nav"),
-                            "live": read_reader_nav_diagnostics()}))
-
-        driver.find_element(By.ID, "nextChapter").click()
-        second = wait_for_chapter(
-            "Second Chapter", first["revision"], first["audioUrl"])
-        second_expected = expected_nav_for_title(second["title"])
-        if (not second_expected or not second.get("nav") or
-                second["nav"]["prevDisabled"] != second_expected["prevDisabled"] or
-                second["nav"]["nextDisabled"] != second_expected["nextDisabled"] or
-                second["nav"]["activeLabel"] != "Second Chapter" or
-                first["audioUrl"] == second["audioUrl"]):
-            raise RuntimeError(
-                "EPUB navigation failed to replace audio or update chapter controls: " +
-                json.dumps({"expected": second_expected, "snapshot": second,
-                            "nav": second.get("nav"),
-                            "firstAudioUrl": first["audioUrl"],
-                            "secondAudioUrl": second["audioUrl"],
-                            "live": read_reader_nav_diagnostics()}))
-
-        driver.find_element(By.ID, "openAnotherDocument").click()
-        driver.find_element(By.ID, "fileInput").send_keys(str(txt_path))
-        plain_text = wait_for_chapter(
-            "acceptance.txt", second["revision"], second["audioUrl"])
-        txt_expected = expected_nav_for_title(plain_text["title"])
-        if (plain_text["audioUrl"] == second["audioUrl"] or
-                not txt_expected or not plain_text.get("nav") or
-                plain_text["nav"]["prevDisabled"] != txt_expected["prevDisabled"] or
-                plain_text["nav"]["nextDisabled"] != txt_expected["nextDisabled"] or
-                plain_text["nav"]["activeLabel"] != "acceptance.txt" or
-                len(plain_text["nav"]["entries"]) != 1):
-            raise RuntimeError(
-                "TXT document replacement retained stale EPUB audio or navigation: " +
-                json.dumps({"expected": txt_expected, "snapshot": plain_text,
-                            "nav": plain_text.get("nav"),
-                            "secondAudioUrl": second["audioUrl"],
-                            "txtAudioUrl": plain_text["audioUrl"],
-                            "live": read_reader_nav_diagnostics()}))
-
+def _assert_reader_backend_still_onnx(driver):
     selected = driver.execute_async_script("""
         const done = arguments[arguments.length - 1];
         browser.storage.sync.get({ ttsBackend: 'fastapi' }).then(
@@ -1547,6 +1553,46 @@ def accept_real_epub_reader(driver, origin):
     """)
     if selected != "onnx":
         raise RuntimeError("Reader silently switched local TTS backend: " + str(selected))
+
+
+def _return_to_benchmark_for_onnx_remove(driver, origin):
+    driver.get(origin + "/benchmark.html")
+    WebDriverWait(driver, 30).until(
+        lambda d: d.execute_script("return Boolean(window.KokoroBenchmark)") and
+        d.find_element(
+            By.CSS_SELECTOR, '[data-variant="onnx-q8"] .model-remove'
+        ).is_enabled()
+    )
+
+
+def accept_real_epub_reader(driver, origin):
+    """Real Firefox file picker → EPUB.js → chapter nav → overlay → offline WAV."""
+    _open_firefox_reader_for_onnx(driver, origin)
+    with tempfile.TemporaryDirectory(prefix="kokoro-firefox-epub-") as tmp:
+        epub_path = Path(tmp) / "offline-reader-acceptance.epub"
+        txt_path = Path(tmp) / "acceptance.txt"
+        build_reader_acceptance_epub(epub_path)
+        txt_path.write_text("Hello world.", encoding="utf-8")
+
+        driver.find_element(By.ID, "fileInput").send_keys(str(epub_path))
+        first = _wait_for_epub_chapter(driver, "First Chapter")
+        _assert_epub_chapter_nav(driver, first, "First Chapter")
+
+        driver.find_element(By.ID, "nextChapter").click()
+        second = _wait_for_epub_chapter(
+            driver, "Second Chapter", first["revision"], first["audioUrl"])
+        _assert_epub_chapter_nav(
+            driver, second, "Second Chapter", previous_audio_url=first["audioUrl"])
+
+        driver.find_element(By.ID, "openAnotherDocument").click()
+        driver.find_element(By.ID, "fileInput").send_keys(str(txt_path))
+        plain_text = _wait_for_epub_chapter(
+            driver, "acceptance.txt", second["revision"], second["audioUrl"])
+        _assert_epub_chapter_nav(
+            driver, plain_text, "acceptance.txt",
+            previous_audio_url=second["audioUrl"], require_single_entry=True)
+
+    _assert_reader_backend_still_onnx(driver)
     return {
         "success": True, "browser": "Firefox", "backend": "onnx",
         "epubFileSelectedThroughUi": True, "chapterCount": 2,
@@ -1561,6 +1607,15 @@ def accept_real_epub_reader(driver, origin):
         "offline": True, "noServerFallback": True, "autoplayDisabled": True,
         "userBackendUnchanged": True,
     }
+
+
+def run_offline_epub_reader_acceptance(driver, origin, result):
+    """Opt-in ONNX EPUB/TXT reader stage; returns report then restores manager UI."""
+    result["stage"] = "offline-real-epub-chapters-and-txt-reader"
+    report = accept_real_epub_reader(driver, origin)
+    # Removal still uses the model-manager UI on benchmark.html.
+    _return_to_benchmark_for_onnx_remove(driver, origin)
+    return report
 
 
 def main():
@@ -2201,17 +2256,8 @@ def main():
             # and before Remove. Mirrors Chromium chromium-onnx-origin stage.
             epub_reader_acceptance = None
             if origin_download and provider == "onnx" and metrics.get("success"):
-                result["stage"] = "offline-real-epub-chapters-and-txt-reader"
-                epub_reader_acceptance = accept_real_epub_reader(
-                    driver, state["origin"])
-                # Removal still uses the model-manager UI on benchmark.html.
-                driver.get(state["origin"] + "/benchmark.html")
-                WebDriverWait(driver, 30).until(
-                    lambda d: d.execute_script("return Boolean(window.KokoroBenchmark)") and
-                    d.find_element(
-                        By.CSS_SELECTOR, '[data-variant="onnx-q8"] .model-remove'
-                    ).is_enabled()
-                )
+                epub_reader_acceptance = run_offline_epub_reader_acceptance(
+                    driver, state["origin"], result)
 
             if origin_download and metrics.get("success"):
                 # Close the active engine before Remove; no re-download may
