@@ -1185,10 +1185,10 @@ describe('EPUB file read/parse lifecycle', () => {
         candidate.sections[1].url = 'second.xhtml';
         candidate.sections[0].load.mockResolvedValue(
             new DOMParser().parseFromString(
-                '<body><p id="first">Hello world.</p></body>', 'text/html'));
+                '<body><p id="first">Hello first chapter.</p></body>', 'text/html'));
         candidate.sections[1].load.mockResolvedValue(
             new DOMParser().parseFromString(
-                '<body><p id="second">Hello world.</p></body>', 'text/html'));
+                '<body><p id="second">Hello second chapter.</p></body>', 'text/html'));
         candidate.navigation.toc = [
             { href: 'first.xhtml', label: 'First Chapter' },
             { href: 'second.xhtml', label: 'Second Chapter' },
@@ -1211,14 +1211,18 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(document.getElementById('nextChapter').getAttribute('aria-disabled'))
             .toBe('false');
         expect(browser.storage.local.set.mock.lastCall[0].pendingTitle).toBe('First Chapter');
-        expect(browser.storage.local.set.mock.lastCall[0].pendingContent
-            .some(block => block.content?.includes('Hello world.'))).toBe(true);
+        expect(browser.storage.local.set.mock.lastCall[0].pendingContent).toEqual([
+            expect.objectContaining({ content: 'Hello first chapter.' }),
+        ]);
 
         document.getElementById('nextChapter').click();
         for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length < 2; i++) {
             await tick();
         }
         expect(browser.storage.local.set.mock.lastCall[0].pendingTitle).toBe('Second Chapter');
+        expect(browser.storage.local.set.mock.lastCall[0].pendingContent).toEqual([
+            expect.objectContaining({ content: 'Hello second chapter.' }),
+        ]);
         expect(document.querySelector('.playable-chapter.active .chapter-label').textContent)
             .toBe('Second Chapter');
         expect(document.getElementById('prevChapter').disabled).toBe(false);

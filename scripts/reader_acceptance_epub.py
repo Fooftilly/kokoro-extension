@@ -1,14 +1,24 @@
 """Shared two-chapter EPUB 3 fixture for offline reader acceptance.
 
-Keep labels, spine, and Hello-world bodies aligned with
+Keep labels, spine, and per-document speech bodies aligned with
 scripts/validate-live-chromium.mjs so Chromium and Firefox exercise one
 contract. No browser or Selenium imports.
 """
 import zipfile
 
+# Distinct dictionary-friendly English per document. Chromium harness must
+# use the same map (see validate-live-chromium.mjs READER_ACCEPTANCE_SPEECH).
+READER_ACCEPTANCE_SPEECH = {
+    "First Chapter": "Hello first chapter.",
+    "Second Chapter": "Hello second chapter.",
+    "acceptance.txt": "Hello plain text.",
+}
+
 
 def build_reader_acceptance_epub(path):
     """Write a standards-structured two-chapter EPUB 3 archive to ``path``."""
+    first_speech = READER_ACCEPTANCE_SPEECH["First Chapter"]
+    second_speech = READER_ACCEPTANCE_SPEECH["Second Chapter"]
     with zipfile.ZipFile(path, "w") as archive:
         mimetype = zipfile.ZipInfo("mimetype")
         mimetype.compress_type = zipfile.ZIP_STORED
@@ -45,11 +55,11 @@ def build_reader_acceptance_epub(path):
             '<li><a href="second.xhtml">Second Chapter</a></li>'
             '</ol></nav></body></html>',
         )
-        for name in ("first", "second"):
+        for name, speech in (("first", first_speech), ("second", second_speech)):
             archive.writestr(
                 "OEBPS/" + name + ".xhtml",
                 '<?xml version="1.0" encoding="UTF-8"?>'
                 '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>' +
                 name + '</title></head><body><p id="' + name +
-                '">Hello world.</p></body></html>',
+                '">' + speech + '</p></body></html>',
             )

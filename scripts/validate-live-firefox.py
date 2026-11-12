@@ -23,7 +23,10 @@ from selenium.webdriver.firefox.service import Service as FirefoxService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 
-from reader_acceptance_epub import build_reader_acceptance_epub
+from reader_acceptance_epub import (
+    READER_ACCEPTANCE_SPEECH,
+    build_reader_acceptance_epub,
+)
 
 
 def pinned_manifest(provider):
@@ -1271,8 +1274,14 @@ def accept_two_backend_comparison(driver, origin):
 # Browser-side readiness poll kept as one string so CodeFactor scores the
 # Python orchestration helpers, not the embedded Chromium-parity JS.
 _EPUB_CHAPTER_READY_SCRIPT = """
-const [title, previousRevision, previousAudioUrl, done] = arguments;
+const [title, previousRevision, previousAudioUrl, previousAudioSha256, done] = arguments;
 (async () => {
+    // Keep in sync with reader_acceptance_epub.READER_ACCEPTANCE_SPEECH.
+    const expectedSpeech = {
+        'First Chapter': 'Hello first chapter.',
+        'Second Chapter': 'Hello second chapter.',
+        'acceptance.txt': 'Hello plain text.',
+    }[title];
     const expectedNav = (chapterTitle) => ({
         entries: chapterTitle === 'acceptance.txt' ? 1 : 2,
         prevDisabled: chapterTitle !== 'Second Chapter',
@@ -1302,6 +1311,11 @@ const [title, previousRevision, previousAudioUrl, done] = arguments;
             prev?.disabled === expected.prevDisabled &&
             next?.disabled === expected.nextDisabled;
     };
+    const pendingContentMatches = (stored) => {
+        const blocks = stored.pendingContent;
+        return Array.isArray(blocks) && blocks.length === 1 &&
+            blocks[0].content === expectedSpeech;
+    };
     const shellReady = (frame, audio, status, stored, revision, audioUrl) => [
         () => Boolean(frame && audio),
         () => document.getElementById('filePickerOverlay')?.style.display === 'none',
@@ -1310,7 +1324,7 @@ const [title, previousRevision, previousAudioUrl, done] = arguments;
         () => stored.pendingApiUrl === null || stored.pendingApiUrl === '',
         () => stored.pendingAutoplay === false,
         () => Number.isSafeInteger(revision) && revision > previousRevision,
-        () => Boolean(stored.pendingContent?.some(b => b.content?.includes('Hello world.'))),
+        () => pendingContentMatches(stored),
         () => Boolean(audioUrl?.startsWith('blob:')),
         () => !previousAudioUrl || audioUrl !== previousAudioUrl,
         () => audio.paused,
@@ -1347,6 +1361,11 @@ const [title, previousRevision, previousAudioUrl, done] = arguments;
             leadBytes: [...bytes.subarray(0, 12)],
         }));
     };
+    const sha256Hex = async (bytes) => {
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
+        return [...new Uint8Array(digest)]
+            .map(b => b.toString(16).padStart(2, '0')).join('');
+    };
     const frame = document.getElementById('playerFrame')?.contentDocument;
     const audio = frame?.getElementById('audio');
     const status = frame?.getElementById('status');
@@ -1381,8 +1400,14 @@ const [title, previousRevision, previousAudioUrl, done] = arguments;
     }
     const audioBytes = assertValidWav(
         bytes, response, audioUrl, revision, stored.pendingTtsBackend);
+    const audioSha256 = await sha256Hex(bytes);
+    if (previousAudioSha256 && audioSha256 === previousAudioSha256) {
+        done(false);
+        return;
+    }
     done({
-        title, revision, audioUrl, bytes: audioBytes,
+        title, revision, audioUrl, bytes: audioBytes, audioSha256,
+        expectedSpeech, pendingContent: stored.pendingContent,
         blockCount: stored.pendingContent.length,
         backend: stored.pendingTtsBackend,
         serverUrl: stored.pendingApiUrl,
@@ -1393,10 +1418,12 @@ const [title, previousRevision, previousAudioUrl, done] = arguments;
 """
 
 
-def _poll_real_epub_chapter_ready(driver, title, previous_revision, previous_audio_url):
+def _poll_real_epub_chapter_ready(driver, title, previous_revision, previous_audio_url,
+                                  previous_audio_sha256=None):
     """Atomic reader+iframe WAV readiness poll (Firefox port of Chromium helper)."""
     return driver.execute_async_script(
-        _EPUB_CHAPTER_READY_SCRIPT, title, previous_revision, previous_audio_url)
+        _EPUB_CHAPTER_READY_SCRIPT, title, previous_revision, previous_audio_url,
+        previous_audio_sha256)
 
 
 def _read_reader_nav_diagnostics(driver):
@@ -1442,10 +1469,11 @@ def _safe_reader_nav_diagnostics(driver):
         return None
 
 
-def _epub_chapter_poll_result(driver, title, previous_revision, previous_audio_url):
+def _epub_chapter_poll_result(driver, title, previous_revision, previous_audio_url,
+                              previous_audio_sha256=None):
     """Return a ready snapshot, raise on WAV mismatch, else None to retry."""
     snapshot = _poll_real_epub_chapter_ready(
-        driver, title, previous_revision, previous_audio_url)
+        driver, title, previous_revision, previous_audio_url, previous_audio_sha256)
     if isinstance(snapshot, dict) and snapshot.get("__error"):
         message = snapshot["__error"]
         if "Real EPUB reader WAV mismatch" in message:
@@ -1460,7 +1488,8 @@ def _epub_chapter_poll_result(driver, title, previous_revision, previous_audio_u
     return None, None
 
 
-def _wait_for_epub_chapter(driver, title, previous_revision=0, previous_audio_url=None):
+def _wait_for_epub_chapter(driver, title, previous_revision=0, previous_audio_url=None,
+                           previous_audio_sha256=None):
     # Drive the async storage+WAV poll from Python: Selenium's until() cannot
     # await browser.storage, and a falsy snapshot must retry.
     deadline = time.time() + 180
@@ -1468,7 +1497,8 @@ def _wait_for_epub_chapter(driver, title, previous_revision=0, previous_audio_ur
     while time.time() < deadline:
         try:
             snapshot, poll_error = _epub_chapter_poll_result(
-                driver, title, previous_revision, previous_audio_url)
+                driver, title, previous_revision, previous_audio_url,
+                previous_audio_sha256)
             if snapshot is not None:
                 return snapshot
             if poll_error is not None:
@@ -1491,7 +1521,7 @@ def _epub_button_nav_matches(nav, expected, expected_label):
 
 
 def _epub_nav_matches(snapshot, expected_label, previous_audio_url=None,
-                      require_single_entry=False):
+                      previous_audio_sha256=None, require_single_entry=False):
     expected = _expected_nav_for_title(snapshot.get("title"))
     nav = snapshot.get("nav")
     if expected is None or nav is None:
@@ -1499,6 +1529,11 @@ def _epub_nav_matches(snapshot, expected_label, previous_audio_url=None,
     if not _epub_button_nav_matches(nav, expected, expected_label):
         return False
     if previous_audio_url is not None and snapshot.get("audioUrl") == previous_audio_url:
+        return False
+    if (previous_audio_sha256 is not None and
+            snapshot.get("audioSha256") == previous_audio_sha256):
+        return False
+    if snapshot.get("expectedSpeech") != READER_ACCEPTANCE_SPEECH.get(expected_label):
         return False
     if require_single_entry and len(nav.get("entries") or []) != 1:
         return False
@@ -1515,14 +1550,16 @@ def _epub_nav_failure_message(expected_label):
 
 
 def _assert_epub_chapter_nav(driver, snapshot, expected_label, previous_audio_url=None,
-                             require_single_entry=False):
+                             previous_audio_sha256=None, require_single_entry=False):
     if _epub_nav_matches(
-            snapshot, expected_label, previous_audio_url, require_single_entry):
+            snapshot, expected_label, previous_audio_url, previous_audio_sha256,
+            require_single_entry):
         return
     detail = {
         "expected": _expected_nav_for_title(snapshot.get("title")),
         "snapshot": snapshot, "nav": snapshot.get("nav"),
         "previousAudioUrl": previous_audio_url,
+        "previousAudioSha256": previous_audio_sha256,
         "live": _safe_reader_nav_diagnostics(driver),
     }
     raise RuntimeError(
@@ -1574,7 +1611,8 @@ def accept_real_epub_reader(driver, origin):
         epub_path = Path(tmp) / "offline-reader-acceptance.epub"
         txt_path = Path(tmp) / "acceptance.txt"
         build_reader_acceptance_epub(epub_path)
-        txt_path.write_text("Hello world.", encoding="utf-8")
+        txt_path.write_text(
+            READER_ACCEPTANCE_SPEECH["acceptance.txt"], encoding="utf-8")
 
         driver.find_element(By.ID, "fileInput").send_keys(str(epub_path))
         first = _wait_for_epub_chapter(driver, "First Chapter")
@@ -1582,30 +1620,53 @@ def accept_real_epub_reader(driver, origin):
 
         driver.find_element(By.ID, "nextChapter").click()
         second = _wait_for_epub_chapter(
-            driver, "Second Chapter", first["revision"], first["audioUrl"])
+            driver, "Second Chapter", first["revision"], first["audioUrl"],
+            first["audioSha256"])
         _assert_epub_chapter_nav(
-            driver, second, "Second Chapter", previous_audio_url=first["audioUrl"])
+            driver, second, "Second Chapter",
+            previous_audio_url=first["audioUrl"],
+            previous_audio_sha256=first["audioSha256"])
 
         driver.find_element(By.ID, "openAnotherDocument").click()
         driver.find_element(By.ID, "fileInput").send_keys(str(txt_path))
         plain_text = _wait_for_epub_chapter(
-            driver, "acceptance.txt", second["revision"], second["audioUrl"])
+            driver, "acceptance.txt", second["revision"], second["audioUrl"],
+            second["audioSha256"])
         _assert_epub_chapter_nav(
             driver, plain_text, "acceptance.txt",
-            previous_audio_url=second["audioUrl"], require_single_entry=True)
+            previous_audio_url=second["audioUrl"],
+            previous_audio_sha256=second["audioSha256"],
+            require_single_entry=True)
 
     _assert_reader_backend_still_onnx(driver)
+    different_audio = len({
+        first["audioSha256"], second["audioSha256"], plain_text["audioSha256"],
+    }) == 3
+    if not different_audio:
+        raise RuntimeError(
+            "Reader WAV content hashes were not distinct across chapters/TXT: " +
+            json.dumps({
+                "first": first["audioSha256"],
+                "second": second["audioSha256"],
+                "txt": plain_text["audioSha256"],
+            }))
     return {
         "success": True, "browser": "Firefox", "backend": "onnx",
         "epubFileSelectedThroughUi": True, "chapterCount": 2,
         "first": {"title": first["title"], "revision": first["revision"],
-                  "audioBytes": first["bytes"]},
+                  "audioBytes": first["bytes"],
+                  "audioSha256": first["audioSha256"],
+                  "speech": first["expectedSpeech"]},
         "second": {"title": second["title"], "revision": second["revision"],
-                   "audioBytes": second["bytes"]},
+                   "audioBytes": second["bytes"],
+                   "audioSha256": second["audioSha256"],
+                   "speech": second["expectedSpeech"]},
         "txtReplacement": {"title": plain_text["title"],
                            "revision": plain_text["revision"],
-                           "audioBytes": plain_text["bytes"]},
-        "local24kHzWav": True, "differentAudioPerChapter": True,
+                           "audioBytes": plain_text["bytes"],
+                           "audioSha256": plain_text["audioSha256"],
+                           "speech": plain_text["expectedSpeech"]},
+        "local24kHzWav": True, "differentAudioPerChapter": different_audio,
         "offline": True, "noServerFallback": True, "autoplayDisabled": True,
         "userBackendUnchanged": True,
     }

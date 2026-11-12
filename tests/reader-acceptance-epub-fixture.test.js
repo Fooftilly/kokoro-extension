@@ -2,14 +2,20 @@
 /**
  * Contract for the in-memory EPUB 3 fixture used by Chromium and Firefox
  * offline reader acceptance (validate-live-chromium.mjs /
- * scripts/reader_acceptance_epub.py). Keep chapter labels and Hello-world
- * bodies identical across both harnesses.
+ * scripts/reader_acceptance_epub.py). Keep chapter labels and distinct
+ * per-document speech bodies identical across both harnesses.
  */
 const JSZip = require('jszip');
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+
+const READER_ACCEPTANCE_SPEECH = {
+    'First Chapter': 'Hello first chapter.',
+    'Second Chapter': 'Hello second chapter.',
+    'acceptance.txt': 'Hello plain text.',
+};
 
 async function buildChromiumStyleEpub() {
     const zip = new JSZip();
@@ -40,18 +46,21 @@ async function buildChromiumStyleEpub() {
         '<ol><li><a href="first.xhtml">First Chapter</a></li>' +
         '<li><a href="second.xhtml">Second Chapter</a></li>' +
         '</ol></nav></body></html>');
-    for (const name of ['first', 'second']) {
+    for (const [name, title] of [
+        ['first', 'First Chapter'], ['second', 'Second Chapter'],
+    ]) {
+        const speech = READER_ACCEPTANCE_SPEECH[title];
         zip.file('OEBPS/' + name + '.xhtml',
             '<?xml version="1.0" encoding="UTF-8"?>' +
             '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>' +
             name + '</title></head><body><p id="' + name +
-            '">Hello world.</p></body></html>');
+            '">' + speech + '</p></body></html>');
     }
     return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 
 describe('reader acceptance EPUB fixture contract', () => {
-    test('Chromium-style fixture has two Hello-world chapters and nav labels', async () => {
+    test('Chromium-style fixture has distinct chapter speech and nav labels', async () => {
         const bytes = await buildChromiumStyleEpub();
         const zip = await JSZip.loadAsync(bytes);
         const fileNames = Object.keys(zip.files).filter(name => !zip.files[name].dir).sort();
@@ -69,9 +78,13 @@ describe('reader acceptance EPUB fixture contract', () => {
         expect(await zip.file('OEBPS/nav.xhtml').async('string'))
             .toContain('>Second Chapter</a>');
         expect(await zip.file('OEBPS/first.xhtml').async('string'))
-            .toContain('Hello world.');
+            .toContain(READER_ACCEPTANCE_SPEECH['First Chapter']);
         expect(await zip.file('OEBPS/second.xhtml').async('string'))
-            .toContain('Hello world.');
+            .toContain(READER_ACCEPTANCE_SPEECH['Second Chapter']);
+        expect(READER_ACCEPTANCE_SPEECH['First Chapter'])
+            .not.toBe(READER_ACCEPTANCE_SPEECH['Second Chapter']);
+        expect(READER_ACCEPTANCE_SPEECH['acceptance.txt'])
+            .not.toBe(READER_ACCEPTANCE_SPEECH['First Chapter']);
     });
 
     test('Firefox harness builder emits the same structural contract', () => {
@@ -81,7 +94,8 @@ describe('reader acceptance EPUB fixture contract', () => {
         const result = spawnSync('python3', ['-c', `
 import json, sys, zipfile
 sys.path.insert(0, ${JSON.stringify(scriptsDir)})
-from reader_acceptance_epub import build_reader_acceptance_epub
+from reader_acceptance_epub import (
+    READER_ACCEPTANCE_SPEECH, build_reader_acceptance_epub)
 build_reader_acceptance_epub(${JSON.stringify(epubPath)})
 with zipfile.ZipFile(${JSON.stringify(epubPath)}) as z:
     print(json.dumps({
@@ -91,6 +105,7 @@ with zipfile.ZipFile(${JSON.stringify(epubPath)}) as z:
         'nav': z.read('OEBPS/nav.xhtml').decode(),
         'first': z.read('OEBPS/first.xhtml').decode(),
         'second': z.read('OEBPS/second.xhtml').decode(),
+        'speech': READER_ACCEPTANCE_SPEECH,
     }))
 `], { encoding: 'utf8' });
         fs.rmSync(tmp, { recursive: true, force: true });
@@ -101,8 +116,9 @@ with zipfile.ZipFile(${JSON.stringify(epubPath)}) as z:
         expect(report.mimeStored).toBe(true);
         expect(report.nav).toContain('>First Chapter</a>');
         expect(report.nav).toContain('>Second Chapter</a>');
-        expect(report.first).toContain('Hello world.');
-        expect(report.second).toContain('Hello world.');
+        expect(report.speech).toEqual(READER_ACCEPTANCE_SPEECH);
+        expect(report.first).toContain(READER_ACCEPTANCE_SPEECH['First Chapter']);
+        expect(report.second).toContain(READER_ACCEPTANCE_SPEECH['Second Chapter']);
         expect(report.names).toEqual([
             'META-INF/container.xml',
             'OEBPS/content.opf',
