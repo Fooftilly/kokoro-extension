@@ -24,10 +24,64 @@ const inFlightDownloads = new Map();
 const inFlightVerifications = new Map();
 const lastAudioUrl = new Map();
 const modelRows = new Map();
+const sharedEnglishResults = new Map(); // in-page only; never stored or uploaded
+let sharedEnglishEpoch = 0; // invalidate asynchronous results after sample edits
 let activeModelOperation = null; // one mutating/inference operation per manager page
 let initialStatusPending = true;
 let recheckInProgress = false;
 let modelStatusEpoch = 0; // A model operation invalidates older read-only scans.
+
+// Summarize only real, successful warm synthesis of the same current English
+// sample. The table deliberately excludes IPA probes and FastAPI latency.
+function renderSharedEnglishResults() {
+    const tbody = document.getElementById('sharedEnglishComparisonRows');
+    const status = document.getElementById('sharedEnglishComparisonStatus');
+    if (!tbody || !status) return;
+    tbody.replaceChildren();
+    for (const entry of variants) {
+        const result = sharedEnglishResults.get(entry.key);
+        if (!result) continue;
+        const row = document.createElement('tr');
+        row.dataset.backend = entry.key;
+        for (const value of [
+            entry.label,
+            result.synthesisP50Ms.toFixed(0) + ' ms',
+            result.synthesisP95Ms.toFixed(0) + ' ms',
+            result.realTimeFactorP50.toFixed(2),
+        ]) {
+            const cell = document.createElement('td');
+            cell.textContent = value;
+            row.appendChild(cell);
+        }
+        tbody.appendChild(row);
+    }
+    status.textContent = sharedEnglishResults.size >= 2
+        ? 'Measured ' + sharedEnglishResults.size +
+            ' local backend paths on the current English sample (three warm runs each). No ranking is inferred.'
+        : sharedEnglishResults.size === 1
+            ? 'One local backend measured. Test another on the same English sample to compare.'
+            : 'Run at least two local English tests to compare their measured timings.';
+}
+
+function forgetSharedEnglishResult(entry) {
+    let removed = false;
+    for (const key of [...sharedEnglishResults.keys()]) {
+        if (key === entry.key ||
+            (entry.provider === 'dictionary' && key.startsWith('onnx-'))) {
+            removed = sharedEnglishResults.delete(key) || removed;
+        }
+    }
+    if (removed) renderSharedEnglishResults();
+}
+
+function rememberSharedEnglishResult(entry, metrics, text, epoch) {
+    const input = document.getElementById('benchmarkText');
+    if (epoch !== sharedEnglishEpoch || input?.value.trim() !== text) return;
+    if (![metrics.synthesisP50Ms, metrics.synthesisP95Ms,
+        metrics.realTimeFactorP50].every(v => Number.isFinite(v) && v >= 0)) return;
+    sharedEnglishResults.set(entry.key, metrics);
+    renderSharedEnglishResults();
+}
 
 function updateRecheckButton() {
     const busy = initialStatusPending || recheckInProgress || !!activeModelOperation;
@@ -246,6 +300,7 @@ function applyRecheckedModelStatuses(snapshots) {
         if (evicted) missing++;
         applyModelStatus(entry, ui, state, { updateMessage: differs });
         if (evicted) {
+            forgetSharedEnglishResult(entry);
             setMessage(ui.status, 'Cached model data is missing. Download again to repair it.');
         }
     }
@@ -495,6 +550,43 @@ async function testOnnxEnglishText(engine, text) {
     }
 }
 
+// The sample path and preparation belong together, not in the UI's model
+// operation state machine. IPA measurements stay isolated from English data.
+async function measureBackendSample(entry, engine, text, ipa) {
+    const english = entry.provider === 'onnx' && entry.variant === 'q8'
+        ? await testOnnxEnglishText(engine, text) : null;
+    const englishReady = english?.ready === true;
+    // MediaPipe can also do lazy setup on its first synthesis.
+    if (entry.provider === 'mediapipe') await engine.synthesize(text);
+    const measured = english?.measured || await measureWarmClip(
+        entry.provider === 'mediapipe'
+            ? () => engine.synthesize(text)
+            : () => engine.synthesizePhonemes(ipa));
+    return {
+        english,
+        englishReady,
+        measured,
+        isEnglishMeasurement: entry.provider === 'mediapipe' || englishReady,
+    };
+}
+
+function formatLocalBenchmarkStatus(entry, metrics, isEnglishMeasurement, english) {
+    return 'Real local inference, warm (3 runs, ' +
+        (isEnglishMeasurement ? 'shared English text' : 'IPA-only diagnostic') +
+        '). Full-clip synthesis p50: ' +
+        metrics.synthesisP50Ms.toFixed(0) + ' ms, p95: ' +
+        metrics.synthesisP95Ms.toFixed(0) + ' ms; RTF p50: ' +
+        metrics.realTimeFactorP50.toFixed(2) +
+        '. Streaming time-to-first-audio was not measured.' +
+        (entry.provider === 'onnx'
+            ? (isEnglishMeasurement
+                ? ' Same English text as MediaPipe; voices and phonemization may differ.'
+                : ' IPA timings are not comparable with English-text timings.') +
+              (english?.message || ' This ONNX variant is IPA-only; regular English playback is not validated.') +
+              ' Unknown English words are not supported and never fall back to FastAPI.'
+            : ' Listen before choosing.');
+}
+
 // Clear stale approval before a retest, then write it back only when the
 // actual backend-specific text test passes. The IPA-only ONNX q8f16 probe
 // never grants regular playback privileges.
@@ -517,6 +609,8 @@ async function approveTestedBackend(entry, ui, validationKey, englishReady) {
 async function testEngine(entry, ui) {
     if (entry.provider === 'dictionary' ||
         !beginModelOperation(entry, ui, 'test')) return;
+    // A failed/unsupported retest must not leave an obsolete comparison.
+    forgetSharedEnglishResult(entry);
     const priorRemoveDisabled = ui.remove.disabled;
     const priorVerifyDisabled = ui.verify.disabled;
     ui.remove.disabled = true; // Never evict a model while its runtime is executing.
@@ -546,18 +640,10 @@ async function testEngine(entry, ui) {
             const engine = currentEngine(entry);
             await engine.initialize(); // Initialize outside warm-run timings.
             const text = document.getElementById('benchmarkText').value.trim();
+            const sampleEpoch = sharedEnglishEpoch;
             const ipa = document.getElementById('benchmarkIpa').value.trim();
-            // When supported, measure ONNX q8 with the same ordinary English
-            // text used by MediaPipe. Unknown words/missing dictionary fall
-            // back to a separately labeled IPA-only diagnostic, never to FastAPI.
-            const english = entry.provider === 'onnx' && entry.variant === 'q8'
-                ? await testOnnxEnglishText(engine, text) : null;
-            const englishReady = english?.ready === true;
-            const measured = english?.measured || await measureWarmClip(
-                entry.provider === 'mediapipe'
-                    ? () => engine.synthesize(text)
-                    : () => engine.synthesizePhonemes(ipa));
-            const isEnglishMeasurement = entry.provider === 'mediapipe' || englishReady;
+            const { english, englishReady, measured, isEnglishMeasurement } =
+                await measureBackendSample(entry, engine, text, ipa);
             const metrics = window.KokoroBenchmark.summarizeRuns(measured.runs);
             const previous = lastAudioUrl.get(entry.key);
             if (previous) URL.revokeObjectURL(previous);
@@ -566,21 +652,12 @@ async function testEngine(entry, ui) {
             lastAudioUrl.set(entry.key, audioUrl);
             ui.audio.src = audioUrl;
             ui.audio.hidden = false;
-            setMessage(ui.status, 'Real local inference, warm (3 runs, ' +
-                (isEnglishMeasurement ? 'shared English text' : 'IPA-only diagnostic') +
-                '). Full-clip synthesis p50: ' +
-                metrics.synthesisP50Ms.toFixed(0) + ' ms, p95: ' +
-                metrics.synthesisP95Ms.toFixed(0) + ' ms; RTF p50: ' +
-                metrics.realTimeFactorP50.toFixed(2) +
-                '. Streaming time-to-first-audio was not measured.' +
-                (entry.provider === 'onnx'
-                    ? (isEnglishMeasurement
-                        ? ' Same English text as MediaPipe; voices and phonemization may differ.'
-                        : ' IPA timings are not comparable with English-text timings.') +
-                      (english?.message || ' This ONNX variant is IPA-only; regular English playback is not validated.') +
-                      ' Unknown English words are not supported and never fall back to FastAPI.'
-                    : ' Listen before choosing.'));
+            setMessage(ui.status,
+                formatLocalBenchmarkStatus(entry, metrics, isEnglishMeasurement, english));
             await approveTestedBackend(entry, ui, validationKey, englishReady);
+            if (isEnglishMeasurement) {
+                rememberSharedEnglishResult(entry, metrics, text, sampleEpoch);
+            }
 
         }, { mode: 'shared' });
     } catch (error) {
@@ -594,6 +671,7 @@ async function testEngine(entry, ui) {
 }
 
 async function invalidateRuntimeFor(entry) {
+    forgetSharedEnglishResult(entry);
     const keys = entry.provider === 'dictionary'
         ? [...engineByKey.keys()].filter(key => key.startsWith('onnx-'))
         : [entry.key];
@@ -672,7 +750,9 @@ async function verifyCachedData(entry, ui) {
         ui.verify.textContent = 'Verify cached data';
         ui.verify.disabled = true;
         ui.busy = 'finalizing';
-        if (removed) {
+        if (removed || result?.missingAssets > 0) {
+            // A missing asset does not increment removedAssets, but any prior
+            // timing and validation for that model (or ONNX dictionary) is stale.
             try {
                 await invalidateRuntimeFor(entry);
             } catch (error) {
@@ -690,7 +770,8 @@ async function verifyCachedData(entry, ui) {
             applyModelStatus(entry, ui, state);
             // Preserve a prior user-validated backend only if no bytes were
             // removed and the model remains installed.
-            ui.choose.disabled = !priorChooseEnabled || removed > 0 || !state.ready;
+            ui.choose.disabled = !priorChooseEnabled ||
+                removed > 0 || result?.missingAssets > 0 || !state.ready;
         } else {
             ui.lastStatus = null;
             ui.download.disabled = false;
@@ -825,6 +906,14 @@ async function testFastApi() {
 }
 
 if (page) {
+    document.getElementById('benchmarkText').addEventListener('input', () => {
+        // Editing the common sample invalidates every prior comparison,
+        // including results from tests that may still be running.
+        sharedEnglishEpoch++;
+        sharedEnglishResults.clear();
+        renderSharedEnglishResults();
+    });
+    renderSharedEnglishResults();
     document.getElementById('testServer').addEventListener('click', () => {
         void testFastApi();
     });

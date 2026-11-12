@@ -45,6 +45,19 @@
                 <p id="modelCleanupStatus" role="status" aria-live="polite"></p>
             </div>
             <div id="modelManager"></div>
+            <div id="localBenchmarkComparison" aria-labelledby="localComparisonHeading">
+                <h3 id="localComparisonHeading">Measured local English results</h3>
+                <p id="sharedEnglishComparisonStatus" role="status" aria-live="polite">Run at least two local English tests to compare their measured timings.</p>
+                <div class="benchmark-results-scroll">
+                    <table aria-label="Measured local English synthesis">
+                        <thead>
+                            <tr><th scope="col">Backend / path</th><th scope="col">Warm p50</th><th scope="col">Warm p95</th><th scope="col">RTF p50</th></tr>
+                        </thead>
+                        <tbody id="sharedEnglishComparisonRows"></tbody>
+                    </table>
+                </div>
+                <p>Only successful tests of the current shared English sample appear here. IPA-only ONNX and server/network tests are excluded. Values measure completed synthesis, not time to first audio. Voices and phonemization may differ; no automatic ranking or backend selection.</p>
+            </div>
             <p>Measurements are taken from actual synthesized audio, not GPU adapter detection. Local figures are warm, after engine initialization; server timings exclude audio playback. ONNX q8 measures the same English input only after the optional dictionary has been installed and the entire sample is supported; otherwise it reports non-comparable IPA-only timings. ONNX q8f16 remains IPA-only. A passed IPA probe cannot enable ordinary English playback.</p>
         </section>
         <section>

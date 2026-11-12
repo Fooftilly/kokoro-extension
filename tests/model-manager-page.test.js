@@ -47,6 +47,8 @@ describe('ONNX model manager English synthesis diagnostics', () => {
             <p id="modelRecheckStatus" role="status"></p>
             <p id="modelCleanupStatus" role="status"></p>
             <div id="modelManager"></div>
+            <p id="sharedEnglishComparisonStatus" role="status"></p>
+            <table><tbody id="sharedEnglishComparisonRows"></tbody></table>
             <textarea id="benchmarkText">Hello world.</textarea>
             <input id="benchmarkIpa" value="hɛˈloʊ.">
             <button id="testServer"></button><button id="chooseServer"></button>
@@ -996,7 +998,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         button.click();
         await waitFor(() => row.querySelector('.model-status').textContent.includes('Full-clip synthesis p50'));
         expect(engine.initialize).toHaveBeenCalledTimes(1);
-        expect(engine.synthesize).toHaveBeenCalledTimes(3);
+        expect(engine.synthesize).toHaveBeenCalledTimes(4); // untimed + 3 measured
         expect(require('../mediapipe-provider.js').MediaPipeKokoroProvider)
             .toHaveBeenCalledWith({ variant: 'gpu' });
         expect(global.browser.storage.local.set).toHaveBeenCalled();
@@ -1082,6 +1084,143 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(browser.storage.local.set).not.toHaveBeenCalledWith({
             'onnxValidatedRevision:q8': expect.any(String),
         });
+    });
+
+    test('shows only measured, shared-English local results side by side', async () => {
+        const comparison = document.getElementById('sharedEnglishComparisonRows');
+        const status = document.getElementById('sharedEnglishComparisonStatus');
+        expect(comparison.children).toHaveLength(0);
+        expect(status.textContent).toContain('at least two local English tests');
+        expect(engine.synthesize).not.toHaveBeenCalled(); // no implicit tests
+
+        await runProbe();
+        expect(comparison.children).toHaveLength(1);
+        expect(comparison.querySelector('[data-backend="onnx-q8"]')).not.toBeNull();
+        expect(comparison.textContent).toContain('12 ms');
+        expect(comparison.textContent).toContain('15 ms');
+        expect(status.textContent).toContain('One local backend measured');
+
+        installedModels.add('cpu');
+        const cpu = document.querySelector('[data-variant="mediapipe-cpu"]');
+        require('../mediapipe-provider.js').MediaPipeKokoroProvider
+            .mockImplementation(() => engine);
+        document.getElementById('refreshModelCache').click();
+        await waitFor(() => cpu.querySelector('.model-test').disabled === false);
+        cpu.querySelector('.model-test').click();
+        await waitFor(() => comparison.children.length === 2);
+
+        expect(comparison.querySelector('[data-backend="mediapipe-cpu"]')).not.toBeNull();
+        expect(comparison.querySelector('[data-backend="onnx-q8"]')).not.toBeNull();
+        expect(status.textContent).toContain('Measured 2 local backend paths');
+        expect(status.textContent).toContain('No ranking is inferred');
+        expect(engine.synthesize).toHaveBeenCalledTimes(8); // two untimed + six measured
+        expect(global.fetch).not.toHaveBeenCalled();
+        expect(global.browser.permissions.request).not.toHaveBeenCalled();
+    });
+
+    test('editing the English sample clears comparison results immediately', async () => {
+        await runProbe();
+        const comparison = document.getElementById('sharedEnglishComparisonRows');
+        expect(comparison.children).toHaveLength(1);
+        const input = document.getElementById('benchmarkText');
+        input.value = 'Another English sample.';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        expect(comparison.children).toHaveLength(0);
+        expect(document.getElementById('sharedEnglishComparisonStatus').textContent)
+            .toContain('at least two local English tests');
+    });
+
+    test('an obsolete asynchronous measurement cannot restore a row after input edit', async () => {
+        const row = document.querySelector('[data-variant="onnx-q8"]');
+        const comparison = document.getElementById('sharedEnglishComparisonRows');
+        let finishWarmup;
+        engine.synthesize.mockImplementationOnce(() =>
+            new Promise(resolve => { finishWarmup = resolve; }));
+        row.querySelector('.model-test').click();
+        await waitFor(() => typeof finishWarmup === 'function');
+
+        const input = document.getElementById('benchmarkText');
+        input.value = 'Changed while measuring.';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        finishWarmup(audio());
+        await waitFor(() => row.querySelector('.model-status').textContent
+            .includes('Full-clip synthesis p50'));
+        expect(comparison.children).toHaveLength(0);
+        expect(engine.synthesize).toHaveBeenCalledTimes(4);
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('missing dictionary assets invalidate ONNX comparison without a corrupt-file deletion', async () => {
+        await runProbe();
+        const comparison = document.getElementById('sharedEnglishComparisonRows');
+        expect(comparison.children).toHaveLength(1);
+
+        verifyModel.mockImplementationOnce(async () => {
+            dictionaryReady = false;
+            return { ready: false, verifiedBytes: 0, totalBytes: 3618488,
+                removedAssets: 0, missingAssets: 1 };
+        });
+        const dictionary = document.querySelector('[data-variant="dictionary-english"]');
+        dictionary.querySelector('.model-verify').click();
+        await waitFor(() => dictionary.querySelector('.model-status').textContent
+            .includes('missing asset(s)'));
+        expect(comparison.children).toHaveLength(0);
+        expect(engine.close).toHaveBeenCalledTimes(1);
+        expect(browser.storage.local.remove).toHaveBeenCalledWith(
+            'onnxValidatedRevision:q8');
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('missing ONNX model assets revoke comparison and selection even if cache status is stale', async () => {
+        const { row } = await runProbe();
+        const comparison = document.getElementById('sharedEnglishComparisonRows');
+        expect(comparison.children).toHaveLength(1);
+        expect(row.querySelector('.model-choose').disabled).toBe(false);
+
+        // Verify detects missing bytes before the mock status view catches up.
+        verifyModel.mockResolvedValueOnce({
+            ready: false, verifiedBytes: 0, totalBytes: 92885404,
+            removedAssets: 0, missingAssets: 1,
+        });
+        row.querySelector('.model-verify').click();
+        await waitFor(() => row.querySelector('.model-status').textContent
+            .includes('missing asset(s)'));
+        expect(comparison.children).toHaveLength(0);
+        expect(row.querySelector('.model-choose').disabled).toBe(true);
+        expect(engine.close).toHaveBeenCalledTimes(1);
+        expect(browser.storage.local.remove).toHaveBeenCalledWith(
+            'onnxValidatedRevision:q8');
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('IPA-only results never enter the English comparison', async () => {
+        dictionaryReady = false;
+        const { message } = await runProbe();
+        expect(message).toContain('IPA-only diagnostic');
+        expect(document.getElementById('sharedEnglishComparisonRows').children).toHaveLength(0);
+        expect(document.getElementById('sharedEnglishComparisonStatus').textContent)
+            .toContain('at least two local English tests');
+    });
+
+    test('dictionary removal invalidates ONNX comparison; recheck detects model eviction', async () => {
+        const comparison = document.getElementById('sharedEnglishComparisonRows');
+        await runProbe();
+        expect(comparison.children).toHaveLength(1);
+        installedOnnxVariants.delete('q8');
+        document.getElementById('refreshModelCache').click();
+        await waitFor(() => comparison.children.length === 0);
+        expect(document.querySelector('[data-variant="onnx-q8"] .model-status').textContent)
+            .toContain('Cached model data is missing');
+
+        installedOnnxVariants.add('q8');
+        document.getElementById('refreshModelCache').click();
+        await waitFor(() => document.querySelector(
+            '[data-variant="onnx-q8"] .model-test').disabled === false);
+        await runProbe();
+        expect(comparison.children).toHaveLength(1);
+        document.querySelector('[data-variant="dictionary-english"] .model-remove').click();
+        await waitFor(() => comparison.children.length === 0);
+        expect(global.fetch).not.toHaveBeenCalled();
     });
 
     test('an English G2P error leaves the valid IPA audio available', async () => {
