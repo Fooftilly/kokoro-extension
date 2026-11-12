@@ -656,7 +656,9 @@ async function acceptRealEpubReader(page, extensionId) {
         return page.evaluate(async () => {
             const frame = document.getElementById('playerFrame').contentDocument;
             const audio = frame.getElementById('audio');
-            const bytes = new Uint8Array(await (await fetch(audio.src)).arrayBuffer());
+            const response = await fetch(audio.src);
+            if (!response.ok) throw Error('Reader WAV Blob unavailable: HTTP ' + response.status);
+            const bytes = new Uint8Array(await response.arrayBuffer());
             const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
             const tag = (offset, length) =>
                 String.fromCharCode(...bytes.subarray(offset, offset + length));
@@ -668,7 +670,21 @@ async function acceptRealEpubReader(page, extensionId) {
             if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
                 header.getUint32(24, true) !== 24000 || audioBytes < 2 ||
                 bytes.length !== 44 + audioBytes) {
-                throw Error('Real EPUB reader iframe did not generate a 24-kHz WAV');
+                // Keep the *actual* browser failure observable. The normal
+                // AudioManager/overlay tests previously passed, so don't
+                // guess whether this is a stale source or a format mismatch.
+                throw Error('Real EPUB reader WAV mismatch: ' + JSON.stringify({
+                    title: stored.pendingTitle,
+                    revision: stored.pendingReaderReloadRevision,
+                    backend: stored.pendingTtsBackend,
+                    dataUrlKind: audio.src.split(':', 1)[0],
+                    mime: response.headers.get('content-type'),
+                    length: bytes.length,
+                    riff: tag(0, 4), wave: tag(8, 4),
+                    rate: header.getUint32(24, true),
+                    audioBytes, expectedLength: 44 + audioBytes,
+                    leadBytes: [...bytes.subarray(0, 12)],
+                }));
             }
             return {
                 title: stored.pendingTitle,
