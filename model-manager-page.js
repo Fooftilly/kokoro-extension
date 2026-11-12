@@ -663,6 +663,20 @@ async function testEngine(entry, ui) {
     } catch (error) {
         setMessage(ui.status, 'Actual inference failed: ' + String(error.message || error));
     } finally {
+        // Retain only the measured audio Blob and summary, not the full
+        // WASM model/runtime. A second provider can then be benchmarked in
+        // this same page without keeping both engines resident in memory.
+        // Removing the mapping before close also prevents reuse after failure.
+        const engine = engineByKey.get(entry.key);
+        if (engine) {
+            engineByKey.delete(entry.key);
+            try {
+                await engine.close();
+            } catch (error) {
+                setMessage(ui.status, ui.status.textContent +
+                    ' Runtime release failed: ' + String(error.message || error));
+            }
+        }
         finishModelOperation(entry, ui);
         ui.test.disabled = false;
         ui.remove.disabled = priorRemoveDisabled;

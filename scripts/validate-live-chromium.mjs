@@ -477,6 +477,89 @@ async function acceptLocalBenchmarkUi(page, extensionId, manifest) {
         noImplicitFastApi: true, rows: 1 };
 }
 
+// Both real local engines must contribute to the *same* benchmark page.
+// Per-provider acceptance only proves the one-row case and does not exercise
+// the shared comparison. This runs once, after both pinned models are cached.
+async function acceptTwoBackendComparison(page, extensionId) {
+    await page.goto('chrome-extension://' + extensionId + '/benchmark.html');
+    const keys = ['onnx-q8', 'mediapipe-cpu'];
+    await page.waitForFunction(keys => keys.every(key => {
+        const row = document.querySelector('[data-variant="' + key + '"]');
+        return row?.querySelector('.model-test')?.disabled === false &&
+            row?.querySelector('.model-remove')?.disabled === false;
+    }), keys, { timeout: 30000 });
+
+    const selectedBefore = await page.evaluate(async () =>
+        (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
+    const measured = [];
+    for (const key of keys) {
+        await page.locator('[data-variant="' + key + '"] .model-test').click();
+        await page.waitForFunction(key => {
+            const model = document.querySelector('[data-variant="' + key + '"]');
+            return model?.querySelector('.model-test')?.disabled === false &&
+                model?.querySelector('.model-choose')?.disabled === false &&
+                model?.querySelector('.model-status')?.textContent.includes(
+                    'warm (3 runs, shared English text)') &&
+                !!document.querySelector(
+                    '#sharedEnglishComparisonRows tr[data-backend="' + key + '"]');
+        }, key, { timeout: 240000 });
+
+        const row = await page.evaluate(key => {
+            const model = document.querySelector('[data-variant="' + key + '"]');
+            const tbody = document.getElementById('sharedEnglishComparisonRows');
+            const row = tbody.querySelector('tr[data-backend="' + key + '"]');
+            const audio = model?.querySelector('audio');
+            if (!row || tbody.rows.length < 1 || tbody.rows.length > 2 ||
+                !audio?.src.startsWith('blob:') ||
+                document.getElementById('serverStatus')?.textContent !== 'Not tested' ||
+                !document.getElementById('serverAudio')?.hidden ||
+                navigator.onLine !== false) {
+                throw Error('Two-provider benchmark showed invalid/offline or server state');
+            }
+            const cells = Array.from(row.cells, c => c.textContent.trim());
+            const numbers = cells.slice(1).map(Number.parseFloat);
+            if (numbers.length !== 3 ||
+                numbers.some(v => !Number.isFinite(v) || v <= 0)) {
+                throw Error('Invalid shared-sample benchmark metrics: ' +
+                    JSON.stringify(cells));
+            }
+            return { key, label: cells[0], p50Ms: numbers[0],
+                p95Ms: numbers[1], rtfP50: numbers[2],
+                rowCount: tbody.rows.length };
+        }, key);
+        measured.push(row);
+    }
+    if (measured[0].rowCount !== 1 || measured[1].rowCount !== 2) {
+        throw Error('Two providers did not retain independent comparison rows');
+    }
+    const summary = await page.evaluate(() => {
+        const rows = [...document.querySelectorAll('#sharedEnglishComparisonRows tr')];
+        const summary = document.getElementById('sharedEnglishComparisonStatus')?.textContent;
+        const keys = rows.map(row => row.dataset.backend);
+        if (rows.length !== 2 || new Set(keys).size !== 2 ||
+            !keys.includes('onnx-q8') || !keys.includes('mediapipe-cpu') ||
+            !summary?.includes('Measured 2 local backend paths') ||
+            !summary.includes('No ranking is inferred')) {
+            throw Error('Shared comparison did not preserve both measured rows');
+        }
+        return summary;
+    });
+    await page.locator('#benchmarkText').fill('Another shared English sample.');
+    if (await page.locator('#sharedEnglishComparisonRows tr').count() !== 0) {
+        throw Error('Editing shared sample did not clear both provider rows');
+    }
+    const selectedAfter = await page.evaluate(async () =>
+        (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
+    if (selectedAfter !== selectedBefore) {
+        throw Error('Comparison silently changed the selected TTS backend');
+    }
+    return { success: true, providers: keys, sharedSample: 'Hello world.',
+        measurements: measured, rowsBeforeEdit: 2, rowsAfterEdit: 0,
+        bothRetainedOnOnePage: true, backendSelectionUnchanged: true,
+        selectedBackend: selectedAfter, offline: true,
+        serverTestNotTriggered: true, noAutomaticRanking: true, summary };
+}
+
 let extensionOrigin = null;
 // A random per-run URL token authenticates Chrome requests, including MV3 GET
 // requests for which Chrome intentionally omits the Origin header.
@@ -592,11 +675,12 @@ try {
     const results = [];
     let browserRestartAcceptance = null;
     let dictionaryUiDownloadAcceptance = null;
+    let twoBackendComparisonAcceptance = null;
     const saveReport = () => writeFile(path.join(resultsDir, 'report.json'), JSON.stringify({
         testedAt: new Date().toISOString(), browser: preflight.browser, preflight,
         dictionaryCacheAcceptance, browserRestartAcceptance,
-        dictionaryUiDownloadAcceptance, results, originDownload,
-        providerFilter,
+        dictionaryUiDownloadAcceptance, twoBackendComparisonAcceptance,
+        results, originDownload, providerFilter,
         networkRequirement: providerFilter === 'dictionary'
             ? 'offline during dictionary persistence/verification; no inference attempted'
             : 'offline during every local synthesis probe',
@@ -952,6 +1036,31 @@ try {
     if (errors.length) throw Error('Extension errors: ' + errors.join('; '));
     if (results.some(result => !result.success)) {
         throw Error('One or more actual model integrations failed: see attached report.json');
+    }
+
+    if (providerFilter === 'both' && !originDownload) {
+        // Reuse both pinned, checksum-verified model caches in one renderer,
+        // with HTTP(S) disabled. Runtime memory must be freed after each test
+        // while the first provider's measurement stays visible.
+        const comparisonPage = await context.newPage();
+        comparisonPage.on('pageerror', error => errors.push(String(error)));
+        await context.setOffline(true);
+        try {
+            twoBackendComparisonAcceptance = await acceptTwoBackendComparison(
+                comparisonPage, extensionId);
+            if (errors.length) throw Error('Extension errors during two-backend comparison: ' +
+                errors.join('; '));
+            await saveReport();
+        } catch (error) {
+            twoBackendComparisonAcceptance = { success: false,
+                stage: 'offline-two-backend-same-page-benchmark',
+                error: String(error) };
+            await saveReport();
+            throw error;
+        } finally {
+            await context.setOffline(false);
+            if (!comparisonPage.isClosed()) await comparisonPage.close();
+        }
     }
 
     // The persistent Chromium profile is reused across an actual browser

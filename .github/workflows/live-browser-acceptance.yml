@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       acceptance_scope:
-        description: 'Select full inference, dictionary UI, or manual official-origin browser model install'
+        description: 'Select full inference, shared two-local-backend comparison, or manual official-origin install'
         type: choice
         required: true
         default: full
@@ -32,6 +32,7 @@ on:
           - firefox-quota-recovery
           - chromium-mediapipe-origin
           - chromium-onnx-origin
+          - chromium-dual-comparison
           - chromium-quota-recovery
 
 permissions:

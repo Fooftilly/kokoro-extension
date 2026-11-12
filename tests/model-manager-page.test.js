@@ -1118,6 +1118,72 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(global.browser.permissions.request).not.toHaveBeenCalled();
     });
 
+    test('sequential ONNX and MediaPipe results remain on one page after releasing both engines', async () => {
+        const comparison = document.getElementById('sharedEnglishComparisonRows');
+        const onnxProvider = require('../onnx-provider.js').OnnxKokoroProvider;
+        const onnxEngine = engine;
+        const mediapipeEngine = {
+            initialize: jest.fn(async () => {}),
+            synthesize: jest.fn(async () => audio()),
+            close: jest.fn(async () => {}),
+        };
+        require('../mediapipe-provider.js').MediaPipeKokoroProvider
+            .mockImplementation(() => mediapipeEngine);
+        installedModels.add('cpu');
+        document.getElementById('refreshModelCache').click();
+        await waitFor(() => document.querySelector(
+            '[data-variant="mediapipe-cpu"] .model-test').disabled === false);
+
+        await runProbe();
+        await waitFor(() => onnxEngine.close.mock.calls.length === 1);
+        expect(comparison.children).toHaveLength(1);
+        expect(onnxProvider).toHaveBeenCalledTimes(1);
+        expect(document.querySelector('[data-variant="onnx-q8"] audio').src)
+            .toContain('blob:test-audio');
+
+        const cpu = document.querySelector('[data-variant="mediapipe-cpu"]');
+        cpu.querySelector('.model-test').click();
+        await waitFor(() => comparison.children.length === 2 &&
+            mediapipeEngine.close.mock.calls.length === 1);
+        expect(mediapipeEngine.initialize).toHaveBeenCalledTimes(1);
+        expect(mediapipeEngine.synthesize).toHaveBeenCalledTimes(4);
+        expect(comparison.querySelector('[data-backend="onnx-q8"]')).not.toBeNull();
+        expect(comparison.querySelector('[data-backend="mediapipe-cpu"]')).not.toBeNull();
+        expect(document.getElementById('sharedEnglishComparisonStatus').textContent)
+            .toContain('Measured 2 local backend paths');
+        expect(browser.storage.sync.set).not.toHaveBeenCalled();
+        expect(global.fetch).not.toHaveBeenCalled();
+
+        // A repeat test constructs a fresh provider; the first model was not
+        // retained in engineByKey or reloaded through a network fallback.
+        await runProbe();
+        await waitFor(() => onnxEngine.close.mock.calls.length === 2);
+        expect(onnxProvider).toHaveBeenCalledTimes(2);
+        expect(comparison.children).toHaveLength(2);
+        expect(global.browser.permissions.request).not.toHaveBeenCalled();
+    });
+
+    test('a failed synthesis closes its runtime and allows a new successful test', async () => {
+        const row = document.querySelector('[data-variant="onnx-q8"]');
+        dictionaryReady = false;
+        engine.synthesizePhonemes.mockRejectedValueOnce(new Error('Synthesis unavailable'));
+        row.querySelector('.model-test').click();
+        await waitFor(() => row.querySelector('.model-status').textContent
+            .includes('Actual inference failed: Synthesis unavailable') &&
+            engine.close.mock.calls.length === 1);
+        expect(row.querySelector('.model-test').disabled).toBe(false);
+        expect(document.getElementById('sharedEnglishComparisonRows').children)
+            .toHaveLength(0);
+        dictionaryReady = true;
+        await runProbe();
+        await waitFor(() => engine.close.mock.calls.length === 2);
+        expect(require('../onnx-provider.js').OnnxKokoroProvider)
+            .toHaveBeenCalledTimes(2);
+        expect(document.getElementById('sharedEnglishComparisonRows').children)
+            .toHaveLength(1);
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
     test('editing the English sample clears comparison results immediately', async () => {
         await runProbe();
         const comparison = document.getElementById('sharedEnglishComparisonRows');
