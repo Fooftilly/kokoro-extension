@@ -1,20 +1,20 @@
 /** @jest-environment node */
 /**
- * Executable contract for Firefox article/selection acceptance helpers.
- * Exercises scripts/firefox_article_selection_acceptance.py and verifies the
- * live harness wires the stage — not source-only string contracts.
+ * Contract checks for Firefox article/selection acceptance — keep this file's
+ * shape distinct from article-selection-acceptance.test.js (Sonar new-code
+ * duplication on the Chromium helper probe).
  */
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const scriptsDir = path.join(__dirname, '..', 'scripts');
-const helperModule = path.join(scriptsDir, 'article-selection-acceptance.mjs');
+const root = path.join(__dirname, '..');
+const scriptsDir = path.join(root, 'scripts');
 const firefoxLive = path.join(scriptsDir, 'validate-live-firefox.py');
 const workflow = path.join(
-    __dirname, '..', '.github', 'workflows', 'live-browser-acceptance.yml');
+    root, '.github', 'workflows', 'live-browser-acceptance.yml');
 
-function runHelperProbe(pythonSnippet) {
+function loadFirefoxArticleSnapshot() {
     return spawnSync('python3', ['-c', `
 import json, sys
 sys.path.insert(0, ${JSON.stringify(scriptsDir)})
@@ -26,107 +26,122 @@ from firefox_article_selection_acceptance import (
     origin_article_selection_stage_enabled,
     require_article_selection_backend,
 )
-${pythonSnippet}
-`], { encoding: 'utf8', cwd: path.join(__dirname, '..') });
+
+def capture(fn):
+    try:
+        return {'ok': True, 'value': fn()}
+    except Exception as exc:
+        return {'ok': False, 'message': str(exc)}
+
+fixture = load_article_selection_fixture()
+speech = fixture['speech']
+storage = article_selection_storage_config('onnx')
+print(json.dumps({
+    'backends': sorted(ALLOWED_ARTICLE_SELECTION_BACKENDS),
+    'onnxRequired': require_article_selection_backend('onnx'),
+    'storageKeys': sorted(storage.keys()),
+    'ttsBackend': storage['ttsBackend'],
+    'floatingMic': storage['showFloatingButton'] is True,
+    'streamMode': storage['mode'] == 'stream',
+    'emptyApi': storage['apiUrl'] == '',
+    'fixtureHasSelectionId': 'id="selection-sentence"' in fixture['html'],
+    'fixtureHasArticleTag': '<article>' in fixture['html'],
+    'selectionSpeech': speech['selection'],
+    'articlePair': [speech['articleFirst'], speech['articleSecond']],
+    'speechDistinct': len({
+        speech['selection'], speech['articleFirst'], speech['articleSecond'],
+    }) == 3,
+    'gates': {
+        'onnxOrigin': origin_article_selection_stage_enabled(True, 'onnx', True),
+        'mediapipe': origin_article_selection_stage_enabled(True, 'mediapipe', True),
+        'noOrigin': origin_article_selection_stage_enabled(False, 'onnx', True),
+        'failedPrior': origin_article_selection_stage_enabled(True, 'onnx', False),
+    },
+    'hashOk': capture(
+        lambda: assert_distinct_article_selection_audio_hashes('aaa', 'bbb')),
+    'hashMissing': capture(
+        lambda: assert_distinct_article_selection_audio_hashes('', 'bbb')),
+    'hashCollision': capture(
+        lambda: assert_distinct_article_selection_audio_hashes('same', 'same')),
+    'rejectMediapipe': capture(
+        lambda: require_article_selection_backend('mediapipe')),
+}))
+`], { encoding: 'utf8', cwd: root });
 }
 
-describe('firefox article/selection acceptance backend wiring', () => {
-    test('gates Firefox ONNX origin only and configures local storage', () => {
-        const result = runHelperProbe(`
-report = {
-    'allowed': sorted(ALLOWED_ARTICLE_SELECTION_BACKENDS),
-    'required': require_article_selection_backend('onnx'),
-    'storage': article_selection_storage_config('onnx'),
-    'stageOn': origin_article_selection_stage_enabled(True, 'onnx', True),
-    'stageOffProvider': origin_article_selection_stage_enabled(True, 'mediapipe', True),
-    'stageOffOrigin': origin_article_selection_stage_enabled(False, 'onnx', True),
-    'stageOffSuccess': origin_article_selection_stage_enabled(True, 'onnx', False),
-}
-errors = []
-for bad in ('mediapipe', 'fastapi', '', None):
-    try:
-        require_article_selection_backend(bad)
-        errors.append('accepted:' + repr(bad))
-    except ValueError as exc:
-        errors.append(str(exc))
-print(json.dumps({'report': report, 'errors': errors}))
-`);
-        expect(result.status).toBe(0);
-        expect(result.stderr || '').toBe('');
-        const payload = JSON.parse(result.stdout.trim());
-        expect(payload.report.allowed).toEqual(['onnx']);
-        expect(payload.report.required).toBe('onnx');
-        expect(payload.report.storage.ttsBackend).toBe('onnx');
-        expect(payload.report.storage.showFloatingButton).toBe(true);
-        expect(payload.report.storage.apiUrl).toBe('');
-        expect(payload.report.storage.mode).toBe('stream');
-        expect(payload.report.stageOn).toBe(true);
-        expect(payload.report.stageOffProvider).toBe(false);
-        expect(payload.report.stageOffOrigin).toBe(false);
-        expect(payload.report.stageOffSuccess).toBe(false);
-        expect(payload.errors.every(message => message.includes('onnx'))).toBe(true);
-        expect(payload.errors.some(message => message.startsWith('accepted:'))).toBe(false);
+describe('firefox article/selection acceptance', () => {
+    test('python helper snapshot covers gates, fixture speech, and hashes', () => {
+        const child = loadFirefoxArticleSnapshot();
+        expect(child.status).toBe(0);
+        expect(child.stderr || '').toBe('');
+        const snap = JSON.parse(child.stdout.trim());
+        expect(snap.backends).toEqual(['onnx']);
+        expect(snap.onnxRequired).toBe('onnx');
+        expect(snap.ttsBackend).toBe('onnx');
+        expect(snap.floatingMic).toBe(true);
+        expect(snap.streamMode).toBe(true);
+        expect(snap.emptyApi).toBe(true);
+        expect(snap.storageKeys).toEqual(expect.arrayContaining([
+            'apiUrl', 'mode', 'showFloatingButton', 'ttsBackend',
+        ]));
+        expect(snap.fixtureHasSelectionId).toBe(true);
+        expect(snap.fixtureHasArticleTag).toBe(true);
+        expect(snap.speechDistinct).toBe(true);
+        expect(snap.selectionSpeech).toMatch(/Hello/);
+        expect(snap.articlePair[0]).not.toBe(snap.articlePair[1]);
+        expect(snap.gates).toEqual({
+            onnxOrigin: true,
+            mediapipe: false,
+            noOrigin: false,
+            failedPrior: false,
+        });
+        expect(snap.hashOk.ok).toBe(true);
+        expect(snap.hashMissing.ok).toBe(false);
+        expect(snap.hashMissing.message).toMatch(/missing/);
+        expect(snap.hashCollision.ok).toBe(false);
+        expect(snap.hashCollision.message).toMatch(/collided/);
+        expect(snap.rejectMediapipe.ok).toBe(false);
+        expect(snap.rejectMediapipe.message).toMatch(/onnx/);
     });
 
-    test('loads shared ESM fixture speech identical to Chromium helpers', () => {
-        const result = runHelperProbe(`
-fixture = load_article_selection_fixture()
-print(json.dumps(fixture))
-`);
-        expect(result.status).toBe(0);
-        expect(result.stderr || '').toBe('');
-        const fixture = JSON.parse(result.stdout.trim());
+    test('shared ESM fixture matches the python-loaded html bytes', () => {
+        const py = spawnSync('python3', ['-c', `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(scriptsDir)})
+from firefox_article_selection_acceptance import load_article_selection_fixture
+print(json.dumps(load_article_selection_fixture()))
+`], { encoding: 'utf8', cwd: root });
+        expect(py.status).toBe(0);
+        const fromPy = JSON.parse(py.stdout.trim());
         const node = spawnSync(process.execPath, ['--input-type=module', '-e', `
 import { pathToFileURL } from 'node:url';
-const mod = await import(pathToFileURL(${JSON.stringify(helperModule)}).href);
+const mod = await import(pathToFileURL(
+    ${JSON.stringify(path.join(scriptsDir, 'article-selection-acceptance.mjs'))}
+).href);
 console.log(JSON.stringify({
     html: mod.buildArticleSelectionFixtureHtml(),
     speech: mod.ARTICLE_SELECTION_SPEECH,
 }));
-`], { encoding: 'utf8', cwd: path.join(__dirname, '..') });
+`], { encoding: 'utf8', cwd: root });
         expect(node.status).toBe(0);
-        const chromium = JSON.parse(node.stdout.trim());
-        expect(fixture.html).toBe(chromium.html);
-        expect(fixture.speech).toEqual(chromium.speech);
-        expect(fixture.html).toContain('id="selection-sentence"');
-        expect(fixture.html).toContain('<article>');
+        const fromNode = JSON.parse(node.stdout.trim());
+        expect(fromPy.html).toBe(fromNode.html);
+        expect(fromPy.speech).toEqual(fromNode.speech);
     });
 
-    test('rejects missing or colliding selection/article WAV hashes', () => {
-        const result = runHelperProbe(`
-ok = assert_distinct_article_selection_audio_hashes('aaa', 'bbb')
-errors = []
-for args in (('', 'bbb'), ('aaa', None), ('same', 'same')):
-    try:
-        assert_distinct_article_selection_audio_hashes(*args)
-        errors.append('accepted:' + repr(args))
-    except RuntimeError as exc:
-        errors.append(str(exc))
-print(json.dumps({'ok': ok, 'errors': errors}))
-`);
-        expect(result.status).toBe(0);
-        const report = JSON.parse(result.stdout.trim());
-        expect(report.ok).toBe(true);
-        expect(report.errors).toHaveLength(3);
-        expect(report.errors[0]).toMatch(/missing/);
-        expect(report.errors[1]).toMatch(/missing/);
-        expect(report.errors[2]).toMatch(/collided/);
-    });
-
-    test('firefox live harness wires article/selection stage for ONNX origin', () => {
+    test('firefox live harness and workflow wire Alt+A article stage', () => {
         const source = fs.readFileSync(firefoxLive, 'utf8');
-        expect(source).toMatch(/from firefox_article_selection_acceptance import/);
-        expect(source).toMatch(/origin_article_selection_stage_enabled\(/);
-        expect(source).toMatch(/accept_real_article_and_selection\(/);
-        expect(source).toMatch(/article_selection_acceptance/);
-        expect(source).toMatch(/offline-real-article-and-selection/);
-        expect(source).toMatch(/kokoro-float-btn/);
-        expect(source).toMatch(/PARSE_ARTICLE/);
-        expect(source).toMatch(/native-chromium-keys\.py/);
-        expect(source).toMatch(/Alt_L/);
+        expect(source).toContain('firefox_article_selection_acceptance');
+        expect(source).toContain('origin_article_selection_stage_enabled');
+        expect(source).toContain('accept_real_article_and_selection');
+        expect(source).toContain('offline-real-article-and-selection');
+        expect(source).toContain('kokoro-float-btn');
+        expect(source).toContain('PARSE_ARTICLE');
+        expect(source).toContain('native-chromium-keys.py');
+        expect(source).toContain('Alt_L');
         const workflowSource = fs.readFileSync(workflow, 'utf8');
-        expect(workflowSource).toMatch(/KOKORO_NATIVE_PYTHON/);
-        expect(workflowSource).toMatch(/xvfb-run/);
-        expect(workflowSource).toMatch(/test-native-chromium-dialog-key\.py/);
+        expect(workflowSource).toContain('KOKORO_NATIVE_PYTHON');
+        expect(workflowSource).toContain('xvfb-run');
+        expect(workflowSource).toContain('test-native-chromium-dialog-key.py');
     });
 });

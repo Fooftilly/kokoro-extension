@@ -1802,6 +1802,131 @@ def _ensure_article_content_script(driver, origin, fixture_url):
     return ensured["tabId"]
 
 
+# Overlay iframe WAV probe kept as one string so CodeFactor scores the
+# Python poll loop, not the embedded Chromium-parity JS.
+_ARTICLE_OVERLAY_WAV_SCRIPT = """
+const [storedState, excludeSha, done] = arguments;
+(async () => {
+    const audio = document.getElementById('audio');
+    const status = document.getElementById('status');
+    const spinner = document.getElementById('loadingSpinner');
+    const audioUrl = audio?.src;
+    if (!audioUrl?.startsWith('blob:') ||
+        spinner?.style.display !== 'none' ||
+        status?.textContent === 'Error playing audio.' ||
+        navigator.onLine !== false) {
+        done(null);
+        return;
+    }
+    let response;
+    let bytes;
+    try {
+        response = await fetch(audioUrl);
+        if (!response.ok) { done(null); return; }
+        bytes = new Uint8Array(await response.arrayBuffer());
+    } catch {
+        done(null);
+        return;
+    }
+    if (audio.src !== audioUrl ||
+        document.getElementById('loadingSpinner')?.style.display !== 'none') {
+        done(null);
+        return;
+    }
+    const tag = (offset, count) => String.fromCharCode(
+        ...bytes.subarray(offset, offset + count));
+    const header = bytes.byteLength >= 44
+        ? new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+        : null;
+    const audioBytes = header?.getUint32(40, true) ?? 0;
+    if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
+        header?.getUint32(24, true) !== 24000 ||
+        audioBytes < 2 ||
+        bytes.length !== 44 + audioBytes) {
+        throw Error(
+            'Firefox article/selection overlay WAV mismatch: ' +
+            JSON.stringify({
+                length: bytes.length, riff: tag(0, 4), wave: tag(8, 4),
+                rate: header?.getUint32(24, true) ?? null, audioBytes,
+            }));
+    }
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    const audioSha256 = [...new Uint8Array(digest)]
+        .map(b => b.toString(16).padStart(2, '0')).join('');
+    if (excludeSha && audioSha256 === excludeSha) {
+        done(null);
+        return;
+    }
+    done({
+        audioBytes, audioSha256,
+        backend: storedState.pendingTtsBackend,
+        serverUrl: storedState.pendingApiUrl,
+        pendingText: storedState.pendingText || '',
+        blockCount: Array.isArray(storedState.pendingContent)
+            ? storedState.pendingContent.length : 0,
+        autoplay: storedState.pendingAutoplay === true,
+        offline: navigator.onLine === false,
+    });
+})().catch(e => done({ error: String(e) }));
+"""
+
+
+def _article_pending_includes_speech(stored, expected_speech):
+    blocks = stored.get("pendingContent")
+    return isinstance(blocks, list) and any(
+        isinstance(block, dict) and
+        isinstance(block.get("content"), str) and
+        expected_speech in block["content"]
+        for block in blocks)
+
+
+def _read_article_pending_storage(driver, origin):
+    stored = _on_extension_page(driver, origin, """
+        const done = arguments[arguments.length - 1];
+        browser.storage.local.get([
+            'pendingText', 'pendingContent', 'pendingTtsBackend',
+            'pendingApiUrl', 'pendingAutoplay',
+        ]).then(done, e => done({ error: String(e) }));
+    """)
+    if stored.get("error"):
+        raise RuntimeError(stored["error"])
+    return stored
+
+
+def _read_article_overlay_frame_wav(driver, stored, exclude_audio_sha256):
+    frames = driver.find_elements(
+        By.CSS_SELECTOR, "#kokoro-overlay-container iframe")
+    if not frames:
+        return None
+    driver.switch_to.frame(frames[0])
+    try:
+        snapshot = driver.execute_async_script(
+            _ARTICLE_OVERLAY_WAV_SCRIPT, stored, exclude_audio_sha256)
+    finally:
+        driver.switch_to.default_content()
+    if snapshot and snapshot.get("error"):
+        raise RuntimeError(snapshot["error"])
+    return snapshot
+
+
+def _poll_article_overlay_once(driver, origin, expected_speech, mode,
+                               exclude_audio_sha256):
+    stored = _read_article_pending_storage(driver, origin)
+    if not _article_pending_includes_speech(stored, expected_speech):
+        return None
+    host_mode = driver.execute_script("""
+        return document.getElementById('kokoro-overlay-container')
+            ?.dataset.mode || null;
+    """)
+    if mode and host_mode != mode:
+        return None
+    snapshot = _read_article_overlay_frame_wav(
+        driver, stored, exclude_audio_sha256)
+    if not snapshot:
+        return None
+    return {"speech": expected_speech, "mode": host_mode, **snapshot}
+
+
 def _wait_article_overlay_wav(driver, origin, expected_speech, mode,
                               exclude_audio_sha256=None, timeout=180):
     """Poll extension storage + overlay iframe for a valid offline 24 kHz WAV."""
@@ -1809,117 +1934,12 @@ def _wait_article_overlay_wav(driver, origin, expected_speech, mode,
     last_error = None
     while time.time() < deadline:
         try:
-            stored = _on_extension_page(driver, origin, """
-                const done = arguments[arguments.length - 1];
-                browser.storage.local.get([
-                    'pendingText', 'pendingContent', 'pendingTtsBackend',
-                    'pendingApiUrl', 'pendingAutoplay',
-                ]).then(done, e => done({ error: String(e) }));
-            """)
-            if stored.get("error"):
-                raise RuntimeError(stored["error"])
-            blocks = stored.get("pendingContent")
-            speech_ok = isinstance(blocks, list) and any(
-                isinstance(block, dict) and
-                isinstance(block.get("content"), str) and
-                expected_speech in block["content"]
-                for block in blocks)
-            if not speech_ok:
-                time.sleep(0.1)
-                continue
-            host_mode = driver.execute_script("""
-                return document.getElementById('kokoro-overlay-container')
-                    ?.dataset.mode || null;
-            """)
-            if mode and host_mode != mode:
-                time.sleep(0.1)
-                continue
-            frames = driver.find_elements(
-                By.CSS_SELECTOR, "#kokoro-overlay-container iframe")
-            if not frames:
-                time.sleep(0.1)
-                continue
-            driver.switch_to.frame(frames[0])
-            try:
-                snapshot = driver.execute_async_script("""
-                    const [storedState, excludeSha, done] = arguments;
-                    (async () => {
-                        const audio = document.getElementById('audio');
-                        const status = document.getElementById('status');
-                        const spinner = document.getElementById('loadingSpinner');
-                        const audioUrl = audio?.src;
-                        if (!audioUrl?.startsWith('blob:') ||
-                            spinner?.style.display !== 'none' ||
-                            status?.textContent === 'Error playing audio.' ||
-                            navigator.onLine !== false) {
-                            done(null);
-                            return;
-                        }
-                        let response;
-                        let bytes;
-                        try {
-                            response = await fetch(audioUrl);
-                            if (!response.ok) { done(null); return; }
-                            bytes = new Uint8Array(await response.arrayBuffer());
-                        } catch {
-                            done(null);
-                            return;
-                        }
-                        if (audio.src !== audioUrl ||
-                            document.getElementById('loadingSpinner')
-                                ?.style.display !== 'none') {
-                            done(null);
-                            return;
-                        }
-                        const tag = (offset, count) => String.fromCharCode(
-                            ...bytes.subarray(offset, offset + count));
-                        const header = bytes.byteLength >= 44
-                            ? new DataView(
-                                bytes.buffer, bytes.byteOffset, bytes.byteLength)
-                            : null;
-                        const audioBytes = header?.getUint32(40, true) ?? 0;
-                        if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
-                            header?.getUint32(24, true) !== 24000 ||
-                            audioBytes < 2 ||
-                            bytes.length !== 44 + audioBytes) {
-                            throw Error(
-                                'Firefox article/selection overlay WAV mismatch: ' +
-                                JSON.stringify({
-                                    length: bytes.length, riff: tag(0, 4),
-                                    wave: tag(8, 4),
-                                    rate: header?.getUint32(24, true) ?? null,
-                                    audioBytes,
-                                }));
-                        }
-                        const digest = await crypto.subtle.digest(
-                            'SHA-256', bytes);
-                        const audioSha256 = [...new Uint8Array(digest)]
-                            .map(b => b.toString(16).padStart(2, '0')).join('');
-                        if (excludeSha && audioSha256 === excludeSha) {
-                            done(null);
-                            return;
-                        }
-                        done({
-                            audioBytes, audioSha256,
-                            backend: storedState.pendingTtsBackend,
-                            serverUrl: storedState.pendingApiUrl,
-                            pendingText: storedState.pendingText || '',
-                            blockCount: Array.isArray(storedState.pendingContent)
-                                ? storedState.pendingContent.length : 0,
-                            autoplay: storedState.pendingAutoplay === true,
-                            offline: navigator.onLine === false,
-                        });
-                    })().catch(e => done({ error: String(e) }));
-                """, stored, exclude_audio_sha256)
-            finally:
-                driver.switch_to.default_content()
-            if snapshot and snapshot.get("error"):
-                raise RuntimeError(snapshot["error"])
+            snapshot = _poll_article_overlay_once(
+                driver, origin, expected_speech, mode, exclude_audio_sha256)
             if snapshot:
-                return {"speech": expected_speech, "mode": host_mode, **snapshot}
+                return snapshot
         except Exception as exc:
-            message = str(exc)
-            if "WAV mismatch" in message:
+            if "WAV mismatch" in str(exc):
                 raise
             last_error = exc
         time.sleep(0.1)
@@ -2019,13 +2039,12 @@ def _send_native_read_article_alt_a():
     return native_alt_a
 
 
-def _accept_firefox_read_article_command(
-        driver, origin, fixture_url, backend, speech, exclude_audio_sha256=None):
+def _prepare_firefox_read_article(driver, origin, fixture_url):
     WebDriverWait(driver, 15).until(
         lambda d: d.execute_script(
             "return !document.getElementById('kokoro-overlay-container')"))
     prepared = _on_extension_page(driver, origin, """
-        const [fixtureUrl, backend, done] = arguments;
+        const [fixtureUrl, done] = arguments;
         (async () => {
             const tabs = await browser.tabs.query({ url: fixtureUrl });
             if (!tabs.length) throw Error('Fixture tab missing before Alt+A');
@@ -2058,7 +2077,7 @@ def _accept_firefox_read_article_command(
                 shortcut: readArticle?.shortcut || '',
             });
         })().catch(e => done({ success: false, error: String(e) }));
-    """, fixture_url, backend)
+    """, fixture_url)
     if not prepared.get("success"):
         raise RuntimeError(
             "Cannot prepare Firefox read-article: " + str(prepared))
@@ -2066,12 +2085,12 @@ def _accept_firefox_read_article_command(
         raise RuntimeError(
             "read-article command has no registered shortcut: " +
             json.dumps(prepared.get("bindings")))
-    driver.find_element(By.TAG_NAME, "body").click()
-    time.sleep(0.3)
-    native_alt_a = _send_native_read_article_alt_a()
-    armed_deadline = time.time() + 20
-    armed = None
-    while time.time() < armed_deadline:
+    return prepared
+
+
+def _wait_firefox_read_article_armed(driver, origin, backend, article_first):
+    deadline = time.time() + 20
+    while time.time() < deadline:
         armed = _on_extension_page(driver, origin, """
             const done = arguments[arguments.length - 1];
             browser.storage.local.get([
@@ -2079,11 +2098,39 @@ def _accept_firefox_read_article_command(
             ]).then(done, e => done({ error: String(e) }));
         """)
         if (isinstance(armed.get("pendingText"), str) and
-                speech["articleFirst"] in armed["pendingText"] and
+                article_first in armed["pendingText"] and
                 armed.get("pendingTtsBackend") == backend):
-            break
-        armed = None
+            return armed
         time.sleep(0.1)
+    return None
+
+
+def _assert_firefox_article_overlay_snap(article_snap, backend, speech):
+    if (article_snap.get("backend") != backend or
+            (article_snap.get("serverUrl") not in (None, ""))):
+        raise RuntimeError(
+            "Article overlay left local backend: " + json.dumps(article_snap))
+    pending = article_snap.get("pendingText", "")
+    if (speech["articleFirst"] not in pending or
+            speech["articleSecond"] not in pending):
+        raise RuntimeError(
+            "read-article command did not store extracted article text: " +
+            json.dumps({
+                "pendingText": article_snap.get("pendingText"),
+                "blockCount": article_snap.get("blockCount"),
+            }))
+    if article_snap.get("blockCount", 0) < 1:
+        raise RuntimeError("read-article command stored empty pendingContent")
+
+
+def _accept_firefox_read_article_command(
+        driver, origin, fixture_url, backend, speech, exclude_audio_sha256=None):
+    prepared = _prepare_firefox_read_article(driver, origin, fixture_url)
+    driver.find_element(By.TAG_NAME, "body").click()
+    time.sleep(0.3)
+    native_alt_a = _send_native_read_article_alt_a()
+    armed = _wait_firefox_read_article_armed(
+        driver, origin, backend, speech["articleFirst"])
     if not armed:
         raise RuntimeError(
             "Native Alt+A did not arm Firefox read-article storage: " +
@@ -2094,20 +2141,7 @@ def _accept_firefox_read_article_command(
     article_snap = _wait_article_overlay_wav(
         driver, origin, speech["articleFirst"], "full",
         exclude_audio_sha256=exclude_audio_sha256)
-    if (article_snap.get("backend") != backend or
-            (article_snap.get("serverUrl") not in (None, ""))):
-        raise RuntimeError(
-            "Article overlay left local backend: " + json.dumps(article_snap))
-    if (speech["articleFirst"] not in article_snap.get("pendingText", "") or
-            speech["articleSecond"] not in article_snap.get("pendingText", "")):
-        raise RuntimeError(
-            "read-article command did not store extracted article text: " +
-            json.dumps({
-                "pendingText": article_snap.get("pendingText"),
-                "blockCount": article_snap.get("blockCount"),
-            }))
-    if article_snap.get("blockCount", 0) < 1:
-        raise RuntimeError("read-article command stored empty pendingContent")
+    _assert_firefox_article_overlay_snap(article_snap, backend, speech)
     return {
         "articleSnap": article_snap,
         "shortcut": prepared["shortcut"],
