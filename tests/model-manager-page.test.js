@@ -74,6 +74,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
                 synthesisP50Ms: 12, synthesisP95Ms: 15, realTimeFactorP50: 0.2,
             })),
         };
+        globalThis.KokoroBackendDisclosure = require('../backend-disclosure.js');
         engine = {
             initialize: jest.fn(async () => {}),
             synthesizePhonemes: jest.fn(async () => audio()),
@@ -129,6 +130,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(retained.map(m => m.provider + '-' + m.variant).sort()).toEqual([
             'dictionary-english', 'mediapipe-cpu', 'mediapipe-gpu', 'onnx-q8', 'onnx-q8f16',
         ]);
+        expect(document.querySelector('[data-variant="mediapipe-gpu"]')).toBeNull();
         expect(cleanup.disabled).toBe(true);
         expect(existing.querySelector('.model-test').disabled).toBe(true);
         expect(other.querySelector('.model-download').disabled).toBe(true);
@@ -448,9 +450,9 @@ describe('ONNX model manager English synthesis diagnostics', () => {
     });
 
     test('discloses pinned model source, license and total cache data before any download', () => {
+        expect(document.querySelector('[data-variant="mediapipe-gpu"]')).toBeNull();
         const cases = [
             ['mediapipe-cpu', 'litert-community/Kokoro-82M', '294.8 MB'],
-            ['mediapipe-gpu', 'litert-community/Kokoro-82M', '294.8 MB'],
             ['onnx-q8', 'onnx-community/Kokoro-82M-v1.0-ONNX', '92.9 MB'],
             ['onnx-q8f16', 'onnx-community/Kokoro-82M-v1.0-ONNX', '86.6 MB'],
             ['dictionary-english', 'cmusphinx/cmudict', '3.6 MB'],
@@ -474,6 +476,16 @@ describe('ONNX model manager English synthesis diagnostics', () => {
             expect(links[0].rel).toBe('noopener noreferrer');
             expect(info.textContent).toContain(expectedSize);
             expect(info.textContent).toContain('browser storage overhead');
+            const footprint = row.querySelector('.model-footprint-note');
+            expect(footprint).toBeTruthy();
+            if (key.startsWith('onnx-')) {
+                expect(info.textContent).toMatch(/Total model-data footprint/);
+                expect(info.textContent).toMatch(/3\.5 KB packaged tokenizer\/config/);
+                expect(footprint.textContent).toMatch(/Total model-data footprint/i);
+                expect(footprint.textContent).toMatch(/tokenizer\/config|voices\/af\.bin/i);
+            } else if (key === 'mediapipe-cpu') {
+                expect(footprint.textContent).toMatch(/slower than real-time|packaged locally/i);
+            }
         }
         expect(global.fetch).not.toHaveBeenCalled();
         expect(global.browser.permissions.request).not.toHaveBeenCalled();
@@ -967,47 +979,14 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(row.querySelector('.model-storage-warning').hidden).toBe(true);
     });
 
-    test('unsupported MediaPipe GPU shows capability result without attempting inference', async () => {
-        installedModels.add('gpu');
-        window.KokoroBenchmark.inspectCapabilities = jest.fn(async () => ({
-            webgpu: { status: 'no-adapter' },
-        }));
-        const row = document.querySelector('[data-variant="mediapipe-gpu"]');
-        const button = row.querySelector('.model-test');
-        button.disabled = false; // Model is cached in this test scenario.
-        button.click();
-        await waitFor(() => row.querySelector('.model-status').textContent.includes('GPU test unavailable'));
-        expect(row.querySelector('.model-status').textContent).toContain('no-adapter');
-        expect(row.querySelector('.model-status').textContent).toContain('No inference was attempted');
-        expect(require('../mediapipe-provider.js').MediaPipeKokoroProvider).not.toHaveBeenCalled();
-        expect(global.browser.storage.local.remove).toHaveBeenCalledWith('mediapipeValidatedRevision:gpu');
-        expect(global.browser.storage.local.set).not.toHaveBeenCalled();
-        expect(row.querySelector('.model-choose').disabled).toBe(true);
-        expect(button.disabled).toBe(false);
-    });
-
-    test('MediaPipe GPU only attempts its real provider when adapter is available', async () => {
-        installedModels.add('gpu');
-        window.KokoroBenchmark.inspectCapabilities = jest.fn(async () => ({
-            webgpu: { status: 'adapter-available' },
-        }));
-        require('../mediapipe-provider.js').MediaPipeKokoroProvider.mockImplementation(() => engine);
-        const row = document.querySelector('[data-variant="mediapipe-gpu"]');
-        const button = row.querySelector('.model-test');
-        button.disabled = false;
-        button.click();
-        await waitFor(() => row.querySelector('.model-status').textContent.includes('Full-clip synthesis p50'));
-        expect(engine.initialize).toHaveBeenCalledTimes(1);
-        expect(engine.synthesize).toHaveBeenCalledTimes(4); // untimed + 3 measured
-        expect(require('../mediapipe-provider.js').MediaPipeKokoroProvider)
-            .toHaveBeenCalledWith({ variant: 'gpu' });
-        expect(global.browser.storage.local.set).toHaveBeenCalled();
-        expect(row.querySelector('audio').hidden).toBe(false);
+    test('MediaPipe GPU is not offered until WebGPU inference is verified (#58)', () => {
+        expect(document.querySelector('[data-variant="mediapipe-gpu"]')).toBeNull();
+        expect(document.querySelector('[data-variant="mediapipe-cpu"]')).toBeTruthy();
     });
 
     test('refused optional download permission hides the progress bar without fetching', async () => {
         global.browser.permissions.request.mockResolvedValue(false);
-        const row = document.querySelector('[data-variant="mediapipe-gpu"]');
+        const row = document.querySelector('[data-variant="mediapipe-cpu"]');
         const button = row.querySelector('.model-download');
         const progress = row.querySelector('progress');
         button.click();

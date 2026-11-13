@@ -1,5 +1,6 @@
 /** @jest-environment node */
-import { manifestForVariant, listModelVariants, dictionaryManifest } from '../model-catalog.js';
+import { manifestForVariant, listModelVariants, listPinnedModelVariants,
+    dictionaryManifest } from '../model-catalog.js';
 import { ModelDataStore, validateModelManifest } from '../model-data-store.js';
 import { tokenizePhonemes, PHONEME_VOCAB } from '../phoneme-tokenizer.js';
 import { parseEnglishLexicon, phonemizeEnglish, loadCachedEnglishLexicon } from '../english-g2p.js';
@@ -36,11 +37,14 @@ function fakeCache(manifest) {
 }
 
 describe('pinned official local Kokoro model catalog', () => {
-    test('includes both MediaPipe variants and ONNX data without executable runtime assets', () => {
-        const variants = listModelVariants();
-        expect(variants.map(x => x.key)).toEqual([
+    test('offers MediaPipe CPU and ONNX; GPU pin is retained but not offered until verified', () => {
+        expect(listModelVariants().map(x => x.key)).toEqual([
+            'mediapipe-cpu', 'onnx-q8', 'onnx-q8f16',
+        ]);
+        expect(listPinnedModelVariants().map(x => x.key)).toEqual([
             'mediapipe-cpu', 'mediapipe-gpu', 'onnx-q8', 'onnx-q8f16',
         ]);
+        expect(listPinnedModelVariants().find(x => x.key === 'mediapipe-gpu').offered).toBe(false);
         expect(validateModelManifest(manifestForVariant('mediapipe', 'cpu'))).toBe(294783298);
         expect(validateModelManifest(manifestForVariant('mediapipe', 'gpu'))).toBe(294750530);
         expect(validateModelManifest(manifestForVariant('onnx', 'q8'))).toBe(92361116 + 524288);

@@ -94,6 +94,7 @@ describe('popup backend-loss resilience (#4)', () => {
 
         Object.assign(global, require('../api-client.js'));
         Object.assign(global, { KokoroLocalVoiceMixing: require('../local-voice-mixing.js') });
+        Object.assign(global, { KokoroBackendDisclosure: require('../backend-disclosure.js') });
         popup = loadPopupModule();
     });
 
@@ -394,6 +395,7 @@ describe('popup backend-loss resilience (#4)', () => {
         loadPopupDom();
         Object.assign(global, require('../api-client.js'));
         Object.assign(global, { KokoroLocalVoiceMixing: require('../local-voice-mixing.js') });
+        Object.assign(global, { KokoroBackendDisclosure: require('../backend-disclosure.js') });
         loadPopupModule();
         document.dispatchEvent(new Event('DOMContentLoaded'));
         await flushAsync();
@@ -637,6 +639,7 @@ describe('popup backend-loss resilience (#4)', () => {
         loadPopupDom();
         Object.assign(global, require('../api-client.js'));
         Object.assign(global, { KokoroLocalVoiceMixing: require('../local-voice-mixing.js') });
+        Object.assign(global, { KokoroBackendDisclosure: require('../backend-disclosure.js') });
         loadPopupModule();
         document.dispatchEvent(new Event('DOMContentLoaded'));
         await flushAsync();
@@ -703,6 +706,28 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(document.getElementById('apiStatus').textContent).toMatch(/reach|Unable/i);
         expect(document.getElementById('retryApi').style.display).not.toBe('none');
         jest.useRealTimers();
+    });
+
+    test('popup surfaces Test TTS backends CTA and three backend cards (#58)', async () => {
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        const cta = document.getElementById('openBenchmarkBtn');
+        expect(cta.textContent).toBe('Test TTS backends');
+        expect(document.getElementById('openBenchmarkHint').textContent).toMatch(/Use this backend/i);
+        expect(document.querySelectorAll('.backend-card')).toHaveLength(3);
+        expect(document.getElementById('backendExplanation').textContent)
+            .toMatch(/default|configured API URL/i);
+
+        allowMediaPipeSelection();
+        const mediapipe = document.querySelector('input[name="ttsBackend"][value="mediapipe"]');
+        mediapipe.checked = true;
+        mediapipe.dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(document.getElementById('backendExplanation').textContent)
+            .toMatch(/never goes to the Kokoro server/i);
+        expect(document.getElementById('backendExplanation').textContent)
+            .toMatch(/slower than real-time|GPU is not offered/i);
     });
 
     test('popup migrates legacy localVoice when mediaPipeVoice is unset (#59)', async () => {

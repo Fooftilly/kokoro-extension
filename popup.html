@@ -29,10 +29,28 @@
         <div id="general" class="content active">
             <fieldset class="backend-picker" aria-describedby="backendExplanation">
                 <legend>TTS backend</legend>
-                <label><input type="radio" name="ttsBackend" value="fastapi" checked> Kokoro server (Docker / FastAPI)</label>
-                <label><input type="radio" name="ttsBackend" value="mediapipe"> MediaPipe Kokoro (on device)</label>
-                <label><input type="radio" name="ttsBackend" value="onnx"> Kokoro ONNX Runtime (on device)</label>
-                <p id="backendExplanation" class="note">The server is the default. Local modes never send speech text to FastAPI.</p>
+                <label class="backend-card">
+                    <input type="radio" name="ttsBackend" value="fastapi" checked>
+                    <span class="backend-card-body">
+                        <span class="backend-card-title">Kokoro server (Docker / FastAPI)</span>
+                        <span class="backend-card-meta">Default · remote/LAN URL · weighted mix · MP3</span>
+                    </span>
+                </label>
+                <label class="backend-card">
+                    <input type="radio" name="ttsBackend" value="mediapipe">
+                    <span class="backend-card-body">
+                        <span class="backend-card-title">MediaPipe Kokoro (on device)</span>
+                        <span class="backend-card-meta">CPU/WASM · local WAV · single voice · GPU not offered</span>
+                    </span>
+                </label>
+                <label class="backend-card">
+                    <input type="radio" name="ttsBackend" value="onnx">
+                    <span class="backend-card-body">
+                        <span class="backend-card-title">Kokoro ONNX Runtime (on device)</span>
+                        <span class="backend-card-meta">WASM CPU · local WAV · af.bin · needs CMUdict</span>
+                    </span>
+                </label>
+                <p id="backendExplanation" class="note">Kokoro server is the default for existing users. Local modes never send speech text to FastAPI.</p>
             </fieldset>
             <div class="label-row">
                 <label for="apiUrl">API Base URL</label>
@@ -170,13 +188,15 @@
     </div>
 
     <div class="footer">
-        <button id="openBenchmarkBtn" class="primary-btn" style="width: 100%; margin-top: 0; margin-bottom: 10px;">Check browser TTS capabilities</button>
+        <button id="openBenchmarkBtn" class="primary-btn" style="width: 100%; margin-top: 0; margin-bottom: 4px;">Test TTS backends</button>
+        <p id="openBenchmarkHint" class="note footer-hint">Download models, compare backends, and confirm with Use this backend. Preference changes only on your action.</p>
         <button id="openDocumentBtn" class="primary-btn" style="width: 100%; margin-top: 0; margin-bottom: 10px;">Open
             Document (EPUB)</button>
         <div id="status">Saving...</div>
     </div>
 
     <script src="api-client.js"></script>
+    <script src="backend-disclosure.js"></script>
     <script src="local-voice-mixing.js"></script>
     <script src="popup.js"></script>
 </body>

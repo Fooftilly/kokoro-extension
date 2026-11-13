@@ -55,11 +55,11 @@ Verified against the current source (not aspirational):
 - **Themes** — light/dark toggle in the popup.
 - **Keyboard shortcuts** — e.g. read article, next/previous sentence, close overlay; EPUB open shortcut is suggested on Firefox (Chrome has a tighter default-shortcut limit).
 - **Connection status icon** — toolbar icon reflects API reachability.
-- **Experimental local runtime tests** — official MediaPipe and ONNX WASM are packaged, with separate opt-in model downloads. An original offline CMUdict-backed English G2P path is being validated for ONNX; it rejects unknown words and is not yet full reading support. MediaPipe model startup currently fails in the official SDK. Neither experimental backend replaces normal server reading yet.
+- **Three TTS backends** — Kokoro server (FastAPI), on-device MediaPipe (CPU/WASM product path), and on-device ONNX Runtime Web (WASM). Choose in the popup; install/test models on **Test TTS backends**. Local modes keep speech text on-device (no server fallback). ONNX English reading needs an opt-in CMUdict download and rejects unknown words. MediaPipe GPU is not offered until a WebGPU adapter and correct inference are verified.
 
 ## Privacy & data handling
 
-- The extension does **not** hardcode a vendor cloud TTS API. Text you select or extract is sent to the **Kokoro-FastAPI base URL you configure** in settings.
+- The extension does **not** hardcode a vendor cloud TTS API. In **Kokoro server** mode, text you select or extract is sent to the **Kokoro-FastAPI base URL you configure**. In **MediaPipe** or **ONNX** mode, speech text stays on-device and is never sent to that server.
 - That endpoint may be **localhost**, another machine on your **LAN**, or a **remote** host you choose. If you point it at a remote server, text leaves your browser over the network to that server.
 - If the configured URL uses **`http://`** (not **`https://`**) to a non-local host, that text is sent **unencrypted in transit**. LAN HTTP Kokoro setups remain supported; prefer HTTPS whenever the path is not a trusted local network.
 - Settings (API URL, voices, playback options, etc.) are stored primarily via **`browser.storage.sync`** (some values are also kept in `storage.local`). If browser sync is enabled, Chrome/Firefox may sync those settings through your browser account across devices; the extension does not run its own sync backend.

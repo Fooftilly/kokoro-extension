@@ -23,6 +23,7 @@ const SRC_FILES = [
     'api-client.js',
     'tts-providers.js',
     'local-voice-mixing.js',
+    'backend-disclosure.js',
     'benchmark.html',
     'benchmark.css',
     'benchmark-capabilities.js',
