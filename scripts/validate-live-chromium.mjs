@@ -716,8 +716,9 @@ async function pollRealEpubChapterReady(
 }
 
 /**
- * Real webpage selection (floating mic) and article extract (PARSE_ARTICLE →
- * full overlay) against a loopback fixture. Chromium ONNX origin only for KE-11.
+ * Real webpage selection (floating mic → REQUEST_TTS) and article read
+ * (registered Alt+A `read-article` command → handleTtsAction) against a
+ * loopback fixture. Chromium ONNX origin only for KE-11.
  */
 async function acceptRealArticleAndSelection(page, context, extensionId, backend) {
     requireArticleSelectionBackend(backend);
@@ -919,40 +920,50 @@ async function acceptRealArticleAndSelection(page, context, extensionId, backend
             () => !document.getElementById('kokoro-overlay-container'),
             null, { timeout: 15000 });
 
-        // Article: real content-script PARSE_ARTICLE, then the same local
-        // storage + SHOW_PLAYER(full) path handleTtsAction uses after parse.
-        const articleSeed = await worker.evaluate(async ({ id, ttsBackend }) => {
+        // Independent extraction probe only — must not seed player state.
+        const articleExtract = await worker.evaluate(async (id) => {
             const parsed = await chrome.tabs.sendMessage(id, { action: 'PARSE_ARTICLE' });
             if (!parsed?.text || !Array.isArray(parsed.content)) {
                 throw Error('PARSE_ARTICLE failed: ' + JSON.stringify(parsed));
             }
-            await chrome.storage.local.set({
-                pendingText: parsed.text,
-                pendingContent: parsed.content,
-                pendingTtsBackend: ttsBackend,
-                pendingApiUrl: null,
-                pendingMediaPipeVariant: 'cpu',
-                pendingLocalVoice: 'af_heart',
-                pendingTitle: 'Kokoro Article Acceptance',
-                pendingAutoplay: true,
-            });
-            await chrome.tabs.sendMessage(id, { action: 'SHOW_PLAYER', mode: 'full' });
-            return {
-                text: parsed.text,
-                blockCount: parsed.content.length,
-            };
-        }, { id: tabId, ttsBackend: backend });
-        if (!articleSeed.text.includes(ARTICLE_SELECTION_SPEECH.articleFirst) ||
-            !articleSeed.text.includes(ARTICLE_SELECTION_SPEECH.articleSecond)) {
+            return { text: parsed.text, blockCount: parsed.content.length };
+        }, tabId);
+        if (!articleExtract.text.includes(ARTICLE_SELECTION_SPEECH.articleFirst) ||
+            !articleExtract.text.includes(ARTICLE_SELECTION_SPEECH.articleSecond)) {
             throw Error('Article extract missed fixture paragraphs: ' +
-                JSON.stringify(articleSeed));
+                JSON.stringify(articleExtract));
         }
+
+        // Real user-facing article path: registered Alt+A `read-article`
+        // command → background handleTtsAction(tab, 'read-article').
+        await worker.evaluate(async (id) => {
+            await chrome.storage.local.remove([
+                'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
+                'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
+            ]);
+            await chrome.tabs.update(id, { active: true });
+        }, tabId);
+        await page.bringToFront();
+        await page.locator('body').click({ position: { x: 8, y: 8 } });
+        await page.keyboard.press('Alt+a');
+
         const articleSnap = await waitForOverlayWav(
             ARTICLE_SELECTION_SPEECH.articleFirst, 'full');
         if (articleSnap.backend !== backend ||
             (articleSnap.serverUrl !== null && articleSnap.serverUrl !== '')) {
             throw Error('Article overlay left local backend: ' +
                 JSON.stringify(articleSnap));
+        }
+        if (!articleSnap.pendingText.includes(ARTICLE_SELECTION_SPEECH.articleFirst) ||
+            !articleSnap.pendingText.includes(ARTICLE_SELECTION_SPEECH.articleSecond)) {
+            throw Error('read-article command did not store extracted article text: ' +
+                JSON.stringify({
+                    pendingText: articleSnap.pendingText,
+                    blockCount: articleSnap.blockCount,
+                }));
+        }
+        if (articleSnap.blockCount < 1) {
+            throw Error('read-article command stored empty pendingContent');
         }
 
         assertDistinctArticleSelectionAudioHashes(
@@ -975,11 +986,12 @@ async function acceptRealArticleAndSelection(page, context, extensionId, backend
                 audioSha256: selectionSnap.audioSha256,
             },
             article: {
-                path: 'parse-article-show-player',
+                path: 'read-article-command',
                 mode: articleSnap.mode,
                 speech: ARTICLE_SELECTION_SPEECH.articleFirst,
                 extractedTextIncludesBothParagraphs: true,
-                blockCount: articleSeed.blockCount,
+                parseArticleProbeBlockCount: articleExtract.blockCount,
+                blockCount: articleSnap.blockCount,
                 audioBytes: articleSnap.audioBytes,
                 audioSha256: articleSnap.audioSha256,
             },
