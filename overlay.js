@@ -35,6 +35,25 @@ let lastDragScreenY = 0;
 const audioManager = new AudioManager();
 const playPauseBtn = document.getElementById('playPause');
 
+// Opt-in live-acceptance probe only — never telemetry. Harness sets
+// pendingAcceptanceProbe so Chromium long-form memory checks can read
+// bounded cache sizes without CDP heap heuristics alone.
+function syncAcceptanceProbe(enabled) {
+    if (enabled !== true) {
+        delete window.__kokoroAudioManagerStats;
+        return;
+    }
+    window.__kokoroAudioManagerStats = () => ({
+        cacheSize: audioManager.audioCache.size,
+        objectUrlCount: audioManager.objectUrls.size,
+        sentenceCount: audioManager.sentences.length,
+        window: audioManager.cacheWindow
+            ? { first: audioManager.cacheWindow.first, last: audioManager.cacheWindow.last }
+            : null,
+        generation: audioManager.generation,
+    });
+}
+
 function hostPageTargetOrigin() {
     try {
         if (document.referrer) return new URL(document.referrer).origin;
@@ -370,10 +389,12 @@ async function initialize() {
     audioManager.clear();
     textDisplay.textContent = '';
 
-    const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'defaultSpeed', 'defaultVolume', 'autoScroll', 'pendingCustomPronunciations', 'theme', 'pendingStartIndex', 'pendingAutoplay', 'pendingContinuousReader', 'pendingReaderReloadRevision']);
+    const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'defaultSpeed', 'defaultVolume', 'autoScroll', 'pendingCustomPronunciations', 'theme', 'pendingStartIndex', 'pendingAutoplay', 'pendingContinuousReader', 'pendingReaderReloadRevision', 'pendingAcceptanceProbe']);
     // A newer chapter can finish loading while an earlier storage read is
     // still pending. Never paint or start playback from a superseded read.
     if (loadId !== initializationRequestId) return;
+
+    syncAcceptanceProbe(data.pendingAcceptanceProbe);
 
     if (autoScrollChangeRevision === scrollRevisionAtStart) {
         window.kokoroAutoScroll = data.autoScroll === true;
@@ -468,210 +489,248 @@ async function initialize() {
     }
 }
 
-function renderText() {
-    textDisplay.textContent = '';
+function appendOverlayImageBlock(block) {
+    const img = document.createElement('img');
+    img.src = block.src;
+    img.style.maxWidth = '100%';
+    img.style.height = 'auto';
+    img.style.display = 'block';
+    img.style.margin = '20px auto';
+    img.style.borderRadius = '8px';
+    img.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
+    textDisplay.appendChild(img);
+}
 
-    if (!window.renderData) return;
+function appendOverlayCaptionBlock(block) {
+    const div = document.createElement('div');
+    div.textContent = block.text;
+    div.className = 'caption';
+    div.style.fontSize = '14px';
+    div.style.color = 'var(--status-text)';
+    div.style.textAlign = 'center';
+    div.style.marginBottom = '20px';
+    div.style.marginTop = '-10px'; // Pull closer to image
+    div.style.padding = '0 10px';
+    div.style.fontStyle = 'italic';
+    textDisplay.appendChild(div);
+}
 
-    let currentList = null; // To manage sequential list items
+function appendOverlaySilentBlock(block) {
+    const div = document.createElement('div');
+    div.textContent = block.text;
+    div.style.fontSize = '12px';
+    div.style.color = 'var(--status-text)';
+    div.style.padding = '8px';
+    div.style.margin = '15px 0';
+    div.style.border = '1px dashed var(--border-color)';
+    div.style.borderRadius = '4px';
+    div.style.textAlign = 'center';
+    div.style.userSelect = 'none'; // Hint it's not content
+    textDisplay.appendChild(div);
+}
 
-    window.renderData.forEach(block => {
-        // If we switch away from list items, or change depth/type, we might break the list chain.
-        // Simple logic: If not list item, currentList becomes null.
-        if (block.type !== 'list-item') {
-            currentList = null;
-        }
+function appendOverlayCodeBlock(block) {
+    const container = document.createElement('div');
+    container.style.margin = '20px 0';
+    container.style.padding = '1px'; // Outer wrapper padding
+    container.style.backgroundColor = '#1e1e1e';
+    container.style.borderRadius = '8px';
+    container.style.overflow = 'hidden';
+    container.style.boxShadow = '0 4px 12px rgba(0,0,0,0.2)';
 
-        if (block.type === 'image') {
-            const img = document.createElement('img');
-            img.src = block.src;
+    const pre = document.createElement('pre');
+    pre.style.margin = '0';
+    pre.style.padding = '16px';
+    pre.style.overflowX = 'auto';
+    pre.style.color = '#d4d4d4';
+    pre.style.fontFamily = "'JetBrains Mono', 'Fira Code', 'Menlo', 'Monaco', 'Consolas', monospace";
+    pre.style.fontSize = '14px';
+    pre.style.lineHeight = '1.5';
+    pre.style.tabSize = '4';
+
+    const code = document.createElement('code');
+    code.textContent = block.content;
+    pre.appendChild(code);
+    container.appendChild(pre);
+    textDisplay.appendChild(container);
+}
+
+function styleOverlayHtmlTables(div) {
+    div.querySelectorAll('table').forEach(table => {
+        table.style.minWidth = '100%';
+        table.style.borderCollapse = 'collapse';
+        table.style.fontFamily = 'sans-serif';
+        table.style.fontSize = '0.9em';
+        table.querySelectorAll('th, td').forEach(cell => {
+            cell.style.border = '1px solid var(--border-color)';
+            cell.style.padding = '8px 12px';
+        });
+        table.querySelectorAll('th').forEach(header => {
+            header.style.backgroundColor = 'var(--header-bg)';
+            header.style.fontWeight = 'bold';
+        });
+    });
+}
+
+function styleOverlayHtmlFigures(div) {
+    div.querySelectorAll('figure').forEach(fig => {
+        fig.style.margin = '0';
+        fig.style.textAlign = 'center';
+        const img = fig.querySelector('img');
+        if (img) {
             img.style.maxWidth = '100%';
             img.style.height = 'auto';
-            img.style.display = 'block';
-            img.style.margin = '20px auto';
-            img.style.borderRadius = '8px';
-            img.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
-            textDisplay.appendChild(img);
-        } else if (block.type === 'caption') {
-            const div = document.createElement('div');
-            div.textContent = block.text;
-            div.className = 'caption';
-            div.style.fontSize = '14px';
-            div.style.color = 'var(--status-text)';
-            div.style.textAlign = 'center';
-            div.style.marginBottom = '20px';
-            div.style.marginTop = '-10px'; // Pull closer to image
-            div.style.padding = '0 10px';
-            div.style.fontStyle = 'italic';
-            textDisplay.appendChild(div);
-        } else if (block.type === 'silent') {
-            const div = document.createElement('div');
-            div.textContent = block.text;
-            div.style.fontSize = '12px';
-            div.style.color = 'var(--status-text)';
-            div.style.padding = '8px';
-            div.style.margin = '15px 0';
-            div.style.border = '1px dashed var(--border-color)';
-            div.style.borderRadius = '4px';
-            div.style.textAlign = 'center';
-            div.style.userSelect = 'none'; // Hint it's not content
-            textDisplay.appendChild(div);
-        } else if (block.type === 'code') {
-            const container = document.createElement('div');
-            container.style.margin = '20px 0';
-            container.style.padding = '1px'; // Outer wrapper padding
-            container.style.backgroundColor = '#1e1e1e';
-            container.style.borderRadius = '8px';
-            container.style.overflow = 'hidden';
-            container.style.boxShadow = '0 4px 12px rgba(0,0,0,0.2)';
-
-            const pre = document.createElement('pre');
-            pre.style.margin = '0';
-            pre.style.padding = '16px';
-            pre.style.overflowX = 'auto';
-            pre.style.color = '#d4d4d4';
-            pre.style.fontFamily = "'JetBrains Mono', 'Fira Code', 'Menlo', 'Monaco', 'Consolas', monospace";
-            pre.style.fontSize = '14px';
-            pre.style.lineHeight = '1.5';
-            pre.style.tabSize = '4';
-
-            const code = document.createElement('code');
-            code.textContent = block.content;
-            pre.appendChild(code);
-            container.appendChild(pre);
-            textDisplay.appendChild(container);
-        } else if (block.type === 'html') {
-            const div = document.createElement('div');
-            const docParser = new DOMParser();
-            const tempDoc = docParser.parseFromString(block.html, 'text/html');
-            while (tempDoc.body.firstChild) {
-                div.appendChild(tempDoc.body.firstChild);
-            }
-            div.style.margin = '20px 0';
-            div.style.overflowX = 'auto'; // Horizontal scroll for wide tables
-            div.style.padding = '10px';
-            div.style.border = '1px solid var(--border-color)';
-            div.style.borderRadius = '8px';
-
-            // Basic table styling injection
-            const tables = div.querySelectorAll('table');
-            tables.forEach(table => {
-                // Ensure table fits container width at least visually
-                table.style.minWidth = '100%';
-                table.style.borderCollapse = 'collapse';
-                table.style.fontFamily = 'sans-serif';
-                table.style.fontSize = '0.9em';
-
-                table.querySelectorAll('th, td').forEach(cell => {
-                    cell.style.border = '1px solid var(--border-color)';
-                    cell.style.padding = '8px 12px';
-                });
-                table.querySelectorAll('th').forEach(header => {
-                    header.style.backgroundColor = 'var(--header-bg)';
-                    header.style.fontWeight = 'bold';
-                });
-            });
-
-            // Figure styling
-            const figures = div.querySelectorAll('figure');
-            figures.forEach(fig => {
-                fig.style.margin = '0';
-                fig.style.textAlign = 'center';
-                const img = fig.querySelector('img');
-                if (img) {
-                    img.style.maxWidth = '100%';
-                    img.style.height = 'auto';
-                    img.style.borderRadius = '4px';
-                }
-                const caption = fig.querySelector('figcaption');
-                if (caption) {
-                    caption.style.fontSize = '0.9em';
-                    caption.style.color = 'var(--status-text)';
-                    caption.style.marginTop = '8px';
-                    caption.style.fontStyle = 'italic';
-                }
-            });
-
-            textDisplay.appendChild(div);
-        } else if (block.type === 'paragraph' || block.type === 'list-item' || /^h[1-6]$/.test(block.type)) {
-            let container;
-            if (block.type === 'list-item') {
-                // List logic: Check if we need a new list container (ul/ol)
-                if (!currentList || currentList.dataset.listType !== block.listType || parseInt(currentList.dataset.depth) !== block.depth) {
-                    currentList = document.createElement(block.listType === 'ol' ? 'ol' : 'ul');
-                    currentList.dataset.listType = block.listType || 'ul';
-                    currentList.dataset.depth = block.depth || 0;
-                    // Indentation based on depth
-                    currentList.style.paddingLeft = (20 + (block.depth * 20)) + 'px';
-                    currentList.style.margin = '0 0 16px 0'; // Add spacing below the list
-                    textDisplay.appendChild(currentList);
-                }
-                container = document.createElement('li');
-                container.style.marginBottom = '8px'; // Spacing between list items
-                currentList.appendChild(container);
-            } else if (/^h[1-6]$/.test(block.type)) {
-                container = document.createElement(block.type);
-                container.style.margin = '24px 0 16px 0';
-                container.style.fontWeight = '700';
-                container.style.lineHeight = '1.3';
-                container.style.color = 'var(--text-color)';
-
-                // Scale font size based on level
-                const level = parseInt(block.type.substring(1));
-                const sizes = ['2em', '1.5em', '1.3em', '1.1em', '1em', '0.9em'];
-                container.style.fontSize = sizes[level - 1] || '1em';
-
-                textDisplay.appendChild(container);
-            } else {
-                // Paragraph logic
-                container = document.createElement('p');
-                if (block.isQuote) {
-                    container.style.borderLeft = '4px solid var(--border-color)';
-                    container.style.paddingLeft = '16px';
-                    container.style.marginLeft = '20px';
-                    container.style.fontStyle = 'italic';
-                    container.style.color = 'var(--text-color)';
-                    container.style.marginBottom = '16px';
-                } else {
-                    container.style.margin = '0 0 16px 0'; // Add spacing below paragraph
-                }
-                textDisplay.appendChild(container);
-            }
-
-            block.sentences.forEach(s => {
-                const span = document.createElement('span');
-                // Use HTML fragment if available, else text
-                if (s.html) {
-                    // Sanitize again just in case
-                    const docParser = new DOMParser();
-                    const tempDoc = docParser.parseFromString(window.DOMPurify.sanitize(s.html), 'text/html');
-                    while (tempDoc.body.firstChild) {
-                        span.appendChild(tempDoc.body.firstChild);
-                    }
-                } else {
-                    span.textContent = s.text;
-                }
-                // Add spacing
-                span.appendChild(document.createTextNode(' '));
-
-                span.className = 'sentence';
-                span.dataset.index = s.index;
-
-                span.onclick = (e) => {
-                    // If clicked element is a link, let it do its thing and don't navigate player
-                    if (e.target.tagName === 'A') {
-                        e.stopPropagation();
-                        return;
-                    }
-                    navigate(s.index, true);
-                };
-                container.appendChild(span);
-
-                // Link element back to sentence object for highlighting/scrolling
-                sentences[s.index].element = span;
-            });
+            img.style.borderRadius = '4px';
+        }
+        const caption = fig.querySelector('figcaption');
+        if (caption) {
+            caption.style.fontSize = '0.9em';
+            caption.style.color = 'var(--status-text)';
+            caption.style.marginTop = '8px';
+            caption.style.fontStyle = 'italic';
         }
     });
+}
+
+function appendOverlayHtmlBlock(block) {
+    const div = document.createElement('div');
+    const tempDoc = new DOMParser().parseFromString(block.html, 'text/html');
+    while (tempDoc.body.firstChild) {
+        div.appendChild(tempDoc.body.firstChild);
+    }
+    div.style.margin = '20px 0';
+    div.style.overflowX = 'auto'; // Horizontal scroll for wide tables
+    div.style.padding = '10px';
+    div.style.border = '1px solid var(--border-color)';
+    div.style.borderRadius = '8px';
+    styleOverlayHtmlTables(div);
+    styleOverlayHtmlFigures(div);
+    textDisplay.appendChild(div);
+}
+
+function createOverlayListItemContainer(block, listState) {
+    if (!listState.currentList ||
+        listState.currentList.dataset.listType !== block.listType ||
+        parseInt(listState.currentList.dataset.depth) !== block.depth) {
+        listState.currentList = document.createElement(block.listType === 'ol' ? 'ol' : 'ul');
+        listState.currentList.dataset.listType = block.listType || 'ul';
+        listState.currentList.dataset.depth = block.depth || 0;
+        listState.currentList.style.paddingLeft = (20 + (block.depth * 20)) + 'px';
+        listState.currentList.style.margin = '0 0 16px 0';
+        textDisplay.appendChild(listState.currentList);
+    }
+    const container = document.createElement('li');
+    container.style.marginBottom = '8px';
+    listState.currentList.appendChild(container);
+    return container;
+}
+
+function createOverlayHeadingContainer(block) {
+    const container = document.createElement(block.type);
+    container.style.margin = '24px 0 16px 0';
+    container.style.fontWeight = '700';
+    container.style.lineHeight = '1.3';
+    container.style.color = 'var(--text-color)';
+    const level = parseInt(block.type.substring(1));
+    const sizes = ['2em', '1.5em', '1.3em', '1.1em', '1em', '0.9em'];
+    container.style.fontSize = sizes[level - 1] || '1em';
+    textDisplay.appendChild(container);
+    return container;
+}
+
+function createOverlayParagraphContainer(block) {
+    const container = document.createElement('p');
+    if (block.isQuote) {
+        container.style.borderLeft = '4px solid var(--border-color)';
+        container.style.paddingLeft = '16px';
+        container.style.marginLeft = '20px';
+        container.style.fontStyle = 'italic';
+        container.style.color = 'var(--text-color)';
+        container.style.marginBottom = '16px';
+    } else {
+        container.style.margin = '0 0 16px 0';
+    }
+    textDisplay.appendChild(container);
+    return container;
+}
+
+function appendOverlaySentenceSpans(container, block) {
+    block.sentences.forEach(s => {
+        const span = document.createElement('span');
+        if (s.html) {
+            const tempDoc = new DOMParser().parseFromString(
+                window.DOMPurify.sanitize(s.html), 'text/html');
+            while (tempDoc.body.firstChild) {
+                span.appendChild(tempDoc.body.firstChild);
+            }
+        } else {
+            span.textContent = s.text;
+        }
+        span.appendChild(document.createTextNode(' '));
+        span.className = 'sentence';
+        span.dataset.index = s.index;
+        span.onclick = (e) => {
+            if (e.target.tagName === 'A') {
+                e.stopPropagation();
+                return;
+            }
+            navigate(s.index, true);
+        };
+        container.appendChild(span);
+        sentences[s.index].element = span;
+    });
+}
+
+function appendOverlayTextualBlock(block, listState) {
+    let container;
+    if (block.type === 'list-item') {
+        container = createOverlayListItemContainer(block, listState);
+    } else if (/^h[1-6]$/.test(block.type)) {
+        listState.currentList = null;
+        container = createOverlayHeadingContainer(block);
+    } else {
+        listState.currentList = null;
+        container = createOverlayParagraphContainer(block);
+    }
+    appendOverlaySentenceSpans(container, block);
+}
+
+function appendOverlayRenderBlock(block, listState) {
+    if (block.type === 'image') {
+        listState.currentList = null;
+        appendOverlayImageBlock(block);
+        return;
+    }
+    if (block.type === 'caption') {
+        listState.currentList = null;
+        appendOverlayCaptionBlock(block);
+        return;
+    }
+    if (block.type === 'silent') {
+        listState.currentList = null;
+        appendOverlaySilentBlock(block);
+        return;
+    }
+    if (block.type === 'code') {
+        listState.currentList = null;
+        appendOverlayCodeBlock(block);
+        return;
+    }
+    if (block.type === 'html') {
+        listState.currentList = null;
+        appendOverlayHtmlBlock(block);
+        return;
+    }
+    if (block.type === 'paragraph' || block.type === 'list-item' || /^h[1-6]$/.test(block.type)) {
+        appendOverlayTextualBlock(block, listState);
+    }
+}
+
+function renderText() {
+    textDisplay.textContent = '';
+    if (!window.renderData) return;
+    const listState = { currentList: null };
+    window.renderData.forEach(block => appendOverlayRenderBlock(block, listState));
 }
 
 function showBlockedPlayback() {
