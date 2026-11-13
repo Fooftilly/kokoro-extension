@@ -4,6 +4,7 @@ Default: ONNX q8 + dictionary. KOKORO_FIREFOX_PROVIDER=mediapipe tests official
 MediaPipe CPU separately, so large runtimes never share one Firefox renderer.
 No model weights are committed; locally pinned models are rehashed before reuse.
 """
+import contextlib
 import hashlib
 import http.server
 import json
@@ -2225,14 +2226,11 @@ def accept_real_article_and_selection(driver, origin, backend):
             "userBackendUnchanged": True,
         }
     finally:
-        try:
+        # Best-effort fixture teardown; do not mask the acceptance error.
+        with contextlib.suppress(OSError, RuntimeError):
             server.shutdown()
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(OSError, RuntimeError):
             server.server_close()
-        except Exception:
-            pass
 
 
 def run_offline_article_selection_acceptance(driver, origin, result, backend):
