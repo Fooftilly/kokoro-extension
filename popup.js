@@ -935,7 +935,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const eventType = (input.type === 'text' || input.type === 'number') ? 'input' : 'change';
         input.addEventListener(eventType, () => {
-            saveOptions(input.type === 'text');
+            void saveOptions(input.type === 'text');
         });
     });
 
@@ -943,9 +943,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (localVoiceInput) {
         localVoiceInput.addEventListener('change', () => {
             localVoiceInput.value = LocalVoice.normalizeLocalVoiceId(localVoiceInput.value);
-            saveOptions(false);
+            void saveOptions(false);
         });
-        localVoiceInput.addEventListener('input', () => saveOptions(true));
+        localVoiceInput.addEventListener('input', () => {
+            void saveOptions(true);
+        });
     }
 
     for (const radio of document.querySelectorAll('input[name="ttsBackend"]')) {
