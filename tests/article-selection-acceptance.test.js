@@ -126,7 +126,9 @@ console.log(JSON.stringify({ ok, errors }));
         expect(source).toMatch(/progress\.log/);
         expect(source).toMatch(/chromium-launch-start/);
         expect(source).toMatch(/offline-synthesis-wait-start/);
-        expect(source).toMatch(/setInterval\(\(\) => liveHeartbeat\('alive'\)/);
+        expect(source).toMatch(/liveHeartbeat\('alive'/);
+        expect(source).toMatch(/toProgress: false/);
+
         expect(source).not.toMatch(/keyboard\.press\('Alt\+a'\)/);
         expect(source).not.toMatch(/path: 'parse-article-show-player'/);
         expect(source).not.toMatch(
@@ -146,5 +148,8 @@ console.log(JSON.stringify({ ok, errors }));
         expect(chromiumJob).toMatch(/progress\.log/);
         expect(chromiumJob).toMatch(/tail -n 0 -F/);
         expect(chromiumJob).toMatch(/stall watchdog/);
+        expect(chromiumJob).toMatch(/STALL_SECS=180/);
+        expect(chromiumJob).toMatch(/HARD_LIMIT_SECS=1200/);
+        expect(chromiumJob).toMatch(/setsid /);
     });
 });

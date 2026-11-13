@@ -112,24 +112,25 @@ jobs:
           # Native optional-host dialog input uses libX11/libXtst via a small
           # standard-library Python helper; no mutable apt mirror is required.
           #
-          # GitHub often withholds container step logs until the step ends, so
-          # Node stderr heartbeats alone stay invisible while stalled. Mirror
-          # progress.log into this shell's stdout via tail -F, and kill the
-          # harness if the log stops growing (stall watchdog).
+          # GitHub withholds container step logs until the step ends — mid-flight
+          # stdout is invisible. Fail fast so the artifact + flushed log appear:
+          # (1) stall watchdog on stage-only progress.log (not keepalive lines)
+          # (2) hard 20m timeout on the whole harness process group.
           set -eu
           mkdir -p dist/runtime-acceptance
           : > dist/runtime-acceptance/progress.log
           rm -f dist/runtime-acceptance/stalled.flag
-          echo "[live-wrapper] starting; progress.log mirrored below"
+          echo "[live-wrapper] starting; stage progress mirrored below when step ends or fails fast"
           tail -n 0 -F dist/runtime-acceptance/progress.log &
           TAIL_PID=$!
           set +e
-          stdbuf -oL -eL xvfb-run -a -s '-screen 0 1440x900x24' \
+          # setsid so stall/timeout can kill xvfb+node as a group
+          setsid stdbuf -oL -eL xvfb-run -a -s '-screen 0 1440x900x24' \
             stdbuf -oL -eL node scripts/validate-live-chromium.mjs &
           NODE_PID=$!
           set -e
           (
-            STALL_SECS=480
+            STALL_SECS=180
             LAST_SIZE=0
             IDLE=0
             while kill -0 "$NODE_PID" 2>/dev/null; do
@@ -138,15 +139,16 @@ jobs:
               if [ "$SIZE" -gt "$LAST_SIZE" ]; then
                 LAST_SIZE=$SIZE
                 IDLE=0
+                echo "[live-wrapper] stage progress size=$SIZE"
               else
                 IDLE=$((IDLE + 15))
-                echo "[live-wrapper] no progress.log growth for ${IDLE}s (size=$SIZE)"
+                echo "[live-wrapper] no stage progress for ${IDLE}s (size=$SIZE)"
                 if [ "$IDLE" -ge "$STALL_SECS" ]; then
-                  echo "[live-wrapper] stall watchdog: killing harness after ${STALL_SECS}s silence"
+                  echo "[live-wrapper] stall watchdog after ${STALL_SECS}s without stage progress"
                   echo "stalled-after-${STALL_SECS}s" > dist/runtime-acceptance/stalled.flag
-                  kill "$NODE_PID" 2>/dev/null || true
-                  sleep 2
-                  kill -9 "$NODE_PID" 2>/dev/null || true
+                  kill -TERM -"$NODE_PID" 2>/dev/null || kill -TERM "$NODE_PID" 2>/dev/null || true
+                  sleep 3
+                  kill -KILL -"$NODE_PID" 2>/dev/null || kill -KILL "$NODE_PID" 2>/dev/null || true
                   exit 0
                 fi
               fi
@@ -154,16 +156,34 @@ jobs:
           ) &
           WATCH_PID=$!
           set +e
-          wait "$NODE_PID"
+          # Hard ceiling so a wedged wait cannot burn the full 60m job timeout.
+          # (timeout(1) cannot wrap the shell builtin `wait`, so poll with a deadline.)
+          HARD_LIMIT_SECS=1200
+          START_EPOCH=$(date +%s)
+          while kill -0 "$NODE_PID" 2>/dev/null; do
+            NOW_EPOCH=$(date +%s)
+            ELAPSED=$((NOW_EPOCH - START_EPOCH))
+            if [ "$ELAPSED" -ge "$HARD_LIMIT_SECS" ]; then
+              echo "[live-wrapper] hard timeout after ${HARD_LIMIT_SECS}s"
+              echo "hard-timeout-${HARD_LIMIT_SECS}s" > dist/runtime-acceptance/stalled.flag
+              kill -TERM -"$NODE_PID" 2>/dev/null || kill -TERM "$NODE_PID" 2>/dev/null || true
+              sleep 3
+              kill -KILL -"$NODE_PID" 2>/dev/null || kill -KILL "$NODE_PID" 2>/dev/null || true
+              break
+            fi
+            sleep 5
+          done
+          wait "$NODE_PID" 2>/dev/null
           EXIT=$?
           set -e
           kill "$WATCH_PID" 2>/dev/null || true
           kill "$TAIL_PID" 2>/dev/null || true
           wait "$WATCH_PID" 2>/dev/null || true
           wait "$TAIL_PID" 2>/dev/null || true
+          echo "[live-wrapper] ---- progress.log (tail) ----"
+          tail -n 80 dist/runtime-acceptance/progress.log || true
           if [ -f dist/runtime-acceptance/stalled.flag ]; then
-            echo "[live-wrapper] failing: stall watchdog fired"
-            tail -n 50 dist/runtime-acceptance/progress.log || true
+            echo "[live-wrapper] failing: $(cat dist/runtime-acceptance/stalled.flag)"
             exit 124
           fi
           echo "[live-wrapper] harness exited with $EXIT"

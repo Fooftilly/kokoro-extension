@@ -55,14 +55,18 @@ const resultsDir = path.resolve('dist/runtime-acceptance');
 await mkdir(resultsDir, { recursive: true });
 const progressLogPath = path.join(resultsDir, 'progress.log');
 
-function liveHeartbeat(label, detail) {
-    // writeSync(2) bypasses Node's full stderr buffering under non-TTY CI pipes
-    // (process.stderr.write was invisible until the step exited/cancelled).
+function liveHeartbeat(label, detail, options = {}) {
+    // writeSync(2) bypasses Node's full stderr buffering under non-TTY CI pipes.
+    // Stage lines go to progress.log (stall watchdog). Keepalive "alive" lines
+    // must NOT touch progress.log — they previously defeated the watchdog.
+    const toProgress = options.toProgress !== false;
     const elapsedSec = Math.round((Date.now() - liveStartedAt) / 1000);
     const suffix = detail === undefined ? '' : ' ' + JSON.stringify(detail);
     const line = '[live-chromium ' + elapsedSec + 's] ' + label + suffix + '\n';
     try { writeSync(2, line); } catch { /* ignore */ }
-    try { appendFileSync(progressLogPath, line); } catch { /* ignore */ }
+    if (toProgress) {
+        try { appendFileSync(progressLogPath, line); } catch { /* ignore */ }
+    }
 }
 
 async function withTimeout(promise, ms, label) {
@@ -81,8 +85,9 @@ async function withTimeout(promise, ms, label) {
 }
 
 liveHeartbeat('harness-start', { providerFilter, originDownload, headedConsent });
-// Keepalive so a silent hang still leaves fresh progress.log / Actions log lines.
-const aliveTimer = setInterval(() => liveHeartbeat('alive'), 15000);
+// Stderr-only keepalive; progress.log stays stage-gated for the stall watchdog.
+const aliveTimer = setInterval(
+    () => liveHeartbeat('alive', undefined, { toProgress: false }), 15000);
 aliveTimer.unref?.();
 
 const variants = [
