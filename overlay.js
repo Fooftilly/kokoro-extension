@@ -370,10 +370,27 @@ async function initialize() {
     audioManager.clear();
     textDisplay.textContent = '';
 
-    const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'defaultSpeed', 'defaultVolume', 'autoScroll', 'pendingCustomPronunciations', 'theme', 'pendingStartIndex', 'pendingAutoplay', 'pendingContinuousReader', 'pendingReaderReloadRevision']);
+    const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'defaultSpeed', 'defaultVolume', 'autoScroll', 'pendingCustomPronunciations', 'theme', 'pendingStartIndex', 'pendingAutoplay', 'pendingContinuousReader', 'pendingReaderReloadRevision', 'pendingAcceptanceProbe']);
     // A newer chapter can finish loading while an earlier storage read is
     // still pending. Never paint or start playback from a superseded read.
     if (loadId !== initializationRequestId) return;
+
+    // Opt-in live-acceptance probe only — never telemetry. Harness sets
+    // pendingAcceptanceProbe so Chromium long-form memory checks can read
+    // bounded cache sizes without CDP heap heuristics alone.
+    if (data.pendingAcceptanceProbe === true) {
+        window.__kokoroAudioManagerStats = () => ({
+            cacheSize: audioManager.audioCache.size,
+            objectUrlCount: audioManager.objectUrls.size,
+            sentenceCount: audioManager.sentences.length,
+            window: audioManager.cacheWindow
+                ? { first: audioManager.cacheWindow.first, last: audioManager.cacheWindow.last }
+                : null,
+            generation: audioManager.generation,
+        });
+    } else {
+        delete window.__kokoroAudioManagerStats;
+    }
 
     if (autoScrollChangeRevision === scrollRevisionAtStart) {
         window.kokoroAutoScroll = data.autoScroll === true;

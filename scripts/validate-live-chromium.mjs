@@ -21,6 +21,14 @@ import {
     originArticleSelectionStageEnabled,
     requireArticleSelectionBackend,
 } from './article-selection-acceptance.mjs';
+import {
+    LONG_FORM_SENTENCE_COUNT,
+    assertBoundedAudioManagerStats,
+    assertLongFormHeapDelta,
+    longFormStorageConfig,
+    originLongFormMemoryStageEnabled,
+    requireLongFormBackend,
+} from './long-form-memory-acceptance.mjs';
 // The extension's .js modules are ESM while package.json is CommonJS for the
 // build tool. Copy the pure catalog into a temporary .mjs file for the Node harness.
 const catalogFile = path.join(os.tmpdir(), 'kokoro-runtime-model-catalog.mjs');
@@ -1205,6 +1213,153 @@ async function acceptRealArticleAndSelection(page, context, extensionId, backend
     }
 }
 
+// Long-form memory: walk many ONNX overlay sentences while the opt-in
+// AudioManager probe proves the cache/object-URL window stays bounded.
+async function acceptLongFormMemoryPerformance(page, extensionId, backend) {
+    requireLongFormBackend(backend);
+    liveHeartbeat('long-form-memory-start', { backend, sentences: LONG_FORM_SENTENCE_COUNT });
+    const storage = longFormStorageConfig(backend);
+    await page.evaluate(async (cfg) => {
+        await chrome.storage.local.set(cfg);
+    }, storage);
+    await page.goto('chrome-extension://' + extensionId + '/overlay.html');
+
+    const overlayReady = (index) => {
+        const spans = document.querySelectorAll('.sentence');
+        return spans.length >= LONG_FORM_SENTENCE_COUNT &&
+            spans[index]?.classList.contains('highlight') &&
+            document.getElementById('audio')?.src.startsWith('blob:') &&
+            document.getElementById('loadingSpinner')?.style.display === 'none' &&
+            typeof window.__kokoroAudioManagerStats === 'function';
+    };
+
+    await withTimeout(
+        page.waitForFunction(overlayReady, 0, { timeout: 240000 }),
+        250000, 'long-form overlay first sentence');
+
+    const readStats = () => page.evaluate(() => window.__kokoroAudioManagerStats());
+    const readHeap = () => page.evaluate(() => {
+        const mem = performance.memory;
+        return mem && Number.isFinite(mem.usedJSHeapSize)
+            ? mem.usedJSHeapSize : null;
+    });
+    const readWavMeta = () => page.evaluate(async () => {
+        const audio = document.getElementById('audio');
+        const bytes = new Uint8Array(await (await fetch(audio.src)).arrayBuffer());
+        const wav = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const tag = (start, length) =>
+            String.fromCharCode(...bytes.subarray(start, start + length));
+        const audioBytes = wav.getUint32(40, true);
+        if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
+            wav.getUint32(24, true) !== 24000 || audioBytes < 2 ||
+            bytes.length !== 44 + audioBytes) {
+            throw Error('Long-form overlay WAV mismatch');
+        }
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
+        const audioSha256 = [...new Uint8Array(digest)]
+            .map(b => b.toString(16).padStart(2, '0')).join('');
+        return {
+            audioBytes, audioSha256, paused: audio.paused,
+            offline: navigator.onLine === false,
+        };
+    });
+
+    const heapBefore = await readHeap();
+    let maxCacheSize = 0;
+    let maxObjectUrlCount = 0;
+    const samples = [];
+    const stepIndexes = [];
+    for (let i = 0; i < LONG_FORM_SENTENCE_COUNT; i += 1) {
+        stepIndexes.push(i);
+    }
+    // Sample every sentence for the first eight, then every third to bound CI time.
+    const visitIndexes = stepIndexes.filter((i) => i < 8 || i % 3 === 0 ||
+        i === LONG_FORM_SENTENCE_COUNT - 1);
+
+    for (const index of visitIndexes) {
+        if (index > 0) {
+            await page.evaluate((target) => {
+                document.querySelectorAll('.sentence')[target].click();
+            }, index);
+            await withTimeout(
+                page.waitForFunction(overlayReady, index, { timeout: 180000 }),
+                190000, 'long-form overlay sentence ' + index);
+        }
+        // Prefetch of +1/+2 may still be settling; sample after a short settle.
+        await page.waitForTimeout(250);
+        const stats = await readStats();
+        assertBoundedAudioManagerStats(stats);
+        maxCacheSize = Math.max(maxCacheSize, stats.cacheSize);
+        maxObjectUrlCount = Math.max(maxObjectUrlCount, stats.objectUrlCount);
+        if (index === 0 || index === visitIndexes[visitIndexes.length - 1]) {
+            const wav = await readWavMeta();
+            samples.push({ index, ...wav, ...stats });
+        }
+        if (index % 4 === 0) {
+            liveHeartbeat('long-form-memory-progress', {
+                index, cacheSize: stats.cacheSize,
+                objectUrlCount: stats.objectUrlCount,
+            });
+        }
+    }
+
+    // Distant jump must not grow the cache unboundedly.
+    liveHeartbeat('long-form-memory-jump');
+    await page.evaluate(() => {
+        const spans = document.querySelectorAll('.sentence');
+        spans[spans.length - 1].click();
+    });
+    await withTimeout(
+        page.waitForFunction(overlayReady, LONG_FORM_SENTENCE_COUNT - 1, { timeout: 180000 }),
+        190000, 'long-form jump to last sentence');
+    const jumpStats = await readStats();
+    assertBoundedAudioManagerStats(jumpStats);
+    maxCacheSize = Math.max(maxCacheSize, jumpStats.cacheSize);
+    maxObjectUrlCount = Math.max(maxObjectUrlCount, jumpStats.objectUrlCount);
+    const finalWav = await readWavMeta();
+    samples.push({ index: LONG_FORM_SENTENCE_COUNT - 1, phase: 'jump', ...finalWav, ...jumpStats });
+
+    const heapAfter = await readHeap();
+    let heap = null;
+    if (heapBefore != null && heapAfter != null) {
+        heap = assertLongFormHeapDelta(heapBefore, heapAfter);
+    }
+
+    const stored = await page.evaluate(async () => chrome.storage.local.get([
+        'pendingTtsBackend', 'pendingApiUrl', 'ttsBackend', 'apiUrl',
+    ]));
+    if (stored.pendingTtsBackend !== backend && stored.ttsBackend !== backend) {
+        throw Error('Long-form backend drifted: ' + JSON.stringify(stored));
+    }
+    if (stored.pendingApiUrl || stored.apiUrl) {
+        throw Error('Long-form acceptance saw a server URL: ' + JSON.stringify(stored));
+    }
+    if (finalWav.offline !== true) {
+        throw Error('Long-form overlay was not offline at end');
+    }
+
+    liveHeartbeat('long-form-memory-done', {
+        maxCacheSize, maxObjectUrlCount, heapGrowth: heap?.growth ?? null,
+    });
+    return {
+        success: true,
+        browser: 'chromium',
+        backend,
+        sentenceCount: LONG_FORM_SENTENCE_COUNT,
+        visitedCount: visitIndexes.length,
+        maxCacheSize,
+        maxObjectUrlCount,
+        jumpCacheSize: jumpStats.cacheSize,
+        local24kHzWav: true,
+        offline: true,
+        noServerFallback: true,
+        acceptanceProbe: true,
+        heap,
+        samples,
+        userBackendUnchanged: true,
+    };
+}
+
 // Verify that the real EPUB.js reader and embedded overlay—not a seeded
 // pendingContent shortcut—create a local offline WAV for both chapters.
 // Also cover replacing the book with a TXT file through the same UI.
@@ -1531,6 +1686,7 @@ try {
         let localBenchmarkAcceptance = null;
         let epubReaderAcceptance = null;
         let articleSelectionAcceptance = null;
+        let longFormMemoryAcceptance = null;
         page.on('pageerror', error => errors.push(String(error)));
         page.on('crash', () => { crashed = true; });
         try {
@@ -1877,12 +2033,24 @@ try {
                     success: articleSelectionAcceptance?.success === true,
                 });
             }
+            if (originLongFormMemoryStageEnabled(
+                originDownload, manifest.provider, result.success)) {
+                stage = 'offline-real-long-form-memory';
+                liveHeartbeat(stage, { provider: manifest.provider });
+                longFormMemoryAcceptance = await acceptLongFormMemoryPerformance(
+                    page, extensionId, manifest.provider);
+                liveHeartbeat('long-form-memory-done-stage', {
+                    success: longFormMemoryAcceptance?.success === true,
+                    maxCacheSize: longFormMemoryAcceptance?.maxCacheSize,
+                });
+                await saveReport();
+            }
             console.log(result.success ? 'REAL MODEL INFERENCE' : 'MODEL INFERENCE FAILURE', result);
             results.push({ provider: manifest.provider, variant: manifest.variant,
                 offlineAttempted: true, offlineInference: result.success === true,
                 originModelAcceptance, onnxPlaybackAcceptance, onnxOverlayAcceptance,
                 localBenchmarkAcceptance, epubReaderAcceptance,
-                articleSelectionAcceptance, ...result });
+                articleSelectionAcceptance, longFormMemoryAcceptance, ...result });
             await saveReport();
         } catch (error) {
             liveHeartbeat('provider-validation-aborted', {
@@ -1892,7 +2060,8 @@ try {
                 success: false, crashed, stage, originModelAcceptance,
                 onnxPlaybackAcceptance, onnxOverlayAcceptance,
                 localBenchmarkAcceptance, epubReaderAcceptance,
-                articleSelectionAcceptance, error: String(error) };
+                articleSelectionAcceptance, longFormMemoryAcceptance,
+                error: String(error) };
             results.push(failure);
             await saveReport();
             console.error('MODEL VALIDATION ABORTED', failure);
