@@ -863,14 +863,20 @@ async function readOverlayWavSnapshot(overlayFrame, stored) {
     }, stored);
 }
 
-async function waitForArticleSelectionOverlayWav(page, worker, expectedSpeech, mode) {
+async function waitForArticleSelectionOverlayWav(
+    page, worker, expectedSpeech, mode, options = {},
+) {
+    const excludeAudioSha256 = options.excludeAudioSha256 || null;
     const deadline = Date.now() + 180000;
     let lastError = null;
     let lastBeat = 0;
     while (Date.now() < deadline) {
         const elapsed = Date.now() - (deadline - 180000);
         if (elapsed - lastBeat >= 15000) {
-            liveHeartbeat('wait-overlay-wav', { expectedSpeech, mode, elapsedMs: elapsed });
+            liveHeartbeat('wait-overlay-wav', {
+                expectedSpeech, mode, elapsedMs: elapsed,
+                excludeAudioSha256: Boolean(excludeAudioSha256),
+            });
             lastBeat = elapsed;
         }
         try {
@@ -906,6 +912,13 @@ async function waitForArticleSelectionOverlayWav(page, worker, expectedSpeech, m
             const snapshot = await withTimeout(
                 readOverlayWavSnapshot(overlayFrame, stored),
                 30000, 'article/selection overlay WAV snapshot');
+            // After selection→article, pendingText can update before the overlay
+            // replaces the previous blob URL; ignore the stale selection WAV.
+            if (snapshot && excludeAudioSha256 &&
+                snapshot.audioSha256 === excludeAudioSha256) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                continue;
+            }
             if (snapshot) {
                 return { speech: expectedSpeech, mode: hostMode, ...snapshot };
             }
@@ -1007,8 +1020,28 @@ async function waitForReadArticleStorageArmed(worker, backend) {
     return null;
 }
 
-async function acceptReadArticleCommand(page, worker, tabId, backend) {
+async function acceptReadArticleCommand(
+    page, worker, tabId, backend, options = {},
+) {
     // Playwright/CDP keys never reach chrome.commands; use native X11 XTest.
+    // background.js ignores read-article while CHECK_PLAYER_ACTIVE — ensure the
+    // selection popup is fully gone before sending Alt+A.
+    await page.waitForFunction(
+        () => !document.getElementById('kokoro-overlay-container'),
+        null, { timeout: 15000 });
+    const playerStillActive = await withTimeout(worker.evaluate(async (id) => {
+        try {
+            const response = await chrome.tabs.sendMessage(id, {
+                action: 'CHECK_PLAYER_ACTIVE',
+            });
+            return Boolean(response?.active);
+        } catch {
+            return false;
+        }
+    }, tabId), 15000, 'CHECK_PLAYER_ACTIVE before read-article');
+    if (playerStillActive) {
+        throw Error('Selection player still active before native Alt+A');
+    }
     await worker.evaluate(async (id) => {
         await chrome.storage.local.remove([
             'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
@@ -1038,7 +1071,9 @@ async function acceptReadArticleCommand(page, worker, tabId, backend) {
             JSON.stringify({ nativeAltA, readArticleBinding, commandBindings }));
     }
     const articleSnap = await waitForArticleSelectionOverlayWav(
-        page, worker, ARTICLE_SELECTION_SPEECH.articleFirst, 'full');
+        page, worker, ARTICLE_SELECTION_SPEECH.articleFirst, 'full', {
+            excludeAudioSha256: options.excludeAudioSha256 || null,
+        });
     if (articleSnap.backend !== backend ||
         (articleSnap.serverUrl !== null && articleSnap.serverUrl !== '')) {
         throw Error('Article overlay left local backend: ' +
@@ -1104,20 +1139,26 @@ async function acceptRealArticleAndSelection(page, context, extensionId, backend
         const articleExtract = await withTimeout(
             probeArticleExtraction(worker, tabId),
             30000, 'PARSE_ARTICLE probe');
-        liveHeartbeat('article-selection-native-alt-a');
+        liveHeartbeat('article-selection-native-alt-a', {
+            excludeSelectionSha: selectionSnap.audioSha256?.slice(0, 12),
+        });
         const { articleSnap, readArticleBinding, nativeAltA } =
-            await acceptReadArticleCommand(page, worker, tabId, backend);
+            await acceptReadArticleCommand(page, worker, tabId, backend, {
+                excludeAudioSha256: selectionSnap.audioSha256,
+            });
         liveHeartbeat('article-selection-alt-a-done', {
             audioBytes: articleSnap.audioBytes,
+            audioSha256: articleSnap.audioSha256?.slice(0, 12),
             nativeKeys: nativeAltA.nativeKeys,
         });
 
         assertDistinctArticleSelectionAudioHashes(
             selectionSnap.audioSha256, articleSnap.audioSha256);
+        liveHeartbeat('article-selection-hashes-distinct');
 
-        await worker.evaluate(async (id) => {
+        await withTimeout(worker.evaluate(async (id) => {
             await chrome.tabs.sendMessage(id, { action: 'REMOVE_PLAYER' }).catch(() => {});
-        }, tabId);
+        }, tabId), 15000, 'REMOVE_PLAYER after article');
 
         return {
             success: true,
@@ -1834,6 +1875,9 @@ try {
                 articleSelectionAcceptance, ...result });
             await saveReport();
         } catch (error) {
+            liveHeartbeat('provider-validation-aborted', {
+                stage, error: String(error).slice(0, 240),
+            });
             const failure = { provider: manifest.provider, variant: manifest.variant,
                 success: false, crashed, stage, originModelAcceptance,
                 onnxPlaybackAcceptance, onnxOverlayAcceptance,
@@ -1846,8 +1890,13 @@ try {
         } finally {
             // Restore network only for the next verified local model transfer.
             // Each provider's acceptance itself must finish entirely offline.
-            await context.setOffline(false);
-            if (!page.isClosed()) await page.close();
+            await context.setOffline(false).catch(() => {});
+            if (!page.isClosed()) {
+                await withTimeout(page.close(), 15000, 'page.close after provider')
+                    .catch((closeError) => liveHeartbeat('page-close-timeout', {
+                        error: String(closeError).slice(0, 160),
+                    }));
+            }
         }
     }
     if (errors.length) throw Error('Extension errors: ' + errors.join('; '));
@@ -2202,6 +2251,11 @@ try {
 } finally {
     clearInterval(aliveTimer);
     liveHeartbeat('harness-teardown');
-    if (context) await context.close();
+    if (context) {
+        await withTimeout(context.close(), 20000, 'context.close')
+            .catch((closeError) => liveHeartbeat('context-close-timeout', {
+                error: String(closeError).slice(0, 160),
+            }));
+    }
     await new Promise(resolve => server.close(resolve));
 }

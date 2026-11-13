@@ -120,6 +120,8 @@ console.log(JSON.stringify({ ok, errors }));
         expect(source).toMatch(/native-chromium-keys\.py/);
         expect(source).toMatch(/Alt_L',\s*'a'/);
         expect(source).toMatch(/path: 'read-article-command-native-x11'/);
+        expect(source).toMatch(/excludeAudioSha256/);
+        expect(source).toMatch(/CHECK_PLAYER_ACTIVE/);
         expect(source).toMatch(/function liveHeartbeat\(/);
         expect(source).toMatch(/function withTimeout\(/);
         expect(source).toMatch(/writeSync\(2,/);
