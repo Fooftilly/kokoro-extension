@@ -1,0 +1,10 @@
+{
+  "name": "babel-preset-current-node-syntax",
+  "version": "1.2.0",
+  "description": "Babel 8-compatible empty stand-in: modern Node syntax is built into @babel/parser 8 (see Babel 8 migration guide). Replaces the published preset that still depends on @babel/plugin-syntax-* packages with peer @babel/core ^7 only.",
+  "main": "index.js",
+  "license": "MIT",
+  "peerDependencies": {
+    "@babel/core": "^7.0.0 || ^8.0.0"
+  }
+}

@@ -70,7 +70,7 @@ Default host permissions cover localhost; non-local URLs prompt for optional hos
 
 ## Prerequisites
 
-- **Node.js `^20.19.0 || ^22.13.0 || >=24`** and npm (for building from source; CI uses Node 22).
+- **Node.js `^22.18.0 || >=24.11.0`** and npm (Babel 8 toolchain; CI uses Node 22).
 - A reachable **[Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI)** instance (local Docker, LAN, or remote) for actual speech generation. Unit tests mock the API and do **not** require a live server.
 
 ## Installation & build
@@ -78,7 +78,7 @@ Default host permissions cover localhost; non-local URLs prompt for optional hos
 ```bash
 git clone https://github.com/Fooftilly/kokoro-extension.git
 cd kokoro-extension
-npm ci
+npm ci --engine-strict
 npm run build
 ```
 

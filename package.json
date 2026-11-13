@@ -31,7 +31,7 @@
   },
   "homepage": "https://github.com/Fooftilly/kokoro-extension#readme",
   "engines": {
-    "node": "^20.19.0 || ^22.13.0 || >=24"
+    "node": "^22.18.0 || >=24.11.0"
   },
   "type": "commonjs",
   "dependencies": {
@@ -47,15 +47,19 @@
     "onnxruntime-web": "1.31.1"
   },
   "devDependencies": {
-    "@babel/core": "^7.28.5",
-    "@babel/preset-env": "^7.28.5",
+    "@babel/core": "^8.1.2",
+    "@babel/preset-env": "^8.0.7",
     "@eslint/js": "^10.0.1",
     "adm-zip": "^0.6.1",
-    "babel-jest": "^30.2.0",
+    "babel-jest": "^30.5.2",
+    "babel-preset-current-node-syntax": "file:./tooling/babel-preset-current-node-syntax-compat",
     "eslint": "^10.14.0",
     "globals": "^17.14.0",
-    "jest": "^30.2.0",
-    "jest-environment-jsdom": "^30.2.0",
+    "jest": "^30.5.2",
+    "jest-environment-jsdom": "^30.5.2",
     "web-ext": "10.8.0"
+  },
+  "overrides": {
+    "babel-preset-current-node-syntax": "$babel-preset-current-node-syntax"
   }
 }

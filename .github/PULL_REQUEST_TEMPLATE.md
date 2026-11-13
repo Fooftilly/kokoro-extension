@@ -13,7 +13,8 @@
 ## Tests
 
 - [ ] Targeted Jest coverage for changed behavior (or N/A with reason)
-- [ ] `npm ci`
+- [ ] `npm ci --engine-strict`
+- [ ] `npm ls --all`
 - [ ] `npm test`
 - [ ] `npm run lint`
 - [ ] `npm run build` (Chrome + Firefox manifests valid)
