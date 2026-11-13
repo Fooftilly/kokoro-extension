@@ -74,6 +74,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
                 synthesisP50Ms: 12, synthesisP95Ms: 15, realTimeFactorP50: 0.2,
             })),
         };
+        globalThis.KokoroBackendDisclosure = require('../backend-disclosure.js');
         engine = {
             initialize: jest.fn(async () => {}),
             synthesizePhonemes: jest.fn(async () => audio()),
@@ -474,6 +475,16 @@ describe('ONNX model manager English synthesis diagnostics', () => {
             expect(links[0].rel).toBe('noopener noreferrer');
             expect(info.textContent).toContain(expectedSize);
             expect(info.textContent).toContain('browser storage overhead');
+            const footprint = row.querySelector('.model-footprint-note');
+            expect(footprint).toBeTruthy();
+            if (key.startsWith('onnx-')) {
+                expect(footprint.textContent).toMatch(/Tokenizer\/config|voices\/af\.bin/i);
+            } else if (key === 'mediapipe-gpu') {
+                expect(footprint.textContent).toMatch(/unverified/i);
+                expect(row.querySelector('h3').textContent).toMatch(/unverified/i);
+            } else if (key === 'mediapipe-cpu') {
+                expect(footprint.textContent).toMatch(/slower than real-time|packaged locally/i);
+            }
         }
         expect(global.fetch).not.toHaveBeenCalled();
         expect(global.browser.permissions.request).not.toHaveBeenCalled();

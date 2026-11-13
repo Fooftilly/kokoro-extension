@@ -90,7 +90,8 @@ const VARIANTS = Object.freeze({
             'e7b931ee5d4b7104012a838c9eee240d19ea69cb3ca269041a3274f83dbb7fa1')]),
     }),
     'mediapipe-gpu': Object.freeze({
-        provider: 'mediapipe', variant: 'gpu', label: 'MediaPipe GPU (where supported)',
+        provider: 'mediapipe', variant: 'gpu',
+        label: 'MediaPipe GPU (experimental / unverified)',
         assets: Object.freeze([asset('mediapipe', 'kokoro_int8_gpu_fp16.litertlm', 294750530,
             '1ef178b127ec48c737daf17eabb4cea5f6b3ffbc510aced270fe5c267bbeac52')]),
     }),

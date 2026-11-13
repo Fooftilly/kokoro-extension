@@ -209,6 +209,14 @@ function createModelRow(entry) {
         ' · Pinned revision: ', source.revision.slice(0, 7),
         ' · Model data to download and cache: ', formatModelSize(entry.totalBytes),
         ' (browser storage overhead may add to this).');
+    const footprint = document.createElement('p');
+    footprint.className = 'model-footprint-note';
+    const Disclosure = globalThis.KokoroBackendDisclosure;
+    const footprintNote = Disclosure && typeof Disclosure.downloadFootprintNote === 'function'
+        ? Disclosure.downloadFootprintNote(entry)
+        : '';
+    if (footprintNote) footprint.textContent = footprintNote;
+    else footprint.hidden = true;
     const status = document.createElement('p');
     status.className = 'model-status';
     status.setAttribute('role', 'status');
@@ -258,7 +266,7 @@ function createModelRow(entry) {
     const audio = document.createElement('audio');
     audio.controls = true;
     audio.hidden = true;
-    row.append(title, provenance, status, storageWarning, progress, actions, audio);
+    row.append(title, provenance, footprint, status, storageWarning, progress, actions, audio);
     return { row, status, storageWarning, progress, download, remove, verify, test, choose,
         audio, busy: null };
 }

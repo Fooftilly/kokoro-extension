@@ -632,6 +632,24 @@ button:hover {
 /* Explicit three-provider radios; show all choices even before local models are ready. */
 .backend-picker { border: 1px solid var(--border-color); padding: 7px 9px; margin: 0 0 10px; min-width: 0; }
 .backend-picker legend { font-size: 12px; font-weight: bold; padding: 0 4px; }
-.backend-picker label { display: flex; gap: 7px; align-items: center; font-weight: normal; margin: 4px 0; cursor: pointer; }
-.backend-picker input { flex-shrink: 0; margin: 0; }
+.backend-picker .backend-card {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    font-weight: normal;
+    margin: 5px 0;
+    padding: 6px 7px;
+    border: 1px solid var(--row-border);
+    border-radius: 4px;
+    cursor: pointer;
+    background: var(--mixer-bg);
+}
+.backend-picker .backend-card:has(input:checked) {
+    border-color: var(--hover-bg);
+}
+.backend-picker .backend-card input { flex-shrink: 0; margin: 2px 0 0; }
+.backend-card-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.backend-card-title { font-size: 12px; line-height: 1.3; }
+.backend-card-meta { font-size: 11px; color: var(--note-color); line-height: 1.3; }
 .backend-picker p { margin: 7px 0 0; line-height: 1.35; }
+.footer-hint { margin: 0 0 10px; line-height: 1.3; }

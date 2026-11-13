@@ -61,6 +61,7 @@ export default [
       'transliteration-lite.js',
       'tts-providers.js',
       'local-voice-mixing.js',
+      'backend-disclosure.js',
       'benchmark-capabilities.js',
       'benchmark-page.js',
     ],
@@ -99,7 +100,7 @@ export default [
   },
   // Classic scripts that optionally export for Jest via CJS interop
   {
-    files: ['content.js', 'api-client.js', 'overlay-position.js', 'floating-mic-position.js', 'benchmark-capabilities.js', 'tts-providers.js', 'local-voice-mixing.js'],
+    files: ['content.js', 'api-client.js', 'overlay-position.js', 'floating-mic-position.js', 'benchmark-capabilities.js', 'tts-providers.js', 'local-voice-mixing.js', 'backend-disclosure.js'],
     languageOptions: {
       globals: {
         module: 'readonly',
@@ -110,6 +111,12 @@ export default [
     files: ['benchmark-page.js'],
     languageOptions: {
       globals: { KokoroBenchmark: 'readonly' },
+    },
+  },
+  {
+    files: ['model-manager-page.js'],
+    languageOptions: {
+      globals: { KokoroBackendDisclosure: 'readonly' },
     },
   },
   // background.js uses require only in its Jest CommonJS harness.
@@ -127,12 +134,13 @@ export default [
       },
     },
   },
-  // popup.js uses helpers from api-client.js / local-voice-mixing.js (classic script globals)
+  // popup.js uses helpers from api-client.js / local-voice-mixing.js / backend-disclosure.js
   {
     files: ['popup.js'],
     languageOptions: {
       globals: {
         KokoroLocalVoiceMixing: 'readonly',
+        KokoroBackendDisclosure: 'readonly',
         normalizeVoiceEntry: 'readonly',
         normalizeVoiceIds: 'readonly',
         filterVoicesByPrefix: 'readonly',

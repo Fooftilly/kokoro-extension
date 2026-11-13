@@ -9,7 +9,8 @@ Guidance for humans and coding agents working in this repository.
 | `background.js` | MV3 service worker / background scripts: context menus, API fetch, downloads, shortcuts, connection icon |
 | `content.js` | Content script: selection/article extract, overlay injection, auto-scroll, floating mic |
 | `floating-mic-position.js` | Pure helpers for floating mic end-caret position + viewport clamp (#11) |
-| `popup.html` / `popup.js` / `popup.css` | Settings UI: API URL, voice mixer / MediaPipe voice / fixed ONNX asset, stream/download, normalization toggles, theme |
+| `popup.html` / `popup.js` / `popup.css` | Settings UI: three backend cards, API URL, voice mixer / MediaPipe voice / fixed ONNX asset, Test TTS backends CTA, theme |
+| `backend-disclosure.js` | Popup / download footprint disclosure copy for the three backends (#58) |
 | `local-voice-mixing.js` | FastAPI vs MediaPipe vs ONNX voice prefs (#59): separate keys, single-voice / fixed-asset policy |
 | `api-client.js` | Popup API helpers: voice-list normalization, connection/voice fetch error kinds |
 | `overlay.html` / `overlay.js` / `overlay.css` | In-page TTS player overlay |
@@ -41,7 +42,7 @@ Guidance for humans and coding agents working in this repository.
 - Optional: `*://*/*` for user-configured remote/LAN endpoints.
 - CSP for extension pages: `script-src 'self'; object-src 'self'`.
 - **No telemetry** or analytics without explicit maintainer approval.
-- Text/content is sent only to the **user-configured Kokoro-FastAPI endpoint** (localhost, LAN, or remote).
+- In FastAPI mode, text/content is sent only to the **user-configured Kokoro-FastAPI endpoint** (localhost, LAN, or remote). Local MediaPipe/ONNX modes keep speech text on-device and never fall back to the server.
 
 ## Install / test / build / package
 

@@ -33,6 +33,23 @@ function normalizeApiUrl(raw) {
     return apiUrl;
 }
 
+const BackendDisclosure = globalThis.KokoroBackendDisclosure || {
+    CTA_LABEL: 'Test TTS backends',
+    CTA_HINT: '',
+    backendDisclosure: (backend) => {
+        if (backend === 'mediapipe') {
+            return 'MediaPipe runs on-device. Speech text never goes to the Kokoro server.';
+        }
+        if (backend === 'onnx') {
+            return 'ONNX runs on-device via WASM. Speech text never goes to the Kokoro server.';
+        }
+        if (backend === 'fastapi') {
+            return 'Kokoro server is the default. Selected text is sent to your configured API URL.';
+        }
+        return 'Unknown saved backend. Select one explicitly; no server requests will run.';
+    },
+};
+
 const LocalVoice = globalThis.KokoroLocalVoiceMixing || {
     DEFAULT_MEDIAPIPE_VOICE: 'af_heart',
     DEFAULT_LOCAL_VOICE: 'af_heart',
@@ -827,13 +844,8 @@ function applyThemeFromSettings(theme) {
 
 function applyBackendExplanation(ttsBackend) {
     const backendExplanation = document.getElementById('backendExplanation');
-    if (ttsBackend === 'mediapipe') {
-        backendExplanation.textContent = 'MediaPipe runs locally after installing and testing a model. Use the TTS test page to manage downloads.';
-    } else if (ttsBackend === 'onnx') {
-        backendExplanation.textContent = 'ONNX q8 supports experimental dictionary-backed English text after installing its model and CMUdict. Unknown words fail locally; there is no server fallback. Long-form reading is not yet verified.';
-    } else if (ttsBackend !== 'fastapi') {
-        backendExplanation.textContent = 'Unknown saved backend. Select one explicitly; no server requests will run.';
-    }
+    if (!backendExplanation) return;
+    backendExplanation.textContent = BackendDisclosure.backendDisclosure(ttsBackend || 'fastapi');
 }
 
 function applyVoiceFieldsFromSettings(items) {
@@ -1036,8 +1048,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function applySelectedBackendUi(radio, explanation) {
+        explanation.textContent = BackendDisclosure.backendDisclosure(radio.value);
         if (radio.value === 'fastapi') {
-            explanation.textContent = 'Using the configured Kokoro server; text is sent to this endpoint.';
             syncVoiceUiForBackend('fastapi');
             await refreshBackendStatus(document.getElementById('apiUrl').value);
             return;
@@ -1045,9 +1057,6 @@ document.addEventListener('DOMContentLoaded', () => {
         // Cancel any in-flight remote status/voice fetch when switching to local.
         refreshGeneration++;
         if (activeRefreshAbort) activeRefreshAbort.abort();
-        explanation.textContent = radio.value === 'mediapipe'
-            ? 'Local MediaPipe requires a downloaded model. Manage and test it on the TTS test page.'
-            : 'Local ONNX q8 supports dictionary-backed English sentences. Install ONNX q8 and CMUdict on the browser TTS test page first; unknown words fail locally.';
         syncVoiceUiForBackend(radio.value);
         const status = document.getElementById('apiStatusRow');
         if (status) status.style.display = 'none';
@@ -1119,9 +1128,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const openBenchmarkBtn = document.getElementById('openBenchmarkBtn');
     if (openBenchmarkBtn) {
+        openBenchmarkBtn.textContent = BackendDisclosure.CTA_LABEL || 'Test TTS backends';
         openBenchmarkBtn.addEventListener('click', () => {
             browser.tabs.create({ url: 'benchmark.html' });
         });
+    }
+    const openBenchmarkHint = document.getElementById('openBenchmarkHint');
+    if (openBenchmarkHint && BackendDisclosure.CTA_HINT) {
+        openBenchmarkHint.textContent = BackendDisclosure.CTA_HINT;
     }
 
     // Open Document Handler
