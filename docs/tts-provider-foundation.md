@@ -6,7 +6,7 @@ Backend setting: browser.storage.sync ttsBackend = fastapi | mediapipe | onnx. A
 
 The existing FastAPI selection, article actions and EPUB playback are unchanged. When a local provider is selected in storage, the background does not poll the API, issue HTTP requests for selected text, or forward stale FETCH_TTS_AUDIO messages to FastAPI. The reader and audio player carry the selection as pendingTtsBackend.
 
-Chrome's background service worker imports tts-providers.js. Firefox loads that same classic script before background.js through background.scripts. The shared registry is also CommonJS-loadable by Jest. No new network permissions or CSP exceptions are needed. The Chrome/Firefox manifest and CI assertions account for the new Firefox background script.
+Chrome's background service worker imports tts-providers.js and local-voice-mixing.js. Firefox loads those same classic scripts before background.js through background.scripts (`browser-polyfill.min.js`, `tts-providers.js`, `local-voice-mixing.js`, `background.js`). The shared registries are also CommonJS-loadable by Jest. No new network permissions or CSP exceptions are needed. The Chrome/Firefox manifest and CI assertions account for the Firefox background script list.
 
 A backend picker is intentionally not shown yet: presenting local modes as working before the actual SDK/model integration would mislead users. #58 will add a three-way visible choice, install states and capability labels when the engines are usable.
 
