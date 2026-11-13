@@ -31,6 +31,7 @@ from firefox_article_selection_acceptance import (
     origin_article_selection_stage_enabled,
     require_article_selection_backend,
 )
+from native_chromium_x11 import X11Session
 from firefox_epub_acceptance import (
     assert_distinct_chapter_audio_hashes,
     epub_backend_variant,
@@ -2022,21 +2023,22 @@ def _probe_firefox_parse_article(driver, origin, fixture_url, speech):
 
 
 def _send_native_read_article_alt_a():
-    """Real X11 Alt+A — Selenium keys do not reach browser.commands.onCommand."""
-    # Mirror Chromium: only the pinned setup-python absolute interpreter.
-    native_python = os.environ.get("KOKORO_NATIVE_PYTHON")
-    if not native_python or not Path(native_python).is_absolute():
-        raise RuntimeError(
-            "Pinned setup-python absolute interpreter path is required "
-            "(KOKORO_NATIVE_PYTHON)")
-    helper = Path(__file__).resolve().parent / "native-chromium-keys.py"
-    argv = [native_python, str(helper), "Alt_L", "a"]
+    """Real X11 Alt+A — Selenium keys do not reach browser.commands.onCommand.
+
+    Chromium live shells out to native-chromium-keys.py via Node execFileSync.
+    Firefox is already in Python, so call the same X11Session in-process (no
+    env-argv subprocess for Sourcery dangerous-subprocess-use-tainted-env-args).
+    """
+    keys = ["Alt_L", "a"]
+    session = X11Session()
     try:
-        raw = subprocess.check_output(argv, text=True, timeout=5).strip()
-        native_alt_a = json.loads(raw)
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        session.chord(keys)
+        native_alt_a = session.result(" ".join(keys))
+    except Exception as exc:
         raise RuntimeError(
             "Cannot send native Alt+A for Firefox read-article: " + str(exc))
+    finally:
+        session.close()
     if (native_alt_a.get("x11XTest") is not True or
             native_alt_a.get("nativeKeys") != "Alt_L a"):
         raise RuntimeError(
