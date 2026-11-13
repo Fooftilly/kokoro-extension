@@ -1,7 +1,7 @@
 /**
  * Shared long-form memory/performance live-acceptance helpers (Chromium +
- * Firefox ONNX origin). Speech tokens are CMUdict-friendly English number
- * words for ONNX q8.
+ * Firefox origin; onnx + mediapipe). Speech tokens are short English number
+ * words (CMUdict-friendly for ONNX q8; plain text for MediaPipe CPU).
  */
 
 export const LONG_FORM_SENTENCE_COUNT = 24;
@@ -18,12 +18,12 @@ export const LONG_FORM_NUMBER_WORDS = Object.freeze([
     'fifty', 'sixty',
 ]);
 
-export const ALLOWED_LONG_FORM_BACKENDS = Object.freeze(['onnx']);
+export const ALLOWED_LONG_FORM_BACKENDS = Object.freeze(['onnx', 'mediapipe']);
 
 export function requireLongFormBackend(backend) {
     if (!ALLOWED_LONG_FORM_BACKENDS.includes(backend)) {
         throw new Error(
-            'Long-form memory acceptance requires onnx backend, got: ' +
+            'Long-form memory acceptance requires onnx or mediapipe backend, got: ' +
             String(backend));
     }
     return backend;
