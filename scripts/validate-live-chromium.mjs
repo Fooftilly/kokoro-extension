@@ -9,6 +9,10 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
+import {
+    READER_ACCEPTANCE_SPEECH,
+    buildReaderAcceptanceEpub,
+} from './reader-acceptance-epub.mjs';
 // The extension's .js modules are ESM while package.json is CommonJS for the
 // build tool. Copy the pure catalog into a temporary .mjs file for the Node harness.
 const catalogFile = path.join(os.tmpdir(), 'kokoro-runtime-model-catalog.mjs');
@@ -560,53 +564,17 @@ async function acceptTwoBackendComparison(page, extensionId) {
         serverTestNotTriggered: true, noAutomaticRanking: true, summary };
 }
 
-// A minimal, valid EPUB 3 archive is generated in-memory for the opt-in
-// browser test. No downloaded fixture, external content or test-only
-// production API: the packaged reader handles a real file selection.
-async function buildReaderAcceptanceEpub() {
-    const { default: JSZip } = await import('jszip');
-    const zip = new JSZip();
-    zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
-    zip.file('META-INF/container.xml',
-        '<?xml version="1.0" encoding="UTF-8"?>' +
-        '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">' +
-        '<rootfiles><rootfile full-path="OEBPS/content.opf" ' +
-        'media-type="application/oebps-package+xml"/></rootfiles></container>');
-    zip.file('OEBPS/content.opf',
-        '<?xml version="1.0" encoding="UTF-8"?>' +
-        '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" ' +
-        'unique-identifier="book-id" xml:lang="en">' +
-        '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">' +
-        '<dc:identifier id="book-id">urn:uuid:01234567-89ab-4cde-8012-3456789abcde</dc:identifier>' +
-        '<dc:title>Local Reader Acceptance</dc:title><dc:language>en</dc:language>' +
-        '<meta property="dcterms:modified">2026-11-12T00:00:00Z</meta></metadata>' +
-        '<manifest>' +
-        '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>' +
-        '<item id="first" href="first.xhtml" media-type="application/xhtml+xml"/>' +
-        '<item id="second" href="second.xhtml" media-type="application/xhtml+xml"/>' +
-        '</manifest><spine><itemref idref="first"/><itemref idref="second"/></spine></package>');
-    zip.file('OEBPS/nav.xhtml',
-        '<?xml version="1.0" encoding="UTF-8"?>' +
-        '<html xmlns="http://www.w3.org/1999/xhtml" ' +
-        'xmlns:epub="http://www.idpf.org/2007/ops"><head>' +
-        '<title>Contents</title></head><body><nav epub:type="toc">' +
-        '<ol><li><a href="first.xhtml">First Chapter</a></li>' +
-        '<li><a href="second.xhtml">Second Chapter</a></li>' +
-        '</ol></nav></body></html>');
-    for (const [name, id] of [['first', 'first'], ['second', 'second']]) {
-        zip.file('OEBPS/' + name + '.xhtml',
-            '<?xml version="1.0" encoding="UTF-8"?>' +
-            '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>' +
-            name + '</title></head><body><p id="' + id +
-            '">Hello world.</p></body></html>');
-    }
-    return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
-}
-
 // Browser-side readiness poll serialized by Playwright into the reader page.
 // Nested helpers keep CodeFactor method complexity under the gate while the
 // WAV fetch, revision recheck, and Prev/Next assertions stay atomic.
-async function pollRealEpubChapterReady({ title, previousRevision, previousAudioUrl }) {
+async function pollRealEpubChapterReady({ title, previousRevision, previousAudioUrl,
+    previousAudioSha256 }) {
+    // Must match READER_ACCEPTANCE_SPEECH in the harness module scope copy.
+    const expectedSpeech = {
+        'First Chapter': 'Hello first chapter.',
+        'Second Chapter': 'Hello second chapter.',
+        'acceptance.txt': 'Hello plain text.',
+    }[title];
     const expectedNav = (chapterTitle) => ({
         entries: chapterTitle === 'acceptance.txt' ? 1 : 2,
         prevDisabled: chapterTitle !== 'Second Chapter',
@@ -636,6 +604,11 @@ async function pollRealEpubChapterReady({ title, previousRevision, previousAudio
             prev?.disabled === expected.prevDisabled &&
             next?.disabled === expected.nextDisabled;
     };
+    const pendingContentMatches = (stored) => {
+        const blocks = stored.pendingContent;
+        return Array.isArray(blocks) && blocks.length === 1 &&
+            blocks[0].content === expectedSpeech;
+    };
     const shellReady = (frame, audio, status, stored, revision, audioUrl) => [
         () => Boolean(frame && audio),
         () => document.getElementById('filePickerOverlay')?.style.display === 'none',
@@ -644,7 +617,7 @@ async function pollRealEpubChapterReady({ title, previousRevision, previousAudio
         () => stored.pendingApiUrl === null || stored.pendingApiUrl === '',
         () => stored.pendingAutoplay === false,
         () => Number.isSafeInteger(revision) && revision > previousRevision,
-        () => Boolean(stored.pendingContent?.some(b => b.content?.includes('Hello world.'))),
+        () => pendingContentMatches(stored),
         () => Boolean(audioUrl?.startsWith('blob:')),
         () => !previousAudioUrl || audioUrl !== previousAudioUrl,
         () => audio.paused,
@@ -681,6 +654,11 @@ async function pollRealEpubChapterReady({ title, previousRevision, previousAudio
             leadBytes: [...bytes.subarray(0, 12)],
         }));
     };
+    const sha256Hex = async (bytes) => {
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
+        return [...new Uint8Array(digest)]
+            .map(b => b.toString(16).padStart(2, '0')).join('');
+    };
 
     const frame = document.getElementById('playerFrame')?.contentDocument;
     const audio = frame?.getElementById('audio');
@@ -716,8 +694,11 @@ async function pollRealEpubChapterReady({ title, previousRevision, previousAudio
     }
     const audioBytes = assertValidWav(
         bytes, response, audioUrl, revision, stored.pendingTtsBackend);
+    const audioSha256 = await sha256Hex(bytes);
+    if (previousAudioSha256 && audioSha256 === previousAudioSha256) return false;
     return {
-        title, revision, audioUrl, bytes: audioBytes,
+        title, revision, audioUrl, bytes: audioBytes, audioSha256,
+        expectedSpeech, pendingContent: stored.pendingContent,
         blockCount: stored.pendingContent.length,
         backend: stored.pendingTtsBackend,
         serverUrl: stored.pendingApiUrl,
@@ -778,7 +759,8 @@ async function acceptRealEpubReader(page, extensionId) {
         if (title === 'acceptance.txt') return { prevDisabled: true, nextDisabled: true };
         return null;
     };
-    const waitForChapter = async (title, previousRevision = 0, previousAudioUrl = null) => {
+    const waitForChapter = async (title, previousRevision = 0, previousAudioUrl = null,
+        previousAudioSha256 = null) => {
         // Playwright 1.65 treats an *async* waitForFunction predicate that
         // resolves to false/null as success (returns that falsy value). The
         // EPUB readiness poll must await chrome.storage + iframe WAV fetch, so
@@ -792,7 +774,7 @@ async function acceptRealEpubReader(page, extensionId) {
             try {
                 const snapshot = await page.evaluate(
                     pollRealEpubChapterReady,
-                    { title, previousRevision, previousAudioUrl },
+                    { title, previousRevision, previousAudioUrl, previousAudioSha256 },
                 );
                 if (snapshot && typeof snapshot === 'object' &&
                     snapshot.title === title && snapshot.nav) {
@@ -818,40 +800,53 @@ async function acceptRealEpubReader(page, extensionId) {
     if (!firstExpected || !first.nav ||
         first.nav.prevDisabled !== firstExpected.prevDisabled ||
         first.nav.nextDisabled !== firstExpected.nextDisabled ||
-        first.nav.activeLabel !== 'First Chapter') {
+        first.nav.activeLabel !== 'First Chapter' ||
+        first.expectedSpeech !== READER_ACCEPTANCE_SPEECH['First Chapter']) {
         throw Error('EPUB first chapter navigation controls incorrect: ' +
             JSON.stringify({ expected: firstExpected, snapshot: first, nav: first.nav,
                 live: await readReaderNavDiagnostics() }));
     }
     await page.locator('#nextChapter').click();
-    const second = await waitForChapter('Second Chapter', first.revision, first.audioUrl);
+    const second = await waitForChapter(
+        'Second Chapter', first.revision, first.audioUrl, first.audioSha256);
     const secondExpected = expectedNavForTitle(second.title);
     if (!secondExpected || !second.nav ||
         second.nav.prevDisabled !== secondExpected.prevDisabled ||
         second.nav.nextDisabled !== secondExpected.nextDisabled ||
         second.nav.activeLabel !== 'Second Chapter' ||
-        first.audioUrl === second.audioUrl) {
+        first.audioUrl === second.audioUrl ||
+        first.audioSha256 === second.audioSha256 ||
+        second.expectedSpeech !== READER_ACCEPTANCE_SPEECH['Second Chapter']) {
         throw Error('EPUB navigation failed to replace audio or update chapter controls: ' +
             JSON.stringify({ expected: secondExpected, snapshot: second, nav: second.nav,
                 firstAudioUrl: first.audioUrl, secondAudioUrl: second.audioUrl,
+                firstAudioSha256: first.audioSha256, secondAudioSha256: second.audioSha256,
                 live: await readReaderNavDiagnostics() }));
     }
     await page.locator('#openAnotherDocument').click();
     await page.locator('#fileInput').setInputFiles({
         name: 'acceptance.txt', mimeType: 'text/plain',
-        buffer: Buffer.from('Hello world.', 'utf8'),
+        buffer: Buffer.from(READER_ACCEPTANCE_SPEECH['acceptance.txt'], 'utf8'),
     });
-    const plainText = await waitForChapter('acceptance.txt', second.revision, second.audioUrl);
+    const plainText = await waitForChapter(
+        'acceptance.txt', second.revision, second.audioUrl, second.audioSha256);
     const txtExpected = expectedNavForTitle(plainText.title);
+    const differentAudioPerChapter = new Set([
+        first.audioSha256, second.audioSha256, plainText.audioSha256,
+    ]).size === 3;
     if (plainText.audioUrl === second.audioUrl ||
+        !differentAudioPerChapter ||
         !txtExpected || !plainText.nav ||
         plainText.nav.prevDisabled !== txtExpected.prevDisabled ||
         plainText.nav.nextDisabled !== txtExpected.nextDisabled ||
         plainText.nav.activeLabel !== 'acceptance.txt' ||
-        plainText.nav.entries.length !== 1) {
+        plainText.nav.entries.length !== 1 ||
+        plainText.expectedSpeech !== READER_ACCEPTANCE_SPEECH['acceptance.txt']) {
         throw Error('TXT document replacement retained stale EPUB audio or navigation: ' +
             JSON.stringify({ expected: txtExpected, snapshot: plainText, nav: plainText.nav,
                 secondAudioUrl: second.audioUrl, txtAudioUrl: plainText.audioUrl,
+                firstAudioSha256: first.audioSha256, secondAudioSha256: second.audioSha256,
+                txtAudioSha256: plainText.audioSha256,
                 live: await readReaderNavDiagnostics() }));
     }
     const selected = await page.evaluate(async () =>
@@ -860,11 +855,14 @@ async function acceptRealEpubReader(page, extensionId) {
     return {
         success: true, browser: 'Chromium', backend: 'onnx',
         epubFileSelectedThroughUi: true, chapterCount: 2,
-        first: { title: first.title, revision: first.revision, audioBytes: first.bytes },
-        second: { title: second.title, revision: second.revision, audioBytes: second.bytes },
+        first: { title: first.title, revision: first.revision, audioBytes: first.bytes,
+            audioSha256: first.audioSha256, speech: first.expectedSpeech },
+        second: { title: second.title, revision: second.revision, audioBytes: second.bytes,
+            audioSha256: second.audioSha256, speech: second.expectedSpeech },
         txtReplacement: { title: plainText.title, revision: plainText.revision,
-            audioBytes: plainText.bytes },
-        local24kHzWav: true, differentAudioPerChapter: true,
+            audioBytes: plainText.bytes, audioSha256: plainText.audioSha256,
+            speech: plainText.expectedSpeech },
+        local24kHzWav: true, differentAudioPerChapter,
         offline: true, noServerFallback: true, autoplayDisabled: true,
         userBackendUnchanged: true,
     };
