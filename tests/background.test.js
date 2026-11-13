@@ -157,9 +157,11 @@ describe('background.js logic', () => {
             'browser-polyfill.min.js',
             'readability.js',
             'overlay-position.js',
+            'floating-mic-position.js',
             'content.js'
         ]);
         expect(files.indexOf('overlay-position.js')).toBeLessThan(files.indexOf('content.js'));
+        expect(files.indexOf('floating-mic-position.js')).toBeLessThan(files.indexOf('content.js'));
     });
 
     test.each(['', 'not a valid server URL', undefined])(

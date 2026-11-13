@@ -721,10 +721,23 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         }
     });
 
-    // --- Floating Microphone Button Logic ---
+    // --- Floating Microphone Button Logic (#11) ---
+    // Survival rule: while selected text is non-empty and Floating mic is enabled,
+    // the control follows the selection focus endpoint (scroll / selectionchange /
+    // resize). It dismisses when the selection is cleared, the mic is used, or the
+    // setting is turned off. Auto-scroll that fires `scroll` therefore repositions
+    // (rAF-coalesced, no storage spam) rather than surprising-dismiss.
+    // Deferral: pages that transform html/body can retarget `position:fixed`; a
+    // transform-proof containing block needs a larger overlay architecture (#11 follow-up).
 
+    const micPosApi = globalThis.KokoroFloatingMicPosition;
     let floatBtn = null;
     let lastSelection = "";
+    let selectionChangeTimer = null;
+    let hideTimer = null;
+    let scrollRepositionRaf = null;
+    let selectionGeneration = 0;
+    let showFloatingMicCached = true;
 
     function createFloatingButton() {
         const btn = document.createElement('div');
@@ -736,10 +749,11 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
     </svg>
     `;
-        btn.style.position = 'absolute';
+        const btnSize = (micPosApi && micPosApi.FLOAT_MIC_BTN_SIZE) || 36;
+        btn.style.position = 'fixed';
         btn.style.zIndex = '2147483646';
-        btn.style.width = '36px';
-        btn.style.height = '36px';
+        btn.style.width = `${btnSize}px`;
+        btn.style.height = `${btnSize}px`;
         btn.style.borderRadius = '50%';
         btn.style.backgroundColor = '#333';
         btn.style.display = 'flex';
@@ -772,39 +786,40 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         return btn;
     }
 
-    function updateFloatingButton(rect) {
+    function getFloatingMicViewport() {
+        return {
+            viewportWidth: window.innerWidth || document.documentElement.clientWidth || 0,
+            viewportHeight: window.innerHeight || document.documentElement.clientHeight || 0
+        };
+    }
+
+    function cancelHideTimer() {
+        if (hideTimer) {
+            clearTimeout(hideTimer);
+            hideTimer = null;
+        }
+    }
+
+    function updateFloatingButton(endRect) {
+        if (!micPosApi) return;
+        const pos = micPosApi.computeFloatingMicPosition(endRect, getFloatingMicViewport());
+        if (!pos) return;
+
+        cancelHideTimer();
+
         if (!floatBtn) {
             floatBtn = createFloatingButton();
         }
-        // Position button slightly above and to the right of the selection end
-        // rect is the bounding client rect of the range
-        const btnSize = 36;
-        const margin = 10;
 
-        // Calculate absolute position
-        const absoluteTop = window.scrollY + rect.top;
-        const absoluteLeft = window.scrollX + rect.right;
-
-        // If close to right edge, shift left
-        let leftPos = absoluteLeft - (btnSize / 2);
-        if (leftPos + btnSize > document.body.scrollWidth) {
-            leftPos = document.body.scrollWidth - btnSize - margin;
-        }
-
-        // If close to top edge, shift down
-        let topPos = absoluteTop - btnSize - margin;
-        if (topPos < 0) {
-            topPos = absoluteTop + rect.height + margin;
-        }
-
-        floatBtn.style.top = `${topPos}px`;
-        floatBtn.style.left = `${leftPos}px`;
+        floatBtn.style.top = `${pos.top}px`;
+        floatBtn.style.left = `${pos.left}px`;
 
         // Ensure display is correct before transition
         floatBtn.style.display = 'flex';
 
         // Small delay to allow transition
         requestAnimationFrame(() => {
+            if (!floatBtn) return;
             floatBtn.style.opacity = '1';
             floatBtn.style.pointerEvents = 'auto';
             floatBtn.style.transform = 'scale(1)';
@@ -816,46 +831,129 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
             floatBtn.style.opacity = '0';
             floatBtn.style.transform = 'scale(0.8)';
             floatBtn.style.pointerEvents = 'none';
-            // Remove from DOM after transition
-            setTimeout(() => {
-                if (floatBtn) { // Check if still exists/ref valid
+            cancelHideTimer();
+            // Hide after transition; cancelled if the button is reused for a new selection
+            hideTimer = setTimeout(() => {
+                hideTimer = null;
+                if (floatBtn) {
                     floatBtn.style.display = 'none';
                 }
             }, 200);
         }
     }
 
-    async function handleSelection() {
+    async function refreshShowFloatingMicSetting() {
+        try {
+            const settings = await browser.storage.sync.get('showFloatingButton');
+            showFloatingMicCached = settings.showFloatingButton !== false;
+        } catch {
+            showFloatingMicCached = true;
+        }
+        return showFloatingMicCached;
+    }
+
+    function repositionFloatingMicFromLiveSelection() {
+        if (!showFloatingMicCached || !micPosApi) {
+            removeFloatingButton();
+            return;
+        }
         const selection = window.getSelection();
-        const text = selection.toString().trim();
+        const text = selection ? selection.toString().trim() : '';
+        if (!text) {
+            lastSelection = '';
+            removeFloatingButton();
+            return;
+        }
+        lastSelection = text;
+        try {
+            const endRect = micPosApi.getSelectionFocusClientRect(selection);
+            if (endRect) {
+                updateFloatingButton(endRect);
+            }
+        } catch (e) {
+            console.log('Selection range error:', e);
+        }
+    }
+
+    function scheduleFloatingMicReposition() {
+        if (scrollRepositionRaf) return;
+        scrollRepositionRaf = requestAnimationFrame(() => {
+            scrollRepositionRaf = null;
+            repositionFloatingMicFromLiveSelection();
+        });
+    }
+
+    async function handleSelection() {
+        const generation = ++selectionGeneration;
+        const selection = window.getSelection();
+        const text = selection ? selection.toString().trim() : '';
 
         if (text.length > 0) {
-            // Check settings first
-            try {
-                const settings = await browser.storage.sync.get('showFloatingButton');
-                // Default to true if undefined
-                if (settings.showFloatingButton === false) {
-                    return;
-                }
-            } catch (e) { /* ignore error, assume true */ }
+            const enabled = await refreshShowFloatingMicSetting();
+            // Discard superseded handlers (selection changed / cleared during await).
+            if (generation !== selectionGeneration) return;
+            const live = window.getSelection();
+            const liveText = live ? live.toString().trim() : '';
+            if (liveText !== text) {
+                // Selection moved while we awaited storage; newest handler owns the update.
+                return;
+            }
+            if (!enabled) {
+                lastSelection = '';
+                removeFloatingButton();
+                return;
+            }
 
             lastSelection = text;
-
             try {
-                const range = selection.getRangeAt(0);
-                const rect = range.getBoundingClientRect();
-
-                // Ensure rect is valid and visible
-                if (rect.width > 0 && rect.height > 0) {
-                    updateFloatingButton(rect);
+                if (!live.rangeCount || !micPosApi) return;
+                const endRect = micPosApi.getSelectionFocusClientRect(live);
+                if (endRect) {
+                    updateFloatingButton(endRect);
                 }
             } catch (e) {
-                console.log("Selection range error:", e);
+                console.log('Selection range error:', e);
             }
         } else {
+            if (generation !== selectionGeneration) return;
             removeFloatingButton();
-            lastSelection = "";
+            lastSelection = '';
         }
+    }
+
+    function scheduleSelectionHandle() {
+        const delay = (micPosApi && micPosApi.FLOAT_MIC_SELECTION_THROTTLE_MS) || 100;
+        if (selectionChangeTimer) {
+            clearTimeout(selectionChangeTimer);
+        }
+        selectionChangeTimer = setTimeout(() => {
+            selectionChangeTimer = null;
+            void handleSelection();
+        }, delay);
+    }
+
+    void refreshShowFloatingMicSetting();
+
+    if (browser.storage && browser.storage.onChanged && browser.storage.onChanged.addListener) {
+        browser.storage.onChanged.addListener((changes, area) => {
+            if (area !== 'sync' && area !== 'local') return;
+            if (!Object.prototype.hasOwnProperty.call(changes, 'showFloatingButton')) return;
+            const change = changes.showFloatingButton;
+            const action = (micPosApi && micPosApi.showFloatingButtonChangeAction)
+                ? micPosApi.showFloatingButtonChangeAction(change)
+                : (change && change.newValue === false
+                    ? 'hide'
+                    : (change && change.oldValue === false ? 'restore' : 'noop'));
+            showFloatingMicCached = action !== 'hide';
+            if (action === 'hide') {
+                lastSelection = '';
+                removeFloatingButton();
+            } else if (action === 'restore') {
+                // Selection may still be alive after the popup closes; no selectionchange
+                // is guaranteed, so re-evaluate/reposition from the live selection.
+                scheduleFloatingMicReposition();
+            }
+        });
     }
 
     document.addEventListener('mouseup', (e) => {
@@ -863,17 +961,36 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         if (floatBtn && floatBtn.contains(e.target)) return;
 
         // Delay slightly to let selection update
-        setTimeout(handleSelection, 10);
+        setTimeout(() => { void handleSelection(); }, 10);
     });
 
     document.addEventListener('keyup', (e) => {
         if (e.key === 'Shift' || e.key.startsWith('Arrow')) {
-            setTimeout(handleSelection, 10);
+            setTimeout(() => { void handleSelection(); }, 10);
         }
     });
+
+    // Keyboard / touch selection extensions that do not fire mouseup or Shift/Arrow keyup.
+    document.addEventListener('selectionchange', () => {
+        scheduleSelectionHandle();
+    });
+
+    // Follow focus endpoint while alive; coalesce to animation frames and skip storage.
     document.addEventListener('scroll', () => {
-        if (floatBtn && floatBtn.style.opacity === '1') {
-            removeFloatingButton();
+        if (floatBtn && floatBtn.style.opacity === '1' && lastSelection) {
+            scheduleFloatingMicReposition();
         }
-    }, { passive: true });
+    }, { passive: true, capture: true });
+
+    window.addEventListener('resize', () => {
+        if (floatBtn && floatBtn.style.opacity === '1' && lastSelection) {
+            scheduleFloatingMicReposition();
+        }
+    });
+
+    window.addEventListener('orientationchange', () => {
+        if (floatBtn && floatBtn.style.opacity === '1' && lastSelection) {
+            scheduleFloatingMicReposition();
+        }
+    });
 }

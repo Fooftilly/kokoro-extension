@@ -9,6 +9,7 @@ describe('Code Block Support', () => {
     beforeAll(() => {
         global.Readability = Readability;
         require('../overlay-position.js');
+        require('../floating-mic-position.js');
         global.browser = {
             runtime: {
                 onMessage: {
