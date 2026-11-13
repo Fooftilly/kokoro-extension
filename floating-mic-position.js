@@ -9,6 +9,8 @@
     const FLOAT_MIC_BTN_SIZE = 36;
     const FLOAT_MIC_MARGIN = 10;
     const FLOAT_MIC_SELECTION_THROTTLE_MS = 100;
+    // Node.DOCUMENT_POSITION_PRECEDING — keep numeric so helpers stay DOM-constant free.
+    const DOC_POSITION_PRECEDING = 2;
 
     /**
      * @param {unknown} value
@@ -37,15 +39,36 @@
     }
 
     /**
-     * Selection end caret client rect (not the whole-range bounding box).
-     * @param {{ cloneRange: Function, getClientRects: Function, getBoundingClientRect: Function } | null | undefined} range
+     * Whether the selection's focus (user caret) is before its anchor in document order.
+     * @param {{ isCollapsed?: boolean, anchorNode?: { compareDocumentPosition?: Function }, focusNode?: unknown, anchorOffset?: number, focusOffset?: number } | null | undefined} selection
      */
-    function getSelectionEndClientRect(range) {
+    function isSelectionBackward(selection) {
+        if (!selection || selection.isCollapsed) return false;
+        const anchorNode = selection.anchorNode;
+        const focusNode = selection.focusNode;
+        if (!anchorNode || !focusNode) return false;
+        if (anchorNode === focusNode) {
+            return Number(selection.focusOffset) < Number(selection.anchorOffset);
+        }
+        if (typeof anchorNode.compareDocumentPosition !== 'function') return false;
+        const pos = anchorNode.compareDocumentPosition(focusNode);
+        return !!(pos & DOC_POSITION_PRECEDING);
+    }
+
+    /**
+     * Selection focus caret client rect (handles backward selections).
+     * Falls back to last/first client rect, then whole-range box.
+     *
+     * @param {{ cloneRange: Function, getClientRects: Function, getBoundingClientRect: Function } | null | undefined} range
+     * @param {{ atStart?: boolean }} [opts] atStart=true collapses to range start (backward focus)
+     */
+    function getSelectionEndClientRect(range, opts = {}) {
         if (!range || typeof range.cloneRange !== 'function') return null;
+        const atStart = opts.atStart === true;
 
         try {
             const endRange = range.cloneRange();
-            endRange.collapse(false);
+            endRange.collapse(atStart);
             const endBox = normalizeClientRect(endRange.getBoundingClientRect());
             if (hasUsableClientRect(endBox)) return endBox;
         } catch { /* fall through */ }
@@ -53,13 +76,49 @@
         try {
             const rects = range.getClientRects ? range.getClientRects() : [];
             if (rects && rects.length > 0) {
-                const last = normalizeClientRect(rects[rects.length - 1]);
-                if (hasUsableClientRect(last)) return last;
+                const pick = atStart ? rects[0] : rects[rects.length - 1];
+                const box = normalizeClientRect(pick);
+                if (hasUsableClientRect(box)) return box;
             }
         } catch { /* fall through */ }
 
         try {
             return normalizeClientRect(range.getBoundingClientRect());
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Focus-endpoint rect for a live Selection.
+     * Builds a collapsed range at Selection.focusNode/focusOffset (correct for
+     * backward selections where Range end ≠ user caret). Falls back to
+     * range collapse + clientRects when focus geometry is unavailable.
+     *
+     * @param {{ rangeCount?: number, getRangeAt?: Function, isCollapsed?: boolean, anchorNode?: unknown, focusNode?: unknown, anchorOffset?: number, focusOffset?: number } | null | undefined} selection
+     */
+    function getSelectionFocusClientRect(selection) {
+        if (!selection) return null;
+
+        const focusNode = selection.focusNode;
+        const focusOffset = Number(selection.focusOffset);
+        if (focusNode != null && Number.isFinite(focusOffset) &&
+            typeof selection.getRangeAt === 'function' && selection.rangeCount > 0) {
+            try {
+                const focusRange = selection.getRangeAt(0).cloneRange();
+                focusRange.setStart(focusNode, focusOffset);
+                focusRange.collapse(true);
+                const focusBox = normalizeClientRect(focusRange.getBoundingClientRect());
+                if (hasUsableClientRect(focusBox)) return focusBox;
+            } catch { /* fall through to range-based fallback */ }
+        }
+
+        if (!selection.rangeCount || typeof selection.getRangeAt !== 'function') {
+            return null;
+        }
+        try {
+            const range = selection.getRangeAt(0);
+            return getSelectionEndClientRect(range, { atStart: isSelectionBackward(selection) });
         } catch {
             return null;
         }
@@ -131,7 +190,9 @@
         FLOAT_MIC_MARGIN,
         FLOAT_MIC_SELECTION_THROTTLE_MS,
         normalizeClientRect,
+        isSelectionBackward,
         getSelectionEndClientRect,
+        getSelectionFocusClientRect,
         preferredFloatingMicPosition,
         clampFloatingMicPosition,
         computeFloatingMicPosition
