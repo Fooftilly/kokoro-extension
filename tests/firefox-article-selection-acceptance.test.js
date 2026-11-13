@@ -138,7 +138,8 @@ console.log(JSON.stringify({
         expect(source).toContain('kokoro-float-btn');
         expect(source).toContain('PARSE_ARTICLE');
         expect(source).toContain('native-firefox-keys.py');
-        expect(source).toContain('sys.executable');
+        expect(source).toContain('KOKORO_NATIVE_PYTHON');
+        expect(source).toContain('_native_x11_python');
         expect(source).toContain('findArticleFixtureTab');
         expect(source).toContain("http://127.0.0.1/*");
         expect(source).toContain('Alt_L');
@@ -149,6 +150,8 @@ console.log(JSON.stringify({
             path.join(scriptsDir, 'native_chromium_x11.py'), 'utf8');
         expect(x11).toContain('def focus_client_window');
         expect(x11).toContain('XSetInputFocus');
+        expect(x11).toContain("('res_name', ctypes.c_void_p)");
+        expect(x11).toContain("('res_class', ctypes.c_void_p)");
         expect(fs.existsSync(
             path.join(scriptsDir, 'native-firefox-keys.py'))).toBe(true);
         const workflowSource = fs.readFileSync(workflow, 'utf8');

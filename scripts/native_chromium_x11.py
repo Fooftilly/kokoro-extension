@@ -25,7 +25,9 @@ PointerRoot = 1
 
 
 class _XClassHint(ctypes.Structure):
-    _fields_ = [('res_name', ctypes.c_char_p), ('res_class', ctypes.c_char_p)]
+    # c_void_p — c_char_p fields make ctypes own/convert the pointers so
+    # XFree() then hits munmap_chunk on real browser WM_CLASS values.
+    _fields_ = [('res_name', ctypes.c_void_p), ('res_class', ctypes.c_void_p)]
 
 
 class X11Session:
@@ -79,7 +81,7 @@ class X11Session:
         x11.XFree.restype = ctypes.c_int
         x11.XFetchName.argtypes = [
             ctypes.c_void_p, ctypes.c_ulong,
-            ctypes.POINTER(ctypes.c_char_p)]
+            ctypes.POINTER(ctypes.c_void_p)]
         x11.XFetchName.restype = ctypes.c_int
         x11.XGetClassHint.argtypes = [
             ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(_XClassHint)]
@@ -121,7 +123,10 @@ class X11Session:
     def _xfree(self, ptr):
         if not ptr:
             return
-        self.x11.XFree(ctypes.cast(ptr, ctypes.c_void_p))
+        addr = ctypes.cast(ptr, ctypes.c_void_p).value
+        if not addr:
+            return
+        self.x11.XFree(addr)
 
     def _window_title(self, window):
         # Prefer _NET_WM_NAME (UTF8); fall back to XA_WM_NAME via XFetchName.
@@ -146,12 +151,14 @@ class X11Session:
                 self._xfree(prop)
             if title:
                 return title
-        name = ctypes.c_char_p()
-        if self.x11.XFetchName(self.display, window, ctypes.byref(name)) and name:
+        # char** as void* — avoid c_char_p auto-conversion before XFree.
+        name = ctypes.c_void_p()
+        if (self.x11.XFetchName(
+                self.display, window, ctypes.byref(name)) and name.value):
             try:
-                title = name.value.decode('utf-8', 'replace') if name.value else ''
+                title = ctypes.string_at(name.value).decode('utf-8', 'replace')
             finally:
-                self._xfree(name)
+                self._xfree(name.value)
         return title
 
     def _window_class_bits(self, window):
@@ -161,9 +168,11 @@ class X11Session:
         bits = []
         try:
             if hint.res_name:
-                bits.append(hint.res_name.decode('utf-8', 'replace'))
+                bits.append(ctypes.string_at(hint.res_name).decode(
+                    'utf-8', 'replace'))
             if hint.res_class:
-                bits.append(hint.res_class.decode('utf-8', 'replace'))
+                bits.append(ctypes.string_at(hint.res_class).decode(
+                    'utf-8', 'replace'))
         finally:
             self._xfree(hint.res_name)
             self._xfree(hint.res_class)

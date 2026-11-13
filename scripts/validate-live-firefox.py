@@ -2041,16 +2041,26 @@ def _probe_firefox_parse_article(driver, origin, fixture_url, speech):
     return probed
 
 
+def _native_x11_python():
+    """Prefer clean host Python for ctypes X11 — not the Selenium venv."""
+    configured = (os.environ.get("KOKORO_NATIVE_PYTHON") or "").strip()
+    if configured and Path(configured).is_file():
+        return configured
+    return sys.executable
+
+
 def _send_native_read_article_alt_a():
     """Real X11 Alt+A — Selenium keys do not reach browser.commands.onCommand.
 
-    Run native-firefox-keys.py in a **separate** process (sys.executable + fixed
-    argv). In-process ctypes X11 alongside Selenium/Firefox on the same DISPLAY
-    aborted CI with munmap_chunk. The child focuses a Firefox/Navigator window
-    then plays Alt+A — same XTest stack Chromium uses via Node execFileSync.
+    Run native-firefox-keys.py in a **separate** process with
+    KOKORO_NATIVE_PYTHON (fallback: sys.executable) + fixed argv. In-process
+    ctypes X11 alongside Selenium/Firefox on the same DISPLAY aborted CI with
+    munmap_chunk; Selenium-venv Python also aborted the child. Chromium uses
+    the same env via Node execFileSync. Child focuses Firefox/Navigator then
+    plays Alt+A.
     """
     helper = Path(__file__).resolve().parent / "native-firefox-keys.py"
-    argv = [sys.executable, str(helper), "Alt_L", "a"]
+    argv = [_native_x11_python(), str(helper), "Alt_L", "a"]
     try:
         completed = subprocess.run(
             argv, check=True, capture_output=True, text=True, timeout=15)
