@@ -39,6 +39,15 @@ from firefox_epub_acceptance import (
     reader_storage_config,
     require_epub_backend,
 )
+from firefox_long_form_memory_acceptance import (
+    LONG_FORM_SENTENCE_COUNT,
+    assert_bounded_audio_manager_stats,
+    assert_long_form_cache_window_near,
+    assert_long_form_heap_delta,
+    load_long_form_fixture,
+    origin_long_form_memory_stage_enabled,
+    require_long_form_backend,
+)
 from reader_acceptance_epub import (
     READER_ACCEPTANCE_SPEECH,
     build_reader_acceptance_epub,
@@ -2288,6 +2297,249 @@ def run_offline_article_selection_acceptance(driver, origin, result, backend):
     return report
 
 
+def _wait_firefox_long_form_overlay_ready(driver, index, timeout_s=180):
+    WebDriverWait(driver, timeout_s).until(lambda d: d.execute_script("""
+        const [idx, count] = arguments;
+        const spans = document.querySelectorAll('.sentence');
+        return spans.length >= count &&
+            spans[idx]?.classList.contains('highlight') &&
+            document.getElementById('audio')?.src.startsWith('blob:') &&
+            document.getElementById('loadingSpinner')?.style.display === 'none' &&
+            typeof window.__kokoroAudioManagerStats === 'function';
+    """, index, LONG_FORM_SENTENCE_COUNT))
+
+
+def _read_firefox_long_form_stats(driver):
+    return driver.execute_script("return window.__kokoroAudioManagerStats();")
+
+
+def _read_firefox_long_form_heap(driver):
+    return driver.execute_script("""
+        const mem = performance.memory;
+        return mem && Number.isFinite(mem.usedJSHeapSize)
+            ? mem.usedJSHeapSize : null;
+    """)
+
+
+def _read_firefox_long_form_wav_meta(driver):
+    meta = driver.execute_async_script("""
+        const done = arguments[arguments.length - 1];
+        (async () => {
+            const audio = document.getElementById('audio');
+            const bytes = new Uint8Array(await (await fetch(audio.src)).arrayBuffer());
+            const wav = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+            const tag = (start, length) =>
+                String.fromCharCode(...bytes.subarray(start, start + length));
+            const audioBytes = wav.getUint32(40, true);
+            if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
+                wav.getUint32(24, true) !== 24000 || audioBytes < 2 ||
+                bytes.length !== 44 + audioBytes) {
+                throw Error('Long-form overlay WAV mismatch');
+            }
+            const digest = await crypto.subtle.digest('SHA-256', bytes);
+            const audioSha256 = [...new Uint8Array(digest)]
+                .map(b => b.toString(16).padStart(2, '0')).join('');
+            done({
+                audioBytes, audioSha256, paused: audio.paused,
+                offline: navigator.onLine === false,
+            });
+        })().catch(e => done({ error: String(e) }));
+    """)
+    if meta.get("error"):
+        raise RuntimeError("Firefox long-form WAV read failed: " + str(meta))
+    return meta
+
+
+def _seed_firefox_long_form_overlay(driver, origin, storage):
+    seeded = _on_extension_page(driver, origin, """
+        const [cfg, done] = arguments;
+        browser.storage.local.set(cfg).then(
+            () => done({ success: true }),
+            e => done({ success: false, error: String(e) }));
+    """, storage)
+    if not seeded.get("success"):
+        raise RuntimeError(
+            "Cannot seed Firefox long-form overlay: " + str(seeded))
+    driver.get(origin + "/overlay.html")
+    _wait_firefox_long_form_overlay_ready(
+        driver, 0, timeout_s=240)
+
+
+def _walk_firefox_long_form_sentences(driver, visit_indexes):
+    max_cache = 0
+    max_urls = 0
+    samples = []
+    for index in visit_indexes:
+        if index > 0:
+            driver.execute_script("""
+                document.querySelectorAll('.sentence')[arguments[0]].click();
+            """, index)
+            _wait_firefox_long_form_overlay_ready(driver, index)
+        time.sleep(0.25)
+        stats = _read_firefox_long_form_stats(driver)
+        assert_bounded_audio_manager_stats(stats)
+        max_cache = max(max_cache, stats["cacheSize"])
+        max_urls = max(max_urls, stats["objectUrlCount"])
+        if index in (0, visit_indexes[-1]):
+            samples.append({
+                "index": index,
+                **_read_firefox_long_form_wav_meta(driver),
+                **stats,
+            })
+    return {
+        "maxCacheSize": max_cache,
+        "maxObjectUrlCount": max_urls,
+        "samples": samples,
+    }
+
+
+def _jump_firefox_long_form_across_windows(driver, bounds):
+    last_index = LONG_FORM_SENTENCE_COUNT - 1
+    driver.execute_script(
+        "document.querySelectorAll('.sentence')[0].click();")
+    _wait_firefox_long_form_overlay_ready(driver, 0)
+    time.sleep(0.25)
+    at_zero = _read_firefox_long_form_stats(driver)
+    assert_bounded_audio_manager_stats(at_zero)
+    assert_long_form_cache_window_near(at_zero, 0)
+    zero_wav = _read_firefox_long_form_wav_meta(driver)
+
+    driver.execute_script(
+        "document.querySelectorAll('.sentence')[arguments[0]].click();",
+        last_index)
+    _wait_firefox_long_form_overlay_ready(driver, last_index)
+    time.sleep(0.25)
+    jump = _read_firefox_long_form_stats(driver)
+    assert_bounded_audio_manager_stats(jump)
+    assert_long_form_cache_window_near(jump, last_index)
+    final_wav = _read_firefox_long_form_wav_meta(driver)
+    if final_wav["audioSha256"] == zero_wav["audioSha256"]:
+        raise RuntimeError(
+            "Distant jump WAV hash matched index-0 hash: " +
+            json.dumps({"zero": zero_wav["audioSha256"],
+                        "last": final_wav["audioSha256"]}))
+    if (jump["window"]["first"] == at_zero["window"]["first"] and
+            jump["window"]["last"] == at_zero["window"]["last"]):
+        raise RuntimeError(
+            "Distant jump did not move cache window: " +
+            json.dumps({"atZero": at_zero["window"], "jump": jump["window"]}))
+    return {
+        "maxCacheSize": max(
+            bounds["maxCacheSize"], at_zero["cacheSize"], jump["cacheSize"]),
+        "maxObjectUrlCount": max(
+            bounds["maxObjectUrlCount"], at_zero["objectUrlCount"],
+            jump["objectUrlCount"]),
+        "jumpCacheSize": jump["cacheSize"],
+        "returnToZeroCacheSize": at_zero["cacheSize"],
+        "windowAfterReturn": at_zero["window"],
+        "windowAfterJump": jump["window"],
+        "zeroAudioSha256": zero_wav["audioSha256"],
+        "jumpAudioSha256": final_wav["audioSha256"],
+        "finalWav": final_wav,
+        "samples": [
+            {"index": 0, "phase": "return-before-jump",
+             **zero_wav, **at_zero},
+            {"index": last_index, "phase": "distant-jump",
+             **final_wav, **jump},
+        ],
+    }
+
+
+def _read_firefox_sync_tts_backend(driver, origin):
+    return _on_extension_page(driver, origin, """
+        const done = arguments[arguments.length - 1];
+        browser.storage.sync.get({ ttsBackend: 'fastapi' }).then(
+            data => done({ success: true, ttsBackend: data.ttsBackend }),
+            e => done({ success: false, error: String(e) }));
+    """)
+
+
+def accept_firefox_long_form_memory(driver, origin, backend):
+    """Walk many overlay sentences; probe proves cache/URL window stays bounded."""
+    require_long_form_backend(backend)
+    fixture = load_long_form_fixture(backend)
+    sync_before = _read_firefox_sync_tts_backend(driver, origin)
+    if not sync_before.get("success"):
+        raise RuntimeError(
+            "Cannot read sync ttsBackend before long-form: " + str(sync_before))
+    sync_before_backend = sync_before["ttsBackend"]
+
+    _seed_firefox_long_form_overlay(driver, origin, fixture["storage"])
+    heap_before = _read_firefox_long_form_heap(driver)
+    walk = _walk_firefox_long_form_sentences(driver, fixture["visits"])
+    jump = _jump_firefox_long_form_across_windows(driver, walk)
+    walk["samples"].extend(jump["samples"])
+
+    heap_after = _read_firefox_long_form_heap(driver)
+    heap = None
+    if heap_before is not None and heap_after is not None:
+        heap = assert_long_form_heap_delta(heap_before, heap_after)
+
+    privacy = driver.execute_async_script("""
+        const done = arguments[arguments.length - 1];
+        browser.storage.local.get([
+            'pendingTtsBackend', 'pendingApiUrl', 'apiUrl',
+        ]).then(done, e => done({ error: String(e) }));
+    """)
+    if privacy.get("error"):
+        raise RuntimeError(
+            "Cannot read long-form privacy storage: " + str(privacy))
+    if privacy.get("pendingTtsBackend") != backend:
+        raise RuntimeError(
+            "pendingTtsBackend drifted from seeded onnx session: " +
+            json.dumps(privacy))
+    if privacy.get("pendingApiUrl") or privacy.get("apiUrl"):
+        raise RuntimeError(
+            "Long-form acceptance saw a server URL: " + json.dumps(privacy))
+    if jump["finalWav"].get("offline") is not True:
+        raise RuntimeError("Long-form overlay was not offline at end")
+
+    # Overlay page may not expose sync; read via extension page after walk.
+    sync_after = _read_firefox_sync_tts_backend(driver, origin)
+    if not sync_after.get("success"):
+        raise RuntimeError(
+            "Cannot read sync ttsBackend after long-form: " + str(sync_after))
+    if sync_after["ttsBackend"] != sync_before_backend:
+        raise RuntimeError(
+            "chrome.storage.sync ttsBackend changed during long-form: " +
+            json.dumps({"syncBefore": sync_before_backend,
+                        "syncAfter": sync_after["ttsBackend"]}))
+
+    return {
+        "success": True,
+        "browser": "Firefox",
+        "backend": backend,
+        "sentenceCount": LONG_FORM_SENTENCE_COUNT,
+        "visitedCount": len(fixture["visits"]),
+        "maxCacheSize": jump["maxCacheSize"],
+        "maxObjectUrlCount": jump["maxObjectUrlCount"],
+        "jumpCacheSize": jump["jumpCacheSize"],
+        "returnToZeroCacheSize": jump["returnToZeroCacheSize"],
+        "windowAfterReturn": jump["windowAfterReturn"],
+        "windowAfterJump": jump["windowAfterJump"],
+        "zeroAudioSha256": jump["zeroAudioSha256"],
+        "jumpAudioSha256": jump["jumpAudioSha256"],
+        "distantJumpChangedWindow": True,
+        "local24kHzWav": True,
+        "offline": True,
+        "noServerFallback": True,
+        "acceptanceProbe": True,
+        "heap": heap,
+        "samples": walk["samples"],
+        "syncTtsBackend": sync_after["ttsBackend"],
+        "userBackendUnchanged":
+            sync_after["ttsBackend"] == sync_before_backend,
+    }
+
+
+def run_offline_long_form_memory_acceptance(driver, origin, result, backend):
+    """Opt-in long-form memory stage for Firefox ONNX origin; restores manager UI."""
+    result["stage"] = "offline-real-long-form-memory"
+    report = accept_firefox_long_form_memory(driver, origin, backend)
+    _return_to_benchmark_for_model_remove(driver, origin, backend)
+    return report
+
+
 def main():
     if os.environ.get("KOKORO_LIVE_DOWNLOAD") != "1":
         raise RuntimeError("Explicit model download opt-in is required")
@@ -2938,12 +3190,19 @@ def main():
                     driver, state["origin"], result, provider)
 
             # Real webpage floating-mic selection + native Alt+A read-article.
-            # Firefox ONNX origin only for this Phase A slice (Chromium #139).
             article_selection_acceptance = None
             if origin_article_selection_stage_enabled(
                     origin_download, provider, metrics.get("success")):
                 article_selection_acceptance = (
                     run_offline_article_selection_acceptance(
+                        driver, state["origin"], result, provider))
+
+            # Real overlay long-form memory bounds (ONNX origin; Chromium #140).
+            long_form_memory_acceptance = None
+            if origin_long_form_memory_stage_enabled(
+                    origin_download, provider, metrics.get("success")):
+                long_form_memory_acceptance = (
+                    run_offline_long_form_memory_acceptance(
                         driver, state["origin"], result, provider))
 
             if origin_download and metrics.get("success"):
@@ -3012,6 +3271,7 @@ def main():
                 "localBenchmarkAcceptance": benchmark_acceptance,
                 "epubReaderAcceptance": epub_reader_acceptance,
                 "articleSelectionAcceptance": article_selection_acceptance,
+                "longFormMemoryAcceptance": long_form_memory_acceptance,
                 "offlineAttempted": True,
                 "offlineInference": metrics.get("success") is True,
                 "cachePopulation": (
@@ -3019,7 +3279,7 @@ def main():
                     if origin_download else
                     "model weights preloaded over authenticated loopback; dictionary tested with pinned HTTPS CORS/SRI and real Download/Cancel/Retry/Remove UI"),
                 "scope": "Firefox/Linux MV3 offline " + provider +
-                         " CPU synthesis; no subjective audio-quality or long-form acceptance"}
+                         " CPU synthesis; no subjective audio-quality acceptance"}
             print("FIREFOX REAL INFERENCE", json.dumps(result), flush=True)
             if not metrics.get("success"):
                 raise RuntimeError("Firefox model-backed " + provider + " inference failed")
@@ -3050,6 +3310,9 @@ def main():
             if ("article_selection_acceptance" in locals() and
                     article_selection_acceptance is not None):
                 result["articleSelectionAcceptance"] = article_selection_acceptance
+            if ("long_form_memory_acceptance" in locals() and
+                    long_form_memory_acceptance is not None):
+                result["longFormMemoryAcceptance"] = long_form_memory_acceptance
             raise
         finally:
             output.write_text(json.dumps(result, indent=2), encoding="utf-8")
