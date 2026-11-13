@@ -128,12 +128,12 @@ body {
 
 .chapter-item {
     padding: 8px 10px;
-    cursor: pointer;
     border-radius: 4px;
     margin-bottom: 2px;
     display: flex;
     align-items: center;
     gap: 5px;
+    border-left: 4px solid transparent;
 }
 
 .chapter-item:hover {
@@ -160,9 +160,17 @@ body {
     outline-offset: 2px;
 }
 
+/* Active chapter: accent fill plus non-color cues (weight + inset bar) so
+   selection is not conveyed by hue alone (#17). */
 .chapter-item.active {
     background-color: var(--accent-color);
     color: white;
+    font-weight: 700;
+    border-left-color: #111111;
+}
+
+.dark-theme .chapter-item.active {
+    border-left-color: #ffffff;
 }
 
 .chapter-toggle {
@@ -244,6 +252,12 @@ body {
     display: flex;
     justify-content: center;
     align-items: center;
+    transition: background-color 0.2s ease;
+}
+
+/* Full-overlay drag affordance (#17); card keeps the dashed-border cue. */
+#filePickerOverlay.drag-active {
+    background-color: var(--hover-color);
 }
 
 .picker-content {
@@ -257,6 +271,7 @@ body {
     width: 80%;
 }
 
+#filePickerOverlay.drag-active .picker-content,
 .picker-content.drag-active {
     border-color: var(--accent-color);
     background-color: var(--hover-color);

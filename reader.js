@@ -92,6 +92,7 @@ function resetPickerState() {
 
 function openDocumentPicker() {
     resetPickerState();
+    clearPickerDragState();
     filePickerOverlay.style.display = 'flex';
 }
 
@@ -114,6 +115,7 @@ function cancelDocumentPicker() {
         activeFileReader.abort();
     }
     resetPickerState();
+    clearPickerDragState();
     filePickerOverlay.style.display = 'none';
     if (deferredChapterEndRevision !== null) {
         continueAfterChapter(deferredChapterEndRevision);
@@ -133,29 +135,45 @@ fileInput.addEventListener('change', (e) => {
     if (file) handleFile(file);
 });
 
-// Drag and Drop Handling
-['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-    dropZone.addEventListener(eventName, preventDefaults, false);
-});
+// Drag and Drop Handling — highlight the full picker overlay (#17), not only
+// the dashed drop card. Depth counting ignores child enter/leave flicker.
+let pickerDragDepth = 0;
 
 function preventDefaults(e) {
     e.preventDefault();
     e.stopPropagation();
 }
 
-['dragenter', 'dragover'].forEach(eventName => {
-    dropZone.addEventListener(eventName, () => dropZone.classList.add('drag-active'), false);
+function setPickerDragActive(active) {
+    filePickerOverlay.classList.toggle('drag-active', active);
+    dropZone.classList.toggle('drag-active', active);
+}
+
+function clearPickerDragState() {
+    pickerDragDepth = 0;
+    setPickerDragActive(false);
+}
+
+['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+    filePickerOverlay.addEventListener(eventName, preventDefaults, false);
 });
 
-['dragleave', 'drop'].forEach(eventName => {
-    dropZone.addEventListener(eventName, () => dropZone.classList.remove('drag-active'), false);
-});
+filePickerOverlay.addEventListener('dragenter', () => {
+    pickerDragDepth += 1;
+    setPickerDragActive(true);
+}, false);
 
-dropZone.addEventListener('drop', (e) => {
-    const dt = e.dataTransfer;
-    const file = dt.files[0];
+filePickerOverlay.addEventListener('dragleave', () => {
+    pickerDragDepth = Math.max(0, pickerDragDepth - 1);
+    if (pickerDragDepth === 0) setPickerDragActive(false);
+}, false);
+
+filePickerOverlay.addEventListener('drop', (e) => {
+    pickerDragDepth = 0;
+    setPickerDragActive(false);
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
     if (file) handleFile(file);
-});
+}, false);
 
 async function handleFile(file) {
     const requestId = ++fileRequestId;
@@ -177,6 +195,7 @@ async function handleFile(file) {
         else await loadTextDocument(file, format, requestId);
         // Only a successfully parsed and current document may hide the picker.
         if (requestId === fileRequestId) {
+            clearPickerDragState();
             filePickerOverlay.style.display = 'none';
             cancelDocumentPickerButton.hidden = !hasOpenDocument();
         }
