@@ -717,7 +717,7 @@ async function pollRealEpubChapterReady(
 
 /**
  * Real webpage selection (floating mic → REQUEST_TTS) and article read
- * (registered Alt+A `read-article` command → handleTtsAction) against a
+ * (native X11 Alt+A `read-article` command → handleTtsAction) against a
  * loopback fixture. Chromium ONNX origin only for KE-11.
  */
 async function acceptRealArticleAndSelection(page, context, extensionId, backend) {
@@ -936,6 +936,8 @@ async function acceptRealArticleAndSelection(page, context, extensionId, backend
 
         // Real user-facing article path: registered Alt+A `read-article`
         // command → background handleTtsAction(tab, 'read-article').
+        // Playwright/CDP key events do not reach chrome.commands; use the same
+        // native X11 XTest path as optional-host consent dialogs.
         await worker.evaluate(async (id) => {
             await chrome.storage.local.remove([
                 'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
@@ -943,9 +945,59 @@ async function acceptRealArticleAndSelection(page, context, extensionId, backend
             ]);
             await chrome.tabs.update(id, { active: true });
         }, tabId);
+        const commandBindings = await worker.evaluate(async () => {
+            const commands = await chrome.commands.getAll();
+            return commands.map(entry => ({
+                name: entry.name, shortcut: entry.shortcut || '',
+            }));
+        });
+        const readArticleBinding = commandBindings.find(
+            entry => entry.name === 'read-article');
+        if (!readArticleBinding?.shortcut) {
+            throw Error('read-article command has no registered shortcut: ' +
+                JSON.stringify(commandBindings));
+        }
         await page.bringToFront();
         await page.locator('body').click({ position: { x: 8, y: 8 } });
-        await page.keyboard.press('Alt+a');
+        await page.waitForTimeout(300);
+        const nativePython = process.env.KOKORO_NATIVE_PYTHON;
+        if (!nativePython || !path.isAbsolute(nativePython)) {
+            throw Error('Pinned setup-python absolute interpreter path is required');
+        }
+        let nativeAltA;
+        try {
+            nativeAltA = JSON.parse(execFileSync(nativePython, [
+                path.resolve('scripts/native-chromium-keys.py'),
+                'Alt_L', 'a',
+            ], { encoding: 'utf8', timeout: 5000 }).trim());
+            if (nativeAltA.x11XTest !== true || nativeAltA.nativeKeys !== 'Alt_L a') {
+                throw Error('Native X11 input did not confirm Alt+A');
+            }
+        } catch (error) {
+            throw Error('Cannot send native Alt+A for read-article command: ' +
+                String(error.message || error) + '; bindings=' +
+                JSON.stringify({ readArticleBinding, commandBindings }));
+        }
+
+        // Fail fast if the command never armed player storage.
+        const armedDeadline = Date.now() + 20000;
+        let armed = null;
+        while (Date.now() < armedDeadline) {
+            armed = await worker.evaluate(async () => chrome.storage.local.get([
+                'pendingText', 'pendingContent', 'pendingTtsBackend',
+            ]));
+            if (typeof armed.pendingText === 'string' &&
+                armed.pendingText.includes(ARTICLE_SELECTION_SPEECH.articleFirst) &&
+                armed.pendingTtsBackend === backend) {
+                break;
+            }
+            armed = null;
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        if (!armed) {
+            throw Error('Native Alt+A did not arm read-article storage: ' +
+                JSON.stringify({ nativeAltA, readArticleBinding, commandBindings }));
+        }
 
         const articleSnap = await waitForOverlayWav(
             ARTICLE_SELECTION_SPEECH.articleFirst, 'full');
@@ -986,7 +1038,9 @@ async function acceptRealArticleAndSelection(page, context, extensionId, backend
                 audioSha256: selectionSnap.audioSha256,
             },
             article: {
-                path: 'read-article-command',
+                path: 'read-article-command-native-x11',
+                shortcut: readArticleBinding.shortcut,
+                nativeKeys: nativeAltA.nativeKeys,
                 mode: articleSnap.mode,
                 speech: ARTICLE_SELECTION_SPEECH.articleFirst,
                 extractedTextIncludesBothParagraphs: true,

@@ -114,10 +114,13 @@ console.log(JSON.stringify({ ok, errors }));
         expect(source).toMatch(/articleSelectionAcceptance/);
         expect(source).toMatch(/offline-real-article-and-selection/);
         expect(source).toMatch(/kokoro-float-btn/);
-        // Independent extraction probe, then real Alt+A read-article command.
+        // Independent extraction probe, then real Alt+A via native X11 XTest
+        // (CDP keyboard does not reach chrome.commands.onCommand).
         expect(source).toMatch(/PARSE_ARTICLE/);
-        expect(source).toMatch(/keyboard\.press\('Alt\+a'\)/);
-        expect(source).toMatch(/path: 'read-article-command'/);
+        expect(source).toMatch(/native-chromium-keys\.py/);
+        expect(source).toMatch(/Alt_L',\s*'a'/);
+        expect(source).toMatch(/path: 'read-article-command-native-x11'/);
+        expect(source).not.toMatch(/keyboard\.press\('Alt\+a'\)/);
         expect(source).not.toMatch(/path: 'parse-article-show-player'/);
         expect(source).not.toMatch(
             /pendingTtsBackend: ttsBackend[\s\S]{0,200}SHOW_PLAYER/,
