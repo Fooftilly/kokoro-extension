@@ -1,6 +1,7 @@
 /**
- * Chromium long-form memory/performance live-acceptance helpers.
- * Speech tokens are CMUdict-friendly English number words for ONNX q8.
+ * Shared long-form memory/performance live-acceptance helpers (Chromium +
+ * Firefox ONNX origin). Speech tokens are CMUdict-friendly English number
+ * words for ONNX q8.
  */
 
 export const LONG_FORM_SENTENCE_COUNT = 24;
