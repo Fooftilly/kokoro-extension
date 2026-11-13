@@ -23,6 +23,13 @@ from selenium.webdriver.firefox.service import Service as FirefoxService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 
+from firefox_epub_acceptance import (
+    assert_distinct_chapter_audio_hashes,
+    epub_backend_variant,
+    origin_epub_stage_enabled,
+    reader_storage_config,
+    require_epub_backend,
+)
 from reader_acceptance_epub import (
     READER_ACCEPTANCE_SPEECH,
     build_reader_acceptance_epub,
@@ -1274,7 +1281,7 @@ def accept_two_backend_comparison(driver, origin):
 # Browser-side readiness poll kept as one string so CodeFactor scores the
 # Python orchestration helpers, not the embedded Chromium-parity JS.
 _EPUB_CHAPTER_READY_SCRIPT = """
-const [title, previousRevision, previousAudioUrl, previousAudioSha256, done] = arguments;
+const [title, previousRevision, previousAudioUrl, previousAudioSha256, backend, done] = arguments;
 (async () => {
     // Keep in sync with reader_acceptance_epub.READER_ACCEPTANCE_SPEECH.
     const expectedSpeech = {
@@ -1320,7 +1327,7 @@ const [title, previousRevision, previousAudioUrl, previousAudioSha256, done] = a
         () => Boolean(frame && audio),
         () => document.getElementById('filePickerOverlay')?.style.display === 'none',
         () => navMatches(title),
-        () => stored.pendingTitle === title && stored.pendingTtsBackend === 'onnx',
+        () => stored.pendingTitle === title && stored.pendingTtsBackend === backend,
         () => stored.pendingApiUrl === null || stored.pendingApiUrl === '',
         () => stored.pendingAutoplay === false,
         () => Number.isSafeInteger(revision) && revision > previousRevision,
@@ -1340,7 +1347,7 @@ const [title, previousRevision, previousAudioUrl, previousAudioSha256, done] = a
         () => frame.getElementById('pageTitle')?.textContent === title,
         () => navMatches(title),
     ].every(check => check());
-    const assertValidWav = (bytes, response, audioUrl, revision, backend) => {
+    const assertValidWav = (bytes, response, audioUrl, revision, wavBackend) => {
         const tag = (offset, count) =>
             String.fromCharCode(...bytes.subarray(offset, offset + count));
         const header = bytes.byteLength >= 44
@@ -1352,7 +1359,7 @@ const [title, previousRevision, previousAudioUrl, previousAudioSha256, done] = a
             return audioBytes;
         }
         throw Error('Real EPUB reader WAV mismatch: ' + JSON.stringify({
-            title, revision, backend,
+            title, revision, backend: wavBackend,
             sourceKind: audioUrl.split(':', 1)[0],
             mime: response.headers.get('content-type'),
             length: bytes.length, riff: tag(0, 4), wave: tag(8, 4),
@@ -1393,7 +1400,7 @@ const [title, previousRevision, previousAudioUrl, previousAudioSha256, done] = a
         'pendingReaderReloadRevision', 'pendingTitle', 'pendingTtsBackend',
     ]);
     if (latest.pendingReaderReloadRevision !== revision ||
-        latest.pendingTitle !== title || latest.pendingTtsBackend !== 'onnx' ||
+        latest.pendingTitle !== title || latest.pendingTtsBackend !== backend ||
         !stillStable(frame, audio, audioUrl)) {
         done(false);
         return;
@@ -1419,11 +1426,11 @@ const [title, previousRevision, previousAudioUrl, previousAudioSha256, done] = a
 
 
 def _poll_real_epub_chapter_ready(driver, title, previous_revision, previous_audio_url,
-                                  previous_audio_sha256=None):
+                                  previous_audio_sha256=None, backend="onnx"):
     """Atomic reader+iframe WAV readiness poll (Firefox port of Chromium helper)."""
     return driver.execute_async_script(
         _EPUB_CHAPTER_READY_SCRIPT, title, previous_revision, previous_audio_url,
-        previous_audio_sha256)
+        previous_audio_sha256, backend)
 
 
 def _read_reader_nav_diagnostics(driver):
@@ -1470,10 +1477,11 @@ def _safe_reader_nav_diagnostics(driver):
 
 
 def _epub_chapter_poll_result(driver, title, previous_revision, previous_audio_url,
-                              previous_audio_sha256=None):
+                              previous_audio_sha256=None, backend="onnx"):
     """Return a ready snapshot, raise on WAV mismatch, else None to retry."""
     snapshot = _poll_real_epub_chapter_ready(
-        driver, title, previous_revision, previous_audio_url, previous_audio_sha256)
+        driver, title, previous_revision, previous_audio_url,
+        previous_audio_sha256, backend)
     if isinstance(snapshot, dict) and snapshot.get("__error"):
         message = snapshot["__error"]
         if "Real EPUB reader WAV mismatch" in message:
@@ -1489,7 +1497,7 @@ def _epub_chapter_poll_result(driver, title, previous_revision, previous_audio_u
 
 
 def _wait_for_epub_chapter(driver, title, previous_revision=0, previous_audio_url=None,
-                           previous_audio_sha256=None):
+                           previous_audio_sha256=None, backend="onnx"):
     # Drive the async storage+WAV poll from Python: Selenium's until() cannot
     # await browser.storage, and a falsy snapshot must retry.
     deadline = time.time() + 180
@@ -1498,7 +1506,7 @@ def _wait_for_epub_chapter(driver, title, previous_revision=0, previous_audio_ur
         try:
             snapshot, poll_error = _epub_chapter_poll_result(
                 driver, title, previous_revision, previous_audio_url,
-                previous_audio_sha256)
+                previous_audio_sha256, backend)
             if snapshot is not None:
                 return snapshot
             if poll_error is not None:
@@ -1566,47 +1574,54 @@ def _assert_epub_chapter_nav(driver, snapshot, expected_label, previous_audio_ur
         _epub_nav_failure_message(expected_label) + json.dumps(detail))
 
 
-def _open_firefox_reader_for_onnx(driver, origin):
+def _open_firefox_reader_for_backend(driver, origin, backend):
+    config = reader_storage_config(backend)
+    variant = epub_backend_variant(backend)
     configured = driver.execute_async_script("""
-        const done = arguments[arguments.length - 1];
-        browser.storage.sync.set({
-            ttsBackend: 'onnx', autoplayReader: false, continuousReader: false,
-            mediaPipeVariant: 'cpu', localVoice: 'af_heart',
-        }).then(() => done({ success: true }), e => done({ success: false, error: String(e) }));
-    """)
+        const [stored, done] = arguments;
+        browser.storage.sync.set(stored).then(
+            () => done({ success: true }),
+            e => done({ success: false, error: String(e) }));
+    """, config)
     if not configured.get("success"):
-        raise RuntimeError("Cannot configure Firefox ONNX reader backend: " + str(configured))
+        raise RuntimeError(
+            "Cannot configure Firefox " + backend + " reader backend: " +
+            str(configured))
     driver.get(origin + "/reader.html")
     WebDriverWait(driver, 30).until(lambda d: d.execute_script("""
         return Boolean(document.querySelector('#fileInput') &&
             document.querySelector('#playerFrame')?.contentDocument?.getElementById('status'));
     """))
+    return variant
 
 
-def _assert_reader_backend_still_onnx(driver):
+def _assert_reader_backend_unchanged(driver, backend):
     selected = driver.execute_async_script("""
         const done = arguments[arguments.length - 1];
         browser.storage.sync.get({ ttsBackend: 'fastapi' }).then(
             stored => done(stored.ttsBackend),
             e => done({ error: String(e) }));
     """)
-    if selected != "onnx":
-        raise RuntimeError("Reader silently switched local TTS backend: " + str(selected))
+    if selected != backend:
+        raise RuntimeError(
+            "Reader silently switched local TTS backend: expected " +
+            backend + ", got " + str(selected))
 
 
-def _return_to_benchmark_for_onnx_remove(driver, origin):
+def _return_to_benchmark_for_model_remove(driver, origin, backend):
+    variant = epub_backend_variant(backend)
+    selector = '[data-variant="' + variant + '"] .model-remove'
     driver.get(origin + "/benchmark.html")
     WebDriverWait(driver, 30).until(
         lambda d: d.execute_script("return Boolean(window.KokoroBenchmark)") and
-        d.find_element(
-            By.CSS_SELECTOR, '[data-variant="onnx-q8"] .model-remove'
-        ).is_enabled()
+        d.find_element(By.CSS_SELECTOR, selector).is_enabled()
     )
 
 
-def accept_real_epub_reader(driver, origin):
+def accept_real_epub_reader(driver, origin, backend):
     """Real Firefox file picker → EPUB.js → chapter nav → overlay → offline WAV."""
-    _open_firefox_reader_for_onnx(driver, origin)
+    require_epub_backend(backend)
+    _open_firefox_reader_for_backend(driver, origin, backend)
     with tempfile.TemporaryDirectory(prefix="kokoro-firefox-epub-") as tmp:
         epub_path = Path(tmp) / "offline-reader-acceptance.epub"
         txt_path = Path(tmp) / "acceptance.txt"
@@ -1615,13 +1630,14 @@ def accept_real_epub_reader(driver, origin):
             READER_ACCEPTANCE_SPEECH["acceptance.txt"], encoding="utf-8")
 
         driver.find_element(By.ID, "fileInput").send_keys(str(epub_path))
-        first = _wait_for_epub_chapter(driver, "First Chapter")
+        first = _wait_for_epub_chapter(
+            driver, "First Chapter", backend=backend)
         _assert_epub_chapter_nav(driver, first, "First Chapter")
 
         driver.find_element(By.ID, "nextChapter").click()
         second = _wait_for_epub_chapter(
             driver, "Second Chapter", first["revision"], first["audioUrl"],
-            first["audioSha256"])
+            first["audioSha256"], backend=backend)
         _assert_epub_chapter_nav(
             driver, second, "Second Chapter",
             previous_audio_url=first["audioUrl"],
@@ -1631,27 +1647,18 @@ def accept_real_epub_reader(driver, origin):
         driver.find_element(By.ID, "fileInput").send_keys(str(txt_path))
         plain_text = _wait_for_epub_chapter(
             driver, "acceptance.txt", second["revision"], second["audioUrl"],
-            second["audioSha256"])
+            second["audioSha256"], backend=backend)
         _assert_epub_chapter_nav(
             driver, plain_text, "acceptance.txt",
             previous_audio_url=second["audioUrl"],
             previous_audio_sha256=second["audioSha256"],
             require_single_entry=True)
 
-    _assert_reader_backend_still_onnx(driver)
-    different_audio = len({
-        first["audioSha256"], second["audioSha256"], plain_text["audioSha256"],
-    }) == 3
-    if not different_audio:
-        raise RuntimeError(
-            "Reader WAV content hashes were not distinct across chapters/TXT: " +
-            json.dumps({
-                "first": first["audioSha256"],
-                "second": second["audioSha256"],
-                "txt": plain_text["audioSha256"],
-            }))
+    _assert_reader_backend_unchanged(driver, backend)
+    assert_distinct_chapter_audio_hashes(
+        first["audioSha256"], second["audioSha256"], plain_text["audioSha256"])
     return {
-        "success": True, "browser": "Firefox", "backend": "onnx",
+        "success": True, "browser": "Firefox", "backend": backend,
         "epubFileSelectedThroughUi": True, "chapterCount": 2,
         "first": {"title": first["title"], "revision": first["revision"],
                   "audioBytes": first["bytes"],
@@ -1666,18 +1673,18 @@ def accept_real_epub_reader(driver, origin):
                            "audioBytes": plain_text["bytes"],
                            "audioSha256": plain_text["audioSha256"],
                            "speech": plain_text["expectedSpeech"]},
-        "local24kHzWav": True, "differentAudioPerChapter": different_audio,
+        "local24kHzWav": True, "differentAudioPerChapter": True,
         "offline": True, "noServerFallback": True, "autoplayDisabled": True,
         "userBackendUnchanged": True,
     }
 
 
-def run_offline_epub_reader_acceptance(driver, origin, result):
-    """Opt-in ONNX EPUB/TXT reader stage; returns report then restores manager UI."""
+def run_offline_epub_reader_acceptance(driver, origin, result, backend):
+    """Opt-in EPUB/TXT reader stage for onnx or mediapipe; restores manager UI."""
     result["stage"] = "offline-real-epub-chapters-and-txt-reader"
-    report = accept_real_epub_reader(driver, origin)
+    report = accept_real_epub_reader(driver, origin, backend)
     # Removal still uses the model-manager UI on benchmark.html.
-    _return_to_benchmark_for_onnx_remove(driver, origin)
+    _return_to_benchmark_for_model_remove(driver, origin, backend)
     return report
 
 
@@ -2315,12 +2322,13 @@ def main():
                     driver, state["origin"], provider)
 
             # Real packaged reader: file picker → EPUB.js chapters → overlay WAV,
-            # then TXT replacement. Must run while the ONNX model is still cached
-            # and before Remove. Mirrors Chromium chromium-onnx-origin stage.
+            # then TXT replacement. Must run while the origin model is still
+            # cached and before Remove. Mirrors Chromium onnx/mediapipe stages.
             epub_reader_acceptance = None
-            if origin_download and provider == "onnx" and metrics.get("success"):
+            if origin_epub_stage_enabled(
+                    origin_download, provider, metrics.get("success")):
                 epub_reader_acceptance = run_offline_epub_reader_acceptance(
-                    driver, state["origin"], result)
+                    driver, state["origin"], result, provider)
 
             if origin_download and metrics.get("success"):
                 # Close the active engine before Remove; no re-download may
