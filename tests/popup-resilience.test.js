@@ -14,6 +14,12 @@ function loadPopupDom() {
     document.body.innerHTML = bodyMatch ? bodyMatch[1] : html;
     // Remove script tags from injected HTML — we require scripts explicitly
     document.body.querySelectorAll('script').forEach((s) => s.remove());
+    // Author CSS is required for computed-style checks (e.g. [hidden] vs display:flex).
+    document.querySelectorAll('style[data-popup-css]').forEach((node) => node.remove());
+    const style = document.createElement('style');
+    style.setAttribute('data-popup-css', 'true');
+    style.textContent = fs.readFileSync(path.join(__dirname, '../popup.css'), 'utf8');
+    document.head.appendChild(style);
 }
 
 describe('popup backend-loss resilience (#4)', () => {
@@ -697,6 +703,41 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(document.getElementById('apiStatus').textContent).toMatch(/reach|Unable/i);
         expect(document.getElementById('retryApi').style.display).not.toBe('none');
         jest.useRealTimers();
+    });
+
+    test('local-voice containers honor [hidden] under author display:flex (#59)', async () => {
+        allowMediaPipeSelection();
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        const mediaPipeBox = document.getElementById('mediaPipeVoiceContainer');
+        const onnxBox = document.getElementById('onnxVoiceContainer');
+        expect(mediaPipeBox.classList.contains('local-voice-container')).toBe(true);
+        expect(onnxBox.classList.contains('local-voice-container')).toBe(true);
+
+        // FastAPI: both local containers must be display:none despite display:flex.
+        expect(mediaPipeBox.hidden).toBe(true);
+        expect(onnxBox.hidden).toBe(true);
+        expect(getComputedStyle(mediaPipeBox).display).toBe('none');
+        expect(getComputedStyle(onnxBox).display).toBe('none');
+
+        popup.syncVoiceUiForBackend('mediapipe');
+        expect(mediaPipeBox.hidden).toBe(false);
+        expect(onnxBox.hidden).toBe(true);
+        expect(getComputedStyle(mediaPipeBox).display).toBe('flex');
+        expect(getComputedStyle(onnxBox).display).toBe('none');
+
+        popup.syncVoiceUiForBackend('onnx');
+        expect(mediaPipeBox.hidden).toBe(true);
+        expect(onnxBox.hidden).toBe(false);
+        expect(getComputedStyle(mediaPipeBox).display).toBe('none');
+        expect(getComputedStyle(onnxBox).display).toBe('flex');
+
+        popup.syncVoiceUiForBackend('fastapi');
+        expect(mediaPipeBox.hidden).toBe(true);
+        expect(onnxBox.hidden).toBe(true);
+        expect(getComputedStyle(mediaPipeBox).display).toBe('none');
+        expect(getComputedStyle(onnxBox).display).toBe('none');
     });
 
     test('ONNX save pins onnxVoiceAsset and leaves FastAPI mix untouched (#59)', async () => {

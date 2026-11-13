@@ -197,6 +197,11 @@ button:hover {
     gap: 6px;
 }
 
+/* Author `display: flex` beats the UA `[hidden] { display: none }` rule. */
+.local-voice-container[hidden] {
+    display: none;
+}
+
 .local-voice-container input {
     width: 100%;
     box-sizing: border-box;
