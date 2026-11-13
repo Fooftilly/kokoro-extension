@@ -2046,10 +2046,11 @@ def _send_native_read_article_alt_a():
 
     Chromium live shells out to native-chromium-keys.py via Node execFileSync.
     Firefox is already in Python, so call the same X11Session in-process (no
-    env-argv subprocess for Sourcery dangerous-subprocess-use-tainted-env-args).
+    env-argv subprocess). Under Xvfb, Selenium Firefox often has PointerRoot
+    focus — raise/focus a Firefox window before the chord.
     """
     keys = ["Alt_L", "a"]
-    session = X11Session()
+    session = X11Session(focus_name_substr="Firefox")
     try:
         session.chord(keys)
         native_alt_a = session.result(" ".join(keys))
