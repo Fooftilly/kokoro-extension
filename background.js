@@ -156,8 +156,8 @@ async function ensureContentScript(tabId) {
         try {
             await browser.scripting.executeScript({
                 target: { tabId: tabId },
-                // Match manifest content_scripts order: overlay-position before content.js
-                files: ['browser-polyfill.min.js', 'readability.js', 'overlay-position.js', 'content.js']
+                // Match manifest content_scripts order: position helpers before content.js
+                files: ['browser-polyfill.min.js', 'readability.js', 'overlay-position.js', 'floating-mic-position.js', 'content.js']
             });
             // Brief wait for script to populate listener
             await new Promise(r => setTimeout(r, 100));

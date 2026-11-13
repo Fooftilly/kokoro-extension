@@ -721,10 +721,16 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         }
     });
 
-    // --- Floating Microphone Button Logic ---
+    // --- Floating Microphone Button Logic (#11) ---
+    // Survival rule: while selected text is non-empty and Floating mic is enabled,
+    // the control follows the selection end (scroll / selectionchange). It dismisses
+    // when the selection is cleared, the mic is used, or the setting is off.
+    // Auto-scroll that fires `scroll` therefore repositions rather than surprising-dismiss.
 
+    const micPosApi = globalThis.KokoroFloatingMicPosition;
     let floatBtn = null;
     let lastSelection = "";
+    let selectionChangeTimer = null;
 
     function createFloatingButton() {
         const btn = document.createElement('div');
@@ -736,10 +742,11 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
     </svg>
     `;
-        btn.style.position = 'absolute';
+        const btnSize = (micPosApi && micPosApi.FLOAT_MIC_BTN_SIZE) || 36;
+        btn.style.position = 'fixed';
         btn.style.zIndex = '2147483646';
-        btn.style.width = '36px';
-        btn.style.height = '36px';
+        btn.style.width = `${btnSize}px`;
+        btn.style.height = `${btnSize}px`;
         btn.style.borderRadius = '50%';
         btn.style.backgroundColor = '#333';
         btn.style.display = 'flex';
@@ -772,39 +779,31 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
         return btn;
     }
 
-    function updateFloatingButton(rect) {
+    function getFloatingMicViewport() {
+        return {
+            viewportWidth: window.innerWidth || document.documentElement.clientWidth || 0,
+            viewportHeight: window.innerHeight || document.documentElement.clientHeight || 0
+        };
+    }
+
+    function updateFloatingButton(endRect) {
+        if (!micPosApi) return;
+        const pos = micPosApi.computeFloatingMicPosition(endRect, getFloatingMicViewport());
+        if (!pos) return;
+
         if (!floatBtn) {
             floatBtn = createFloatingButton();
         }
-        // Position button slightly above and to the right of the selection end
-        // rect is the bounding client rect of the range
-        const btnSize = 36;
-        const margin = 10;
 
-        // Calculate absolute position
-        const absoluteTop = window.scrollY + rect.top;
-        const absoluteLeft = window.scrollX + rect.right;
-
-        // If close to right edge, shift left
-        let leftPos = absoluteLeft - (btnSize / 2);
-        if (leftPos + btnSize > document.body.scrollWidth) {
-            leftPos = document.body.scrollWidth - btnSize - margin;
-        }
-
-        // If close to top edge, shift down
-        let topPos = absoluteTop - btnSize - margin;
-        if (topPos < 0) {
-            topPos = absoluteTop + rect.height + margin;
-        }
-
-        floatBtn.style.top = `${topPos}px`;
-        floatBtn.style.left = `${leftPos}px`;
+        floatBtn.style.top = `${pos.top}px`;
+        floatBtn.style.left = `${pos.left}px`;
 
         // Ensure display is correct before transition
         floatBtn.style.display = 'flex';
 
         // Small delay to allow transition
         requestAnimationFrame(() => {
+            if (!floatBtn) return;
             floatBtn.style.opacity = '1';
             floatBtn.style.pointerEvents = 'auto';
             floatBtn.style.transform = 'scale(1)';
@@ -835,6 +834,7 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
                 const settings = await browser.storage.sync.get('showFloatingButton');
                 // Default to true if undefined
                 if (settings.showFloatingButton === false) {
+                    removeFloatingButton();
                     return;
                 }
             } catch (e) { /* ignore error, assume true */ }
@@ -842,12 +842,11 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
             lastSelection = text;
 
             try {
+                if (!selection.rangeCount || !micPosApi) return;
                 const range = selection.getRangeAt(0);
-                const rect = range.getBoundingClientRect();
-
-                // Ensure rect is valid and visible
-                if (rect.width > 0 && rect.height > 0) {
-                    updateFloatingButton(rect);
+                const endRect = micPosApi.getSelectionEndClientRect(range);
+                if (endRect) {
+                    updateFloatingButton(endRect);
                 }
             } catch (e) {
                 console.log("Selection range error:", e);
@@ -856,6 +855,17 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
             removeFloatingButton();
             lastSelection = "";
         }
+    }
+
+    function scheduleSelectionHandle() {
+        const delay = (micPosApi && micPosApi.FLOAT_MIC_SELECTION_THROTTLE_MS) || 100;
+        if (selectionChangeTimer) {
+            clearTimeout(selectionChangeTimer);
+        }
+        selectionChangeTimer = setTimeout(() => {
+            selectionChangeTimer = null;
+            handleSelection();
+        }, delay);
     }
 
     document.addEventListener('mouseup', (e) => {
@@ -871,9 +881,17 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
             setTimeout(handleSelection, 10);
         }
     });
+
+    // Keyboard / touch selection extensions that do not fire mouseup or Shift/Arrow keyup.
+    document.addEventListener('selectionchange', () => {
+        scheduleSelectionHandle();
+    });
+
+    // Follow selection end while alive; do not dismiss solely because the page scrolled
+    // (covers user scroll nudges and TTS auto-scrollIntoView).
     document.addEventListener('scroll', () => {
-        if (floatBtn && floatBtn.style.opacity === '1') {
-            removeFloatingButton();
+        if (floatBtn && floatBtn.style.opacity === '1' && lastSelection) {
+            handleSelection();
         }
-    }, { passive: true });
+    }, { passive: true, capture: true });
 }

@@ -56,6 +56,7 @@ export default [
       'popup.js',
       'api-client.js',
       'overlay-position.js',
+      'floating-mic-position.js',
       'theme-init.js',
       'transliteration-lite.js',
       'tts-providers.js',
@@ -97,7 +98,7 @@ export default [
   },
   // Classic scripts that optionally export for Jest via CJS interop
   {
-    files: ['content.js', 'api-client.js', 'overlay-position.js', 'benchmark-capabilities.js', 'tts-providers.js'],
+    files: ['content.js', 'api-client.js', 'overlay-position.js', 'floating-mic-position.js', 'benchmark-capabilities.js', 'tts-providers.js'],
     languageOptions: {
       globals: {
         module: 'readonly',
@@ -115,12 +116,13 @@ export default [
     files: ['background.js'],
     languageOptions: { globals: { require: 'readonly' } },
   },
-  // content.js depends on overlay-position.js (classic script global)
+  // content.js depends on overlay-position.js / floating-mic-position.js (classic script globals)
   {
     files: ['content.js'],
     languageOptions: {
       globals: {
         KokoroOverlayPosition: 'readonly',
+        KokoroFloatingMicPosition: 'readonly',
       },
     },
   },

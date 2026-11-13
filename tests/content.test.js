@@ -12,6 +12,7 @@ describe('content.js parseArticle', () => {
         // Setup globals BEFORE requiring content.js because content.js executes top-level code
         global.Readability = Readability;
         require('../overlay-position.js');
+        require('../floating-mic-position.js');
 
         global.browser = {
             runtime: {
