@@ -1215,13 +1215,18 @@ async function acceptRealArticleAndSelection(page, context, extensionId, backend
 
 // Long-form memory: walk many ONNX overlay sentences while the opt-in
 // AudioManager probe proves the cache/object-URL window stays bounded.
-async function acceptLongFormMemoryPerformance(page, extensionId, backend) {
+// Seed storage through the service worker — after article/selection the page
+// is still on the HTTP fixture, where `chrome` is undefined.
+async function acceptLongFormMemoryPerformance(page, context, extensionId, backend) {
     requireLongFormBackend(backend);
     liveHeartbeat('long-form-memory-start', { backend, sentences: LONG_FORM_SENTENCE_COUNT });
     const storage = longFormStorageConfig(backend);
-    await page.evaluate(async (cfg) => {
+    const worker = context.serviceWorkers()[0] ||
+        await context.waitForEvent('serviceworker', { timeout: 30000 });
+    if (!worker) throw Error('Extension service worker missing for long-form memory');
+    await withTimeout(worker.evaluate(async (cfg) => {
         await chrome.storage.local.set(cfg);
-    }, storage);
+    }, storage), 15000, 'long-form storage seed');
     await page.goto('chrome-extension://' + extensionId + '/overlay.html');
 
     const overlayReady = (index) => {
@@ -2038,7 +2043,7 @@ try {
                 stage = 'offline-real-long-form-memory';
                 liveHeartbeat(stage, { provider: manifest.provider });
                 longFormMemoryAcceptance = await acceptLongFormMemoryPerformance(
-                    page, extensionId, manifest.provider);
+                    page, context, extensionId, manifest.provider);
                 liveHeartbeat('long-form-memory-done-stage', {
                     success: longFormMemoryAcceptance?.success === true,
                     maxCacheSize: longFormMemoryAcceptance?.maxCacheSize,

@@ -109,6 +109,12 @@ describe('long-form memory acceptance', () => {
         expect(harness).toContain('acceptLongFormMemoryPerformance');
         expect(harness).toContain('longFormMemoryAcceptance');
         expect(harness).toContain('offline-real-long-form-memory');
+        // After article/selection the Playwright page is still on the HTTP
+        // fixture — storage must be seeded via the extension service worker.
+        expect(harness).toMatch(
+            /long-form storage seed[\s\S]{0,200}serviceWorkers|serviceWorkers\(\)\[0\][\s\S]{0,400}long-form storage seed/,
+        );
+        expect(harness).toContain('long-form storage seed');
         expect(overlay).toContain('pendingAcceptanceProbe');
         expect(overlay).toContain('__kokoroAudioManagerStats');
         expect(overlay).toContain('audioManager.audioCache.size');
