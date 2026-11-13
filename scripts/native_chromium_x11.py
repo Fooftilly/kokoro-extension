@@ -100,6 +100,13 @@ class X11Session:
         x11.XRaiseWindow.restype = ctypes.c_int
         x11.XMapRaised.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
         x11.XMapRaised.restype = ctypes.c_int
+        x11.XGetGeometry.argtypes = [
+            ctypes.c_void_p, ctypes.c_ulong,
+            ctypes.POINTER(ctypes.c_ulong),
+            ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint),
+            ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint)]
+        x11.XGetGeometry.restype = ctypes.c_int
         x11.XSetInputFocus.argtypes = [
             ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
         x11.XSetInputFocus.restype = ctypes.c_int
@@ -195,6 +202,22 @@ class X11Session:
         finally:
             self._xfree(children)
 
+    def _window_area(self, window):
+        root = ctypes.c_ulong()
+        x_pos = ctypes.c_int()
+        y_pos = ctypes.c_int()
+        width = ctypes.c_uint()
+        height = ctypes.c_uint()
+        border = ctypes.c_uint()
+        depth = ctypes.c_uint()
+        if not self.x11.XGetGeometry(
+                self.display, window, ctypes.byref(root),
+                ctypes.byref(x_pos), ctypes.byref(y_pos),
+                ctypes.byref(width), ctypes.byref(height),
+                ctypes.byref(border), ctypes.byref(depth)):
+            return 0
+        return int(width.value) * int(height.value)
+
     def focus_client_window(self, name_substr):
         """Raise + focus a top-level window whose title/WM_CLASS contains substr.
 
@@ -216,12 +239,15 @@ class X11Session:
                 seen.append(label)
             haystack = label.lower()
             if haystack and any(item in haystack for item in needles):
-                matches.append((window, label))
+                # Prefer the largest mapped window when several match.
+                area = self._window_area(window)
+                matches.append((area, window, label))
         if not matches:
             raise RuntimeError(
                 'No X11 window matching ' + repr(name_substr) +
                 '; windows=' + json.dumps(seen[:20]))
-        window, label = matches[0]
+        matches.sort(key=lambda item: item[0], reverse=True)
+        _, window, label = matches[0]
         self.x11.XMapRaised(self.display, window)
         self.x11.XRaiseWindow(self.display, window)
         self.x11.XSetInputFocus(

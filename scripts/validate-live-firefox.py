@@ -2171,11 +2171,18 @@ def _accept_firefox_read_article_command(
     armed = _wait_firefox_read_article_armed(
         driver, origin, backend, speech["articleFirst"])
     if not armed:
+        leftover = _on_extension_page(driver, origin, """
+            const done = arguments[arguments.length - 1];
+            browser.storage.local.get([
+                'pendingText', 'pendingContent', 'pendingTtsBackend',
+            ]).then(done, e => done({ error: String(e) }));
+        """)
         raise RuntimeError(
             "Native Alt+A did not arm Firefox read-article storage: " +
             json.dumps({
                 "nativeAltA": native_alt_a,
                 "shortcut": prepared.get("shortcut"),
+                "storageAfter": leftover,
             }))
     article_snap = _wait_article_overlay_wav(
         driver, origin, speech["articleFirst"], "full",
@@ -2352,6 +2359,10 @@ def main():
                 options.add_argument("-headless")
             options.set_preference("xpinstall.signatures.required", False)
             options.set_preference("extensions.experiments.enabled", True)
+            # Without this, Alt focuses the menu bar and steals Alt+A before
+            # browser.commands.onCommand (XTest reports success, storage stays empty).
+            options.set_preference("ui.key.menuAccessKeyFocuses", False)
+            options.set_preference("ui.key.menuAccessKey", 0)
             driver = webdriver.Firefox(options=options)
             driver.set_script_timeout(250)
             package_version = json.loads(Path("package.json").read_text(encoding="utf-8"))["version"]

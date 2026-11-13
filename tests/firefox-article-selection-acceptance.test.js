@@ -143,6 +143,8 @@ console.log(JSON.stringify({
         expect(source).toContain('findArticleFixtureTab');
         expect(source).toContain("http://127.0.0.1/*");
         expect(source).toContain('Alt_L');
+        expect(source).toContain('ui.key.menuAccessKeyFocuses');
+        expect(source).toContain('ui.key.menuAccessKey');
         expect(source).not.toContain('subprocess.check_output');
         expect(source).not.toContain('tabs.query({ url: fixtureUrl })');
         expect(source).not.toContain('X11Session(');
