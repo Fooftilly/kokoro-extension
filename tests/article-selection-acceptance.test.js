@@ -29,19 +29,21 @@ ${jsSnippet}
 }
 
 describe('article/selection acceptance helpers', () => {
-    test('gates Chromium ONNX origin only and configures local storage', () => {
+    test('gates Chromium onnx and mediapipe origin and configures local storage', () => {
         const result = runHelperProbe(`
 const report = {
     allowed: [...ALLOWED_ARTICLE_SELECTION_BACKENDS],
-    required: requireArticleSelectionBackend('onnx'),
-    storage: articleSelectionStorageConfig('onnx'),
-    stageOn: originArticleSelectionStageEnabled(true, 'onnx', true),
-    stageOffProvider: originArticleSelectionStageEnabled(true, 'mediapipe', true),
+    requiredOnnx: requireArticleSelectionBackend('onnx'),
+    requiredMediaPipe: requireArticleSelectionBackend('mediapipe'),
+    storageOnnx: articleSelectionStorageConfig('onnx'),
+    storageMediaPipe: articleSelectionStorageConfig('mediapipe'),
+    stageOnnx: originArticleSelectionStageEnabled(true, 'onnx', true),
+    stageMediaPipe: originArticleSelectionStageEnabled(true, 'mediapipe', true),
     stageOffOrigin: originArticleSelectionStageEnabled(false, 'onnx', true),
     stageOffSuccess: originArticleSelectionStageEnabled(true, 'onnx', false),
 };
 let rejected = [];
-for (const bad of ['mediapipe', 'fastapi', '']) {
+for (const bad of ['fastapi', '', 'whisper']) {
     try { requireArticleSelectionBackend(bad); rejected.push('accepted:' + bad); }
     catch (error) { rejected.push(String(error.message || error)); }
 }
@@ -51,17 +53,21 @@ console.log(JSON.stringify(report));
         expect(result.status).toBe(0);
         expect(result.stderr || '').toBe('');
         const report = JSON.parse(result.stdout.trim());
-        expect(report.allowed).toEqual(['onnx']);
-        expect(report.required).toBe('onnx');
-        expect(report.storage.ttsBackend).toBe('onnx');
-        expect(report.storage.showFloatingButton).toBe(true);
-        expect(report.storage.apiUrl).toBe('');
-        expect(report.storage.mode).toBe('stream');
-        expect(report.stageOn).toBe(true);
-        expect(report.stageOffProvider).toBe(false);
+        expect(report.allowed).toEqual(['onnx', 'mediapipe']);
+        expect(report.requiredOnnx).toBe('onnx');
+        expect(report.requiredMediaPipe).toBe('mediapipe');
+        expect(report.storageOnnx.ttsBackend).toBe('onnx');
+        expect(report.storageMediaPipe.ttsBackend).toBe('mediapipe');
+        expect(report.storageMediaPipe.mediaPipeVariant).toBe('cpu');
+        expect(report.storageOnnx.showFloatingButton).toBe(true);
+        expect(report.storageOnnx.apiUrl).toBe('');
+        expect(report.storageOnnx.mode).toBe('stream');
+        expect(report.stageOnnx).toBe(true);
+        expect(report.stageMediaPipe).toBe(true);
         expect(report.stageOffOrigin).toBe(false);
         expect(report.stageOffSuccess).toBe(false);
-        expect(report.rejected.every(line => /onnx/.test(line))).toBe(true);
+        expect(report.rejected.every(line =>
+            /onnx or mediapipe/.test(line))).toBe(true);
     });
 
     test('fixture HTML carries distinct selection and article speech', () => {
@@ -106,7 +112,7 @@ console.log(JSON.stringify({ ok, errors }));
         expect(report.errors[2]).toMatch(/collided/);
     });
 
-    test('chromium live harness wires the article/selection stage for ONNX origin', () => {
+    test('chromium live harness wires the article/selection stage for origin scopes', () => {
         const source = fs.readFileSync(chromiumLive, 'utf8');
         expect(source).toMatch(/from '\.\/article-selection-acceptance\.mjs'/);
         expect(source).toMatch(/originArticleSelectionStageEnabled\(/);
