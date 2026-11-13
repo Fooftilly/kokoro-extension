@@ -50,6 +50,8 @@ export function buildLongFormPendingContent() {
 export function longFormStorageConfig(backend) {
     requireLongFormBackend(backend);
     const lines = buildLongFormSpeechLines();
+    // Pending overlay session only — never write sync user preference
+    // (`ttsBackend`) into local; that belongs to chrome.storage.sync.
     return {
         pendingTtsBackend: backend,
         pendingApiUrl: null,
@@ -58,12 +60,37 @@ export function longFormStorageConfig(backend) {
         pendingTitle: 'Kokoro long-form memory acceptance',
         pendingAutoplay: false,
         pendingAcceptanceProbe: true,
-        ttsBackend: backend,
         apiUrl: '',
         mode: 'stream',
         mediaPipeVariant: 'cpu',
         localVoice: 'af_heart',
     };
+}
+
+/** Visit path must not already end on the last sentence — distant jump
+ *  needs a real window change (return to 0, then seek to last). */
+export function buildLongFormVisitIndexes(sentenceCount = LONG_FORM_SENTENCE_COUNT) {
+    return Array.from({ length: sentenceCount }, (_, i) => i)
+        .filter((i) => i < 8 || (i % 3 === 0 && i < sentenceCount - 1));
+}
+
+export function assertLongFormCacheWindowNear(stats, center, options = {}) {
+    const behind = options.behind ?? 2;
+    const ahead = options.ahead ?? 2;
+    if (!stats?.window ||
+        !Number.isInteger(stats.window.first) ||
+        !Number.isInteger(stats.window.last)) {
+        throw new Error('Cache window missing after navigation: ' + JSON.stringify(stats));
+    }
+    if (stats.window.first > center || stats.window.last < center) {
+        throw new Error('Cache window does not cover active sentence: ' +
+            JSON.stringify({ center, window: stats.window, behind, ahead }));
+    }
+    if (stats.window.last - stats.window.first > behind + ahead) {
+        throw new Error('Cache window wider than retainWindow bound: ' +
+            JSON.stringify({ window: stats.window, behind, ahead }));
+    }
+    return true;
 }
 
 export function assertBoundedAudioManagerStats(stats, options = {}) {

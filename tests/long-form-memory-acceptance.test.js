@@ -18,10 +18,12 @@ import * as longForm from ${JSON.stringify(helperUrl)};
 const speech = longForm.buildLongFormSpeechLines();
 const pending = longForm.buildLongFormPendingContent();
 const cfg = longForm.longFormStorageConfig('onnx');
+const visits = longForm.buildLongFormVisitIndexes();
 const sampleStats = {
     cacheSize: 4,
     objectUrlCount: 3,
     sentenceCount: longForm.LONG_FORM_SENTENCE_COUNT,
+    window: { first: 0, last: 4 },
 };
 const capture = (fn) => {
     try { fn(); return { ok: true }; }
@@ -34,10 +36,13 @@ console.log(JSON.stringify({
     pendingLen: pending.length,
     pendingShape: pending[0],
     cfgKeys: Object.keys(cfg).sort(),
+    seedsLocalTtsBackend: Object.hasOwn(cfg, 'ttsBackend'),
     probeArmed: cfg.pendingAcceptanceProbe === true,
     autoplayDisabled: cfg.pendingAutoplay === false,
     offlineApi: cfg.apiUrl === '' && cfg.pendingApiUrl === null,
     backend: cfg.pendingTtsBackend,
+    visits,
+    visitEndsOnLast: visits.includes(longForm.LONG_FORM_SENTENCE_COUNT - 1),
     stageTruthTable: {
         onnxOriginOk: longForm.originLongFormMemoryStageEnabled(true, 'onnx', true),
         mediapipeBlocked: longForm.originLongFormMemoryStageEnabled(true, 'mediapipe', true),
@@ -45,6 +50,9 @@ console.log(JSON.stringify({
         priorFailure: longForm.originLongFormMemoryStageEnabled(true, 'onnx', false),
     },
     statsPass: capture(() => longForm.assertBoundedAudioManagerStats(sampleStats)),
+    windowPass: capture(() => longForm.assertLongFormCacheWindowNear(sampleStats, 2)),
+    windowFail: capture(() => longForm.assertLongFormCacheWindowNear(
+        { ...sampleStats, window: { first: 10, last: 14 } }, 2)),
     statsCacheFail: capture(() => longForm.assertBoundedAudioManagerStats({
         ...sampleStats, cacheSize: longForm.LONG_FORM_MAX_CACHE_ENTRIES + 3,
     })),
@@ -83,6 +91,9 @@ describe('long-form memory acceptance', () => {
         expect(snap.cfgKeys).toEqual(expect.arrayContaining([
             'pendingAcceptanceProbe', 'pendingContent', 'pendingTtsBackend',
         ]));
+        expect(snap.seedsLocalTtsBackend).toBe(false);
+        expect(snap.visitEndsOnLast).toBe(false);
+        expect(snap.visits[snap.visits.length - 1]).toBeLessThan(23);
         expect(snap.stageTruthTable).toEqual({
             onnxOriginOk: true,
             mediapipeBlocked: false,
@@ -90,6 +101,8 @@ describe('long-form memory acceptance', () => {
             priorFailure: false,
         });
         expect(snap.statsPass).toEqual({ ok: true });
+        expect(snap.windowPass).toEqual({ ok: true });
+        expect(snap.windowFail.ok).toBe(false);
         expect(snap.statsCacheFail.ok).toBe(false);
         expect(snap.statsCacheFail.message).toMatch(/cache exceeded/);
         expect(snap.statsUrlFail.ok).toBe(false);
@@ -109,20 +122,17 @@ describe('long-form memory acceptance', () => {
         expect(harness).toContain('acceptLongFormMemoryPerformance');
         expect(harness).toContain('longFormMemoryAcceptance');
         expect(harness).toContain('offline-real-long-form-memory');
-        // After article/selection the Playwright page is still on the HTTP
-        // fixture — storage must be seeded via the extension service worker.
-        expect(harness).toMatch(
-            /long-form storage seed[\s\S]{0,200}serviceWorkers|serviceWorkers\(\)\[0\][\s\S]{0,400}long-form storage seed/,
-        );
         expect(harness).toContain('long-form storage seed');
         expect(harness).toContain('seedLongFormOverlay');
         expect(harness).toContain('walkLongFormSentences');
+        expect(harness).toContain('jumpLongFormAcrossWindows');
+        expect(harness).toContain('readSyncTtsBackend');
+        expect(harness).toContain('chrome.storage.sync.get');
         expect(harness).toContain('waitLongFormOverlayReady');
-        // Predicate args must carry sentence count into the page realm —
-        // Node module constants are not visible inside Playwright's page eval.
         expect(harness).toContain('({ idx, count })');
         expect(harness).toContain('count: LONG_FORM_SENTENCE_COUNT');
         expect(harness).not.toContain('waitForFunction(longFormOverlayReady');
+        expect(harness).not.toContain('jumpLongFormToLastSentence');
         expect(overlay).toContain('pendingAcceptanceProbe');
         expect(overlay).toContain('syncAcceptanceProbe');
         expect(overlay).toContain('__kokoroAudioManagerStats');

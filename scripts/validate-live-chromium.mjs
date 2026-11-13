@@ -24,7 +24,9 @@ import {
 import {
     LONG_FORM_SENTENCE_COUNT,
     assertBoundedAudioManagerStats,
+    assertLongFormCacheWindowNear,
     assertLongFormHeapDelta,
+    buildLongFormVisitIndexes,
     longFormStorageConfig,
     originLongFormMemoryStageEnabled,
     requireLongFormBackend,
@@ -1276,11 +1278,6 @@ function readLongFormWavMeta(page) {
     });
 }
 
-function buildLongFormVisitIndexes() {
-    return Array.from({ length: LONG_FORM_SENTENCE_COUNT }, (_, i) => i)
-        .filter((i) => i < 8 || i % 3 === 0 || i === LONG_FORM_SENTENCE_COUNT - 1);
-}
-
 async function walkLongFormSentences(page, visitIndexes) {
     let maxCacheSize = 0;
     let maxObjectUrlCount = 0;
@@ -1311,44 +1308,87 @@ async function walkLongFormSentences(page, visitIndexes) {
     return { maxCacheSize, maxObjectUrlCount, samples };
 }
 
-async function jumpLongFormToLastSentence(page, bounds) {
-    liveHeartbeat('long-form-memory-jump');
+// Walk ends before the last sentence. Return to 0 (outside the near-end
+// retain window), await a fresh WAV, then jump to the last index and assert
+// the cache window/URL actually moved while staying bounded.
+async function jumpLongFormAcrossWindows(page, bounds) {
+    const lastIndex = LONG_FORM_SENTENCE_COUNT - 1;
+    liveHeartbeat('long-form-memory-jump-return-zero');
     await page.evaluate(() => {
-        const spans = document.querySelectorAll('.sentence');
-        spans[spans.length - 1].click();
+        document.querySelectorAll('.sentence')[0].click();
     });
-    await waitLongFormOverlayReady(
-        page, LONG_FORM_SENTENCE_COUNT - 1, 'long-form jump to last sentence');
+    await waitLongFormOverlayReady(page, 0, 'long-form return to first sentence');
+    await page.waitForTimeout(250);
+    const atZeroStats = await readLongFormStats(page);
+    assertBoundedAudioManagerStats(atZeroStats);
+    assertLongFormCacheWindowNear(atZeroStats, 0);
+    const zeroWav = await readLongFormWavMeta(page);
+
+    liveHeartbeat('long-form-memory-jump-to-last');
+    await page.evaluate((target) => {
+        document.querySelectorAll('.sentence')[target].click();
+    }, lastIndex);
+    await waitLongFormOverlayReady(page, lastIndex, 'long-form jump to last sentence');
+    await page.waitForTimeout(250);
     const jumpStats = await readLongFormStats(page);
     assertBoundedAudioManagerStats(jumpStats);
+    assertLongFormCacheWindowNear(jumpStats, lastIndex);
     const finalWav = await readLongFormWavMeta(page);
+    if (finalWav.audioSha256 === zeroWav.audioSha256) {
+        throw Error('Distant jump WAV hash matched index-0 hash: ' +
+            JSON.stringify({
+                zero: zeroWav.audioSha256, last: finalWav.audioSha256,
+            }));
+    }
+    if (jumpStats.window.first === atZeroStats.window.first &&
+        jumpStats.window.last === atZeroStats.window.last) {
+        throw Error('Distant jump did not move cache window: ' +
+            JSON.stringify({ atZero: atZeroStats.window, jump: jumpStats.window }));
+    }
     return {
-        maxCacheSize: Math.max(bounds.maxCacheSize, jumpStats.cacheSize),
-        maxObjectUrlCount: Math.max(bounds.maxObjectUrlCount, jumpStats.objectUrlCount),
+        maxCacheSize: Math.max(
+            bounds.maxCacheSize, atZeroStats.cacheSize, jumpStats.cacheSize),
+        maxObjectUrlCount: Math.max(
+            bounds.maxObjectUrlCount, atZeroStats.objectUrlCount, jumpStats.objectUrlCount),
         jumpCacheSize: jumpStats.cacheSize,
+        returnToZeroCacheSize: atZeroStats.cacheSize,
+        windowAfterReturn: atZeroStats.window,
+        windowAfterJump: jumpStats.window,
+        zeroAudioSha256: zeroWav.audioSha256,
+        jumpAudioSha256: finalWav.audioSha256,
         finalWav,
-        sample: {
-            index: LONG_FORM_SENTENCE_COUNT - 1,
-            phase: 'jump',
-            ...finalWav,
-            ...jumpStats,
-        },
+        samples: [
+            { index: 0, phase: 'return-before-jump', ...zeroWav, ...atZeroStats },
+            { index: lastIndex, phase: 'distant-jump', ...finalWav, ...jumpStats },
+        ],
     };
 }
 
-async function assertLongFormPrivacy(page, backend, finalWav) {
-    const stored = await page.evaluate(async () => chrome.storage.local.get([
-        'pendingTtsBackend', 'pendingApiUrl', 'ttsBackend', 'apiUrl',
+async function readSyncTtsBackend(pageOrWorker) {
+    return pageOrWorker.evaluate(async () =>
+        (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
+}
+
+async function assertLongFormPrivacy(page, backend, finalWav, syncBefore) {
+    const local = await page.evaluate(async () => chrome.storage.local.get([
+        'pendingTtsBackend', 'pendingApiUrl', 'apiUrl',
     ]));
-    if (stored.pendingTtsBackend !== backend && stored.ttsBackend !== backend) {
-        throw Error('Long-form backend drifted: ' + JSON.stringify(stored));
+    if (local.pendingTtsBackend !== backend) {
+        throw Error('pendingTtsBackend drifted from seeded onnx session: ' +
+            JSON.stringify(local));
     }
-    if (stored.pendingApiUrl || stored.apiUrl) {
-        throw Error('Long-form acceptance saw a server URL: ' + JSON.stringify(stored));
+    if (local.pendingApiUrl || local.apiUrl) {
+        throw Error('Long-form acceptance saw a server URL: ' + JSON.stringify(local));
+    }
+    const syncAfter = await readSyncTtsBackend(page);
+    if (syncAfter !== syncBefore) {
+        throw Error('chrome.storage.sync ttsBackend changed during long-form: ' +
+            JSON.stringify({ syncBefore, syncAfter }));
     }
     if (finalWav.offline !== true) {
         throw Error('Long-form overlay was not offline at end');
     }
+    return { syncTtsBackend: syncAfter };
 }
 
 // Long-form memory: walk many ONNX overlay sentences while the opt-in
@@ -1358,24 +1398,33 @@ async function assertLongFormPrivacy(page, backend, finalWav) {
 async function acceptLongFormMemoryPerformance(page, context, extensionId, backend) {
     requireLongFormBackend(backend);
     liveHeartbeat('long-form-memory-start', { backend, sentences: LONG_FORM_SENTENCE_COUNT });
+    const worker = context.serviceWorkers()[0] ||
+        await context.waitForEvent('serviceworker', { timeout: 30000 });
+    if (!worker) throw Error('Extension service worker missing for long-form memory');
+    const syncBefore = await readSyncTtsBackend(worker);
     await seedLongFormOverlay(page, context, extensionId, backend);
 
     const heapBefore = await readLongFormHeap(page);
     const visitIndexes = buildLongFormVisitIndexes();
+    if (visitIndexes.includes(LONG_FORM_SENTENCE_COUNT - 1)) {
+        throw Error('Visit path must not already end on the distant-jump target');
+    }
     const walk = await walkLongFormSentences(page, visitIndexes);
-    const jump = await jumpLongFormToLastSentence(page, walk);
-    walk.samples.push(jump.sample);
+    const jump = await jumpLongFormAcrossWindows(page, walk);
+    walk.samples.push(...jump.samples);
 
     const heapAfter = await readLongFormHeap(page);
     const heap = heapBefore != null && heapAfter != null
         ? assertLongFormHeapDelta(heapBefore, heapAfter)
         : null;
-    await assertLongFormPrivacy(page, backend, jump.finalWav);
+    const privacy = await assertLongFormPrivacy(
+        page, backend, jump.finalWav, syncBefore);
 
     liveHeartbeat('long-form-memory-done', {
         maxCacheSize: jump.maxCacheSize,
         maxObjectUrlCount: jump.maxObjectUrlCount,
         heapGrowth: heap?.growth ?? null,
+        windowAfterJump: jump.windowAfterJump,
     });
     return {
         success: true,
@@ -1386,13 +1435,20 @@ async function acceptLongFormMemoryPerformance(page, context, extensionId, backe
         maxCacheSize: jump.maxCacheSize,
         maxObjectUrlCount: jump.maxObjectUrlCount,
         jumpCacheSize: jump.jumpCacheSize,
+        returnToZeroCacheSize: jump.returnToZeroCacheSize,
+        windowAfterReturn: jump.windowAfterReturn,
+        windowAfterJump: jump.windowAfterJump,
+        zeroAudioSha256: jump.zeroAudioSha256,
+        jumpAudioSha256: jump.jumpAudioSha256,
+        distantJumpChangedWindow: true,
         local24kHzWav: true,
         offline: true,
         noServerFallback: true,
         acceptanceProbe: true,
         heap,
         samples: walk.samples,
-        userBackendUnchanged: true,
+        syncTtsBackend: privacy.syncTtsBackend,
+        userBackendUnchanged: privacy.syncTtsBackend === syncBefore,
     };
 }
 
