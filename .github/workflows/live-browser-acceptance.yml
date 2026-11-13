@@ -111,10 +111,63 @@ jobs:
           # The pinned image already includes Xvfb and browser dependencies.
           # Native optional-host dialog input uses libX11/libXtst via a small
           # standard-library Python helper; no mutable apt mirror is required.
-          # stdbuf line-buffers node stderr/stdout so heartbeats appear in the
-          # Actions log while the step is still running (not only after exit).
+          #
+          # GitHub often withholds container step logs until the step ends, so
+          # Node stderr heartbeats alone stay invisible while stalled. Mirror
+          # progress.log into this shell's stdout via tail -F, and kill the
+          # harness if the log stops growing (stall watchdog).
+          set -eu
+          mkdir -p dist/runtime-acceptance
+          : > dist/runtime-acceptance/progress.log
+          rm -f dist/runtime-acceptance/stalled.flag
+          echo "[live-wrapper] starting; progress.log mirrored below"
+          tail -n 0 -F dist/runtime-acceptance/progress.log &
+          TAIL_PID=$!
+          set +e
           stdbuf -oL -eL xvfb-run -a -s '-screen 0 1440x900x24' \
-            stdbuf -oL -eL node scripts/validate-live-chromium.mjs
+            stdbuf -oL -eL node scripts/validate-live-chromium.mjs &
+          NODE_PID=$!
+          set -e
+          (
+            STALL_SECS=480
+            LAST_SIZE=0
+            IDLE=0
+            while kill -0 "$NODE_PID" 2>/dev/null; do
+              sleep 15
+              SIZE=$(wc -c < dist/runtime-acceptance/progress.log | tr -d ' ')
+              if [ "$SIZE" -gt "$LAST_SIZE" ]; then
+                LAST_SIZE=$SIZE
+                IDLE=0
+              else
+                IDLE=$((IDLE + 15))
+                echo "[live-wrapper] no progress.log growth for ${IDLE}s (size=$SIZE)"
+                if [ "$IDLE" -ge "$STALL_SECS" ]; then
+                  echo "[live-wrapper] stall watchdog: killing harness after ${STALL_SECS}s silence"
+                  echo "stalled-after-${STALL_SECS}s" > dist/runtime-acceptance/stalled.flag
+                  kill "$NODE_PID" 2>/dev/null || true
+                  sleep 2
+                  kill -9 "$NODE_PID" 2>/dev/null || true
+                  exit 0
+                fi
+              fi
+            done
+          ) &
+          WATCH_PID=$!
+          set +e
+          wait "$NODE_PID"
+          EXIT=$?
+          set -e
+          kill "$WATCH_PID" 2>/dev/null || true
+          kill "$TAIL_PID" 2>/dev/null || true
+          wait "$WATCH_PID" 2>/dev/null || true
+          wait "$TAIL_PID" 2>/dev/null || true
+          if [ -f dist/runtime-acceptance/stalled.flag ]; then
+            echo "[live-wrapper] failing: stall watchdog fired"
+            tail -n 50 dist/runtime-acceptance/progress.log || true
+            exit 124
+          fi
+          echo "[live-wrapper] harness exited with $EXIT"
+          exit "$EXIT"
       - name: Execute Chromium real-quota, offline multi-asset recovery acceptance
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.acceptance_scope == 'chromium-quota-recovery' }}
         env:
@@ -131,6 +184,7 @@ jobs:
             dist/runtime-acceptance/report.json
             dist/runtime-acceptance/chromium-quota.json
             dist/runtime-acceptance/progress.log
+            dist/runtime-acceptance/stalled.flag
           if-no-files-found: ignore
 
   firefox-local-inference:

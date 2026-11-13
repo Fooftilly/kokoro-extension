@@ -144,5 +144,7 @@ console.log(JSON.stringify({ ok, errors }));
         expect(chromiumJob).toMatch(/timeout-minutes:\s*60\b/);
         expect(chromiumJob).toMatch(/stdbuf -oL -eL/);
         expect(chromiumJob).toMatch(/progress\.log/);
+        expect(chromiumJob).toMatch(/tail -n 0 -F/);
+        expect(chromiumJob).toMatch(/stall watchdog/);
     });
 });
