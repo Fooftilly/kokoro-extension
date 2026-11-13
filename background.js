@@ -452,61 +452,63 @@ function isReaderTabUrl(url) {
         (url === readerUrl || url.startsWith(readerUrl + '?') || url.startsWith(readerUrl + '#'));
 }
 
-browser.commands.onCommand.addListener(async (command) => {
-    if (command === "read-article") {
-        const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-        if (tabs && tabs[0]) {
-            const url = tabs[0].url || "";
-            if (isReaderTabUrl(url)) {
-                console.log("Shortcut disabled on reader page.");
-                return;
-            }
-            const tabId = tabs[0].id;
+async function activeTab() {
+    const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+    return tabs && tabs[0] ? tabs[0] : null;
+}
 
-            // Check if player is already active
-            try {
-                const response = await browser.tabs.sendMessage(tabId, { action: "CHECK_PLAYER_ACTIVE" });
-                if (response && response.active) {
-                    console.log("Player already active, ignoring shortcut.");
-                    return;
-                }
-            } catch (e) {
-                // Content script might not be there or ready, proceed to try opening
-            }
-
-            // Clear stale pending text to prevent "echo"
-            await browser.storage.local.remove(['pendingText', 'pendingContent', 'pendingVoice']);
-
-            // Proceed with full TTS action (article extraction, etc.)
-            await handleTtsAction(tabs[0], "read-article");
-        }
-    } else if (command === "open-reader") {
-        browser.tabs.create({ url: 'reader.html' });
-    } else if (command === "nav-next" || command === "nav-prev") {
-        const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-        if (tabs && tabs[0]) {
-            const direction = command === "nav-next" ? "NAV_NEXT" : "NAV_PREV";
-            if (isReaderTabUrl(tabs[0].url)) {
-                // Extension reader pages have no content script. Broadcast within
-                // the extension; each reader checks its own tab ID before forwarding.
-                try {
-                    await browser.runtime.sendMessage({
-                        action: 'KOKORO_READER_NAV', tabId: tabs[0].id, direction,
-                    });
-                } catch (err) {
-                    console.log("Reader navigation shortcut unavailable:", err);
-                }
-            } else {
-                browser.tabs.sendMessage(tabs[0].id, { action: direction }).catch(err => {
-                    // Preserve existing webpage overlay navigation.
-                    console.log("Navigation command failed (player might be closed):", err);
-                });
-            }
-        }
-    } else if (command === "close-overlay") {
-        const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-        if (tabs && tabs[0]) {
-            browser.tabs.sendMessage(tabs[0].id, { action: "REMOVE_PLAYER" }).catch(() => { });
-        }
+async function handleReadArticleShortcut() {
+    const tab = await activeTab();
+    if (!tab) return;
+    if (isReaderTabUrl(tab.url || '')) {
+        console.log("Shortcut disabled on reader page.");
+        return;
     }
+    try {
+        const response = await browser.tabs.sendMessage(tab.id, { action: "CHECK_PLAYER_ACTIVE" });
+        if (response && response.active) {
+            console.log("Player already active, ignoring shortcut.");
+            return;
+        }
+    } catch (e) {
+        // Content script might not be there or ready, proceed to try opening
+    }
+    // Clear stale pending text to prevent "echo"
+    await browser.storage.local.remove(['pendingText', 'pendingContent', 'pendingVoice']);
+    await handleTtsAction(tab, "read-article");
+}
+
+async function handleNavShortcut(command) {
+    const tab = await activeTab();
+    if (!tab) return;
+    const direction = command === "nav-next" ? "NAV_NEXT" : "NAV_PREV";
+    if (isReaderTabUrl(tab.url)) {
+        // Extension reader pages have no content script. Broadcast within
+        // the extension; each reader checks its own tab ID before forwarding.
+        try {
+            await browser.runtime.sendMessage({
+                action: 'KOKORO_READER_NAV', tabId: tab.id, direction,
+            });
+        } catch (err) {
+            console.log("Reader navigation shortcut unavailable:", err);
+        }
+        return;
+    }
+    browser.tabs.sendMessage(tab.id, { action: direction }).catch(err => {
+        // Preserve existing webpage overlay navigation.
+        console.log("Navigation command failed (player might be closed):", err);
+    });
+}
+
+async function handleCloseOverlayShortcut() {
+    const tab = await activeTab();
+    if (!tab) return;
+    browser.tabs.sendMessage(tab.id, { action: "REMOVE_PLAYER" }).catch(() => { });
+}
+
+browser.commands.onCommand.addListener(async (command) => {
+    if (command === "read-article") return handleReadArticleShortcut();
+    if (command === "open-reader") return browser.tabs.create({ url: 'reader.html' });
+    if (command === "nav-next" || command === "nav-prev") return handleNavShortcut(command);
+    if (command === "close-overlay") return handleCloseOverlayShortcut();
 });
