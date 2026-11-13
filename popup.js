@@ -33,22 +33,11 @@ function normalizeApiUrl(raw) {
     return apiUrl;
 }
 
-const BackendDisclosure = globalThis.KokoroBackendDisclosure || {
-    CTA_LABEL: 'Test TTS backends',
-    CTA_HINT: '',
-    backendDisclosure: (backend) => {
-        if (backend === 'mediapipe') {
-            return 'MediaPipe runs on-device. Speech text never goes to the Kokoro server.';
-        }
-        if (backend === 'onnx') {
-            return 'ONNX runs on-device via WASM. Speech text never goes to the Kokoro server.';
-        }
-        if (backend === 'fastapi') {
-            return 'Kokoro server is the default. Selected text is sent to your configured API URL.';
-        }
-        return 'Unknown saved backend. Select one explicitly; no server requests will run.';
-    },
-};
+// Loaded via popup.html before this script (Jest assigns KokoroBackendDisclosure).
+const BackendDisclosure = globalThis.KokoroBackendDisclosure;
+if (!BackendDisclosure) {
+    throw new Error('KokoroBackendDisclosure required (load backend-disclosure.js first)');
+}
 
 const LocalVoice = globalThis.KokoroLocalVoiceMixing || {
     DEFAULT_MEDIAPIPE_VOICE: 'af_heart',
