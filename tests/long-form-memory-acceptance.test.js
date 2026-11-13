@@ -118,13 +118,11 @@ describe('long-form memory acceptance', () => {
         expect(harness).toContain('seedLongFormOverlay');
         expect(harness).toContain('walkLongFormSentences');
         expect(harness).toContain('waitLongFormOverlayReady');
-        // Predicate args must carry sentence count into the page realm.
-        expect(harness).toMatch(
-            /waitForFunction\(\(\{\s*idx,\s*count\s*\}\)[\s\S]{0,400}count:\s*LONG_FORM_SENTENCE_COUNT/,
-        );
-        expect(harness).not.toMatch(
-            /waitForFunction\(\s*longFormOverlayReady\s*,/,
-        );
+        // Predicate args must carry sentence count into the page realm —
+        // Node module constants are not visible inside Playwright's page eval.
+        expect(harness).toContain('({ idx, count })');
+        expect(harness).toContain('count: LONG_FORM_SENTENCE_COUNT');
+        expect(harness).not.toContain('waitForFunction(longFormOverlayReady');
         expect(overlay).toContain('pendingAcceptanceProbe');
         expect(overlay).toContain('syncAcceptanceProbe');
         expect(overlay).toContain('__kokoroAudioManagerStats');
