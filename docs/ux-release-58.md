@@ -6,8 +6,8 @@ Most of the three-backend stack already landed in earlier slices (#54 routing, #
 
 - Popup radios restyled as cards with compact meta (server / MediaPipe / ONNX).
 - Prominent **Test TTS backends** CTA (+ hint) opening `benchmark.html`.
-- Backend disclosure copy: privacy (local never hits FastAPI), local WAV / single-voice vs remote MP3 / weighted mix, ONNX = packaged WASM CPU, MediaPipe CPU may be slower than real-time, MediaPipe GPU labeled experimental/unverified.
-- Download footprint notes: model+voice download size vs packaged tokenizer/runtime; CMUdict separate; GPU unverified until adapter + successful test.
+- Backend disclosure copy: privacy (local never hits FastAPI), local WAV / single-voice vs remote MP3 / weighted mix, ONNX = packaged WASM CPU, MediaPipe CPU may be slower than real-time, MediaPipe GPU not offered until verified.
+- Download footprint notes: model+voice download size vs packaged tokenizer/runtime; CMUdict separate; GPU gated out of catalog/test UI until adapter + successful inference.
 - Docs/README/AGENTS sync so local backends are not described as unimplemented.
 
 ## Explicitly out of scope here
@@ -26,7 +26,7 @@ Do **not** rely on jsdom alone for this checklist:
 4. **Use this backend** updates preference only after confirmation; popup radios reflect the choice.
 5. Selection / article / EPUB playback with local backend produces local audio and does not call FastAPI speech endpoints (DevTools network).
 6. Disconnect network after models are cached; local playback still works; FastAPI mode fails closed without sending unexpected traffic.
-7. Confirm MediaPipe GPU row discloses unverified status; GPU test refuses without a WebGPU adapter.
+7. Confirm MediaPipe GPU is not listed for download/test; only MediaPipe CPU is offered until WebGPU is verified.
 8. After extension restart, installed models and backend choice still work.
 
 CPU validation evidence: `docs/runtime-validation-2026-11-07.md`.

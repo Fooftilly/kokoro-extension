@@ -36,10 +36,10 @@ function fakeCache(manifest) {
 }
 
 describe('pinned official local Kokoro model catalog', () => {
-    test('includes both MediaPipe variants and ONNX data without executable runtime assets', () => {
+    test('offers MediaPipe CPU and ONNX; GPU pin exists but is not listed until verified', () => {
         const variants = listModelVariants();
         expect(variants.map(x => x.key)).toEqual([
-            'mediapipe-cpu', 'mediapipe-gpu', 'onnx-q8', 'onnx-q8f16',
+            'mediapipe-cpu', 'onnx-q8', 'onnx-q8f16',
         ]);
         expect(validateModelManifest(manifestForVariant('mediapipe', 'cpu'))).toBe(294783298);
         expect(validateModelManifest(manifestForVariant('mediapipe', 'gpu'))).toBe(294750530);

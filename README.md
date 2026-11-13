@@ -55,7 +55,7 @@ Verified against the current source (not aspirational):
 - **Themes** — light/dark toggle in the popup.
 - **Keyboard shortcuts** — e.g. read article, next/previous sentence, close overlay; EPUB open shortcut is suggested on Firefox (Chrome has a tighter default-shortcut limit).
 - **Connection status icon** — toolbar icon reflects API reachability.
-- **Three TTS backends** — Kokoro server (FastAPI), on-device MediaPipe (CPU/WASM product path), and on-device ONNX Runtime Web (WASM). Choose in the popup; install/test models on **Test TTS backends**. Local modes keep speech text on-device (no server fallback). ONNX English reading needs an opt-in CMUdict download and rejects unknown words. MediaPipe GPU remains experimental/unverified until a successful WebGPU test.
+- **Three TTS backends** — Kokoro server (FastAPI), on-device MediaPipe (CPU/WASM product path), and on-device ONNX Runtime Web (WASM). Choose in the popup; install/test models on **Test TTS backends**. Local modes keep speech text on-device (no server fallback). ONNX English reading needs an opt-in CMUdict download and rejects unknown words. MediaPipe GPU is not offered until a WebGPU adapter and correct inference are verified.
 
 ## Privacy & data handling
 

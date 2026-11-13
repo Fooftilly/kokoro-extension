@@ -15,7 +15,7 @@ describe('backend disclosure copy (#58)', () => {
         expect(Disclosure.backendDisclosure('mediapipe')).toMatch(/Supported language: English/i);
         expect(Disclosure.backendDisclosure('mediapipe')).toMatch(/af_heart/);
         expect(Disclosure.backendDisclosure('mediapipe')).toMatch(/slower than real-time/i);
-        expect(Disclosure.backendDisclosure('mediapipe')).toMatch(/GPU.*unverified/i);
+        expect(Disclosure.backendDisclosure('mediapipe')).toMatch(/GPU is not offered/i);
         expect(Disclosure.backendDisclosure('onnx')).toMatch(/WASM/i);
         expect(Disclosure.backendDisclosure('onnx')).toMatch(/never goes to the Kokoro server/i);
         expect(Disclosure.backendDisclosure('onnx')).toMatch(/af\.bin/);
@@ -38,7 +38,7 @@ describe('backend disclosure copy (#58)', () => {
             (n) => (n / 1000000).toFixed(1) + ' MB',
         )).toBe('294.8 MB');
         expect(Disclosure.downloadFootprintNote({ provider: 'mediapipe', variant: 'gpu' }))
-            .toMatch(/unverified/i);
+            .toMatch(/not offered/i);
         expect(Disclosure.downloadFootprintNote({ provider: 'dictionary' }))
             .toMatch(/dictionary/i);
     });

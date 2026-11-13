@@ -32,7 +32,7 @@
                 'Supported language: English; voices are Kokoro voice IDs such as af_heart ' +
                 '(many named embeddings ship inside the model bundle). ' +
                 'CPU synthesis can be slower than real-time on some machines. ' +
-                'MediaPipe GPU remains unverified until a WebGPU adapter is available and a successful test passes. ' +
+                'MediaPipe GPU is not offered until a WebGPU adapter and correct on-device inference are verified. ' +
                 'Install and test models on the TTS backends page.';
         }
         if (backend === 'onnx') {
@@ -61,8 +61,8 @@
                 'Official ONNX Runtime JS/WASM is packaged locally — not part of model-data size.';
         }
         if (source.provider === 'mediapipe' && source.variant === 'gpu') {
-            return 'GPU model download is experimental. Product-supported path is MediaPipe CPU (WASM). ' +
-                'GPU inference stays unverified until a WebGPU adapter is available and a successful on-device test completes. ' +
+            return 'MediaPipe GPU is not offered in the product catalog until a WebGPU adapter and correct ' +
+                'on-device inference are verified. Product-supported path is MediaPipe CPU (WASM). ' +
                 'Official MediaPipe WASM is packaged locally.';
         }
         if (source.provider === 'mediapipe') {

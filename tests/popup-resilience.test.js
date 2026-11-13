@@ -727,7 +727,7 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(document.getElementById('backendExplanation').textContent)
             .toMatch(/never goes to the Kokoro server/i);
         expect(document.getElementById('backendExplanation').textContent)
-            .toMatch(/slower than real-time|GPU.*unverified/i);
+            .toMatch(/slower than real-time|GPU is not offered/i);
     });
 
     test('popup migrates legacy localVoice when mediaPipeVoice is unset (#59)', async () => {

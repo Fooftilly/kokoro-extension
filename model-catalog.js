@@ -89,9 +89,12 @@ const VARIANTS = Object.freeze({
         assets: Object.freeze([asset('mediapipe', 'kokoro_int8_fp16.litertlm', 294783298,
             'e7b931ee5d4b7104012a838c9eee240d19ea69cb3ca269041a3274f83dbb7fa1')]),
     }),
+    // Pin kept for integrity/cleanup; not listed until WebGPU adapter + correct
+    // inference are verified (#58). Do not invent a product-offered GPU path.
     'mediapipe-gpu': Object.freeze({
         provider: 'mediapipe', variant: 'gpu',
         label: 'MediaPipe GPU (experimental / unverified)',
+        offered: false,
         assets: Object.freeze([asset('mediapipe', 'kokoro_int8_gpu_fp16.litertlm', 294750530,
             '1ef178b127ec48c737daf17eabb4cea5f6b3ffbc510aced270fe5c267bbeac52')]),
     }),
@@ -117,13 +120,15 @@ const VARIANTS = Object.freeze({
 });
 
 export function listModelVariants() {
-    return Object.values(VARIANTS).map(entry => ({
-        key: entry.provider + '-' + entry.variant,
-        label: entry.label,
-        provider: entry.provider,
-        variant: entry.variant,
-        totalBytes: entry.assets.reduce((sum, item) => sum + item.bytes, 0),
-    }));
+    return Object.values(VARIANTS)
+        .filter(entry => entry.offered !== false)
+        .map(entry => ({
+            key: entry.provider + '-' + entry.variant,
+            label: entry.label,
+            provider: entry.provider,
+            variant: entry.variant,
+            totalBytes: entry.assets.reduce((sum, item) => sum + item.bytes, 0),
+        }));
 }
 
 export function manifestForVariant(provider, variant) {
