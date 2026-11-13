@@ -15,7 +15,7 @@ Requirements: **Node.js `^22.18.0 || >=24.11.0`** (Babel 8; CI uses Node 22) and
 ```bash
 git clone https://github.com/Fooftilly/kokoro-extension.git
 cd kokoro-extension
-npm ci --engine-strict
+npm ci --engine-strict --ignore-scripts
 ```
 
 ## Everyday commands
@@ -34,7 +34,7 @@ Load unpacked builds from `dist/chrome` or `dist/firefox` as described in the RE
 - Keep PRs bounded to one deliverable.
 - Do **not** edit generated `dist/` files; change sources and rebuild.
 - Add or update Jest coverage for behavior changes.
-- Before opening/updating a PR, run `npm ci --engine-strict`, `npm ls --all`, `npm test`, `npm run lint`, and `npm run build`.
+- Before opening/updating a PR, run `npm ci --engine-strict --ignore-scripts`, `npm ls --all`, `npm test`, `npm run lint`, and `npm run build`.
 - Do not broaden extension permissions or add telemetry without an explicit, reviewed reason.
 - Align `package.json` `version` only when intentionally cutting a release; manifests are generated from it.
 

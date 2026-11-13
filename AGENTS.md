@@ -47,14 +47,14 @@ Guidance for humans and coding agents working in this repository.
 Canonical commands (Node **`^22.18.0 || >=24.11.0`** for Babel 8; CI uses Node 22):
 
 ```bash
-npm ci --engine-strict # clean install from package-lock.json
+npm ci --engine-strict --ignore-scripts # clean install (CI-safe; no lifecycle scripts)
 npm test               # full Jest suite
 npm run lint           # ESLint on source + tests
 npm run build          # tests + write dist/chrome and dist/firefox
 npm run package        # build + zip packages (Chrome zip + web-ext Firefox zip)
 ```
 
-- Prefer `npm ci --engine-strict` over `npm install` for CI and agent clean installs.
+- Prefer `npm ci --engine-strict --ignore-scripts` over `npm install` for CI and agent clean installs.
 - `package.json` `version` is the **single source of truth**; `build.js` reads it for manifests and zip names. Do not bump the public extension version for housekeeping alone.
 
 ## Regression expectations before a PR

@@ -13,7 +13,7 @@
 ## Tests
 
 - [ ] Targeted Jest coverage for changed behavior (or N/A with reason)
-- [ ] `npm ci --engine-strict`
+- [ ] `npm ci --engine-strict --ignore-scripts`
 - [ ] `npm ls --all`
 - [ ] `npm test`
 - [ ] `npm run lint`

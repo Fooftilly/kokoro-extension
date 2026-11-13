@@ -29,7 +29,8 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --engine-strict
+        # --ignore-scripts: Sonar githubactions:S6505 (no lifecycle scripts on CI install)
+        run: npm ci --engine-strict --ignore-scripts
 
       - name: Verify dependency tree
         run: npm ls --all

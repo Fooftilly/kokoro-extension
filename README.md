@@ -78,7 +78,7 @@ Default host permissions cover localhost; non-local URLs prompt for optional hos
 ```bash
 git clone https://github.com/Fooftilly/kokoro-extension.git
 cd kokoro-extension
-npm ci --engine-strict
+npm ci --engine-strict --ignore-scripts
 npm run build
 ```
 
