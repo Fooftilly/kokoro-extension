@@ -11,6 +11,8 @@ on:
       - '.github/workflows/live-browser-acceptance.yml'
       - 'scripts/validate-live-chromium.mjs'
       - 'scripts/validate-live-firefox.py'
+      - 'scripts/firefox_article_selection_acceptance.py'
+      - 'scripts/article-selection-acceptance.mjs'
       - 'mediapipe-provider.js'
       - 'onnx-provider.js'
       - 'sha256-stream.js'
@@ -303,14 +305,20 @@ jobs:
   firefox-model-origin:
     name: Firefox MV3 model download and persistent restart acceptance
     if: ${{ github.event_name == 'workflow_dispatch' && (inputs.acceptance_scope == 'firefox-mediapipe-origin' || inputs.acceptance_scope == 'firefox-onnx-origin' || inputs.acceptance_scope == 'firefox-dual-comparison' || inputs.acceptance_scope == 'firefox-persistent-restart' || inputs.acceptance_scope == 'firefox-quota-recovery') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Keep Firefox origin on 24.04 with host Xvfb/XTest for native Alt+A
+    # article/selection (Selenium keys do not reach browser.commands).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
           cache: npm
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        id: native-python
+        with:
+          python-version: '3.12'
       - name: Install extension dependencies
         run: npm ci --ignore-scripts
       - name: Package Firefox temporary add-on
@@ -328,6 +336,12 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/firefox-selenium"
           "$RUNNER_TEMP/firefox-selenium/bin/python" -m pip install --disable-pip-version-check selenium==4.38.0
+      - name: Verify host Xvfb and native X11 input libraries
+        run: |
+          test -x /usr/bin/Xvfb
+          "${{ steps.native-python.outputs.python-path }}" -c 'import ctypes; ctypes.CDLL("libX11.so.6"); ctypes.CDLL("libXtst.so.6")'
+          xvfb-run -a -s '-screen 0 640x480x24' \
+            "${{ steps.native-python.outputs.python-path }}" "$GITHUB_WORKSPACE/scripts/test-native-chromium-dialog-key.py"
       - name: Execute manually scoped Firefox acceptance
         env:
           KOKORO_LIVE_DOWNLOAD: '1'
@@ -336,10 +350,13 @@ jobs:
           KOKORO_FIREFOX_QUOTA_ACCEPTANCE: ${{ inputs.acceptance_scope == 'firefox-quota-recovery' && '1' || '0' }}
           KOKORO_FIREFOX_PROVIDER: ${{ inputs.acceptance_scope == 'firefox-dual-comparison' && 'both' || inputs.acceptance_scope == 'firefox-onnx-origin' && 'onnx' || 'mediapipe' }}
           KOKORO_FIREFOX_DUAL_COMPARISON: ${{ inputs.acceptance_scope == 'firefox-dual-comparison' && '1' || '0' }}
+          KOKORO_NATIVE_PYTHON: ${{ steps.native-python.outputs.python-path }}
           FIREFOX_BINARY: ${{ steps.firefox.outputs.firefox-path }}
           MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: '1'
         run: |
-          "$RUNNER_TEMP/firefox-selenium/bin/python" scripts/validate-live-firefox.py
+          # Headed Firefox under Xvfb so read-article Alt+A reaches commands.
+          xvfb-run -a -s '-screen 0 1440x900x24' \
+            "$RUNNER_TEMP/firefox-selenium/bin/python" scripts/validate-live-firefox.py
       - name: Upload official-origin Firefox acceptance report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
