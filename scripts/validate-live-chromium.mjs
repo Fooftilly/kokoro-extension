@@ -13,6 +13,14 @@ import {
     READER_ACCEPTANCE_SPEECH,
     buildReaderAcceptanceEpub,
 } from './reader-acceptance-epub.mjs';
+import {
+    ARTICLE_SELECTION_SPEECH,
+    articleSelectionStorageConfig,
+    assertDistinctArticleSelectionAudioHashes,
+    buildArticleSelectionFixtureHtml,
+    originArticleSelectionStageEnabled,
+    requireArticleSelectionBackend,
+} from './article-selection-acceptance.mjs';
 // The extension's .js modules are ESM while package.json is CommonJS for the
 // build tool. Copy the pure catalog into a temporary .mjs file for the Node harness.
 const catalogFile = path.join(os.tmpdir(), 'kokoro-runtime-model-catalog.mjs');
@@ -707,6 +715,285 @@ async function pollRealEpubChapterReady(
     };
 }
 
+/**
+ * Real webpage selection (floating mic) and article extract (PARSE_ARTICLE →
+ * full overlay) against a loopback fixture. Chromium ONNX origin only for KE-11.
+ */
+async function acceptRealArticleAndSelection(page, context, extensionId, backend) {
+    requireArticleSelectionBackend(backend);
+    const fixtureHtml = buildArticleSelectionFixtureHtml();
+    const fixtureServer = createServer((req, res) => {
+        if (req.method === 'GET' && (req.url === '/' || req.url === '/article.html')) {
+            res.writeHead(200, {
+                'Content-Type': 'text/html; charset=utf-8',
+                'Cache-Control': 'no-store',
+            });
+            res.end(fixtureHtml);
+            return;
+        }
+        res.writeHead(404);
+        res.end();
+    });
+    await new Promise(resolve => fixtureServer.listen(0, '127.0.0.1', resolve));
+    const fixturePort = fixtureServer.address().port;
+    const fixtureUrl = 'http://127.0.0.1:' + fixturePort + '/article.html';
+
+    const worker = context.serviceWorkers()[0];
+    if (!worker) throw Error('Extension service worker missing for article/selection');
+
+    try {
+        // Fixture pages have no chrome.*; drive extension storage from the SW.
+        await worker.evaluate(async (storage) => {
+            await chrome.storage.sync.set(storage);
+            await chrome.storage.local.remove([
+                'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
+                'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
+            ]);
+        }, articleSelectionStorageConfig(backend));
+
+        // Fixture is loopback HTTP; Playwright offline mode blocks it.
+        await context.setOffline(false);
+        await page.goto(fixtureUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForFunction(() =>
+            document.getElementById('selection-sentence') &&
+            document.getElementById('article-first'),
+        null, { timeout: 15000 });
+
+        const tabId = await worker.evaluate(async (url) => {
+            const tabs = await chrome.tabs.query({ url });
+            if (!tabs.length) throw Error('Fixture tab not found for ' + url);
+            return tabs[0].id;
+        }, fixtureUrl);
+        await worker.evaluate(async (id) => {
+            // Ensure content scripts are listening before selection/article.
+            try {
+                await chrome.tabs.sendMessage(id, { action: 'PING' });
+            } catch {
+                await chrome.scripting.executeScript({
+                    target: { tabId: id },
+                    files: [
+                        'browser-polyfill.min.js', 'readability.js',
+                        'overlay-position.js', 'content.js',
+                    ],
+                });
+                await new Promise(r => setTimeout(r, 150));
+                await chrome.tabs.sendMessage(id, { action: 'PING' });
+            }
+        }, tabId);
+
+        await context.setOffline(true);
+
+        const waitForOverlayWav = async (expectedSpeech, mode) => {
+            const deadline = Date.now() + 180000;
+            let lastError = null;
+            while (Date.now() < deadline) {
+                try {
+                    const stored = await worker.evaluate(async () => chrome.storage.local.get([
+                        'pendingText', 'pendingContent', 'pendingTtsBackend',
+                        'pendingApiUrl', 'pendingAutoplay',
+                    ]));
+                    const blocks = stored.pendingContent;
+                    const speechOk = Array.isArray(blocks) &&
+                        blocks.some(block => typeof block?.content === 'string' &&
+                            block.content.includes(expectedSpeech));
+                    if (!speechOk) {
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                        continue;
+                    }
+                    const hostMode = await page.evaluate(() =>
+                        document.getElementById('kokoro-overlay-container')?.dataset.mode || null);
+                    if (mode && hostMode !== mode) {
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                        continue;
+                    }
+                    // Overlay iframe is chrome-extension:// — page JS cannot read it.
+                    // Playwright frames can.
+                    const overlayFrame = page.frames().find(frame =>
+                        frame.url().includes('/overlay.html'));
+                    if (!overlayFrame) {
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                        continue;
+                    }
+                    const snapshot = await overlayFrame.evaluate(async (storedState) => {
+                        const audio = document.getElementById('audio');
+                        const status = document.getElementById('status');
+                        const spinner = document.getElementById('loadingSpinner');
+                        const audioUrl = audio?.src;
+                        if (!audioUrl?.startsWith('blob:') ||
+                            spinner?.style.display !== 'none' ||
+                            status?.textContent === 'Error playing audio.' ||
+                            navigator.onLine !== false) {
+                            return null;
+                        }
+                        let response;
+                        let bytes;
+                        try {
+                            response = await fetch(audioUrl);
+                            if (!response.ok) return null;
+                            bytes = new Uint8Array(await response.arrayBuffer());
+                        } catch {
+                            return null;
+                        }
+                        if (audio.src !== audioUrl ||
+                            document.getElementById('loadingSpinner')?.style.display !== 'none') {
+                            return null;
+                        }
+                        const tag = (offset, count) =>
+                            String.fromCharCode(...bytes.subarray(offset, offset + count));
+                        const header = bytes.byteLength >= 44
+                            ? new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+                            : null;
+                        const audioBytes = header?.getUint32(40, true) ?? 0;
+                        if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
+                            header?.getUint32(24, true) !== 24000 || audioBytes < 2 ||
+                            bytes.length !== 44 + audioBytes) {
+                            throw Error('Article/selection overlay WAV mismatch: ' +
+                                JSON.stringify({
+                                    length: bytes.length, riff: tag(0, 4), wave: tag(8, 4),
+                                    rate: header?.getUint32(24, true) ?? null, audioBytes,
+                                }));
+                        }
+                        const digest = await crypto.subtle.digest('SHA-256', bytes);
+                        const audioSha256 = [...new Uint8Array(digest)]
+                            .map(b => b.toString(16).padStart(2, '0')).join('');
+                        return {
+                            audioBytes,
+                            audioSha256,
+                            backend: storedState.pendingTtsBackend,
+                            serverUrl: storedState.pendingApiUrl,
+                            pendingText: storedState.pendingText || '',
+                            blockCount: Array.isArray(storedState.pendingContent)
+                                ? storedState.pendingContent.length : 0,
+                            autoplay: storedState.pendingAutoplay === true,
+                            offline: navigator.onLine === false,
+                        };
+                    }, stored);
+                    if (snapshot) {
+                        return {
+                            speech: expectedSpeech,
+                            mode: hostMode,
+                            ...snapshot,
+                        };
+                    }
+                } catch (error) {
+                    const message = String(error);
+                    if (message.includes('Article/selection overlay WAV mismatch')) throw error;
+                    lastError = error;
+                }
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            throw Error('Timed out waiting for article/selection overlay WAV for ' +
+                expectedSpeech + (lastError ? (': ' + lastError) : ''));
+        };
+
+        // Selection: real floating-mic UI → REQUEST_TTS → handleTtsAction.
+        await page.evaluate(() => {
+            const el = document.getElementById('selection-sentence');
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        });
+        await page.waitForSelector('#kokoro-float-btn', {
+            state: 'visible', timeout: 15000,
+        });
+        await page.locator('#kokoro-float-btn').click();
+        const selectionSnap = await waitForOverlayWav(
+            ARTICLE_SELECTION_SPEECH.selection, 'popup');
+        if (selectionSnap.backend !== backend ||
+            selectionSnap.serverUrl !== null && selectionSnap.serverUrl !== '') {
+            throw Error('Selection overlay left local backend: ' +
+                JSON.stringify(selectionSnap));
+        }
+
+        await worker.evaluate(async (id) => {
+            await chrome.tabs.sendMessage(id, { action: 'REMOVE_PLAYER' });
+            await chrome.storage.local.remove([
+                'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
+                'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
+            ]);
+        }, tabId);
+        await page.waitForFunction(
+            () => !document.getElementById('kokoro-overlay-container'),
+            null, { timeout: 15000 });
+
+        // Article: real content-script PARSE_ARTICLE, then the same local
+        // storage + SHOW_PLAYER(full) path handleTtsAction uses after parse.
+        const articleSeed = await worker.evaluate(async ({ id, ttsBackend }) => {
+            const parsed = await chrome.tabs.sendMessage(id, { action: 'PARSE_ARTICLE' });
+            if (!parsed?.text || !Array.isArray(parsed.content)) {
+                throw Error('PARSE_ARTICLE failed: ' + JSON.stringify(parsed));
+            }
+            await chrome.storage.local.set({
+                pendingText: parsed.text,
+                pendingContent: parsed.content,
+                pendingTtsBackend: ttsBackend,
+                pendingApiUrl: null,
+                pendingMediaPipeVariant: 'cpu',
+                pendingLocalVoice: 'af_heart',
+                pendingTitle: 'Kokoro Article Acceptance',
+                pendingAutoplay: true,
+            });
+            await chrome.tabs.sendMessage(id, { action: 'SHOW_PLAYER', mode: 'full' });
+            return {
+                text: parsed.text,
+                blockCount: parsed.content.length,
+            };
+        }, { id: tabId, ttsBackend: backend });
+        if (!articleSeed.text.includes(ARTICLE_SELECTION_SPEECH.articleFirst) ||
+            !articleSeed.text.includes(ARTICLE_SELECTION_SPEECH.articleSecond)) {
+            throw Error('Article extract missed fixture paragraphs: ' +
+                JSON.stringify(articleSeed));
+        }
+        const articleSnap = await waitForOverlayWav(
+            ARTICLE_SELECTION_SPEECH.articleFirst, 'full');
+        if (articleSnap.backend !== backend ||
+            (articleSnap.serverUrl !== null && articleSnap.serverUrl !== '')) {
+            throw Error('Article overlay left local backend: ' +
+                JSON.stringify(articleSnap));
+        }
+
+        assertDistinctArticleSelectionAudioHashes(
+            selectionSnap.audioSha256, articleSnap.audioSha256);
+
+        await worker.evaluate(async (id) => {
+            await chrome.tabs.sendMessage(id, { action: 'REMOVE_PLAYER' }).catch(() => {});
+        }, tabId);
+
+        return {
+            success: true,
+            browser: 'Chromium',
+            backend,
+            fixtureUrl,
+            selection: {
+                path: 'floating-mic',
+                mode: selectionSnap.mode,
+                speech: ARTICLE_SELECTION_SPEECH.selection,
+                audioBytes: selectionSnap.audioBytes,
+                audioSha256: selectionSnap.audioSha256,
+            },
+            article: {
+                path: 'parse-article-show-player',
+                mode: articleSnap.mode,
+                speech: ARTICLE_SELECTION_SPEECH.articleFirst,
+                extractedTextIncludesBothParagraphs: true,
+                blockCount: articleSeed.blockCount,
+                audioBytes: articleSnap.audioBytes,
+                audioSha256: articleSnap.audioSha256,
+            },
+            local24kHzWav: true,
+            differentAudioPerPath: true,
+            offline: true,
+            noServerFallback: true,
+            userBackendUnchanged: true,
+        };
+    } finally {
+        await new Promise(resolve => fixtureServer.close(resolve));
+    }
+}
+
 // Verify that the real EPUB.js reader and embedded overlay—not a seeded
 // pendingContent shortcut—create a local offline WAV for both chapters.
 // Also cover replacing the book with a TXT file through the same UI.
@@ -1020,6 +1307,7 @@ try {
         let onnxOverlayAcceptance = null;
         let localBenchmarkAcceptance = null;
         let epubReaderAcceptance = null;
+        let articleSelectionAcceptance = null;
         page.on('pageerror', error => errors.push(String(error)));
         page.on('crash', () => { crashed = true; });
         try {
@@ -1331,17 +1619,25 @@ try {
                 epubReaderAcceptance = await acceptRealEpubReader(
                     page, extensionId, manifest.provider);
             }
+            if (originArticleSelectionStageEnabled(
+                originDownload, manifest.provider, result.success)) {
+                stage = 'offline-real-article-and-selection';
+                articleSelectionAcceptance = await acceptRealArticleAndSelection(
+                    page, context, extensionId, manifest.provider);
+            }
             console.log(result.success ? 'REAL MODEL INFERENCE' : 'MODEL INFERENCE FAILURE', result);
             results.push({ provider: manifest.provider, variant: manifest.variant,
                 offlineAttempted: true, offlineInference: result.success === true,
                 originModelAcceptance, onnxPlaybackAcceptance, onnxOverlayAcceptance,
-                localBenchmarkAcceptance, epubReaderAcceptance, ...result });
+                localBenchmarkAcceptance, epubReaderAcceptance,
+                articleSelectionAcceptance, ...result });
             await saveReport();
         } catch (error) {
             const failure = { provider: manifest.provider, variant: manifest.variant,
                 success: false, crashed, stage, originModelAcceptance,
                 onnxPlaybackAcceptance, onnxOverlayAcceptance,
-                localBenchmarkAcceptance, epubReaderAcceptance, error: String(error) };
+                localBenchmarkAcceptance, epubReaderAcceptance,
+                articleSelectionAcceptance, error: String(error) };
             results.push(failure);
             await saveReport();
             console.error('MODEL VALIDATION ABORTED', failure);
