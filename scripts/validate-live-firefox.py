@@ -23,6 +23,13 @@ from selenium.webdriver.firefox.service import Service as FirefoxService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 
+from firefox_article_selection_acceptance import (
+    assert_distinct_article_selection_audio_hashes,
+    article_selection_storage_config,
+    load_article_selection_fixture,
+    origin_article_selection_stage_enabled,
+    require_article_selection_backend,
+)
 from firefox_epub_acceptance import (
     assert_distinct_chapter_audio_hashes,
     epub_backend_variant,
@@ -1688,6 +1695,520 @@ def run_offline_epub_reader_acceptance(driver, origin, result, backend):
     return report
 
 
+def _set_firefox_network_offline(driver, offline):
+    """Force Firefox offline/online via chrome-privileged Services.io."""
+    driver.set_context("chrome")
+    try:
+        return driver.execute_script("""
+            Services.io.manageOfflineStatus = false;
+            Services.io.offline = arguments[0];
+            return Services.io.offline;
+        """, bool(offline))
+    finally:
+        driver.set_context("content")
+
+
+def _start_article_selection_fixture_server(html):
+    """Loopback HTTP fixture for Readability + floating-mic acceptance."""
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path.split("?", 1)[0] in ("/", "/article.html"):
+                body = html.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self.send_error(404)
+
+        def log_message(self, *args):
+            return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+    return server, f"http://127.0.0.1:{port}/article.html"
+
+
+def _extension_async(driver, script, *args):
+    """Run an async browser.* script while the driver is on an extension page."""
+    return driver.execute_async_script(script, *args)
+
+
+def _on_extension_page(driver, origin, script, *args):
+    """Open benchmark.html briefly so browser.* APIs are available, then restore."""
+    fixture_handle = driver.current_window_handle
+    handles_before = set(driver.window_handles)
+    driver.switch_to.new_window("tab")
+    new_handles = set(driver.window_handles) - handles_before
+    ext_handle = next(iter(new_handles))
+    try:
+        driver.get(origin + "/benchmark.html")
+        WebDriverWait(driver, 30).until(
+            lambda d: d.execute_script("return Boolean(window.KokoroBenchmark)"))
+        return _extension_async(driver, script, *args)
+    finally:
+        driver.close()
+        driver.switch_to.window(fixture_handle)
+
+
+def _seed_article_selection_storage(driver, origin, backend):
+    storage = article_selection_storage_config(backend)
+    seeded = _on_extension_page(driver, origin, """
+        const [stored, done] = arguments;
+        (async () => {
+            await browser.storage.sync.set(stored);
+            await browser.storage.local.remove([
+                'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
+                'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
+            ]);
+            done({ success: true });
+        })().catch(e => done({ success: false, error: String(e) }));
+    """, storage)
+    if not seeded.get("success"):
+        raise RuntimeError(
+            "Cannot seed Firefox article/selection storage: " + str(seeded))
+
+
+def _ensure_article_content_script(driver, origin, fixture_url):
+    ensured = _on_extension_page(driver, origin, """
+        const [fixtureUrl, done] = arguments;
+        (async () => {
+            const tabs = await browser.tabs.query({ url: fixtureUrl });
+            if (!tabs.length) throw Error('Fixture tab not found for ' + fixtureUrl);
+            const tabId = tabs[0].id;
+            try {
+                await browser.tabs.sendMessage(tabId, { action: 'PING' });
+            } catch {
+                await browser.scripting.executeScript({
+                    target: { tabId },
+                    files: [
+                        'browser-polyfill.min.js', 'readability.js',
+                        'overlay-position.js', 'content.js',
+                    ],
+                });
+                await new Promise(r => setTimeout(r, 150));
+                await browser.tabs.sendMessage(tabId, { action: 'PING' });
+            }
+            await browser.tabs.update(tabId, { active: true });
+            done({ success: true, tabId });
+        })().catch(e => done({ success: false, error: String(e) }));
+    """, fixture_url)
+    if not ensured.get("success"):
+        raise RuntimeError(
+            "Cannot ensure Firefox content script on fixture: " + str(ensured))
+    return ensured["tabId"]
+
+
+def _wait_article_overlay_wav(driver, origin, expected_speech, mode,
+                              exclude_audio_sha256=None, timeout=180):
+    """Poll extension storage + overlay iframe for a valid offline 24 kHz WAV."""
+    deadline = time.time() + timeout
+    last_error = None
+    while time.time() < deadline:
+        try:
+            stored = _on_extension_page(driver, origin, """
+                const done = arguments[arguments.length - 1];
+                browser.storage.local.get([
+                    'pendingText', 'pendingContent', 'pendingTtsBackend',
+                    'pendingApiUrl', 'pendingAutoplay',
+                ]).then(done, e => done({ error: String(e) }));
+            """)
+            if stored.get("error"):
+                raise RuntimeError(stored["error"])
+            blocks = stored.get("pendingContent")
+            speech_ok = isinstance(blocks, list) and any(
+                isinstance(block, dict) and
+                isinstance(block.get("content"), str) and
+                expected_speech in block["content"]
+                for block in blocks)
+            if not speech_ok:
+                time.sleep(0.1)
+                continue
+            host_mode = driver.execute_script("""
+                return document.getElementById('kokoro-overlay-container')
+                    ?.dataset.mode || null;
+            """)
+            if mode and host_mode != mode:
+                time.sleep(0.1)
+                continue
+            frames = driver.find_elements(
+                By.CSS_SELECTOR, "#kokoro-overlay-container iframe")
+            if not frames:
+                time.sleep(0.1)
+                continue
+            driver.switch_to.frame(frames[0])
+            try:
+                snapshot = driver.execute_async_script("""
+                    const [storedState, excludeSha, done] = arguments;
+                    (async () => {
+                        const audio = document.getElementById('audio');
+                        const status = document.getElementById('status');
+                        const spinner = document.getElementById('loadingSpinner');
+                        const audioUrl = audio?.src;
+                        if (!audioUrl?.startsWith('blob:') ||
+                            spinner?.style.display !== 'none' ||
+                            status?.textContent === 'Error playing audio.' ||
+                            navigator.onLine !== false) {
+                            done(null);
+                            return;
+                        }
+                        let response;
+                        let bytes;
+                        try {
+                            response = await fetch(audioUrl);
+                            if (!response.ok) { done(null); return; }
+                            bytes = new Uint8Array(await response.arrayBuffer());
+                        } catch {
+                            done(null);
+                            return;
+                        }
+                        if (audio.src !== audioUrl ||
+                            document.getElementById('loadingSpinner')
+                                ?.style.display !== 'none') {
+                            done(null);
+                            return;
+                        }
+                        const tag = (offset, count) => String.fromCharCode(
+                            ...bytes.subarray(offset, offset + count));
+                        const header = bytes.byteLength >= 44
+                            ? new DataView(
+                                bytes.buffer, bytes.byteOffset, bytes.byteLength)
+                            : null;
+                        const audioBytes = header?.getUint32(40, true) ?? 0;
+                        if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
+                            header?.getUint32(24, true) !== 24000 ||
+                            audioBytes < 2 ||
+                            bytes.length !== 44 + audioBytes) {
+                            throw Error(
+                                'Firefox article/selection overlay WAV mismatch: ' +
+                                JSON.stringify({
+                                    length: bytes.length, riff: tag(0, 4),
+                                    wave: tag(8, 4),
+                                    rate: header?.getUint32(24, true) ?? null,
+                                    audioBytes,
+                                }));
+                        }
+                        const digest = await crypto.subtle.digest(
+                            'SHA-256', bytes);
+                        const audioSha256 = [...new Uint8Array(digest)]
+                            .map(b => b.toString(16).padStart(2, '0')).join('');
+                        if (excludeSha && audioSha256 === excludeSha) {
+                            done(null);
+                            return;
+                        }
+                        done({
+                            audioBytes, audioSha256,
+                            backend: storedState.pendingTtsBackend,
+                            serverUrl: storedState.pendingApiUrl,
+                            pendingText: storedState.pendingText || '',
+                            blockCount: Array.isArray(storedState.pendingContent)
+                                ? storedState.pendingContent.length : 0,
+                            autoplay: storedState.pendingAutoplay === true,
+                            offline: navigator.onLine === false,
+                        });
+                    })().catch(e => done({ error: String(e) }));
+                """, stored, exclude_audio_sha256)
+            finally:
+                driver.switch_to.default_content()
+            if snapshot and snapshot.get("error"):
+                raise RuntimeError(snapshot["error"])
+            if snapshot:
+                return {"speech": expected_speech, "mode": host_mode, **snapshot}
+        except Exception as exc:
+            message = str(exc)
+            if "WAV mismatch" in message:
+                raise
+            last_error = exc
+        time.sleep(0.1)
+    raise RuntimeError(
+        "Timed out waiting for Firefox article/selection overlay WAV for " +
+        expected_speech +
+        ((": " + str(last_error)) if last_error else ""))
+
+
+def _accept_firefox_floating_mic(driver, origin, fixture_url, backend, speech):
+    driver.execute_script("""
+        const el = document.getElementById('selection-sentence');
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    """)
+    WebDriverWait(driver, 15).until(
+        lambda d: d.find_element(By.ID, "kokoro-float-btn").is_displayed())
+    driver.find_element(By.ID, "kokoro-float-btn").click()
+    selection_snap = _wait_article_overlay_wav(
+        driver, origin, speech["selection"], "popup")
+    if (selection_snap.get("backend") != backend or
+            (selection_snap.get("serverUrl") not in (None, ""))):
+        raise RuntimeError(
+            "Selection overlay left local backend: " + json.dumps(selection_snap))
+    removed = _on_extension_page(driver, origin, """
+        const [fixtureUrl, done] = arguments;
+        (async () => {
+            const tabs = await browser.tabs.query({ url: fixtureUrl });
+            if (!tabs.length) throw Error('Fixture tab missing during cleanup');
+            const tabId = tabs[0].id;
+            await browser.tabs.sendMessage(tabId, { action: 'REMOVE_PLAYER' })
+                .catch(() => {});
+            await browser.storage.local.remove([
+                'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
+                'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
+            ]);
+            await browser.tabs.update(tabId, { active: true });
+            done({ success: true });
+        })().catch(e => done({ success: false, error: String(e) }));
+    """, fixture_url)
+    if not removed.get("success"):
+        raise RuntimeError(
+            "Cannot clear Firefox selection player: " + str(removed))
+    WebDriverWait(driver, 15).until(
+        lambda d: d.execute_script(
+            "return !document.getElementById('kokoro-overlay-container')"))
+    return selection_snap
+
+
+def _probe_firefox_parse_article(driver, origin, fixture_url, speech):
+    probed = _on_extension_page(driver, origin, """
+        const [fixtureUrl, done] = arguments;
+        (async () => {
+            const tabs = await browser.tabs.query({ url: fixtureUrl });
+            if (!tabs.length) throw Error('Fixture tab missing for PARSE_ARTICLE');
+            const parsed = await browser.tabs.sendMessage(
+                tabs[0].id, { action: 'PARSE_ARTICLE' });
+            if (!parsed?.text || !Array.isArray(parsed.content)) {
+                throw Error('PARSE_ARTICLE failed: ' + JSON.stringify(parsed));
+            }
+            done({
+                success: true,
+                text: parsed.text,
+                blockCount: parsed.content.length,
+            });
+        })().catch(e => done({ success: false, error: String(e) }));
+    """, fixture_url)
+    if not probed.get("success"):
+        raise RuntimeError("Firefox PARSE_ARTICLE probe failed: " + str(probed))
+    if (speech["articleFirst"] not in probed["text"] or
+            speech["articleSecond"] not in probed["text"]):
+        raise RuntimeError(
+            "Article extract missed fixture paragraphs: " + json.dumps(probed))
+    return probed
+
+
+def _send_native_read_article_alt_a():
+    """Real X11 Alt+A — Selenium keys do not reach browser.commands.onCommand."""
+    native_python = os.environ.get("KOKORO_NATIVE_PYTHON") or "python3"
+    helper = Path(__file__).resolve().parent / "native-chromium-keys.py"
+    try:
+        raw = subprocess.check_output(
+            [native_python, str(helper), "Alt_L", "a"],
+            text=True, timeout=5).strip()
+        native_alt_a = json.loads(raw)
+    except Exception as exc:
+        raise RuntimeError(
+            "Cannot send native Alt+A for Firefox read-article: " + str(exc))
+    if (native_alt_a.get("x11XTest") is not True or
+            native_alt_a.get("nativeKeys") != "Alt_L a"):
+        raise RuntimeError(
+            "Native X11 input did not confirm Alt+A: " + json.dumps(native_alt_a))
+    return native_alt_a
+
+
+def _accept_firefox_read_article_command(
+        driver, origin, fixture_url, backend, speech, exclude_audio_sha256=None):
+    WebDriverWait(driver, 15).until(
+        lambda d: d.execute_script(
+            "return !document.getElementById('kokoro-overlay-container')"))
+    prepared = _on_extension_page(driver, origin, """
+        const [fixtureUrl, backend, done] = arguments;
+        (async () => {
+            const tabs = await browser.tabs.query({ url: fixtureUrl });
+            if (!tabs.length) throw Error('Fixture tab missing before Alt+A');
+            const tabId = tabs[0].id;
+            let playerActive = false;
+            try {
+                const response = await browser.tabs.sendMessage(tabId, {
+                    action: 'CHECK_PLAYER_ACTIVE',
+                });
+                playerActive = Boolean(response?.active);
+            } catch {
+                playerActive = false;
+            }
+            if (playerActive) {
+                throw Error('Selection player still active before native Alt+A');
+            }
+            await browser.storage.local.remove([
+                'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
+                'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
+            ]);
+            await browser.tabs.update(tabId, { active: true });
+            const commands = await browser.commands.getAll();
+            const bindings = commands.map(entry => ({
+                name: entry.name, shortcut: entry.shortcut || '',
+            }));
+            const readArticle = bindings.find(entry => entry.name === 'read-article');
+            done({
+                success: true,
+                bindings,
+                shortcut: readArticle?.shortcut || '',
+            });
+        })().catch(e => done({ success: false, error: String(e) }));
+    """, fixture_url, backend)
+    if not prepared.get("success"):
+        raise RuntimeError(
+            "Cannot prepare Firefox read-article: " + str(prepared))
+    if not prepared.get("shortcut"):
+        raise RuntimeError(
+            "read-article command has no registered shortcut: " +
+            json.dumps(prepared.get("bindings")))
+    driver.find_element(By.TAG_NAME, "body").click()
+    time.sleep(0.3)
+    native_alt_a = _send_native_read_article_alt_a()
+    armed_deadline = time.time() + 20
+    armed = None
+    while time.time() < armed_deadline:
+        armed = _on_extension_page(driver, origin, """
+            const done = arguments[arguments.length - 1];
+            browser.storage.local.get([
+                'pendingText', 'pendingContent', 'pendingTtsBackend',
+            ]).then(done, e => done({ error: String(e) }));
+        """)
+        if (isinstance(armed.get("pendingText"), str) and
+                speech["articleFirst"] in armed["pendingText"] and
+                armed.get("pendingTtsBackend") == backend):
+            break
+        armed = None
+        time.sleep(0.1)
+    if not armed:
+        raise RuntimeError(
+            "Native Alt+A did not arm Firefox read-article storage: " +
+            json.dumps({
+                "nativeAltA": native_alt_a,
+                "shortcut": prepared.get("shortcut"),
+            }))
+    article_snap = _wait_article_overlay_wav(
+        driver, origin, speech["articleFirst"], "full",
+        exclude_audio_sha256=exclude_audio_sha256)
+    if (article_snap.get("backend") != backend or
+            (article_snap.get("serverUrl") not in (None, ""))):
+        raise RuntimeError(
+            "Article overlay left local backend: " + json.dumps(article_snap))
+    if (speech["articleFirst"] not in article_snap.get("pendingText", "") or
+            speech["articleSecond"] not in article_snap.get("pendingText", "")):
+        raise RuntimeError(
+            "read-article command did not store extracted article text: " +
+            json.dumps({
+                "pendingText": article_snap.get("pendingText"),
+                "blockCount": article_snap.get("blockCount"),
+            }))
+    if article_snap.get("blockCount", 0) < 1:
+        raise RuntimeError("read-article command stored empty pendingContent")
+    return {
+        "articleSnap": article_snap,
+        "shortcut": prepared["shortcut"],
+        "nativeAltA": native_alt_a,
+    }
+
+
+def accept_real_article_and_selection(driver, origin, backend):
+    """Real webpage selection + Alt+A read-article against a loopback fixture."""
+    require_article_selection_backend(backend)
+    fixture = load_article_selection_fixture()
+    html = fixture["html"]
+    speech = fixture["speech"]
+    server, fixture_url = _start_article_selection_fixture_server(html)
+    try:
+        _seed_article_selection_storage(driver, origin, backend)
+        # Services.io.offline blocks loopback; briefly go online for page.goto.
+        _set_firefox_network_offline(driver, False)
+        driver.get(fixture_url)
+        WebDriverWait(driver, 30).until(
+            lambda d: d.execute_script(
+                "return Boolean(document.getElementById('selection-sentence') && "
+                "document.getElementById('article-first'))"))
+        _ensure_article_content_script(driver, origin, fixture_url)
+        offline = _set_firefox_network_offline(driver, True)
+        if not offline or driver.execute_script("return navigator.onLine !== false"):
+            raise RuntimeError(
+                "Firefox did not re-enter offline mode before article/selection TTS")
+
+        selection_snap = _accept_firefox_floating_mic(
+            driver, origin, fixture_url, backend, speech)
+        article_extract = _probe_firefox_parse_article(
+            driver, origin, fixture_url, speech)
+        article_path = _accept_firefox_read_article_command(
+            driver, origin, fixture_url, backend, speech,
+            exclude_audio_sha256=selection_snap.get("audioSha256"))
+        article_snap = article_path["articleSnap"]
+        assert_distinct_article_selection_audio_hashes(
+            selection_snap["audioSha256"], article_snap["audioSha256"])
+
+        _on_extension_page(driver, origin, """
+            const [fixtureUrl, done] = arguments;
+            (async () => {
+                const tabs = await browser.tabs.query({ url: fixtureUrl });
+                if (tabs.length) {
+                    await browser.tabs.sendMessage(
+                        tabs[0].id, { action: 'REMOVE_PLAYER' }).catch(() => {});
+                }
+                done({ success: true });
+            })().catch(e => done({ success: false, error: String(e) }));
+        """, fixture_url)
+
+        return {
+            "success": True,
+            "browser": "Firefox",
+            "backend": backend,
+            "fixtureUrl": fixture_url,
+            "selection": {
+                "path": "floating-mic",
+                "mode": selection_snap.get("mode"),
+                "speech": speech["selection"],
+                "audioBytes": selection_snap.get("audioBytes"),
+                "audioSha256": selection_snap.get("audioSha256"),
+            },
+            "article": {
+                "path": "read-article-command-native-x11",
+                "shortcut": article_path["shortcut"],
+                "nativeKeys": article_path["nativeAltA"].get("nativeKeys"),
+                "mode": article_snap.get("mode"),
+                "speech": speech["articleFirst"],
+                "extractedTextIncludesBothParagraphs": True,
+                "parseArticleProbeBlockCount": article_extract["blockCount"],
+                "blockCount": article_snap.get("blockCount"),
+                "audioBytes": article_snap.get("audioBytes"),
+                "audioSha256": article_snap.get("audioSha256"),
+            },
+            "local24kHzWav": True,
+            "differentAudioPerPath": True,
+            "offline": True,
+            "noServerFallback": True,
+            "userBackendUnchanged": True,
+        }
+    finally:
+        try:
+            server.shutdown()
+        except Exception:
+            pass
+        try:
+            server.server_close()
+        except Exception:
+            pass
+
+
+def run_offline_article_selection_acceptance(driver, origin, result, backend):
+    """Opt-in article/selection stage for Firefox ONNX origin; restores manager UI."""
+    result["stage"] = "offline-real-article-and-selection"
+    report = accept_real_article_and_selection(driver, origin, backend)
+    _return_to_benchmark_for_model_remove(driver, origin, backend)
+    return report
+
+
 def main():
     if os.environ.get("KOKORO_LIVE_DOWNLOAD") != "1":
         raise RuntimeError("Explicit model download opt-in is required")
@@ -1753,7 +2274,10 @@ def main():
                 threading.Thread(target=server.serve_forever, daemon=True).start()
             options = Options()
             options.binary_location = os.environ["FIREFOX_BINARY"]
-            options.add_argument("-headless")
+            # Headed under Xvfb so native X11 Alt+A reaches browser.commands
+            # (article/selection). Keep -headless only when no DISPLAY is set.
+            if not os.environ.get("DISPLAY"):
+                options.add_argument("-headless")
             options.set_preference("xpinstall.signatures.required", False)
             options.set_preference("extensions.experiments.enabled", True)
             driver = webdriver.Firefox(options=options)
@@ -2330,6 +2854,15 @@ def main():
                 epub_reader_acceptance = run_offline_epub_reader_acceptance(
                     driver, state["origin"], result, provider)
 
+            # Real webpage floating-mic selection + native Alt+A read-article.
+            # Firefox ONNX origin only for this Phase A slice (Chromium #139).
+            article_selection_acceptance = None
+            if origin_article_selection_stage_enabled(
+                    origin_download, provider, metrics.get("success")):
+                article_selection_acceptance = (
+                    run_offline_article_selection_acceptance(
+                        driver, state["origin"], result, provider))
+
             if origin_download and metrics.get("success"):
                 # Close the active engine before Remove; no re-download may
                 # occur and other-provider assets must not be modified.
@@ -2395,6 +2928,7 @@ def main():
                 "onnxOverlayAcceptance": overlay_acceptance,
                 "localBenchmarkAcceptance": benchmark_acceptance,
                 "epubReaderAcceptance": epub_reader_acceptance,
+                "articleSelectionAcceptance": article_selection_acceptance,
                 "offlineAttempted": True,
                 "offlineInference": metrics.get("success") is True,
                 "cachePopulation": (
@@ -2430,6 +2964,9 @@ def main():
                 result["localBenchmarkAcceptance"] = benchmark_acceptance
             if "epub_reader_acceptance" in locals() and epub_reader_acceptance is not None:
                 result["epubReaderAcceptance"] = epub_reader_acceptance
+            if ("article_selection_acceptance" in locals() and
+                    article_selection_acceptance is not None):
+                result["articleSelectionAcceptance"] = article_selection_acceptance
             raise
         finally:
             output.write_text(json.dumps(result, indent=2), encoding="utf-8")
