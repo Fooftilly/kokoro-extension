@@ -92,6 +92,7 @@ function resetPickerState() {
 
 function openDocumentPicker() {
     resetPickerState();
+    clearPickerDragState();
     filePickerOverlay.style.display = 'flex';
 }
 
@@ -114,6 +115,7 @@ function cancelDocumentPicker() {
         activeFileReader.abort();
     }
     resetPickerState();
+    clearPickerDragState();
     filePickerOverlay.style.display = 'none';
     if (deferredChapterEndRevision !== null) {
         continueAfterChapter(deferredChapterEndRevision);
@@ -145,6 +147,11 @@ function preventDefaults(e) {
 function setPickerDragActive(active) {
     filePickerOverlay.classList.toggle('drag-active', active);
     dropZone.classList.toggle('drag-active', active);
+}
+
+function clearPickerDragState() {
+    pickerDragDepth = 0;
+    setPickerDragActive(false);
 }
 
 ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
@@ -188,6 +195,7 @@ async function handleFile(file) {
         else await loadTextDocument(file, format, requestId);
         // Only a successfully parsed and current document may hide the picker.
         if (requestId === fileRequestId) {
+            clearPickerDragState();
             filePickerOverlay.style.display = 'none';
             cancelDocumentPickerButton.hidden = !hasOpenDocument();
         }

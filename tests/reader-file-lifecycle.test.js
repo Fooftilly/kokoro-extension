@@ -1188,27 +1188,59 @@ describe('EPUB file read/parse lifecycle', () => {
         const path = require('path');
         const css = fs.readFileSync(path.join(__dirname, '..', 'reader.css'), 'utf8');
         const js = fs.readFileSync(path.join(__dirname, '..', 'reader.js'), 'utf8');
-        expect(css).toMatch(/#filePickerOverlay\.drag-active\s*\{/);
+        const overlayDragRule = css.match(/#filePickerOverlay\.drag-active\s*\{([^}]+)\}/);
+        expect(overlayDragRule).not.toBeNull();
+        expect(overlayDragRule[1]).toMatch(/background-color\s*:\s*var\(--hover-color\)/);
         expect(css).toMatch(/#filePickerOverlay\.drag-active\s+\.picker-content/);
         expect(js).toMatch(/filePickerOverlay\.addEventListener\('dragenter'/);
         expect(js).toMatch(/setPickerDragActive/);
+        expect(js).toMatch(/clearPickerDragState/);
         expect(js).toMatch(/pickerDragDepth/);
 
         const overlay = document.getElementById('filePickerOverlay');
         const zone = document.getElementById('dropZone');
+        // Nest dropZone under overlay so child boundary events match production HTML.
+        overlay.appendChild(zone);
         expect(overlay.classList.contains('drag-active')).toBe(false);
 
         overlay.dispatchEvent(new Event('dragenter', { bubbles: true }));
         expect(overlay.classList.contains('drag-active')).toBe(true);
         expect(zone.classList.contains('drag-active')).toBe(true);
 
-        // Child enter/leave should not clear the overlay highlight.
-        overlay.dispatchEvent(new Event('dragleave', { bubbles: true }));
-        overlay.dispatchEvent(new Event('dragenter', { bubbles: true }));
+        // Crossing into a child: leave bubbles from overlay path then enter on child.
+        // Depth counting must keep the overlay cue until the drag fully leaves.
+        zone.dispatchEvent(new Event('dragleave', { bubbles: true }));
+        zone.dispatchEvent(new Event('dragenter', { bubbles: true }));
         expect(overlay.classList.contains('drag-active')).toBe(true);
+        expect(zone.classList.contains('drag-active')).toBe(true);
 
         overlay.dispatchEvent(new Event('dragleave', { bubbles: true }));
         overlay.dispatchEvent(new Event('dragleave', { bubbles: true }));
+        expect(overlay.classList.contains('drag-active')).toBe(false);
+        expect(zone.classList.contains('drag-active')).toBe(false);
+    });
+
+    test('closing the picker clears a mid-drag cue so reopen is not stale (#17)', async () => {
+        const overlay = document.getElementById('filePickerOverlay');
+        const zone = document.getElementById('dropZone');
+        books.push(createMockBook('DragClear'));
+        selectFile('drag-clear.epub').succeed();
+        await expectLoaded('DragClear');
+
+        document.getElementById('openAnotherDocument').click();
+        expect(overlay.style.display).not.toBe('none');
+
+        overlay.dispatchEvent(new Event('dragenter', { bubbles: true }));
+        expect(overlay.classList.contains('drag-active')).toBe(true);
+        expect(zone.classList.contains('drag-active')).toBe(true);
+
+        document.getElementById('cancelDocumentPicker').click();
+        expect(overlay.style.display).toBe('none');
+        expect(overlay.classList.contains('drag-active')).toBe(false);
+        expect(zone.classList.contains('drag-active')).toBe(false);
+
+        document.getElementById('openAnotherDocument').click();
+        expect(overlay.style.display).not.toBe('none');
         expect(overlay.classList.contains('drag-active')).toBe(false);
         expect(zone.classList.contains('drag-active')).toBe(false);
     });
