@@ -939,10 +939,19 @@ if (typeof window !== 'undefined' && !window.kokoroContentInjected) {
             if (area !== 'sync' && area !== 'local') return;
             if (!Object.prototype.hasOwnProperty.call(changes, 'showFloatingButton')) return;
             const change = changes.showFloatingButton;
-            showFloatingMicCached = !(change && change.newValue === false);
-            if (!showFloatingMicCached) {
+            const action = (micPosApi && micPosApi.showFloatingButtonChangeAction)
+                ? micPosApi.showFloatingButtonChangeAction(change)
+                : (change && change.newValue === false
+                    ? 'hide'
+                    : (change && change.oldValue === false ? 'restore' : 'noop'));
+            showFloatingMicCached = action !== 'hide';
+            if (action === 'hide') {
                 lastSelection = '';
                 removeFloatingButton();
+            } else if (action === 'restore') {
+                // Selection may still be alive after the popup closes; no selectionchange
+                // is guaranteed, so re-evaluate/reposition from the live selection.
+                scheduleFloatingMicReposition();
             }
         });
     }

@@ -15,7 +15,8 @@ const {
     getSelectionFocusClientRect,
     preferredFloatingMicPosition,
     clampFloatingMicPosition,
-    computeFloatingMicPosition
+    computeFloatingMicPosition,
+    showFloatingButtonChangeAction
 } = require('../floating-mic-position.js');
 
 function rect(partial) {
@@ -247,6 +248,14 @@ describe('floating-mic-position helpers', () => {
             viewportHeight: 600
         })).toBeNull();
     });
+
+    test('showFloatingButtonChangeAction hides on false and restores false→enabled', () => {
+        expect(showFloatingButtonChangeAction({ oldValue: true, newValue: false })).toBe('hide');
+        expect(showFloatingButtonChangeAction({ oldValue: false, newValue: true })).toBe('restore');
+        expect(showFloatingButtonChangeAction({ oldValue: false, newValue: undefined })).toBe('restore');
+        expect(showFloatingButtonChangeAction({ oldValue: true, newValue: true })).toBe('noop');
+        expect(showFloatingButtonChangeAction(null)).toBe('noop');
+    });
 });
 
 describe('content.js floating mic survival contract (#11)', () => {
@@ -261,6 +270,8 @@ describe('content.js floating mic survival contract (#11)', () => {
         expect(source).toContain('computeFloatingMicPosition');
         expect(source).toContain('scheduleFloatingMicReposition');
         expect(source).toContain('storage.onChanged');
+        expect(source).toContain('showFloatingButtonChangeAction');
+        expect(source).toContain("action === 'restore'");
         expect(source).toContain("addEventListener('resize'");
     });
 

@@ -185,6 +185,21 @@
         return clampFloatingMicPosition(preferred.left, preferred.top, viewport);
     }
 
+    /**
+     * Decide how a showFloatingButton storage change should affect a visible mic.
+     * @param {{ oldValue?: unknown, newValue?: unknown } | null | undefined} change
+     * @returns {'hide' | 'restore' | 'noop'}
+     */
+    function showFloatingButtonChangeAction(change) {
+        if (!change || typeof change !== 'object') return 'noop';
+        if (change.newValue === false) return 'hide';
+        // false → enabled (true/undefined): restore against an existing live selection
+        if (Object.prototype.hasOwnProperty.call(change, 'oldValue') && change.oldValue === false) {
+            return 'restore';
+        }
+        return 'noop';
+    }
+
     const api = {
         FLOAT_MIC_BTN_SIZE,
         FLOAT_MIC_MARGIN,
@@ -195,7 +210,8 @@
         getSelectionFocusClientRect,
         preferredFloatingMicPosition,
         clampFloatingMicPosition,
-        computeFloatingMicPosition
+        computeFloatingMicPosition,
+        showFloatingButtonChangeAction
     };
 
     if (typeof module !== 'undefined' && module.exports) {
