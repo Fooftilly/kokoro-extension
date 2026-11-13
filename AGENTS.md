@@ -9,8 +9,8 @@ Guidance for humans and coding agents working in this repository.
 | `background.js` | MV3 service worker / background scripts: context menus, API fetch, downloads, shortcuts, connection icon |
 | `content.js` | Content script: selection/article extract, overlay injection, auto-scroll, floating mic |
 | `floating-mic-position.js` | Pure helpers for floating mic end-caret position + viewport clamp (#11) |
-| `popup.html` / `popup.js` / `popup.css` | Settings UI: API URL, voice mixer / local voice, stream/download, normalization toggles, theme |
-| `local-voice-mixing.js` | FastAPI vs local voice prefs (#59): single-voice local policy, limitation copy |
+| `popup.html` / `popup.js` / `popup.css` | Settings UI: API URL, voice mixer / MediaPipe voice / fixed ONNX asset, stream/download, normalization toggles, theme |
+| `local-voice-mixing.js` | FastAPI vs MediaPipe vs ONNX voice prefs (#59): separate keys, single-voice / fixed-asset policy |
 | `api-client.js` | Popup API helpers: voice-list normalization, connection/voice fetch error kinds |
 | `overlay.html` / `overlay.js` / `overlay.css` | In-page TTS player overlay |
 | `reader.html` / `reader.js` / `reader.css` | EPUB reader page |

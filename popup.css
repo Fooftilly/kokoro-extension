@@ -184,6 +184,12 @@ button:hover {
     font-weight: normal;
 }
 
+.local-voice-container input:disabled {
+    opacity: 0.85;
+    cursor: not-allowed;
+    color: var(--note-color);
+}
+
 .local-voice-container {
     margin-top: 8px;
     display: flex;

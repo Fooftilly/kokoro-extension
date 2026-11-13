@@ -5,8 +5,8 @@
 | Backend | Weighted mixing | Decision |
 | --- | --- | --- |
 | Kokoro-FastAPI | Yes (`af_sarah(5)+af_nicole(3)+…`) | Unchanged |
-| MediaPipe Kokoro | No official blend API | Single `voiceId` only + explicit UI |
-| ONNX Runtime Web | Style tensor is blendable; catalog is single-voice today | Single voice in product UI; original style-vector lerp tested for future multi-voice assets |
+| MediaPipe Kokoro | No official blend API | Single editable `voiceId` + explicit UI |
+| ONNX Runtime Web | Style tensor is blendable; catalog is single-voice today | Fixed catalog asset `voices/af.bin` (readonly UI); original style-vector lerp tested for future multi-voice assets |
 
 ## MediaPipe (official API)
 
@@ -18,16 +18,25 @@ Sources: [MediaPipe Text-to-Speech](https://developers.google.com/edge/mediapipe
 
 Published ONNX usage selects one voice `.bin`, reshapes to `(-1, 1, 256)`, and picks `style = voices[len(tokens)]` for the unpadded phoneme count. Inputs are `input_ids`, `style` `[1, 256]`, `speed`. This extension already mirrors that in `onnx-kokoro-inputs.js` (`styleForLength`).
 
-Linear interpolation of equal-length style vectors is a low-overhead, original in-repository operation on those tensors (`blendStyleVectors` / `styleForLengthWeighted`). It is **not** a copy of kokoro-js. It is also **not** enabled in the product path yet: `model-catalog.js` only pins `voices/af.bin`. Shipping weighted ONNX mixing in the UI waits on verified multi-voice asset downloads (#55/#58 follow-ons). Until then, disclose single-voice-only.
+Linear interpolation of equal-length style vectors is a low-overhead, original in-repository operation on those tensors (`blendStyleVectors` / `styleForLengthWeighted`). It is **not** a copy of kokoro-js. It is also **not** enabled in the product path yet: `model-catalog.js` only pins `voices/af.bin`. Shipping weighted ONNX mixing in the UI waits on verified multi-voice asset downloads (#55/#58 follow-ons). Until then, the popup shows a **disabled** asset field for `voices/af.bin` so users cannot enter a voice ID that playback would ignore.
 
 Source: [onnx-community/Kokoro-82M-v1.0-ONNX](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX) (Python sample).
 
 ## Preference separation
 
-- `browser.storage.sync.voice` — FastAPI weighted mix string only.
-- `browser.storage.sync.localVoice` — single local voice ID (`xx_name`).
+Three independent sync keys (never rewritten when switching backends):
+
+| Key | Backend | Editable |
+| --- | --- | --- |
+| `browser.storage.sync.voice` | FastAPI weighted mix | Yes (mixer) |
+| `browser.storage.sync.mediaPipeVoice` | MediaPipe `voiceId` | Yes |
+| `browser.storage.sync.onnxVoiceAsset` | ONNX catalog asset | No (fixed `voices/af.bin`) |
+
+Legacy `localVoice` is read once as a MediaPipe fallback when `mediaPipeVoice` is absent.
+
 - Switching to MediaPipe/ONNX must not clear or rewrite `voice`.
-- Popup shows the mixer for FastAPI and a single-voice control + limitation note for local backends.
+- Switching between MediaPipe and ONNX must not overwrite the other local preference.
+- Popup shows the mixer for FastAPI, an editable MediaPipe voice ID, or a disabled ONNX asset field + limitation note.
 - Test page (`benchmark.html` / model manager) states the same limitation.
 
 ## Rejected shortcut

@@ -2,16 +2,20 @@ try {
     if (typeof importScripts === 'function') {
         importScripts('browser-polyfill.min.js');
         importScripts('tts-providers.js');
+        importScripts('local-voice-mixing.js');
     }
 } catch (e) {
     console.error("Polyfill load error:", e);
 }
 
-// Firefox loads tts-providers.js before this background script via its manifest.
-// Jest uses the same pure helper via CommonJS.
+// Firefox loads helper scripts before this background script via its manifest.
+// Jest uses the same pure helpers via CommonJS.
 const TtsProviders = typeof require === 'function'
     ? require('./tts-providers.js')
     : globalThis.KokoroTtsProviders;
+const LocalVoice = typeof require === 'function'
+    ? require('./local-voice-mixing.js')
+    : globalThis.KokoroLocalVoiceMixing;
 
 browser.runtime.onInstalled.addListener(() => {
     browser.contextMenus.create({
@@ -214,6 +218,8 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
         apiUrl: 'http://127.0.0.1:8880/v1/',
         ttsBackend: TtsProviders.FASTAPI,
         mediaPipeVariant: 'cpu',
+        mediaPipeVoice: 'af_heart',
+        onnxVoiceAsset: 'voices/af.bin',
         localVoice: 'af_heart',
         voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
         mode: 'stream',
@@ -331,7 +337,7 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
                 pendingApiUrl: apiUrl,
                 pendingTtsBackend: backend,
                 pendingMediaPipeVariant: settings.mediaPipeVariant,
-                pendingLocalVoice: settings.localVoice,
+                pendingLocalVoice: LocalVoice.mediaPipeVoiceFromSettings(settings),
                 pendingTitle: tab.title,
                 pendingNormalizationOptions: settings.normalizationOptions,
                 pendingCustomPronunciations: settings.customPronunciations,

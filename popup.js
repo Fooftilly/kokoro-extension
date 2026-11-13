@@ -34,29 +34,48 @@ function normalizeApiUrl(raw) {
 }
 
 const LocalVoice = globalThis.KokoroLocalVoiceMixing || {
+    DEFAULT_MEDIAPIPE_VOICE: 'af_heart',
     DEFAULT_LOCAL_VOICE: 'af_heart',
+    ONNX_FIXED_VOICE_ASSET: 'voices/af.bin',
     normalizeLocalVoiceId: (value) => {
         if (typeof value !== 'string') return 'af_heart';
         const trimmed = value.trim().toLowerCase();
         return /^[a-z]{2}_[a-z]+$/.test(trimmed) ? trimmed : 'af_heart';
     },
     isLocalBackend: (backend) => backend === 'mediapipe' || backend === 'onnx',
+    mediaPipeVoiceFromSettings: (settings) => {
+        const source = settings && typeof settings === 'object' ? settings : {};
+        if (typeof source.mediaPipeVoice === 'string' && source.mediaPipeVoice.trim()) {
+            return LocalVoice.normalizeLocalVoiceId(source.mediaPipeVoice);
+        }
+        return LocalVoice.normalizeLocalVoiceId(source.localVoice);
+    },
+    onnxVoiceAssetFromSettings: () => 'voices/af.bin',
     localVoiceLimitationNote: () => '',
 };
 
 /**
- * FastAPI keeps the weighted mixer; local backends show a single voice ID and
- * never rewrite the stored server mix string (#59).
+ * FastAPI keeps the weighted mixer. MediaPipe shows an editable voice ID.
+ * ONNX shows the fixed catalog asset (readonly) — playback ignores free-form IDs (#59).
+ * Server mix, MediaPipe voice, and ONNX asset prefs are stored separately.
  */
 function syncVoiceUiForBackend(backend) {
     const mixer = document.getElementById('voiceMixerContainer');
-    const localBox = document.getElementById('localVoiceContainer');
+    const mediaPipeBox = document.getElementById('mediaPipeVoiceContainer');
+    const onnxBox = document.getElementById('onnxVoiceContainer');
     const note = document.getElementById('localVoiceNote');
     const label = document.getElementById('voiceSectionLabel');
+    const isMediaPipe = backend === 'mediapipe';
+    const isOnnx = backend === 'onnx';
     const local = LocalVoice.isLocalBackend(backend);
     if (mixer) mixer.hidden = local;
-    if (localBox) localBox.hidden = !local;
-    if (label) label.textContent = local ? 'LOCAL VOICE' : 'VOICE MIXER';
+    if (mediaPipeBox) mediaPipeBox.hidden = !isMediaPipe;
+    if (onnxBox) onnxBox.hidden = !isOnnx;
+    if (label) {
+        if (isMediaPipe) label.textContent = 'MEDIAPIPE VOICE';
+        else if (isOnnx) label.textContent = 'ONNX VOICE';
+        else label.textContent = 'VOICE MIXER';
+    }
     if (note) {
         note.hidden = !local;
         note.textContent = local ? LocalVoice.localVoiceLimitationNote(backend) : '';
@@ -668,12 +687,17 @@ const saveOptions = async (isDebounced = false, options = {}) => {
     };
 
     const theme = document.documentElement.classList.contains('dark-theme') ? 'dark' : 'light';
-    // Keep FastAPI `voice` and local `localVoice` on separate keys (#59).
+    // Keep FastAPI `voice`, MediaPipe `mediaPipeVoice`, and ONNX `onnxVoiceAsset` separate (#59).
     const settings = { apiUrl, mode, ttsBackend, defaultSpeed, defaultVolume, autoScroll, autoplayReader, continuousReader, showFloatingButton, normalizationOptions, theme };
-    if (LocalVoice.isLocalBackend(ttsBackend)) {
-        const localInput = document.getElementById('localVoice');
-        settings.localVoice = LocalVoice.normalizeLocalVoiceId(localInput ? localInput.value : '');
-        if (localInput) localInput.value = settings.localVoice;
+    if (ttsBackend === 'mediapipe') {
+        const mediaPipeInput = document.getElementById('mediaPipeVoice');
+        settings.mediaPipeVoice = LocalVoice.normalizeLocalVoiceId(mediaPipeInput ? mediaPipeInput.value : '');
+        if (mediaPipeInput) mediaPipeInput.value = settings.mediaPipeVoice;
+    } else if (ttsBackend === 'onnx') {
+        const fixedAsset = LocalVoice.ONNX_FIXED_VOICE_ASSET || 'voices/af.bin';
+        settings.onnxVoiceAsset = fixedAsset;
+        const onnxInput = document.getElementById('onnxVoiceAsset');
+        if (onnxInput) onnxInput.value = fixedAsset;
     } else {
         settings.voice = serializeVoiceString(currentVoices);
     }
@@ -758,7 +782,9 @@ const restoreOptions = async () => {
             apiUrl: 'http://127.0.0.1:8880/v1/',
             ttsBackend: 'fastapi',
             voice: 'af_sarah(0.5)+af_nicole(0.3)+af_sky(0.2)',
-            localVoice: LocalVoice.DEFAULT_LOCAL_VOICE,
+            mediaPipeVoice: LocalVoice.DEFAULT_MEDIAPIPE_VOICE || LocalVoice.DEFAULT_LOCAL_VOICE,
+            onnxVoiceAsset: LocalVoice.ONNX_FIXED_VOICE_ASSET || 'voices/af.bin',
+            localVoice: LocalVoice.DEFAULT_MEDIAPIPE_VOICE || LocalVoice.DEFAULT_LOCAL_VOICE,
             mode: 'stream',
             defaultSpeed: '1.0',
             defaultVolume: '1.0',
@@ -800,9 +826,17 @@ const restoreOptions = async () => {
         }
 
         currentVoices = parseVoiceString(items.voice);
-        const localVoiceInput = document.getElementById('localVoice');
-        if (localVoiceInput) {
-            localVoiceInput.value = LocalVoice.normalizeLocalVoiceId(items.localVoice);
+        const mediaPipeInput = document.getElementById('mediaPipeVoice');
+        if (mediaPipeInput) {
+            mediaPipeInput.value = LocalVoice.mediaPipeVoiceFromSettings
+                ? LocalVoice.mediaPipeVoiceFromSettings(items)
+                : LocalVoice.normalizeLocalVoiceId(items.mediaPipeVoice || items.localVoice);
+        }
+        const onnxInput = document.getElementById('onnxVoiceAsset');
+        if (onnxInput) {
+            onnxInput.value = LocalVoice.onnxVoiceAssetFromSettings
+                ? LocalVoice.onnxVoiceAssetFromSettings(items)
+                : (LocalVoice.ONNX_FIXED_VOICE_ASSET || 'voices/af.bin');
         }
         syncVoiceUiForBackend(items.ttsBackend);
         renderVoiceMixer();
@@ -931,7 +965,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const inputs = document.querySelectorAll('input, select');
     inputs.forEach(input => {
         if (input.id === 'voiceSearch' || input.id === 'apiUrl' ||
-            input.id === 'localVoice' || input.name === 'ttsBackend') return;
+            input.id === 'mediaPipeVoice' || input.id === 'onnxVoiceAsset' ||
+            input.name === 'ttsBackend') return;
 
         const eventType = (input.type === 'text' || input.type === 'number') ? 'input' : 'change';
         input.addEventListener(eventType, () => {
@@ -939,13 +974,13 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    const localVoiceInput = document.getElementById('localVoice');
-    if (localVoiceInput) {
-        localVoiceInput.addEventListener('change', () => {
-            localVoiceInput.value = LocalVoice.normalizeLocalVoiceId(localVoiceInput.value);
+    const mediaPipeVoiceInput = document.getElementById('mediaPipeVoice');
+    if (mediaPipeVoiceInput) {
+        mediaPipeVoiceInput.addEventListener('change', () => {
+            mediaPipeVoiceInput.value = LocalVoice.normalizeLocalVoiceId(mediaPipeVoiceInput.value);
             void saveOptions(false);
         });
-        localVoiceInput.addEventListener('input', () => {
+        mediaPipeVoiceInput.addEventListener('input', () => {
             void saveOptions(true);
         });
     }

@@ -114,6 +114,22 @@ describe('popup backend-loss resilience (#4)', () => {
         }));
     }
 
+    function allowMediaPipeSelection({ modelReady = true, revision = null } = {}) {
+        const { manifestForVariant } = require('../model-catalog.js');
+        const { ModelDataStore } = require('../model-data-store.js');
+        const approved = revision ?? manifestForVariant('mediapipe', 'cpu').revision;
+        browser.storage.local.get.mockImplementation(async defaults => ({
+            ...defaults, 'mediapipeValidatedRevision:cpu': approved,
+        }));
+        browser.runtime.getURL = jest.fn(() => 'moz-extension://test/');
+        global.caches = { open: jest.fn() };
+        global.Response = class {};
+        global.TransformStream = class {};
+        jest.spyOn(ModelDataStore.prototype, 'status').mockImplementation(async () => ({
+            ready: modelReady,
+        }));
+    }
+
     test('popup renders and settings remain editable when backend is down', async () => {
         document.dispatchEvent(new Event('DOMContentLoaded'));
         await flushAsync();
@@ -683,14 +699,15 @@ describe('popup backend-loss resilience (#4)', () => {
         jest.useRealTimers();
     });
 
-    test('local backend save keeps FastAPI mix and writes localVoice only (#59)', async () => {
+    test('ONNX save pins onnxVoiceAsset and leaves FastAPI mix untouched (#59)', async () => {
         allowOnnxSelection();
         browser.storage.sync.get.mockImplementation(async (defaults) => ({
             ...defaults,
             apiUrl: 'http://127.0.0.1:8880/v1/',
             ttsBackend: 'onnx',
             voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
-            localVoice: 'af_heart',
+            mediaPipeVoice: 'af_bella',
+            onnxVoiceAsset: 'voices/af.bin',
             mode: 'stream',
             theme: 'light',
         }));
@@ -699,15 +716,53 @@ describe('popup backend-loss resilience (#4)', () => {
         await flushAsync();
 
         expect(document.getElementById('voiceMixerContainer').hidden).toBe(true);
-        expect(document.getElementById('localVoiceContainer').hidden).toBe(false);
-        expect(document.getElementById('localVoiceNote').textContent).toMatch(/af\.bin|single/i);
+        expect(document.getElementById('mediaPipeVoiceContainer').hidden).toBe(true);
+        expect(document.getElementById('onnxVoiceContainer').hidden).toBe(false);
+        expect(document.getElementById('onnxVoiceAsset').disabled).toBe(true);
+        expect(document.getElementById('onnxVoiceAsset').readOnly).toBe(true);
+        expect(document.getElementById('onnxVoiceAsset').value).toBe('voices/af.bin');
+        expect(document.getElementById('localVoiceNote').textContent).toMatch(/af\.bin/i);
+        expect(document.getElementById('localVoiceNote').textContent).toMatch(/no effect/i);
 
-        document.getElementById('localVoice').value = 'af_bella';
         browser.storage.sync.set.mockClear();
         await popup.saveOptions(false);
 
         const writes = browser.storage.sync.set.mock.calls.map(([payload]) => payload);
-        expect(writes.some((payload) => payload.localVoice === 'af_bella')).toBe(true);
+        expect(writes.some((payload) => payload.onnxVoiceAsset === 'voices/af.bin')).toBe(true);
         expect(writes.every((payload) => !Object.hasOwn(payload, 'voice'))).toBe(true);
+        expect(writes.every((payload) => !Object.hasOwn(payload, 'mediaPipeVoice'))).toBe(true);
+        expect(writes.every((payload) => !Object.hasOwn(payload, 'localVoice'))).toBe(true);
+    });
+
+    test('MediaPipe save writes mediaPipeVoice only and keeps FastAPI mix (#59)', async () => {
+        allowMediaPipeSelection();
+        browser.storage.sync.get.mockImplementation(async (defaults) => ({
+            ...defaults,
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
+            mediaPipeVoice: 'af_heart',
+            onnxVoiceAsset: 'voices/af.bin',
+            mode: 'stream',
+            theme: 'light',
+        }));
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        expect(document.getElementById('voiceMixerContainer').hidden).toBe(true);
+        expect(document.getElementById('mediaPipeVoiceContainer').hidden).toBe(false);
+        expect(document.getElementById('onnxVoiceContainer').hidden).toBe(true);
+        expect(document.getElementById('mediaPipeVoice').disabled).toBe(false);
+
+        document.getElementById('mediaPipeVoice').value = 'af_bella';
+        browser.storage.sync.set.mockClear();
+        await popup.saveOptions(false);
+
+        const writes = browser.storage.sync.set.mock.calls.map(([payload]) => payload);
+        expect(writes.some((payload) => payload.mediaPipeVoice === 'af_bella')).toBe(true);
+        expect(writes.every((payload) => !Object.hasOwn(payload, 'voice'))).toBe(true);
+        expect(writes.every((payload) => !Object.hasOwn(payload, 'onnxVoiceAsset'))).toBe(true);
     });
 });

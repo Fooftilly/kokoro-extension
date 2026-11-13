@@ -223,7 +223,7 @@ function createManifest(browser) {
     } else if (browser === 'firefox') {
         commonManifest.permissions.push("downloads");
         commonManifest.background = {
-            scripts: ["browser-polyfill.min.js", "tts-providers.js", "background.js"]
+            scripts: ["browser-polyfill.min.js", "tts-providers.js", "local-voice-mixing.js", "background.js"]
         };
         commonManifest.browser_specific_settings = {
             gecko: {
