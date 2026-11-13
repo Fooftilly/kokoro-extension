@@ -1106,7 +1106,7 @@ async function acceptReadArticleCommand(
 /**
  * Real webpage selection (floating mic → REQUEST_TTS) and article read
  * (native X11 Alt+A `read-article` command → handleTtsAction) against a
- * loopback fixture. Chromium ONNX origin only for KE-11.
+ * loopback fixture. Chromium onnx or mediapipe origin (KE-11 / KE-18).
  */
 async function acceptRealArticleAndSelection(page, context, extensionId, backend) {
     requireArticleSelectionBackend(backend);

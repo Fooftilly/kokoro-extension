@@ -10,12 +10,14 @@ export const ARTICLE_SELECTION_SPEECH = {
     articleTitle: 'Kokoro Article Acceptance',
 };
 
-export const ALLOWED_ARTICLE_SELECTION_BACKENDS = Object.freeze(['onnx']);
+export const ALLOWED_ARTICLE_SELECTION_BACKENDS = Object.freeze([
+    'onnx', 'mediapipe',
+]);
 
 export function requireArticleSelectionBackend(backend) {
     if (!ALLOWED_ARTICLE_SELECTION_BACKENDS.includes(backend)) {
         throw new Error(
-            'Article/selection acceptance requires onnx backend, got: ' +
+            'Article/selection acceptance requires onnx or mediapipe backend, got: ' +
             String(backend));
     }
     return backend;

@@ -36,11 +36,15 @@ def capture(fn):
 fixture = load_article_selection_fixture()
 speech = fixture['speech']
 storage = article_selection_storage_config('onnx')
+mp_storage = article_selection_storage_config('mediapipe')
 print(json.dumps({
     'backends': sorted(ALLOWED_ARTICLE_SELECTION_BACKENDS),
     'onnxRequired': require_article_selection_backend('onnx'),
+    'mediapipeRequired': require_article_selection_backend('mediapipe'),
     'storageKeys': sorted(storage.keys()),
     'ttsBackend': storage['ttsBackend'],
+    'mediapipeBackend': mp_storage['ttsBackend'],
+    'mediapipeVariant': mp_storage['mediaPipeVariant'],
     'floatingMic': storage['showFloatingButton'] is True,
     'streamMode': storage['mode'] == 'stream',
     'emptyApi': storage['apiUrl'] == '',
@@ -63,8 +67,8 @@ print(json.dumps({
         lambda: assert_distinct_article_selection_audio_hashes('', 'bbb')),
     'hashCollision': capture(
         lambda: assert_distinct_article_selection_audio_hashes('same', 'same')),
-    'rejectMediapipe': capture(
-        lambda: require_article_selection_backend('mediapipe')),
+    'rejectFastapi': capture(
+        lambda: require_article_selection_backend('fastapi')),
 }))
 `], { encoding: 'utf8', cwd: root });
 }
@@ -75,9 +79,12 @@ describe('firefox article/selection acceptance', () => {
         expect(child.status).toBe(0);
         expect(child.stderr || '').toBe('');
         const snap = JSON.parse(child.stdout.trim());
-        expect(snap.backends).toEqual(['onnx']);
+        expect(snap.backends).toEqual(['mediapipe', 'onnx']);
         expect(snap.onnxRequired).toBe('onnx');
+        expect(snap.mediapipeRequired).toBe('mediapipe');
         expect(snap.ttsBackend).toBe('onnx');
+        expect(snap.mediapipeBackend).toBe('mediapipe');
+        expect(snap.mediapipeVariant).toBe('cpu');
         expect(snap.floatingMic).toBe(true);
         expect(snap.streamMode).toBe(true);
         expect(snap.emptyApi).toBe(true);
@@ -91,7 +98,7 @@ describe('firefox article/selection acceptance', () => {
         expect(snap.articlePair[0]).not.toBe(snap.articlePair[1]);
         expect(snap.gates).toEqual({
             onnxOrigin: true,
-            mediapipe: false,
+            mediapipe: true,
             noOrigin: false,
             failedPrior: false,
         });
@@ -100,8 +107,8 @@ describe('firefox article/selection acceptance', () => {
         expect(snap.hashMissing.message).toMatch(/missing/);
         expect(snap.hashCollision.ok).toBe(false);
         expect(snap.hashCollision.message).toMatch(/collided/);
-        expect(snap.rejectMediapipe.ok).toBe(false);
-        expect(snap.rejectMediapipe.message).toMatch(/onnx/);
+        expect(snap.rejectFastapi.ok).toBe(false);
+        expect(snap.rejectFastapi.message).toMatch(/onnx or mediapipe/);
     });
 
     test('shared ESM fixture matches the python-loaded html bytes', () => {

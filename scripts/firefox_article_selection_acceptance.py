@@ -9,22 +9,22 @@ import json
 import subprocess
 from pathlib import Path
 
-ALLOWED_ARTICLE_SELECTION_BACKENDS = frozenset({"onnx"})
+ALLOWED_ARTICLE_SELECTION_BACKENDS = frozenset({"onnx", "mediapipe"})
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 
 
 def require_article_selection_backend(backend):
-    """Return ``backend`` when it is onnx; else raise."""
+    """Return ``backend`` when it is onnx or mediapipe; else raise."""
     if backend not in ALLOWED_ARTICLE_SELECTION_BACKENDS:
         raise ValueError(
-            "Article/selection acceptance requires onnx backend, got: " +
+            "Article/selection acceptance requires onnx or mediapipe backend, got: " +
             repr(backend))
     return backend
 
 
 def article_selection_storage_config(backend):
-    """sync storage payload that enables floating mic + local ONNX TTS."""
+    """sync storage payload that enables floating mic + local ONNX/MediaPipe TTS."""
     require_article_selection_backend(backend)
     return {
         "ttsBackend": backend,
@@ -37,7 +37,7 @@ def article_selection_storage_config(backend):
 
 
 def origin_article_selection_stage_enabled(origin_download, provider, success):
-    """Whether firefox-onnx-origin should run real article/selection."""
+    """Whether firefox-*-origin should run real article/selection for onnx/mediapipe."""
     return bool(
         origin_download and
         provider in ALLOWED_ARTICLE_SELECTION_BACKENDS and
