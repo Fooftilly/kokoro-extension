@@ -135,7 +135,7 @@ console.log(JSON.stringify({ ok, errors }));
             'utf8',
         );
         const chromiumJob = workflow.split('chromium-model-inference:')[1]
-            ?.split(/\n  [a-z]/)[0] || '';
-        expect(chromiumJob).toMatch(/timeout-minutes:\s{0,2}60\b/);
+            ?.split(/\n {2}[a-z]/)[0] || '';
+        expect(chromiumJob).toMatch(/timeout-minutes:\s*60\b/);
     });
 });
