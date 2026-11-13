@@ -1213,13 +1213,16 @@ async function acceptRealArticleAndSelection(page, context, extensionId, backend
     }
 }
 
-// Long-form memory: walk many ONNX overlay sentences while the opt-in
-// AudioManager probe proves the cache/object-URL window stays bounded.
-// Seed storage through the service worker — after article/selection the page
-// is still on the HTTP fixture, where `chrome` is undefined.
-async function acceptLongFormMemoryPerformance(page, context, extensionId, backend) {
-    requireLongFormBackend(backend);
-    liveHeartbeat('long-form-memory-start', { backend, sentences: LONG_FORM_SENTENCE_COUNT });
+function longFormOverlayReady(index) {
+    const spans = document.querySelectorAll('.sentence');
+    return spans.length >= LONG_FORM_SENTENCE_COUNT &&
+        spans[index]?.classList.contains('highlight') &&
+        document.getElementById('audio')?.src.startsWith('blob:') &&
+        document.getElementById('loadingSpinner')?.style.display === 'none' &&
+        typeof window.__kokoroAudioManagerStats === 'function';
+}
+
+async function seedLongFormOverlay(page, context, extensionId, backend) {
     const storage = longFormStorageConfig(backend);
     const worker = context.serviceWorkers()[0] ||
         await context.waitForEvent('serviceworker', { timeout: 30000 });
@@ -1228,27 +1231,25 @@ async function acceptLongFormMemoryPerformance(page, context, extensionId, backe
         await chrome.storage.local.set(cfg);
     }, storage), 15000, 'long-form storage seed');
     await page.goto('chrome-extension://' + extensionId + '/overlay.html');
-
-    const overlayReady = (index) => {
-        const spans = document.querySelectorAll('.sentence');
-        return spans.length >= LONG_FORM_SENTENCE_COUNT &&
-            spans[index]?.classList.contains('highlight') &&
-            document.getElementById('audio')?.src.startsWith('blob:') &&
-            document.getElementById('loadingSpinner')?.style.display === 'none' &&
-            typeof window.__kokoroAudioManagerStats === 'function';
-    };
-
     await withTimeout(
-        page.waitForFunction(overlayReady, 0, { timeout: 240000 }),
+        page.waitForFunction(longFormOverlayReady, 0, { timeout: 240000 }),
         250000, 'long-form overlay first sentence');
+}
 
-    const readStats = () => page.evaluate(() => window.__kokoroAudioManagerStats());
-    const readHeap = () => page.evaluate(() => {
+function readLongFormStats(page) {
+    return page.evaluate(() => window.__kokoroAudioManagerStats());
+}
+
+function readLongFormHeap(page) {
+    return page.evaluate(() => {
         const mem = performance.memory;
         return mem && Number.isFinite(mem.usedJSHeapSize)
             ? mem.usedJSHeapSize : null;
     });
-    const readWavMeta = () => page.evaluate(async () => {
+}
+
+function readLongFormWavMeta(page) {
+    return page.evaluate(async () => {
         const audio = document.getElementById('audio');
         const bytes = new Uint8Array(await (await fetch(audio.src)).arrayBuffer());
         const wav = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -1268,37 +1269,33 @@ async function acceptLongFormMemoryPerformance(page, context, extensionId, backe
             offline: navigator.onLine === false,
         };
     });
+}
 
-    const heapBefore = await readHeap();
+function buildLongFormVisitIndexes() {
+    return Array.from({ length: LONG_FORM_SENTENCE_COUNT }, (_, i) => i)
+        .filter((i) => i < 8 || i % 3 === 0 || i === LONG_FORM_SENTENCE_COUNT - 1);
+}
+
+async function walkLongFormSentences(page, visitIndexes) {
     let maxCacheSize = 0;
     let maxObjectUrlCount = 0;
     const samples = [];
-    const stepIndexes = [];
-    for (let i = 0; i < LONG_FORM_SENTENCE_COUNT; i += 1) {
-        stepIndexes.push(i);
-    }
-    // Sample every sentence for the first eight, then every third to bound CI time.
-    const visitIndexes = stepIndexes.filter((i) => i < 8 || i % 3 === 0 ||
-        i === LONG_FORM_SENTENCE_COUNT - 1);
-
     for (const index of visitIndexes) {
         if (index > 0) {
             await page.evaluate((target) => {
                 document.querySelectorAll('.sentence')[target].click();
             }, index);
             await withTimeout(
-                page.waitForFunction(overlayReady, index, { timeout: 180000 }),
+                page.waitForFunction(longFormOverlayReady, index, { timeout: 180000 }),
                 190000, 'long-form overlay sentence ' + index);
         }
-        // Prefetch of +1/+2 may still be settling; sample after a short settle.
         await page.waitForTimeout(250);
-        const stats = await readStats();
+        const stats = await readLongFormStats(page);
         assertBoundedAudioManagerStats(stats);
         maxCacheSize = Math.max(maxCacheSize, stats.cacheSize);
         maxObjectUrlCount = Math.max(maxObjectUrlCount, stats.objectUrlCount);
         if (index === 0 || index === visitIndexes[visitIndexes.length - 1]) {
-            const wav = await readWavMeta();
-            samples.push({ index, ...wav, ...stats });
+            samples.push({ index, ...(await readLongFormWavMeta(page)), ...stats });
         }
         if (index % 4 === 0) {
             liveHeartbeat('long-form-memory-progress', {
@@ -1307,29 +1304,38 @@ async function acceptLongFormMemoryPerformance(page, context, extensionId, backe
             });
         }
     }
+    return { maxCacheSize, maxObjectUrlCount, samples };
+}
 
-    // Distant jump must not grow the cache unboundedly.
+async function jumpLongFormToLastSentence(page, bounds) {
     liveHeartbeat('long-form-memory-jump');
     await page.evaluate(() => {
         const spans = document.querySelectorAll('.sentence');
         spans[spans.length - 1].click();
     });
     await withTimeout(
-        page.waitForFunction(overlayReady, LONG_FORM_SENTENCE_COUNT - 1, { timeout: 180000 }),
+        page.waitForFunction(longFormOverlayReady, LONG_FORM_SENTENCE_COUNT - 1, {
+            timeout: 180000,
+        }),
         190000, 'long-form jump to last sentence');
-    const jumpStats = await readStats();
+    const jumpStats = await readLongFormStats(page);
     assertBoundedAudioManagerStats(jumpStats);
-    maxCacheSize = Math.max(maxCacheSize, jumpStats.cacheSize);
-    maxObjectUrlCount = Math.max(maxObjectUrlCount, jumpStats.objectUrlCount);
-    const finalWav = await readWavMeta();
-    samples.push({ index: LONG_FORM_SENTENCE_COUNT - 1, phase: 'jump', ...finalWav, ...jumpStats });
+    const finalWav = await readLongFormWavMeta(page);
+    return {
+        maxCacheSize: Math.max(bounds.maxCacheSize, jumpStats.cacheSize),
+        maxObjectUrlCount: Math.max(bounds.maxObjectUrlCount, jumpStats.objectUrlCount),
+        jumpCacheSize: jumpStats.cacheSize,
+        finalWav,
+        sample: {
+            index: LONG_FORM_SENTENCE_COUNT - 1,
+            phase: 'jump',
+            ...finalWav,
+            ...jumpStats,
+        },
+    };
+}
 
-    const heapAfter = await readHeap();
-    let heap = null;
-    if (heapBefore != null && heapAfter != null) {
-        heap = assertLongFormHeapDelta(heapBefore, heapAfter);
-    }
-
+async function assertLongFormPrivacy(page, backend, finalWav) {
     const stored = await page.evaluate(async () => chrome.storage.local.get([
         'pendingTtsBackend', 'pendingApiUrl', 'ttsBackend', 'apiUrl',
     ]));
@@ -1342,9 +1348,33 @@ async function acceptLongFormMemoryPerformance(page, context, extensionId, backe
     if (finalWav.offline !== true) {
         throw Error('Long-form overlay was not offline at end');
     }
+}
+
+// Long-form memory: walk many ONNX overlay sentences while the opt-in
+// AudioManager probe proves the cache/object-URL window stays bounded.
+// Seed storage through the service worker — after article/selection the page
+// is still on the HTTP fixture, where `chrome` is undefined.
+async function acceptLongFormMemoryPerformance(page, context, extensionId, backend) {
+    requireLongFormBackend(backend);
+    liveHeartbeat('long-form-memory-start', { backend, sentences: LONG_FORM_SENTENCE_COUNT });
+    await seedLongFormOverlay(page, context, extensionId, backend);
+
+    const heapBefore = await readLongFormHeap(page);
+    const visitIndexes = buildLongFormVisitIndexes();
+    const walk = await walkLongFormSentences(page, visitIndexes);
+    const jump = await jumpLongFormToLastSentence(page, walk);
+    walk.samples.push(jump.sample);
+
+    const heapAfter = await readLongFormHeap(page);
+    const heap = heapBefore != null && heapAfter != null
+        ? assertLongFormHeapDelta(heapBefore, heapAfter)
+        : null;
+    await assertLongFormPrivacy(page, backend, jump.finalWav);
 
     liveHeartbeat('long-form-memory-done', {
-        maxCacheSize, maxObjectUrlCount, heapGrowth: heap?.growth ?? null,
+        maxCacheSize: jump.maxCacheSize,
+        maxObjectUrlCount: jump.maxObjectUrlCount,
+        heapGrowth: heap?.growth ?? null,
     });
     return {
         success: true,
@@ -1352,15 +1382,15 @@ async function acceptLongFormMemoryPerformance(page, context, extensionId, backe
         backend,
         sentenceCount: LONG_FORM_SENTENCE_COUNT,
         visitedCount: visitIndexes.length,
-        maxCacheSize,
-        maxObjectUrlCount,
-        jumpCacheSize: jumpStats.cacheSize,
+        maxCacheSize: jump.maxCacheSize,
+        maxObjectUrlCount: jump.maxObjectUrlCount,
+        jumpCacheSize: jump.jumpCacheSize,
         local24kHzWav: true,
         offline: true,
         noServerFallback: true,
         acceptanceProbe: true,
         heap,
-        samples,
+        samples: walk.samples,
         userBackendUnchanged: true,
     };
 }

@@ -115,8 +115,12 @@ describe('long-form memory acceptance', () => {
             /long-form storage seed[\s\S]{0,200}serviceWorkers|serviceWorkers\(\)\[0\][\s\S]{0,400}long-form storage seed/,
         );
         expect(harness).toContain('long-form storage seed');
+        expect(harness).toContain('seedLongFormOverlay');
+        expect(harness).toContain('walkLongFormSentences');
         expect(overlay).toContain('pendingAcceptanceProbe');
+        expect(overlay).toContain('syncAcceptanceProbe');
         expect(overlay).toContain('__kokoroAudioManagerStats');
+        expect(overlay).toContain('appendOverlayRenderBlock');
         expect(overlay).toContain('audioManager.audioCache.size');
         expect(overlay).toContain('audioManager.objectUrls.size');
     });
