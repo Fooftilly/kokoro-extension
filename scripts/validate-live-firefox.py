@@ -2023,14 +2023,18 @@ def _probe_firefox_parse_article(driver, origin, fixture_url, speech):
 
 def _send_native_read_article_alt_a():
     """Real X11 Alt+A — Selenium keys do not reach browser.commands.onCommand."""
-    native_python = os.environ.get("KOKORO_NATIVE_PYTHON") or "python3"
+    # Mirror Chromium: only the pinned setup-python absolute interpreter.
+    native_python = os.environ.get("KOKORO_NATIVE_PYTHON")
+    if not native_python or not Path(native_python).is_absolute():
+        raise RuntimeError(
+            "Pinned setup-python absolute interpreter path is required "
+            "(KOKORO_NATIVE_PYTHON)")
     helper = Path(__file__).resolve().parent / "native-chromium-keys.py"
+    argv = [native_python, str(helper), "Alt_L", "a"]
     try:
-        raw = subprocess.check_output(
-            [native_python, str(helper), "Alt_L", "a"],
-            text=True, timeout=5).strip()
+        raw = subprocess.check_output(argv, text=True, timeout=5).strip()
         native_alt_a = json.loads(raw)
-    except Exception as exc:
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
         raise RuntimeError(
             "Cannot send native Alt+A for Firefox read-article: " + str(exc))
     if (native_alt_a.get("x11XTest") is not True or
