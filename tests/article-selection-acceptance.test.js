@@ -120,10 +120,22 @@ console.log(JSON.stringify({ ok, errors }));
         expect(source).toMatch(/native-chromium-keys\.py/);
         expect(source).toMatch(/Alt_L',\s*'a'/);
         expect(source).toMatch(/path: 'read-article-command-native-x11'/);
+        expect(source).toMatch(/function liveHeartbeat\(/);
+        expect(source).toMatch(/function withTimeout\(/);
         expect(source).not.toMatch(/keyboard\.press\('Alt\+a'\)/);
         expect(source).not.toMatch(/path: 'parse-article-show-player'/);
         expect(source).not.toMatch(
             /pendingTtsBackend: ttsBackend[\s\S]{0,200}SHOW_PLAYER/,
         );
+    });
+
+    test('chromium live workflow job timeout covers origin+EPUB+article stages', () => {
+        const workflow = fs.readFileSync(
+            path.join(__dirname, '..', '.github', 'workflows', 'live-browser-acceptance.yml'),
+            'utf8',
+        );
+        const chromiumJob = workflow.split('chromium-model-inference:')[1]
+            ?.split(/\n  [a-z]/)[0] || '';
+        expect(chromiumJob).toMatch(/timeout-minutes:\s{0,2}60\b/);
     });
 });

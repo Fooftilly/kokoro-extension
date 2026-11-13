@@ -49,6 +49,32 @@ if (!headedConsent || !process.env.DISPLAY) {
 if (originDownload && !['mediapipe', 'onnx'].includes(providerFilter)) {
     throw Error('Real origin-download acceptance requires KOKORO_LIVE_PROVIDER=mediapipe or onnx');
 }
+
+const liveStartedAt = Date.now();
+function liveHeartbeat(label, detail) {
+    // stderr so CI shows progress even when stdout is fully buffered under xvfb-run.
+    const elapsedSec = Math.round((Date.now() - liveStartedAt) / 1000);
+    const suffix = detail === undefined ? '' : ' ' + JSON.stringify(detail);
+    process.stderr.write('[live-chromium ' + elapsedSec + 's] ' + label + suffix + '\n');
+}
+
+async function withTimeout(promise, ms, label) {
+    let watchdog;
+    try {
+        return await Promise.race([
+            promise,
+            new Promise((_, reject) => {
+                watchdog = setTimeout(() => reject(Error(
+                    label + ' exceeded ' + ms + 'ms')), ms);
+            }),
+        ]);
+    } finally {
+        clearTimeout(watchdog);
+    }
+}
+
+liveHeartbeat('harness-start', { providerFilter, originDownload, headedConsent });
+
 const variants = [
     ...(providerFilter === 'mediapipe' || providerFilter === 'dictionary' ? [] :
         [dictionaryManifest(), manifestForVariant('onnx', 'q8')]),
@@ -740,7 +766,7 @@ function startArticleSelectionFixtureServer(html) {
 }
 
 async function ensureArticleSelectionContentScript(worker, tabId) {
-    await worker.evaluate(async (id) => {
+    await withTimeout(worker.evaluate(async (id) => {
         try {
             await chrome.tabs.sendMessage(id, { action: 'PING' });
         } catch {
@@ -754,7 +780,7 @@ async function ensureArticleSelectionContentScript(worker, tabId) {
             await new Promise(r => setTimeout(r, 150));
             await chrome.tabs.sendMessage(id, { action: 'PING' });
         }
-    }, tabId);
+    }, tabId), 30000, 'ensureArticleSelectionContentScript');
 }
 
 async function readOverlayWavSnapshot(overlayFrame, stored) {
@@ -817,12 +843,22 @@ async function readOverlayWavSnapshot(overlayFrame, stored) {
 async function waitForArticleSelectionOverlayWav(page, worker, expectedSpeech, mode) {
     const deadline = Date.now() + 180000;
     let lastError = null;
+    let lastBeat = 0;
     while (Date.now() < deadline) {
+        const elapsed = Date.now() - (deadline - 180000);
+        if (elapsed - lastBeat >= 15000) {
+            liveHeartbeat('wait-overlay-wav', { expectedSpeech, mode, elapsedMs: elapsed });
+            lastBeat = elapsed;
+        }
         try {
-            const stored = await worker.evaluate(async () => chrome.storage.local.get([
-                'pendingText', 'pendingContent', 'pendingTtsBackend',
-                'pendingApiUrl', 'pendingAutoplay',
-            ]));
+            // Cap each CDP round-trip so a blocked service worker cannot stall
+            // past the outer deadline (job previously cancelled at 30m with no report).
+            const stored = await withTimeout(worker.evaluate(async () =>
+                chrome.storage.local.get([
+                    'pendingText', 'pendingContent', 'pendingTtsBackend',
+                    'pendingApiUrl', 'pendingAutoplay',
+                ]),
+            ), 15000, 'article/selection storage poll');
             const blocks = stored.pendingContent;
             const speechOk = Array.isArray(blocks) &&
                 blocks.some(block => typeof block?.content === 'string' &&
@@ -831,8 +867,9 @@ async function waitForArticleSelectionOverlayWav(page, worker, expectedSpeech, m
                 await new Promise(resolve => setTimeout(resolve, 100));
                 continue;
             }
-            const hostMode = await page.evaluate(() =>
-                document.getElementById('kokoro-overlay-container')?.dataset.mode || null);
+            const hostMode = await withTimeout(page.evaluate(() =>
+                document.getElementById('kokoro-overlay-container')?.dataset.mode || null,
+            ), 15000, 'article/selection overlay mode poll');
             if (mode && hostMode !== mode) {
                 await new Promise(resolve => setTimeout(resolve, 100));
                 continue;
@@ -843,7 +880,9 @@ async function waitForArticleSelectionOverlayWav(page, worker, expectedSpeech, m
                 await new Promise(resolve => setTimeout(resolve, 100));
                 continue;
             }
-            const snapshot = await readOverlayWavSnapshot(overlayFrame, stored);
+            const snapshot = await withTimeout(
+                readOverlayWavSnapshot(overlayFrame, stored),
+                30000, 'article/selection overlay WAV snapshot');
             if (snapshot) {
                 return { speech: expectedSpeech, mode: hostMode, ...snapshot };
             }
@@ -1003,19 +1042,20 @@ async function acceptReadArticleCommand(page, worker, tabId, backend) {
  */
 async function acceptRealArticleAndSelection(page, context, extensionId, backend) {
     requireArticleSelectionBackend(backend);
+    liveHeartbeat('article-selection-fixture-start', { backend });
     const { server: fixtureServer, url: fixtureUrl } =
         await startArticleSelectionFixtureServer(buildArticleSelectionFixtureHtml());
     const worker = context.serviceWorkers()[0];
     if (!worker) throw Error('Extension service worker missing for article/selection');
 
     try {
-        await worker.evaluate(async (storage) => {
+        await withTimeout(worker.evaluate(async (storage) => {
             await chrome.storage.sync.set(storage);
             await chrome.storage.local.remove([
                 'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
                 'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
             ]);
-        }, articleSelectionStorageConfig(backend));
+        }, articleSelectionStorageConfig(backend)), 15000, 'article-selection storage seed');
 
         await context.setOffline(false);
         await page.goto(fixtureUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -1024,19 +1064,30 @@ async function acceptRealArticleAndSelection(page, context, extensionId, backend
             document.getElementById('article-first'),
         null, { timeout: 15000 });
 
-        const tabId = await worker.evaluate(async (url) => {
+        const tabId = await withTimeout(worker.evaluate(async (url) => {
             const tabs = await chrome.tabs.query({ url });
             if (!tabs.length) throw Error('Fixture tab not found for ' + url);
             return tabs[0].id;
-        }, fixtureUrl);
+        }, fixtureUrl), 15000, 'article-selection tab lookup');
         await ensureArticleSelectionContentScript(worker, tabId);
         await context.setOffline(true);
 
+        liveHeartbeat('article-selection-floating-mic');
         const selectionSnap = await acceptFloatingMicSelection(
             page, worker, tabId, backend);
-        const articleExtract = await probeArticleExtraction(worker, tabId);
+        liveHeartbeat('article-selection-mic-done', {
+            audioBytes: selectionSnap.audioBytes,
+        });
+        const articleExtract = await withTimeout(
+            probeArticleExtraction(worker, tabId),
+            30000, 'PARSE_ARTICLE probe');
+        liveHeartbeat('article-selection-native-alt-a');
         const { articleSnap, readArticleBinding, nativeAltA } =
             await acceptReadArticleCommand(page, worker, tabId, backend);
+        liveHeartbeat('article-selection-alt-a-done', {
+            audioBytes: articleSnap.audioBytes,
+            nativeKeys: nativeAltA.nativeKeys,
+        });
 
         assertDistinctArticleSelectionAudioHashes(
             selectionSnap.audioSha256, articleSnap.audioSha256);
@@ -1306,7 +1357,8 @@ try {
     // Exercise the production model-data store against its real pinned HTTPS
     // CMUdict URL. This deliberately does not substitute the local loopback
     // transfer used later for heavyweight model inference acceptance.
-    const dictionaryCacheAcceptance = await preflightPage.evaluate(async () => {
+    liveHeartbeat('dictionary-cache-acceptance-start');
+    const dictionaryCacheAcceptance = await withTimeout(preflightPage.evaluate(async () => {
         try {
             const [{ ModelDataStore }, { dictionaryManifest }] = await Promise.all([
                 import('./model-data-store.js'), import('./model-catalog.js'),
@@ -1346,6 +1398,9 @@ try {
         } catch (error) {
             return { success: false, error: String(error) };
         }
+    }), 180000, 'dictionary cache acceptance');
+    liveHeartbeat('dictionary-cache-acceptance-done', {
+        success: dictionaryCacheAcceptance.success === true,
     });
     if (!dictionaryCacheAcceptance.success) {
         await writeFile(path.join(resultsDir, 'report.json'), JSON.stringify({
@@ -1400,7 +1455,13 @@ try {
             await page.goto('chrome-extension://' + extensionId + '/benchmark.html');
             if (originDownload) {
                 stage = 'official-origin-download-via-real-model-manager-ui';
+                liveHeartbeat(stage, { provider: manifest.provider });
                 originModelAcceptance = await downloadModelFromOfficialOrigin(page, manifest);
+                liveHeartbeat('official-origin-download-done', {
+                    provider: manifest.provider,
+                    success: originModelAcceptance?.success === true,
+                });
+                await saveReport();
             } else {
             await page.evaluate(async ({ manifest, port, transferToken }) => {
             const { ModelDataStore } = await import('./model-data-store.js');
@@ -1702,14 +1763,23 @@ try {
             if (originDownload && result.success &&
                 (manifest.provider === 'onnx' || manifest.provider === 'mediapipe')) {
                 stage = 'offline-real-epub-chapters-and-txt-reader';
+                liveHeartbeat(stage, { provider: manifest.provider });
                 epubReaderAcceptance = await acceptRealEpubReader(
                     page, extensionId, manifest.provider);
+                liveHeartbeat('epub-reader-done', {
+                    success: epubReaderAcceptance?.success === true,
+                });
+                await saveReport();
             }
             if (originArticleSelectionStageEnabled(
                 originDownload, manifest.provider, result.success)) {
                 stage = 'offline-real-article-and-selection';
+                liveHeartbeat(stage, { provider: manifest.provider });
                 articleSelectionAcceptance = await acceptRealArticleAndSelection(
                     page, context, extensionId, manifest.provider);
+                liveHeartbeat('article-selection-done', {
+                    success: articleSelectionAcceptance?.success === true,
+                });
             }
             console.log(result.success ? 'REAL MODEL INFERENCE' : 'MODEL INFERENCE FAILURE', result);
             results.push({ provider: manifest.provider, variant: manifest.variant,

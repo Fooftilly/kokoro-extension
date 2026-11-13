@@ -56,7 +56,10 @@ jobs:
     container:
       image: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:6e3fb709361521eb27161606e6da6d2674e5e89fa16516cb37d6fdd91372273d
       options: --ipc=host
-    timeout-minutes: 30
+    # Origin download allows up to 15m for UI settle; ONNX + EPUB + article/
+    # selection stages need headroom beyond the old 30m job cap (two tips
+    # cancelled at exactly 30m with no report.json).
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
