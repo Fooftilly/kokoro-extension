@@ -128,8 +128,9 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         await waitFor(() => pruneModels.mock.calls.length === 1);
         const retained = pruneModels.mock.calls[0][0];
         expect(retained.map(m => m.provider + '-' + m.variant).sort()).toEqual([
-            'dictionary-english', 'mediapipe-cpu', 'onnx-q8', 'onnx-q8f16',
+            'dictionary-english', 'mediapipe-cpu', 'mediapipe-gpu', 'onnx-q8', 'onnx-q8f16',
         ]);
+        expect(document.querySelector('[data-variant="mediapipe-gpu"]')).toBeNull();
         expect(cleanup.disabled).toBe(true);
         expect(existing.querySelector('.model-test').disabled).toBe(true);
         expect(other.querySelector('.model-download').disabled).toBe(true);

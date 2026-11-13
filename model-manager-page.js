@@ -1,6 +1,7 @@
 // Extension-owned local model manager and *real* opt-in test harness.
 // No model fetch occurs when this page loads, and local test inputs stay here.
-import { listModelVariants, manifestForVariant, dictionaryManifest, modelDataProvenance } from './model-catalog.js';
+import { listModelVariants, listPinnedModelVariants, manifestForVariant,
+    dictionaryManifest, modelDataProvenance } from './model-catalog.js';
 import { ModelDataStore, formatModelSize, assessStorageHeadroom } from './model-data-store.js';
 import { withModelDataLock } from './model-data-lock.js';
 import { MediaPipeKokoroProvider } from './mediapipe-provider.js';
@@ -164,7 +165,13 @@ async function cleanupObsoleteModelData() {
     try {
         // Keep *all* pinned catalog variants, not merely the selected or fully
         // installed ones: partial downloads and alternative variants are valid.
-        const retained = variants.map(entryManifest);
+        // Retain every pinned manifest (including offered:false GPU) so cleanup
+        // never treats a still-current pin as obsolete (#58 / #147).
+        const retained = [
+            ...listPinnedModelVariants().map(entry =>
+                manifestForVariant(entry.provider, entry.variant)),
+            dictionaryManifest(),
+        ];
         const deleted = await cacheStore().removeUnreferenced(retained);
         status.textContent = 'Removed ' + deleted + ' obsolete cached asset(s). ' +
             'All current catalog variants and dictionary data were retained.';

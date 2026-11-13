@@ -119,16 +119,25 @@ const VARIANTS = Object.freeze({
     }),
 });
 
+function summarizeVariant(entry) {
+    return {
+        key: entry.provider + '-' + entry.variant,
+        label: entry.label,
+        provider: entry.provider,
+        variant: entry.variant,
+        totalBytes: entry.assets.reduce((sum, item) => sum + item.bytes, 0),
+        offered: entry.offered !== false,
+    };
+}
+
+/** All pinned model-data variants, including ones gated out of product UI. */
+export function listPinnedModelVariants() {
+    return Object.values(VARIANTS).map(summarizeVariant);
+}
+
+/** Product-offered variants only (test-page download/test UI). */
 export function listModelVariants() {
-    return Object.values(VARIANTS)
-        .filter(entry => entry.offered !== false)
-        .map(entry => ({
-            key: entry.provider + '-' + entry.variant,
-            label: entry.label,
-            provider: entry.provider,
-            variant: entry.variant,
-            totalBytes: entry.assets.reduce((sum, item) => sum + item.bytes, 0),
-        }));
+    return listPinnedModelVariants().filter(entry => entry.offered);
 }
 
 export function manifestForVariant(provider, variant) {
