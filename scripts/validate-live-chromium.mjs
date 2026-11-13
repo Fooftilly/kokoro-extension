@@ -1,7 +1,7 @@
 // Live model-backed Chromium MV3 validation. Explicit opt-in and no model weights in git.
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { createReadStream, createWriteStream } from 'node:fs';
+import { appendFileSync, createReadStream, createWriteStream, writeSync } from 'node:fs';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import os from 'node:os';
@@ -13,6 +13,14 @@ import {
     READER_ACCEPTANCE_SPEECH,
     buildReaderAcceptanceEpub,
 } from './reader-acceptance-epub.mjs';
+import {
+    ARTICLE_SELECTION_SPEECH,
+    articleSelectionStorageConfig,
+    assertDistinctArticleSelectionAudioHashes,
+    buildArticleSelectionFixtureHtml,
+    originArticleSelectionStageEnabled,
+    requireArticleSelectionBackend,
+} from './article-selection-acceptance.mjs';
 // The extension's .js modules are ESM while package.json is CommonJS for the
 // build tool. Copy the pure catalog into a temporary .mjs file for the Node harness.
 const catalogFile = path.join(os.tmpdir(), 'kokoro-runtime-model-catalog.mjs');
@@ -41,6 +49,47 @@ if (!headedConsent || !process.env.DISPLAY) {
 if (originDownload && !['mediapipe', 'onnx'].includes(providerFilter)) {
     throw Error('Real origin-download acceptance requires KOKORO_LIVE_PROVIDER=mediapipe or onnx');
 }
+
+const liveStartedAt = Date.now();
+const resultsDir = path.resolve('dist/runtime-acceptance');
+await mkdir(resultsDir, { recursive: true });
+const progressLogPath = path.join(resultsDir, 'progress.log');
+
+function liveHeartbeat(label, detail, options = {}) {
+    // writeSync(2) bypasses Node's full stderr buffering under non-TTY CI pipes.
+    // Stage lines go to progress.log (stall watchdog). Keepalive "alive" lines
+    // must NOT touch progress.log — they previously defeated the watchdog.
+    const toProgress = options.toProgress !== false;
+    const elapsedSec = Math.round((Date.now() - liveStartedAt) / 1000);
+    const suffix = detail === undefined ? '' : ' ' + JSON.stringify(detail);
+    const line = '[live-chromium ' + elapsedSec + 's] ' + label + suffix + '\n';
+    try { writeSync(2, line); } catch { /* ignore */ }
+    if (toProgress) {
+        try { appendFileSync(progressLogPath, line); } catch { /* ignore */ }
+    }
+}
+
+async function withTimeout(promise, ms, label) {
+    let watchdog;
+    try {
+        return await Promise.race([
+            promise,
+            new Promise((_, reject) => {
+                watchdog = setTimeout(() => reject(Error(
+                    label + ' exceeded ' + ms + 'ms')), ms);
+            }),
+        ]);
+    } finally {
+        clearTimeout(watchdog);
+    }
+}
+
+liveHeartbeat('harness-start', { providerFilter, originDownload, headedConsent });
+// Stderr-only keepalive; progress.log stays stage-gated for the stall watchdog.
+const aliveTimer = setInterval(
+    () => liveHeartbeat('alive', undefined, { toProgress: false }), 15000);
+aliveTimer.unref?.();
+
 const variants = [
     ...(providerFilter === 'mediapipe' || providerFilter === 'dictionary' ? [] :
         [dictionaryManifest(), manifestForVariant('onnx', 'q8')]),
@@ -48,9 +97,7 @@ const variants = [
         [manifestForVariant('mediapipe', 'cpu')]),
 ];
 const sourceDir = path.join(os.tmpdir(), 'kokoro-live-models');
-const resultsDir = path.resolve('dist/runtime-acceptance');
 await mkdir(sourceDir, { recursive: true });
-await mkdir(resultsDir, { recursive: true });
 const local = new Map();
 const byFilename = new Map();
 for (const manifest of (originDownload ? [] : variants)) for (const asset of manifest.assets) {
@@ -321,9 +368,18 @@ async function downloadModelFromOfficialOrigin(page, manifest) {
         failure: request.failure() || null,
     }));
     const button = page.locator(rowSelector + ' .model-download');
+    liveHeartbeat('official-origin-host-permission-start', {
+        provider: manifest.provider, variant: manifest.variant,
+    });
     const hostGrantEvidence = await acceptOfficialOriginHostPermission(
         page, manifest, rowSelector, button, networkEvents);
+    liveHeartbeat('official-origin-host-permission-done', {
+        host: hostGrantEvidence.host,
+    });
     try {
+        liveHeartbeat('official-origin-download-wait-start', {
+            provider: manifest.provider, timeoutMs: 900000,
+        });
         await page.waitForFunction(selector => {
             const row = document.querySelector(selector);
             const status = row?.querySelector('.model-status')?.textContent || '';
@@ -332,6 +388,7 @@ async function downloadModelFromOfficialOrigin(page, manifest) {
             return finished ||
                 /permission.*(denied|failed)|Cannot request|Download failed|Download cancelled|Cannot inspect model cache/i.test(status);
         }, rowSelector, { timeout: 900000 });
+        liveHeartbeat('official-origin-download-wait-done');
     } catch (error) {
         const diagnostics = await captureOfficialOriginDownloadState(page, rowSelector, networkEvents);
         throw Error(manifest.provider + ' official-origin UI acceptance did not settle: ' +
@@ -707,6 +764,447 @@ async function pollRealEpubChapterReady(
     };
 }
 
+function startArticleSelectionFixtureServer(html) {
+    const fixtureServer = createServer((req, res) => {
+        if (req.method === 'GET' && (req.url === '/' || req.url === '/article.html')) {
+            res.writeHead(200, {
+                'Content-Type': 'text/html; charset=utf-8',
+                'Cache-Control': 'no-store',
+            });
+            res.end(html);
+            return;
+        }
+        res.writeHead(404);
+        res.end();
+    });
+    return new Promise(resolve => {
+        fixtureServer.listen(0, '127.0.0.1', () => {
+            const port = fixtureServer.address().port;
+            resolve({
+                server: fixtureServer,
+                url: 'http://127.0.0.1:' + port + '/article.html',
+            });
+        });
+    });
+}
+
+async function ensureArticleSelectionContentScript(worker, tabId) {
+    await withTimeout(worker.evaluate(async (id) => {
+        try {
+            await chrome.tabs.sendMessage(id, { action: 'PING' });
+        } catch {
+            await chrome.scripting.executeScript({
+                target: { tabId: id },
+                files: [
+                    'browser-polyfill.min.js', 'readability.js',
+                    'overlay-position.js', 'content.js',
+                ],
+            });
+            await new Promise(r => setTimeout(r, 150));
+            await chrome.tabs.sendMessage(id, { action: 'PING' });
+        }
+    }, tabId), 30000, 'ensureArticleSelectionContentScript');
+}
+
+async function readOverlayWavSnapshot(overlayFrame, stored) {
+    return overlayFrame.evaluate(async (storedState) => {
+        const audio = document.getElementById('audio');
+        const status = document.getElementById('status');
+        const spinner = document.getElementById('loadingSpinner');
+        const audioUrl = audio?.src;
+        if (!audioUrl?.startsWith('blob:') ||
+            spinner?.style.display !== 'none' ||
+            status?.textContent === 'Error playing audio.' ||
+            navigator.onLine !== false) {
+            return null;
+        }
+        let response;
+        let bytes;
+        try {
+            response = await fetch(audioUrl);
+            if (!response.ok) return null;
+            bytes = new Uint8Array(await response.arrayBuffer());
+        } catch {
+            return null;
+        }
+        if (audio.src !== audioUrl ||
+            document.getElementById('loadingSpinner')?.style.display !== 'none') {
+            return null;
+        }
+        const tag = (offset, count) =>
+            String.fromCharCode(...bytes.subarray(offset, offset + count));
+        const header = bytes.byteLength >= 44
+            ? new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+            : null;
+        const audioBytes = header?.getUint32(40, true) ?? 0;
+        if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
+            header?.getUint32(24, true) !== 24000 || audioBytes < 2 ||
+            bytes.length !== 44 + audioBytes) {
+            throw Error('Article/selection overlay WAV mismatch: ' +
+                JSON.stringify({
+                    length: bytes.length, riff: tag(0, 4), wave: tag(8, 4),
+                    rate: header?.getUint32(24, true) ?? null, audioBytes,
+                }));
+        }
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
+        const audioSha256 = [...new Uint8Array(digest)]
+            .map(b => b.toString(16).padStart(2, '0')).join('');
+        return {
+            audioBytes,
+            audioSha256,
+            backend: storedState.pendingTtsBackend,
+            serverUrl: storedState.pendingApiUrl,
+            pendingText: storedState.pendingText || '',
+            blockCount: Array.isArray(storedState.pendingContent)
+                ? storedState.pendingContent.length : 0,
+            autoplay: storedState.pendingAutoplay === true,
+            offline: navigator.onLine === false,
+        };
+    }, stored);
+}
+
+async function waitForArticleSelectionOverlayWav(
+    page, worker, expectedSpeech, mode, options = {},
+) {
+    const excludeAudioSha256 = options.excludeAudioSha256 || null;
+    const deadline = Date.now() + 180000;
+    let lastError = null;
+    let lastBeat = 0;
+    while (Date.now() < deadline) {
+        const elapsed = Date.now() - (deadline - 180000);
+        if (elapsed - lastBeat >= 15000) {
+            liveHeartbeat('wait-overlay-wav', {
+                expectedSpeech, mode, elapsedMs: elapsed,
+                excludeAudioSha256: Boolean(excludeAudioSha256),
+            });
+            lastBeat = elapsed;
+        }
+        try {
+            // Cap each CDP round-trip so a blocked service worker cannot stall
+            // past the outer deadline (job previously cancelled at 30m with no report).
+            const stored = await withTimeout(worker.evaluate(async () =>
+                chrome.storage.local.get([
+                    'pendingText', 'pendingContent', 'pendingTtsBackend',
+                    'pendingApiUrl', 'pendingAutoplay',
+                ]),
+            ), 15000, 'article/selection storage poll');
+            const blocks = stored.pendingContent;
+            const speechOk = Array.isArray(blocks) &&
+                blocks.some(block => typeof block?.content === 'string' &&
+                    block.content.includes(expectedSpeech));
+            if (!speechOk) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                continue;
+            }
+            const hostMode = await withTimeout(page.evaluate(() =>
+                document.getElementById('kokoro-overlay-container')?.dataset.mode || null,
+            ), 15000, 'article/selection overlay mode poll');
+            if (mode && hostMode !== mode) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                continue;
+            }
+            const overlayFrame = page.frames().find(frame =>
+                frame.url().includes('/overlay.html'));
+            if (!overlayFrame) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                continue;
+            }
+            const snapshot = await withTimeout(
+                readOverlayWavSnapshot(overlayFrame, stored),
+                30000, 'article/selection overlay WAV snapshot');
+            // After selection→article, pendingText can update before the overlay
+            // replaces the previous blob URL; ignore the stale selection WAV.
+            if (snapshot && excludeAudioSha256 &&
+                snapshot.audioSha256 === excludeAudioSha256) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                continue;
+            }
+            if (snapshot) {
+                return { speech: expectedSpeech, mode: hostMode, ...snapshot };
+            }
+        } catch (error) {
+            const message = String(error);
+            if (message.includes('Article/selection overlay WAV mismatch')) throw error;
+            lastError = error;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw Error('Timed out waiting for article/selection overlay WAV for ' +
+        expectedSpeech + (lastError ? (': ' + lastError) : ''));
+}
+
+async function acceptFloatingMicSelection(page, worker, tabId, backend) {
+    await page.evaluate(() => {
+        const el = document.getElementById('selection-sentence');
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    });
+    await page.waitForSelector('#kokoro-float-btn', {
+        state: 'visible', timeout: 15000,
+    });
+    await page.locator('#kokoro-float-btn').click();
+    const selectionSnap = await waitForArticleSelectionOverlayWav(
+        page, worker, ARTICLE_SELECTION_SPEECH.selection, 'popup');
+    if (selectionSnap.backend !== backend ||
+        selectionSnap.serverUrl !== null && selectionSnap.serverUrl !== '') {
+        throw Error('Selection overlay left local backend: ' +
+            JSON.stringify(selectionSnap));
+    }
+    await worker.evaluate(async (id) => {
+        await chrome.tabs.sendMessage(id, { action: 'REMOVE_PLAYER' });
+        await chrome.storage.local.remove([
+            'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
+            'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
+        ]);
+    }, tabId);
+    await page.waitForFunction(
+        () => !document.getElementById('kokoro-overlay-container'),
+        null, { timeout: 15000 });
+    return selectionSnap;
+}
+
+async function probeArticleExtraction(worker, tabId) {
+    const articleExtract = await worker.evaluate(async (id) => {
+        const parsed = await chrome.tabs.sendMessage(id, { action: 'PARSE_ARTICLE' });
+        if (!parsed?.text || !Array.isArray(parsed.content)) {
+            throw Error('PARSE_ARTICLE failed: ' + JSON.stringify(parsed));
+        }
+        return { text: parsed.text, blockCount: parsed.content.length };
+    }, tabId);
+    if (!articleExtract.text.includes(ARTICLE_SELECTION_SPEECH.articleFirst) ||
+        !articleExtract.text.includes(ARTICLE_SELECTION_SPEECH.articleSecond)) {
+        throw Error('Article extract missed fixture paragraphs: ' +
+            JSON.stringify(articleExtract));
+    }
+    return articleExtract;
+}
+
+function sendNativeReadArticleAltA(readArticleBinding, commandBindings) {
+    const nativePython = process.env.KOKORO_NATIVE_PYTHON;
+    if (!nativePython || !path.isAbsolute(nativePython)) {
+        throw Error('Pinned setup-python absolute interpreter path is required');
+    }
+    try {
+        const nativeAltA = JSON.parse(execFileSync(nativePython, [
+            path.resolve('scripts/native-chromium-keys.py'),
+            'Alt_L', 'a',
+        ], { encoding: 'utf8', timeout: 5000 }).trim());
+        if (nativeAltA.x11XTest !== true || nativeAltA.nativeKeys !== 'Alt_L a') {
+            throw Error('Native X11 input did not confirm Alt+A');
+        }
+        return nativeAltA;
+    } catch (error) {
+        throw Error('Cannot send native Alt+A for read-article command: ' +
+            String(error.message || error) + '; bindings=' +
+            JSON.stringify({ readArticleBinding, commandBindings }));
+    }
+}
+
+async function waitForReadArticleStorageArmed(worker, backend) {
+    const armedDeadline = Date.now() + 20000;
+    while (Date.now() < armedDeadline) {
+        const armed = await worker.evaluate(async () => chrome.storage.local.get([
+            'pendingText', 'pendingContent', 'pendingTtsBackend',
+        ]));
+        if (typeof armed.pendingText === 'string' &&
+            armed.pendingText.includes(ARTICLE_SELECTION_SPEECH.articleFirst) &&
+            armed.pendingTtsBackend === backend) {
+            return armed;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return null;
+}
+
+async function acceptReadArticleCommand(
+    page, worker, tabId, backend, options = {},
+) {
+    // Playwright/CDP keys never reach chrome.commands; use native X11 XTest.
+    // background.js ignores read-article while CHECK_PLAYER_ACTIVE — ensure the
+    // selection popup is fully gone before sending Alt+A.
+    await page.waitForFunction(
+        () => !document.getElementById('kokoro-overlay-container'),
+        null, { timeout: 15000 });
+    const playerStillActive = await withTimeout(worker.evaluate(async (id) => {
+        try {
+            const response = await chrome.tabs.sendMessage(id, {
+                action: 'CHECK_PLAYER_ACTIVE',
+            });
+            return Boolean(response?.active);
+        } catch {
+            return false;
+        }
+    }, tabId), 15000, 'CHECK_PLAYER_ACTIVE before read-article');
+    if (playerStillActive) {
+        throw Error('Selection player still active before native Alt+A');
+    }
+    await worker.evaluate(async (id) => {
+        await chrome.storage.local.remove([
+            'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
+            'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
+        ]);
+        await chrome.tabs.update(id, { active: true });
+    }, tabId);
+    const commandBindings = await worker.evaluate(async () => {
+        const commands = await chrome.commands.getAll();
+        return commands.map(entry => ({
+            name: entry.name, shortcut: entry.shortcut || '',
+        }));
+    });
+    const readArticleBinding = commandBindings.find(
+        entry => entry.name === 'read-article');
+    if (!readArticleBinding?.shortcut) {
+        throw Error('read-article command has no registered shortcut: ' +
+            JSON.stringify(commandBindings));
+    }
+    await page.bringToFront();
+    await page.locator('body').click({ position: { x: 8, y: 8 } });
+    await page.waitForTimeout(300);
+    const nativeAltA = sendNativeReadArticleAltA(readArticleBinding, commandBindings);
+    const armed = await waitForReadArticleStorageArmed(worker, backend);
+    if (!armed) {
+        throw Error('Native Alt+A did not arm read-article storage: ' +
+            JSON.stringify({ nativeAltA, readArticleBinding, commandBindings }));
+    }
+    const articleSnap = await waitForArticleSelectionOverlayWav(
+        page, worker, ARTICLE_SELECTION_SPEECH.articleFirst, 'full', {
+            excludeAudioSha256: options.excludeAudioSha256 || null,
+        });
+    if (articleSnap.backend !== backend ||
+        (articleSnap.serverUrl !== null && articleSnap.serverUrl !== '')) {
+        throw Error('Article overlay left local backend: ' +
+            JSON.stringify(articleSnap));
+    }
+    if (!articleSnap.pendingText.includes(ARTICLE_SELECTION_SPEECH.articleFirst) ||
+        !articleSnap.pendingText.includes(ARTICLE_SELECTION_SPEECH.articleSecond)) {
+        throw Error('read-article command did not store extracted article text: ' +
+            JSON.stringify({
+                pendingText: articleSnap.pendingText,
+                blockCount: articleSnap.blockCount,
+            }));
+    }
+    if (articleSnap.blockCount < 1) {
+        throw Error('read-article command stored empty pendingContent');
+    }
+    return { articleSnap, readArticleBinding, nativeAltA };
+}
+
+/**
+ * Real webpage selection (floating mic → REQUEST_TTS) and article read
+ * (native X11 Alt+A `read-article` command → handleTtsAction) against a
+ * loopback fixture. Chromium ONNX origin only for KE-11.
+ */
+async function acceptRealArticleAndSelection(page, context, extensionId, backend) {
+    requireArticleSelectionBackend(backend);
+    liveHeartbeat('article-selection-fixture-start', { backend });
+    const { server: fixtureServer, url: fixtureUrl } =
+        await startArticleSelectionFixtureServer(buildArticleSelectionFixtureHtml());
+    const worker = context.serviceWorkers()[0];
+    if (!worker) throw Error('Extension service worker missing for article/selection');
+
+    try {
+        await withTimeout(worker.evaluate(async (storage) => {
+            await chrome.storage.sync.set(storage);
+            await chrome.storage.local.remove([
+                'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
+                'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
+            ]);
+        }, articleSelectionStorageConfig(backend)), 15000, 'article-selection storage seed');
+
+        await context.setOffline(false);
+        await page.goto(fixtureUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForFunction(() =>
+            document.getElementById('selection-sentence') &&
+            document.getElementById('article-first'),
+        null, { timeout: 15000 });
+
+        const tabId = await withTimeout(worker.evaluate(async (url) => {
+            const tabs = await chrome.tabs.query({ url });
+            if (!tabs.length) throw Error('Fixture tab not found for ' + url);
+            return tabs[0].id;
+        }, fixtureUrl), 15000, 'article-selection tab lookup');
+        await ensureArticleSelectionContentScript(worker, tabId);
+        await context.setOffline(true);
+
+        liveHeartbeat('article-selection-floating-mic');
+        const selectionSnap = await acceptFloatingMicSelection(
+            page, worker, tabId, backend);
+        liveHeartbeat('article-selection-mic-done', {
+            audioBytes: selectionSnap.audioBytes,
+        });
+        const articleExtract = await withTimeout(
+            probeArticleExtraction(worker, tabId),
+            30000, 'PARSE_ARTICLE probe');
+        liveHeartbeat('article-selection-native-alt-a', {
+            excludeSelectionSha: selectionSnap.audioSha256?.slice(0, 12),
+        });
+        const { articleSnap, readArticleBinding, nativeAltA } =
+            await acceptReadArticleCommand(page, worker, tabId, backend, {
+                excludeAudioSha256: selectionSnap.audioSha256,
+            });
+        liveHeartbeat('article-selection-alt-a-done', {
+            audioBytes: articleSnap.audioBytes,
+            audioSha256: articleSnap.audioSha256?.slice(0, 12),
+            nativeKeys: nativeAltA.nativeKeys,
+        });
+
+        assertDistinctArticleSelectionAudioHashes(
+            selectionSnap.audioSha256, articleSnap.audioSha256);
+        liveHeartbeat('article-selection-hashes-distinct');
+
+        await withTimeout(worker.evaluate(async (id) => {
+            await chrome.tabs.sendMessage(id, { action: 'REMOVE_PLAYER' }).catch(() => {});
+        }, tabId), 15000, 'REMOVE_PLAYER after article');
+
+        return {
+            success: true,
+            browser: 'Chromium',
+            backend,
+            fixtureUrl,
+            selection: {
+                path: 'floating-mic',
+                mode: selectionSnap.mode,
+                speech: ARTICLE_SELECTION_SPEECH.selection,
+                audioBytes: selectionSnap.audioBytes,
+                audioSha256: selectionSnap.audioSha256,
+            },
+            article: {
+                path: 'read-article-command-native-x11',
+                shortcut: readArticleBinding.shortcut,
+                nativeKeys: nativeAltA.nativeKeys,
+                mode: articleSnap.mode,
+                speech: ARTICLE_SELECTION_SPEECH.articleFirst,
+                extractedTextIncludesBothParagraphs: true,
+                parseArticleProbeBlockCount: articleExtract.blockCount,
+                blockCount: articleSnap.blockCount,
+                audioBytes: articleSnap.audioBytes,
+                audioSha256: articleSnap.audioSha256,
+            },
+            local24kHzWav: true,
+            differentAudioPerPath: true,
+            offline: true,
+            noServerFallback: true,
+            userBackendUnchanged: true,
+        };
+    } finally {
+        // Drop keep-alive clients so close() cannot sit until the stall watchdog.
+        liveHeartbeat('article-selection-fixture-close');
+        try { fixtureServer.closeAllConnections?.(); } catch { /* ignore */ }
+        await withTimeout(new Promise(resolve => {
+            fixtureServer.close(() => resolve());
+        }), 5000, 'article-selection fixtureServer.close').catch((closeError) => {
+            liveHeartbeat('article-selection-fixture-close-timeout', {
+                error: String(closeError).slice(0, 160),
+            });
+            try { fixtureServer.closeAllConnections?.(); } catch { /* ignore */ }
+        });
+    }
+}
+
 // Verify that the real EPUB.js reader and embedded overlay—not a seeded
 // pendingContent shortcut—create a local offline WAV for both chapters.
 // Also cover replacing the book with a TXT file through the same UI.
@@ -901,20 +1399,27 @@ const server = createServer((req, res) => {
     createReadStream(file).pipe(res);
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+liveHeartbeat('loopback-model-server-listening');
 let context;
 try {
+    liveHeartbeat('playwright-import-start');
     const { chromium } = await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE_PATH).href);
     const extension = path.resolve('dist/chrome');
-    context = await chromium.launchPersistentContext(path.join(sourceDir, 'profile'), {
-        channel: 'chromium', headless: !headedConsent,
-        args: ['--disable-extensions-except=' + extension, '--load-extension=' + extension],
-    });
+    liveHeartbeat('chromium-launch-start', { headed: headedConsent === true });
+    context = await withTimeout(chromium.launchPersistentContext(
+        path.join(sourceDir, 'profile'), {
+            channel: 'chromium', headless: !headedConsent,
+            args: ['--disable-extensions-except=' + extension, '--load-extension=' + extension],
+        }), 120000, 'chromium.launchPersistentContext');
+    liveHeartbeat('chromium-launch-done');
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', { timeout: 30000 });
+    liveHeartbeat('service-worker-ready');
     const extensionId = new URL(worker.url()).hostname;
     extensionOrigin = 'chrome-extension://' + extensionId;
     const preflightPage = await context.newPage();
     const errors = [];
     preflightPage.on('pageerror', error => errors.push(String(error)));
+    liveHeartbeat('preflight-goto-benchmark');
     await preflightPage.goto('chrome-extension://' + extensionId + '/benchmark.html');
     await preflightPage.locator('#runCheck').click();
     // Clicking only awaits DOM dispatch, not the async capability inspection.
@@ -930,10 +1435,12 @@ try {
     }
     const preflight = JSON.parse(await preflightPage.locator('#report').textContent());
     if (!preflight.wasmCompilation) throw Error('Chrome extension CSP blocks WebAssembly compilation');
+    liveHeartbeat('preflight-complete', { browser: preflight.browser });
     // Exercise the production model-data store against its real pinned HTTPS
     // CMUdict URL. This deliberately does not substitute the local loopback
     // transfer used later for heavyweight model inference acceptance.
-    const dictionaryCacheAcceptance = await preflightPage.evaluate(async () => {
+    liveHeartbeat('dictionary-cache-acceptance-start');
+    const dictionaryCacheAcceptance = await withTimeout(preflightPage.evaluate(async () => {
         try {
             const [{ ModelDataStore }, { dictionaryManifest }] = await Promise.all([
                 import('./model-data-store.js'), import('./model-catalog.js'),
@@ -973,6 +1480,9 @@ try {
         } catch (error) {
             return { success: false, error: String(error) };
         }
+    }), 180000, 'dictionary cache acceptance');
+    liveHeartbeat('dictionary-cache-acceptance-done', {
+        success: dictionaryCacheAcceptance.success === true,
     });
     if (!dictionaryCacheAcceptance.success) {
         await writeFile(path.join(resultsDir, 'report.json'), JSON.stringify({
@@ -1020,13 +1530,20 @@ try {
         let onnxOverlayAcceptance = null;
         let localBenchmarkAcceptance = null;
         let epubReaderAcceptance = null;
+        let articleSelectionAcceptance = null;
         page.on('pageerror', error => errors.push(String(error)));
         page.on('crash', () => { crashed = true; });
         try {
             await page.goto('chrome-extension://' + extensionId + '/benchmark.html');
             if (originDownload) {
                 stage = 'official-origin-download-via-real-model-manager-ui';
+                liveHeartbeat(stage, { provider: manifest.provider });
                 originModelAcceptance = await downloadModelFromOfficialOrigin(page, manifest);
+                liveHeartbeat('official-origin-download-done', {
+                    provider: manifest.provider,
+                    success: originModelAcceptance?.success === true,
+                });
+                await saveReport();
             } else {
             await page.evaluate(async ({ manifest, port, transferToken }) => {
             const { ModelDataStore } = await import('./model-data-store.js');
@@ -1048,12 +1565,16 @@ try {
             if (manifest.provider === 'dictionary') continue; // verified/cache-preloaded; no inference engine
             // Require the cached SDK, WASM, voices, model and dictionary to
             // produce speech with all HTTP(S) requests disabled by Chromium.
+            liveHeartbeat('offline-mode-enter', { provider: manifest.provider });
             await context.setOffline(true);
-            if (!await page.evaluate(() => navigator.onLine === false)) {
+            if (!await withTimeout(page.evaluate(() => navigator.onLine === false),
+                15000, 'navigator.onLine offline check')) {
                 throw Error('Chromium did not enter offline mode before inference');
             }
             stage = 'offline-model-initialization-and-synthesis';
-            await page.evaluate(({ provider, variant }) => {
+            liveHeartbeat(stage, { provider: manifest.provider, variant: manifest.variant });
+            await saveReport();
+            await withTimeout(page.evaluate(({ provider, variant }) => {
             window.__kokoroProbe = { done: false };
             void (async () => {
                 let engine;
@@ -1099,9 +1620,19 @@ try {
                         stack: String(error.stack || '') };
                 } finally { try { await engine?.close(); } catch { /* keep result */ } }
             })();
-        }, { provider: manifest.provider, variant: manifest.variant });
-        await page.waitForFunction(() => window.__kokoroProbe?.done === true, null, { timeout: 240000 });
-        const result = await page.evaluate(() => window.__kokoroProbe);
+        }, { provider: manifest.provider, variant: manifest.variant }),
+            30000, 'start offline synthesis probe');
+            // Node-side deadline: Playwright's waitForFunction timeout may not
+            // fire if ONNX/WASM wedges the renderer and CDP polls stop moving.
+            liveHeartbeat('offline-synthesis-wait-start', { timeoutMs: 240000 });
+            await withTimeout(
+                page.waitForFunction(() => window.__kokoroProbe?.done === true, null, {
+                    timeout: 240000,
+                }),
+                250000, 'offline synthesis probe wait');
+            liveHeartbeat('offline-synthesis-wait-done');
+        const result = await withTimeout(page.evaluate(() => window.__kokoroProbe),
+            30000, 'read __kokoroProbe');
         // Diagnose whether the upstream task requires the original .litertlm
         // filename instead of a Blob URL, without changing production behavior.
         // This probe has no text/network fallback beyond our authenticated loopback model server.
@@ -1328,20 +1859,40 @@ try {
             if (originDownload && result.success &&
                 (manifest.provider === 'onnx' || manifest.provider === 'mediapipe')) {
                 stage = 'offline-real-epub-chapters-and-txt-reader';
+                liveHeartbeat(stage, { provider: manifest.provider });
                 epubReaderAcceptance = await acceptRealEpubReader(
                     page, extensionId, manifest.provider);
+                liveHeartbeat('epub-reader-done', {
+                    success: epubReaderAcceptance?.success === true,
+                });
+                await saveReport();
+            }
+            if (originArticleSelectionStageEnabled(
+                originDownload, manifest.provider, result.success)) {
+                stage = 'offline-real-article-and-selection';
+                liveHeartbeat(stage, { provider: manifest.provider });
+                articleSelectionAcceptance = await acceptRealArticleAndSelection(
+                    page, context, extensionId, manifest.provider);
+                liveHeartbeat('article-selection-done', {
+                    success: articleSelectionAcceptance?.success === true,
+                });
             }
             console.log(result.success ? 'REAL MODEL INFERENCE' : 'MODEL INFERENCE FAILURE', result);
             results.push({ provider: manifest.provider, variant: manifest.variant,
                 offlineAttempted: true, offlineInference: result.success === true,
                 originModelAcceptance, onnxPlaybackAcceptance, onnxOverlayAcceptance,
-                localBenchmarkAcceptance, epubReaderAcceptance, ...result });
+                localBenchmarkAcceptance, epubReaderAcceptance,
+                articleSelectionAcceptance, ...result });
             await saveReport();
         } catch (error) {
+            liveHeartbeat('provider-validation-aborted', {
+                stage, error: String(error).slice(0, 240),
+            });
             const failure = { provider: manifest.provider, variant: manifest.variant,
                 success: false, crashed, stage, originModelAcceptance,
                 onnxPlaybackAcceptance, onnxOverlayAcceptance,
-                localBenchmarkAcceptance, epubReaderAcceptance, error: String(error) };
+                localBenchmarkAcceptance, epubReaderAcceptance,
+                articleSelectionAcceptance, error: String(error) };
             results.push(failure);
             await saveReport();
             console.error('MODEL VALIDATION ABORTED', failure);
@@ -1349,8 +1900,13 @@ try {
         } finally {
             // Restore network only for the next verified local model transfer.
             // Each provider's acceptance itself must finish entirely offline.
-            await context.setOffline(false);
-            if (!page.isClosed()) await page.close();
+            await context.setOffline(false).catch(() => {});
+            if (!page.isClosed()) {
+                await withTimeout(page.close(), 15000, 'page.close after provider')
+                    .catch((closeError) => liveHeartbeat('page-close-timeout', {
+                        error: String(closeError).slice(0, 160),
+                    }));
+            }
         }
     }
     if (errors.length) throw Error('Extension errors: ' + errors.join('; '));
@@ -1385,12 +1941,19 @@ try {
 
     // The persistent Chromium profile is reused across an actual browser
     // process shutdown/startup. No network model re-download may be needed.
-    await context.close();
+    liveHeartbeat('chromium-close-before-restart');
+    await withTimeout(context.close(), 30000, 'context.close before restart')
+        .catch((closeError) => liveHeartbeat('chromium-close-before-restart-timeout', {
+            error: String(closeError).slice(0, 160),
+        }));
     context = null;
-    context = await chromium.launchPersistentContext(path.join(sourceDir, 'profile'), {
-        channel: 'chromium', headless: !headedConsent,
-        args: ['--disable-extensions-except=' + extension, '--load-extension=' + extension],
-    });
+    liveHeartbeat('chromium-relaunch-after-restart-start');
+    context = await withTimeout(chromium.launchPersistentContext(
+        path.join(sourceDir, 'profile'), {
+            channel: 'chromium', headless: !headedConsent,
+            args: ['--disable-extensions-except=' + extension, '--load-extension=' + extension],
+        }), 120000, 'chromium.launchPersistentContext (restart)');
+    liveHeartbeat('chromium-relaunch-after-restart-done');
     const restartedWorker = context.serviceWorkers()[0] ||
         await context.waitForEvent('serviceworker', { timeout: 30000 });
     const restartedId = new URL(restartedWorker.url()).hostname;
@@ -1700,6 +2263,13 @@ try {
         if (!reopened.isClosed()) await reopened.close();
     }
 } finally {
-    if (context) await context.close();
+    clearInterval(aliveTimer);
+    liveHeartbeat('harness-teardown');
+    if (context) {
+        await withTimeout(context.close(), 20000, 'context.close')
+            .catch((closeError) => liveHeartbeat('context-close-timeout', {
+                error: String(closeError).slice(0, 160),
+            }));
+    }
     await new Promise(resolve => server.close(resolve));
 }

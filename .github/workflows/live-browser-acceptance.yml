@@ -56,7 +56,10 @@ jobs:
     container:
       image: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:6e3fb709361521eb27161606e6da6d2674e5e89fa16516cb37d6fdd91372273d
       options: --ipc=host
-    timeout-minutes: 30
+    # Origin download allows up to 15m for UI settle; ONNX + EPUB + article/
+    # selection stages need headroom beyond the old 30m job cap (two tips
+    # cancelled at exactly 30m with no report.json).
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -108,8 +111,83 @@ jobs:
           # The pinned image already includes Xvfb and browser dependencies.
           # Native optional-host dialog input uses libX11/libXtst via a small
           # standard-library Python helper; no mutable apt mirror is required.
-          xvfb-run -a -s '-screen 0 1440x900x24' \
-            node scripts/validate-live-chromium.mjs
+          #
+          # GitHub withholds container step logs until the step ends — mid-flight
+          # stdout is invisible. Fail fast so the artifact + flushed log appear:
+          # (1) stall watchdog on stage-only progress.log (not keepalive lines)
+          # (2) hard 20m timeout on the whole harness process group.
+          set -eu
+          mkdir -p dist/runtime-acceptance
+          : > dist/runtime-acceptance/progress.log
+          rm -f dist/runtime-acceptance/stalled.flag
+          echo "[live-wrapper] starting; stage progress mirrored below when step ends or fails fast"
+          tail -n 0 -F dist/runtime-acceptance/progress.log &
+          TAIL_PID=$!
+          set +e
+          # setsid so stall/timeout can kill xvfb+node as a group
+          setsid stdbuf -oL -eL xvfb-run -a -s '-screen 0 1440x900x24' \
+            stdbuf -oL -eL node scripts/validate-live-chromium.mjs &
+          NODE_PID=$!
+          set -e
+          (
+            STALL_SECS=180
+            LAST_SIZE=0
+            IDLE=0
+            while kill -0 "$NODE_PID" 2>/dev/null; do
+              sleep 15
+              SIZE=$(wc -c < dist/runtime-acceptance/progress.log | tr -d ' ')
+              if [ "$SIZE" -gt "$LAST_SIZE" ]; then
+                LAST_SIZE=$SIZE
+                IDLE=0
+                echo "[live-wrapper] stage progress size=$SIZE"
+              else
+                IDLE=$((IDLE + 15))
+                echo "[live-wrapper] no stage progress for ${IDLE}s (size=$SIZE)"
+                if [ "$IDLE" -ge "$STALL_SECS" ]; then
+                  echo "[live-wrapper] stall watchdog after ${STALL_SECS}s without stage progress"
+                  echo "stalled-after-${STALL_SECS}s" > dist/runtime-acceptance/stalled.flag
+                  kill -TERM -"$NODE_PID" 2>/dev/null || kill -TERM "$NODE_PID" 2>/dev/null || true
+                  sleep 3
+                  kill -KILL -"$NODE_PID" 2>/dev/null || kill -KILL "$NODE_PID" 2>/dev/null || true
+                  exit 0
+                fi
+              fi
+            done
+          ) &
+          WATCH_PID=$!
+          set +e
+          # Hard ceiling so a wedged wait cannot burn the full 60m job timeout.
+          # (timeout(1) cannot wrap the shell builtin `wait`, so poll with a deadline.)
+          HARD_LIMIT_SECS=1200
+          START_EPOCH=$(date +%s)
+          while kill -0 "$NODE_PID" 2>/dev/null; do
+            NOW_EPOCH=$(date +%s)
+            ELAPSED=$((NOW_EPOCH - START_EPOCH))
+            if [ "$ELAPSED" -ge "$HARD_LIMIT_SECS" ]; then
+              echo "[live-wrapper] hard timeout after ${HARD_LIMIT_SECS}s"
+              echo "hard-timeout-${HARD_LIMIT_SECS}s" > dist/runtime-acceptance/stalled.flag
+              kill -TERM -"$NODE_PID" 2>/dev/null || kill -TERM "$NODE_PID" 2>/dev/null || true
+              sleep 3
+              kill -KILL -"$NODE_PID" 2>/dev/null || kill -KILL "$NODE_PID" 2>/dev/null || true
+              break
+            fi
+            sleep 5
+          done
+          wait "$NODE_PID" 2>/dev/null
+          EXIT=$?
+          set -e
+          kill "$WATCH_PID" 2>/dev/null || true
+          kill "$TAIL_PID" 2>/dev/null || true
+          wait "$WATCH_PID" 2>/dev/null || true
+          wait "$TAIL_PID" 2>/dev/null || true
+          echo "[live-wrapper] ---- progress.log (tail) ----"
+          tail -n 80 dist/runtime-acceptance/progress.log || true
+          if [ -f dist/runtime-acceptance/stalled.flag ]; then
+            echo "[live-wrapper] failing: $(cat dist/runtime-acceptance/stalled.flag)"
+            exit 124
+          fi
+          echo "[live-wrapper] harness exited with $EXIT"
+          exit "$EXIT"
       - name: Execute Chromium real-quota, offline multi-asset recovery acceptance
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.acceptance_scope == 'chromium-quota-recovery' }}
         env:
@@ -125,6 +203,8 @@ jobs:
           path: |
             dist/runtime-acceptance/report.json
             dist/runtime-acceptance/chromium-quota.json
+            dist/runtime-acceptance/progress.log
+            dist/runtime-acceptance/stalled.flag
           if-no-files-found: ignore
 
   firefox-local-inference:
