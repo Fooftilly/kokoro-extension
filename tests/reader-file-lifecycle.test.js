@@ -1174,6 +1174,45 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(source.querySelector('label[for="fileInput"]')).not.toBeNull();
     });
 
+    test('active chapter styling includes non-color cues beyond accent fill (#17)', () => {
+        const fs = require('fs');
+        const path = require('path');
+        const css = fs.readFileSync(path.join(__dirname, '..', 'reader.css'), 'utf8');
+        expect(css).toMatch(/\.chapter-item\.active\s*\{[^}]*font-weight\s*:\s*700/s);
+        expect(css).toMatch(/\.chapter-item\.active\s*\{[^}]*border-left-color/s);
+        expect(css).toMatch(/\.dark-theme\s+\.chapter-item\.active\s*\{[^}]*border-left-color/s);
+    });
+
+    test('picker drag-active highlights the full overlay, not only the drop card (#17)', () => {
+        const fs = require('fs');
+        const path = require('path');
+        const css = fs.readFileSync(path.join(__dirname, '..', 'reader.css'), 'utf8');
+        const js = fs.readFileSync(path.join(__dirname, '..', 'reader.js'), 'utf8');
+        expect(css).toMatch(/#filePickerOverlay\.drag-active\s*\{/);
+        expect(css).toMatch(/#filePickerOverlay\.drag-active\s+\.picker-content/);
+        expect(js).toMatch(/filePickerOverlay\.addEventListener\('dragenter'/);
+        expect(js).toMatch(/setPickerDragActive/);
+        expect(js).toMatch(/pickerDragDepth/);
+
+        const overlay = document.getElementById('filePickerOverlay');
+        const zone = document.getElementById('dropZone');
+        expect(overlay.classList.contains('drag-active')).toBe(false);
+
+        overlay.dispatchEvent(new Event('dragenter', { bubbles: true }));
+        expect(overlay.classList.contains('drag-active')).toBe(true);
+        expect(zone.classList.contains('drag-active')).toBe(true);
+
+        // Child enter/leave should not clear the overlay highlight.
+        overlay.dispatchEvent(new Event('dragleave', { bubbles: true }));
+        overlay.dispatchEvent(new Event('dragenter', { bubbles: true }));
+        expect(overlay.classList.contains('drag-active')).toBe(true);
+
+        overlay.dispatchEvent(new Event('dragleave', { bubbles: true }));
+        overlay.dispatchEvent(new Event('dragleave', { bubbles: true }));
+        expect(overlay.classList.contains('drag-active')).toBe(false);
+        expect(zone.classList.contains('drag-active')).toBe(false);
+    });
+
     test('acceptance-style two-chapter publisher TOC enables Next only after first chapter activates', async () => {
         // Mirrors the live Chromium EPUB fixture: two spine files, publisher
         // nav labels First/Second Chapter, no heading scan.

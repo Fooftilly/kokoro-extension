@@ -133,29 +133,40 @@ fileInput.addEventListener('change', (e) => {
     if (file) handleFile(file);
 });
 
-// Drag and Drop Handling
-['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-    dropZone.addEventListener(eventName, preventDefaults, false);
-});
+// Drag and Drop Handling — highlight the full picker overlay (#17), not only
+// the dashed drop card. Depth counting ignores child enter/leave flicker.
+let pickerDragDepth = 0;
 
 function preventDefaults(e) {
     e.preventDefault();
     e.stopPropagation();
 }
 
-['dragenter', 'dragover'].forEach(eventName => {
-    dropZone.addEventListener(eventName, () => dropZone.classList.add('drag-active'), false);
+function setPickerDragActive(active) {
+    filePickerOverlay.classList.toggle('drag-active', active);
+    dropZone.classList.toggle('drag-active', active);
+}
+
+['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+    filePickerOverlay.addEventListener(eventName, preventDefaults, false);
 });
 
-['dragleave', 'drop'].forEach(eventName => {
-    dropZone.addEventListener(eventName, () => dropZone.classList.remove('drag-active'), false);
-});
+filePickerOverlay.addEventListener('dragenter', () => {
+    pickerDragDepth += 1;
+    setPickerDragActive(true);
+}, false);
 
-dropZone.addEventListener('drop', (e) => {
-    const dt = e.dataTransfer;
-    const file = dt.files[0];
+filePickerOverlay.addEventListener('dragleave', () => {
+    pickerDragDepth = Math.max(0, pickerDragDepth - 1);
+    if (pickerDragDepth === 0) setPickerDragActive(false);
+}, false);
+
+filePickerOverlay.addEventListener('drop', (e) => {
+    pickerDragDepth = 0;
+    setPickerDragActive(false);
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
     if (file) handleFile(file);
-});
+}, false);
 
 async function handleFile(file) {
     const requestId = ++fileRequestId;
