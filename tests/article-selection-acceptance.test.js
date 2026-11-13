@@ -125,6 +125,7 @@ console.log(JSON.stringify({ ok, errors }));
         expect(source).toMatch(/writeSync\(2,/);
         expect(source).toMatch(/progress\.log/);
         expect(source).toMatch(/chromium-launch-start/);
+        expect(source).toMatch(/offline-synthesis-wait-start/);
         expect(source).toMatch(/setInterval\(\(\) => liveHeartbeat\('alive'\)/);
         expect(source).not.toMatch(/keyboard\.press\('Alt\+a'\)/);
         expect(source).not.toMatch(/path: 'parse-article-show-player'/);

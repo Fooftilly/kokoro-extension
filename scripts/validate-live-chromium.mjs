@@ -1509,12 +1509,16 @@ try {
             if (manifest.provider === 'dictionary') continue; // verified/cache-preloaded; no inference engine
             // Require the cached SDK, WASM, voices, model and dictionary to
             // produce speech with all HTTP(S) requests disabled by Chromium.
+            liveHeartbeat('offline-mode-enter', { provider: manifest.provider });
             await context.setOffline(true);
-            if (!await page.evaluate(() => navigator.onLine === false)) {
+            if (!await withTimeout(page.evaluate(() => navigator.onLine === false),
+                15000, 'navigator.onLine offline check')) {
                 throw Error('Chromium did not enter offline mode before inference');
             }
             stage = 'offline-model-initialization-and-synthesis';
-            await page.evaluate(({ provider, variant }) => {
+            liveHeartbeat(stage, { provider: manifest.provider, variant: manifest.variant });
+            await saveReport();
+            await withTimeout(page.evaluate(({ provider, variant }) => {
             window.__kokoroProbe = { done: false };
             void (async () => {
                 let engine;
@@ -1560,9 +1564,19 @@ try {
                         stack: String(error.stack || '') };
                 } finally { try { await engine?.close(); } catch { /* keep result */ } }
             })();
-        }, { provider: manifest.provider, variant: manifest.variant });
-        await page.waitForFunction(() => window.__kokoroProbe?.done === true, null, { timeout: 240000 });
-        const result = await page.evaluate(() => window.__kokoroProbe);
+        }, { provider: manifest.provider, variant: manifest.variant }),
+            30000, 'start offline synthesis probe');
+            // Node-side deadline: Playwright's waitForFunction timeout may not
+            // fire if ONNX/WASM wedges the renderer and CDP polls stop moving.
+            liveHeartbeat('offline-synthesis-wait-start', { timeoutMs: 240000 });
+            await withTimeout(
+                page.waitForFunction(() => window.__kokoroProbe?.done === true, null, {
+                    timeout: 240000,
+                }),
+                250000, 'offline synthesis probe wait');
+            liveHeartbeat('offline-synthesis-wait-done');
+        const result = await withTimeout(page.evaluate(() => window.__kokoroProbe),
+            30000, 'read __kokoroProbe');
         // Diagnose whether the upstream task requires the original .litertlm
         // filename instead of a Blob URL, without changing production behavior.
         // This probe has no text/network fallback beyond our authenticated loopback model server.
