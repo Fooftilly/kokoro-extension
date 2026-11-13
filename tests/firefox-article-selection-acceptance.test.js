@@ -138,8 +138,11 @@ console.log(JSON.stringify({
         expect(source).toContain('kokoro-float-btn');
         expect(source).toContain('PARSE_ARTICLE');
         expect(source).toContain('from native_chromium_x11 import X11Session');
+        expect(source).toContain('findArticleFixtureTab');
+        expect(source).toContain("http://127.0.0.1/*");
         expect(source).toContain('Alt_L');
         expect(source).not.toContain('subprocess.check_output');
+        expect(source).not.toContain('tabs.query({ url: fixtureUrl })');
         const workflowSource = fs.readFileSync(workflow, 'utf8');
         expect(workflowSource).toContain('KOKORO_NATIVE_PYTHON');
         expect(workflowSource).toContain('xvfb-run');

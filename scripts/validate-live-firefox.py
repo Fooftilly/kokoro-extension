@@ -1756,6 +1756,28 @@ def _on_extension_page(driver, origin, script, *args):
         driver.switch_to.window(fixture_handle)
 
 
+# Firefox match patterns cannot include ports, so tabs.query({url: exactUrl})
+# with http://127.0.0.1:PORT/... finds nothing. Resolve via host patterns.
+_ARTICLE_FIND_FIXTURE_TAB_JS = """
+async function findArticleFixtureTab(fixtureUrl) {
+    const target = String(fixtureUrl || '').split('#')[0];
+    const patterns = ['http://127.0.0.1/*', 'http://localhost/*'];
+    let tabs = await browser.tabs.query({ url: patterns });
+    let tab = tabs.find(entry => (entry.url || '').split('#')[0] === target);
+    if (!tab) {
+        tabs = await browser.tabs.query({});
+        tab = tabs.find(entry => (entry.url || '').split('#')[0] === target);
+    }
+    if (!tab) {
+        throw Error(
+            'Fixture tab not found for ' + target + '; seen=' +
+            JSON.stringify(tabs.map(entry => entry.url || null)));
+    }
+    return tab;
+}
+"""
+
+
 def _seed_article_selection_storage(driver, origin, backend):
     storage = article_selection_storage_config(backend)
     seeded = _on_extension_page(driver, origin, """
@@ -1775,12 +1797,11 @@ def _seed_article_selection_storage(driver, origin, backend):
 
 
 def _ensure_article_content_script(driver, origin, fixture_url):
-    ensured = _on_extension_page(driver, origin, """
+    ensured = _on_extension_page(driver, origin, _ARTICLE_FIND_FIXTURE_TAB_JS + """
         const [fixtureUrl, done] = arguments;
         (async () => {
-            const tabs = await browser.tabs.query({ url: fixtureUrl });
-            if (!tabs.length) throw Error('Fixture tab not found for ' + fixtureUrl);
-            const tabId = tabs[0].id;
+            const tab = await findArticleFixtureTab(fixtureUrl);
+            const tabId = tab.id;
             try {
                 await browser.tabs.sendMessage(tabId, { action: 'PING' });
             } catch {
@@ -1970,12 +1991,11 @@ def _accept_firefox_floating_mic(driver, origin, fixture_url, backend, speech):
             (selection_snap.get("serverUrl") not in (None, ""))):
         raise RuntimeError(
             "Selection overlay left local backend: " + json.dumps(selection_snap))
-    removed = _on_extension_page(driver, origin, """
+    removed = _on_extension_page(driver, origin, _ARTICLE_FIND_FIXTURE_TAB_JS + """
         const [fixtureUrl, done] = arguments;
         (async () => {
-            const tabs = await browser.tabs.query({ url: fixtureUrl });
-            if (!tabs.length) throw Error('Fixture tab missing during cleanup');
-            const tabId = tabs[0].id;
+            const tab = await findArticleFixtureTab(fixtureUrl);
+            const tabId = tab.id;
             await browser.tabs.sendMessage(tabId, { action: 'REMOVE_PLAYER' })
                 .catch(() => {});
             await browser.storage.local.remove([
@@ -1996,13 +2016,12 @@ def _accept_firefox_floating_mic(driver, origin, fixture_url, backend, speech):
 
 
 def _probe_firefox_parse_article(driver, origin, fixture_url, speech):
-    probed = _on_extension_page(driver, origin, """
+    probed = _on_extension_page(driver, origin, _ARTICLE_FIND_FIXTURE_TAB_JS + """
         const [fixtureUrl, done] = arguments;
         (async () => {
-            const tabs = await browser.tabs.query({ url: fixtureUrl });
-            if (!tabs.length) throw Error('Fixture tab missing for PARSE_ARTICLE');
+            const tab = await findArticleFixtureTab(fixtureUrl);
             const parsed = await browser.tabs.sendMessage(
-                tabs[0].id, { action: 'PARSE_ARTICLE' });
+                tab.id, { action: 'PARSE_ARTICLE' });
             if (!parsed?.text || !Array.isArray(parsed.content)) {
                 throw Error('PARSE_ARTICLE failed: ' + JSON.stringify(parsed));
             }
@@ -2050,12 +2069,11 @@ def _prepare_firefox_read_article(driver, origin, fixture_url):
     WebDriverWait(driver, 15).until(
         lambda d: d.execute_script(
             "return !document.getElementById('kokoro-overlay-container')"))
-    prepared = _on_extension_page(driver, origin, """
+    prepared = _on_extension_page(driver, origin, _ARTICLE_FIND_FIXTURE_TAB_JS + """
         const [fixtureUrl, done] = arguments;
         (async () => {
-            const tabs = await browser.tabs.query({ url: fixtureUrl });
-            if (!tabs.length) throw Error('Fixture tab missing before Alt+A');
-            const tabId = tabs[0].id;
+            const tab = await findArticleFixtureTab(fixtureUrl);
+            const tabId = tab.id;
             let playerActive = false;
             try {
                 const response = await browser.tabs.sendMessage(tabId, {
@@ -2189,13 +2207,15 @@ def accept_real_article_and_selection(driver, origin, backend):
         assert_distinct_article_selection_audio_hashes(
             selection_snap["audioSha256"], article_snap["audioSha256"])
 
-        _on_extension_page(driver, origin, """
+        _on_extension_page(driver, origin, _ARTICLE_FIND_FIXTURE_TAB_JS + """
             const [fixtureUrl, done] = arguments;
             (async () => {
-                const tabs = await browser.tabs.query({ url: fixtureUrl });
-                if (tabs.length) {
+                try {
+                    const tab = await findArticleFixtureTab(fixtureUrl);
                     await browser.tabs.sendMessage(
-                        tabs[0].id, { action: 'REMOVE_PLAYER' }).catch(() => {});
+                        tab.id, { action: 'REMOVE_PLAYER' }).catch(() => {});
+                } catch {
+                    /* fixture may already be gone during teardown */
                 }
                 done({ success: true });
             })().catch(e => done({ success: false, error: String(e) }));
