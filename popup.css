@@ -184,6 +184,29 @@ button:hover {
     font-weight: normal;
 }
 
+.local-voice-container input:disabled {
+    opacity: 0.85;
+    cursor: not-allowed;
+    color: var(--note-color);
+}
+
+.local-voice-container {
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+/* Author `display: flex` beats the UA `[hidden] { display: none }` rule. */
+.local-voice-container[hidden] {
+    display: none;
+}
+
+.local-voice-container input {
+    width: 100%;
+    box-sizing: border-box;
+}
+
 #voiceMixerContainer {
     background-color: var(--mixer-bg);
     border: 1px solid var(--border-color);

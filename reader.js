@@ -6,6 +6,7 @@ import {
 } from './document-formats.js';
 import { MAX_DOCX_ARCHIVE_BYTES, parseDocxDocument } from './docx-reader.js';
 import './tts-providers.js';
+import './local-voice-mixing.js';
 
 const fileInput = document.getElementById('fileInput');
 const filePickerOverlay = document.getElementById('filePickerOverlay');
@@ -1049,7 +1050,8 @@ async function sendToPlayer(content, title, textPreview, startIndex, requestId, 
     continuePlaying = false, sourceHref = null) {
     const settings = await browser.storage.sync.get([
         'voice', 'normalizationOptions', 'customPronunciations', 'apiUrl',
-        'autoplayReader', 'continuousReader', 'ttsBackend', 'mediaPipeVariant', 'localVoice',
+        'autoplayReader', 'continuousReader', 'ttsBackend', 'mediaPipeVariant',
+        'mediaPipeVoice', 'onnxVoiceAsset', 'localVoice',
     ]);
     if (requestId !== chapterRequestId || requestedBook !== book) return;
 
@@ -1084,7 +1086,7 @@ async function sendToPlayer(content, title, textPreview, startIndex, requestId, 
         pendingApiUrl: apiUrl,
         pendingTtsBackend: backend,
         pendingMediaPipeVariant: settings.mediaPipeVariant || 'cpu',
-        pendingLocalVoice: settings.localVoice || 'af_heart',
+        pendingLocalVoice: globalThis.KokoroLocalVoiceMixing.mediaPipeVoiceFromSettings(settings),
         pendingTitle: title || 'Document',
         pendingNormalizationOptions: settings.normalizationOptions,
         pendingCustomPronunciations: settings.customPronunciations,

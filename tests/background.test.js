@@ -206,6 +206,30 @@ describe('background.js logic', () => {
         expect(fetch.mock.calls.some(([url]) => String(url).includes('/audio/speech'))).toBe(false);
     });
 
+    test('MediaPipe playback migrates legacy localVoice when mediaPipeVoice is unset (#59)', async () => {
+        browser.storage.sync.get.mockImplementation(async (defaults = {}) => ({
+            ...defaults,
+            ttsBackend: 'mediapipe',
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            mediaPipeVariant: 'cpu',
+            localVoice: 'af_bella',
+            voice: 'af_sarah(5)+af_nicole(3)',
+            mode: 'stream',
+            normalizationOptions: {},
+        }));
+        const listener = browser.contextMenus.onClicked.addListener.mock.calls[0][0];
+        await listener(
+            { menuItemId: 'send-to-kokoro', selectionText: 'Legacy voice upgrade' },
+            { id: 27, title: 'Upgrade page' }
+        );
+        expect(browser.storage.local.set).toHaveBeenCalledWith(expect.objectContaining({
+            pendingTtsBackend: 'mediapipe',
+            pendingLocalVoice: 'af_bella',
+        }));
+        const getArg = browser.storage.sync.get.mock.calls.at(-1)[0];
+        expect(Object.hasOwn(getArg, 'mediaPipeVoice')).toBe(false);
+    });
+
     test.each(['', 'not a valid server URL', undefined])(
         'MediaPipe selection works without a usable server URL (%s)', async apiUrl => {
             browser.storage.sync.get.mockResolvedValue({

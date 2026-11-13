@@ -33,6 +33,55 @@ function normalizeApiUrl(raw) {
     return apiUrl;
 }
 
+const LocalVoice = globalThis.KokoroLocalVoiceMixing || {
+    DEFAULT_MEDIAPIPE_VOICE: 'af_heart',
+    DEFAULT_LOCAL_VOICE: 'af_heart',
+    ONNX_FIXED_VOICE_ASSET: 'voices/af.bin',
+    normalizeLocalVoiceId: (value) => {
+        if (typeof value !== 'string') return 'af_heart';
+        const trimmed = value.trim().toLowerCase();
+        return /^[a-z]{2}_[a-z]+$/.test(trimmed) ? trimmed : 'af_heart';
+    },
+    isLocalBackend: (backend) => backend === 'mediapipe' || backend === 'onnx',
+    mediaPipeVoiceFromSettings: (settings) => {
+        const source = settings && typeof settings === 'object' ? settings : {};
+        if (typeof source.mediaPipeVoice === 'string' && source.mediaPipeVoice.trim()) {
+            return LocalVoice.normalizeLocalVoiceId(source.mediaPipeVoice);
+        }
+        return LocalVoice.normalizeLocalVoiceId(source.localVoice);
+    },
+    onnxVoiceAssetFromSettings: () => 'voices/af.bin',
+    localVoiceLimitationNote: () => '',
+};
+
+/**
+ * FastAPI keeps the weighted mixer. MediaPipe shows an editable voice ID.
+ * ONNX shows the fixed catalog asset (readonly) — playback ignores free-form IDs (#59).
+ * Server mix, MediaPipe voice, and ONNX asset prefs are stored separately.
+ */
+function syncVoiceUiForBackend(backend) {
+    const mixer = document.getElementById('voiceMixerContainer');
+    const mediaPipeBox = document.getElementById('mediaPipeVoiceContainer');
+    const onnxBox = document.getElementById('onnxVoiceContainer');
+    const note = document.getElementById('localVoiceNote');
+    const label = document.getElementById('voiceSectionLabel');
+    const isMediaPipe = backend === 'mediapipe';
+    const isOnnx = backend === 'onnx';
+    const local = LocalVoice.isLocalBackend(backend);
+    if (mixer) mixer.hidden = local;
+    if (mediaPipeBox) mediaPipeBox.hidden = !isMediaPipe;
+    if (onnxBox) onnxBox.hidden = !isOnnx;
+    if (label) {
+        if (isMediaPipe) label.textContent = 'MEDIAPIPE VOICE';
+        else if (isOnnx) label.textContent = 'ONNX VOICE';
+        else label.textContent = 'VOICE MIXER';
+    }
+    if (note) {
+        note.hidden = !local;
+        note.textContent = local ? LocalVoice.localVoiceLimitationNote(backend) : '';
+    }
+}
+
 /**
  * Optional host-permission origin pattern for a non-local API URL.
  * @returns {{ origin: string|null, invalidUrl: boolean }}
@@ -590,6 +639,73 @@ function persistPopupSettings(settings, requestedBackend, selectionVersion) {
 }
 
 let saveTimeout;
+
+function readNormalizationOptionsFromForm() {
+    return {
+        normalize: document.getElementById('norm_normalize').checked,
+        unit_normalization: document.getElementById('norm_unit').checked,
+        url_normalization: document.getElementById('norm_url').checked,
+        email_normalization: document.getElementById('norm_email').checked,
+        optional_pluralization_normalization: document.getElementById('norm_plural').checked,
+        phone_normalization: document.getElementById('norm_phone').checked,
+        replace_remaining_symbols: document.getElementById('norm_symbol').checked
+    };
+}
+
+/** Keep FastAPI / MediaPipe / ONNX voice prefs on separate keys (#59). */
+function attachVoicePreference(settings, ttsBackend) {
+    if (ttsBackend === 'mediapipe') {
+        const mediaPipeInput = document.getElementById('mediaPipeVoice');
+        settings.mediaPipeVoice = LocalVoice.normalizeLocalVoiceId(mediaPipeInput ? mediaPipeInput.value : '');
+        if (mediaPipeInput) mediaPipeInput.value = settings.mediaPipeVoice;
+        return;
+    }
+    if (ttsBackend === 'onnx') {
+        const fixedAsset = LocalVoice.ONNX_FIXED_VOICE_ASSET || 'voices/af.bin';
+        settings.onnxVoiceAsset = fixedAsset;
+        const onnxInput = document.getElementById('onnxVoiceAsset');
+        if (onnxInput) onnxInput.value = fixedAsset;
+        return;
+    }
+    settings.voice = serializeVoiceString(currentVoices);
+}
+
+function showPermissionDeniedToast() {
+    const status = document.getElementById('status');
+    status.textContent = 'Permission denied for this URL.';
+    status.style.color = 'var(--status-error)';
+    status.style.display = 'block';
+    applyPermissionDeniedUI();
+    setTimeout(() => {
+        status.style.display = 'none';
+        status.style.color = 'var(--status-success)';
+    }, 3000);
+}
+
+function showSaveStatusToast(localValidationError, ttsBackend) {
+    const status = document.getElementById('status');
+    status.textContent = localValidationError
+        ? 'Other settings saved, but ' + (ttsBackend === 'onnx' ? 'ONNX' : 'MediaPipe') +
+            ' was not activated: ' + String(localValidationError.message || localValidationError)
+        : 'Settings saved.';
+    status.style.color = localValidationError ? 'var(--status-error)' : 'var(--status-success)';
+    status.style.display = 'block';
+    if (!localValidationError) {
+        setTimeout(() => { status.style.display = 'none'; }, 1500);
+    }
+}
+
+async function resolveHostPermissionGranted(apiUrl, ttsBackend, permissionRequestPromise) {
+    const { origin, invalidUrl } = hostPermissionOriginInfo(apiUrl);
+    if (ttsBackend !== 'fastapi' || invalidUrl || !origin) return true;
+    try {
+        if (permissionRequestPromise) return await permissionRequestPromise;
+        return await browser.permissions.contains({ origins: [origin] });
+    } catch (_) {
+        return false;
+    }
+}
+
 /**
  * Persist settings. Does not call permissions.request() — Firefox requires that
  * to start synchronously in a user-gesture handler. Pass permissionRequestPromise
@@ -608,7 +724,6 @@ const saveOptions = async (isDebounced = false, options = {}) => {
     const permissionRequestPromise = options.permissionRequestPromise || null;
     const apiUrl = normalizeApiUrl(document.getElementById('apiUrl').value);
     document.getElementById('apiUrl').value = apiUrl;
-    const voice = serializeVoiceString(currentVoices);
     const mode = document.querySelector('input[name="mode"]:checked').value;
     const ttsBackend = selectedBackendValue();
     const selectionVersion = backendSelectionVersion;
@@ -627,31 +742,13 @@ const saveOptions = async (isDebounced = false, options = {}) => {
     const autoplayReader = document.getElementById('autoplayReader').checked;
     const continuousReader = document.getElementById('continuousReader').checked;
     const showFloatingButton = document.getElementById('showFloatingButton').checked;
-
-    const normalizationOptions = {
-        normalize: document.getElementById('norm_normalize').checked,
-        unit_normalization: document.getElementById('norm_unit').checked,
-        url_normalization: document.getElementById('norm_url').checked,
-        email_normalization: document.getElementById('norm_email').checked,
-        optional_pluralization_normalization: document.getElementById('norm_plural').checked,
-        phone_normalization: document.getElementById('norm_phone').checked,
-        replace_remaining_symbols: document.getElementById('norm_symbol').checked
-    };
-
+    const normalizationOptions = readNormalizationOptionsFromForm();
     const theme = document.documentElement.classList.contains('dark-theme') ? 'dark' : 'light';
-    const settings = { apiUrl, voice, mode, ttsBackend, defaultSpeed, defaultVolume, autoScroll, autoplayReader, continuousReader, showFloatingButton, normalizationOptions, theme };
-
-    const showPermissionDeniedToast = () => {
-        const status = document.getElementById('status');
-        status.textContent = 'Permission denied for this URL.';
-        status.style.color = 'var(--status-error)';
-        status.style.display = 'block';
-        applyPermissionDeniedUI();
-        setTimeout(() => {
-            status.style.display = 'none';
-            status.style.color = 'var(--status-success)';
-        }, 3000);
+    const settings = {
+        apiUrl, mode, ttsBackend, defaultSpeed, defaultVolume, autoScroll, autoplayReader,
+        continuousReader, showFloatingButton, normalizationOptions, theme,
     };
+    attachVoicePreference(settings, ttsBackend);
 
     try {
         let localValidationError = null;
@@ -668,42 +765,19 @@ const saveOptions = async (isDebounced = false, options = {}) => {
         // 1. Persist settings while retaining the previously saved backend when
         // the local model is unavailable (no silent FastAPI fallback).
         await persistPopupSettings(settings, ttsBackend, selectionVersion);
-        await browser.storage.local.set({ defaultSpeed, defaultVolume, autoScroll, autoplayReader, continuousReader, showFloatingButton, normalizationOptions, theme });
+        await browser.storage.local.set({
+            defaultSpeed, defaultVolume, autoScroll, autoplayReader, continuousReader,
+            showFloatingButton, normalizationOptions, theme,
+        });
 
         // 2. Host permission for non-local URL (never call request() here after awaits)
-        const { origin, invalidUrl } = hostPermissionOriginInfo(apiUrl);
-        if (ttsBackend === 'fastapi' && !invalidUrl && origin) {
-            let hasPerm = false;
-            if (permissionRequestPromise) {
-                try {
-                    hasPerm = await permissionRequestPromise;
-                } catch (_) {
-                    hasPerm = false;
-                }
-            } else {
-                try {
-                    hasPerm = await browser.permissions.contains({ origins: [origin] });
-                } catch (_) {
-                    hasPerm = false;
-                }
-            }
-            if (!hasPerm) {
-                showPermissionDeniedToast();
-                return { ok: false, permissionDenied: true };
-            }
+        const hasPerm = await resolveHostPermissionGranted(apiUrl, ttsBackend, permissionRequestPromise);
+        if (!hasPerm) {
+            showPermissionDeniedToast();
+            return { ok: false, permissionDenied: true };
         }
 
-        // Show generic saving toast
-        const status = document.getElementById('status');
-        status.textContent = localValidationError
-            ? 'Other settings saved, but ' + (ttsBackend === 'onnx' ? 'ONNX' : 'MediaPipe') +
-                ' was not activated: ' + String(localValidationError.message || localValidationError)
-            : 'Settings saved.';
-        status.style.color = localValidationError ? 'var(--status-error)' : 'var(--status-success)';
-        status.style.display = 'block';
-        if (!localValidationError) {
-            setTimeout(() => { status.style.display = 'none'; }, 1500);
-        }
+        showSaveStatusToast(localValidationError, ttsBackend);
         return { ok: true, permissionDenied: false, backendUnavailable: !!localValidationError };
     } catch (e) {
         console.error("Error saving options", e);
@@ -715,54 +789,111 @@ const saveOptions = async (isDebounced = false, options = {}) => {
     }
 };
 
+const POPUP_SYNC_DEFAULTS = {
+    apiUrl: 'http://127.0.0.1:8880/v1/',
+    ttsBackend: 'fastapi',
+    voice: 'af_sarah(0.5)+af_nicole(0.3)+af_sky(0.2)',
+    // Omit mediaPipeVoice default so legacy localVoice can migrate.
+    onnxVoiceAsset: 'voices/af.bin',
+    localVoice: 'af_heart',
+    mode: 'stream',
+    defaultSpeed: '1.0',
+    defaultVolume: '1.0',
+    autoScroll: false,
+    autoplayReader: false,
+    continuousReader: false,
+    showFloatingButton: true,
+    normalizationOptions: {
+        normalize: true,
+        unit_normalization: false,
+        url_normalization: true,
+        email_normalization: true,
+        optional_pluralization_normalization: true,
+        phone_normalization: true,
+        replace_remaining_symbols: true
+    },
+    theme: 'light'
+};
+
+function applyThemeFromSettings(theme) {
+    if (theme === 'dark') {
+        document.documentElement.classList.add('dark-theme');
+        localStorage.setItem('kokoro-theme', 'dark');
+        return;
+    }
+    document.documentElement.classList.remove('dark-theme');
+    localStorage.setItem('kokoro-theme', 'light');
+}
+
+function applyBackendExplanation(ttsBackend) {
+    const backendExplanation = document.getElementById('backendExplanation');
+    if (ttsBackend === 'mediapipe') {
+        backendExplanation.textContent = 'MediaPipe runs locally after installing and testing a model. Use the TTS test page to manage downloads.';
+    } else if (ttsBackend === 'onnx') {
+        backendExplanation.textContent = 'ONNX q8 supports experimental dictionary-backed English text after installing its model and CMUdict. Unknown words fail locally; there is no server fallback. Long-form reading is not yet verified.';
+    } else if (ttsBackend !== 'fastapi') {
+        backendExplanation.textContent = 'Unknown saved backend. Select one explicitly; no server requests will run.';
+    }
+}
+
+function applyVoiceFieldsFromSettings(items) {
+    currentVoices = parseVoiceString(items.voice);
+    const mediaPipeInput = document.getElementById('mediaPipeVoice');
+    if (mediaPipeInput) {
+        mediaPipeInput.value = LocalVoice.mediaPipeVoiceFromSettings
+            ? LocalVoice.mediaPipeVoiceFromSettings(items)
+            : LocalVoice.normalizeLocalVoiceId(items.mediaPipeVoice || items.localVoice);
+    }
+    const onnxInput = document.getElementById('onnxVoiceAsset');
+    if (onnxInput) {
+        onnxInput.value = LocalVoice.onnxVoiceAssetFromSettings
+            ? LocalVoice.onnxVoiceAssetFromSettings(items)
+            : (LocalVoice.ONNX_FIXED_VOICE_ASSET || 'voices/af.bin');
+    }
+    syncVoiceUiForBackend(items.ttsBackend);
+    renderVoiceMixer();
+}
+
+function applyGeneralFormFields(items) {
+    if (items.mode === 'stream') {
+        document.getElementById('modeStream').checked = true;
+    } else {
+        document.getElementById('modeDownload').checked = true;
+    }
+    document.getElementById('defaultSpeed').value = items.defaultSpeed;
+    document.getElementById('defaultVolume').value = items.defaultVolume;
+    document.getElementById('autoScroll').checked = items.autoScroll;
+    document.getElementById('autoplayReader').checked = items.autoplayReader;
+    document.getElementById('continuousReader').checked = items.continuousReader === true;
+    document.getElementById('showFloatingButton').checked = items.showFloatingButton;
+
+    const norm = items.normalizationOptions;
+    document.getElementById('norm_normalize').checked = norm.normalize;
+    document.getElementById('norm_unit').checked = norm.unit_normalization;
+    document.getElementById('norm_url').checked = norm.url_normalization;
+    document.getElementById('norm_email').checked = norm.email_normalization;
+    document.getElementById('norm_plural').checked = norm.optional_pluralization_normalization;
+    document.getElementById('norm_phone').checked = norm.phone_normalization;
+    document.getElementById('norm_symbol').checked = norm.replace_remaining_symbols;
+}
+
 const restoreOptions = async () => {
     try {
-        const items = await browser.storage.sync.get({
-            apiUrl: 'http://127.0.0.1:8880/v1/',
-            ttsBackend: 'fastapi',
-            voice: 'af_sarah(0.5)+af_nicole(0.3)+af_sky(0.2)',
-            mode: 'stream',
-            defaultSpeed: '1.0',
-            defaultVolume: '1.0',
-            autoScroll: false,
-            autoplayReader: false,
-            continuousReader: false,
-            showFloatingButton: true,
-            normalizationOptions: {
-                normalize: true,
-                unit_normalization: false,
-                url_normalization: true,
-                email_normalization: true,
-                optional_pluralization_normalization: true,
-                phone_normalization: true,
-                replace_remaining_symbols: true
-            },
-            theme: 'light'
-        });
+        const defaults = {
+            ...POPUP_SYNC_DEFAULTS,
+            onnxVoiceAsset: LocalVoice.ONNX_FIXED_VOICE_ASSET || POPUP_SYNC_DEFAULTS.onnxVoiceAsset,
+            localVoice: LocalVoice.DEFAULT_MEDIAPIPE_VOICE || LocalVoice.DEFAULT_LOCAL_VOICE ||
+                POPUP_SYNC_DEFAULTS.localVoice,
+        };
+        const items = await browser.storage.sync.get(defaults);
 
-        if (items.theme === 'dark') {
-            document.documentElement.classList.add('dark-theme');
-            localStorage.setItem('kokoro-theme', 'dark');
-        } else {
-            document.documentElement.classList.remove('dark-theme');
-            localStorage.setItem('kokoro-theme', 'light');
-        }
-
+        applyThemeFromSettings(items.theme);
         document.getElementById('apiUrl').value = items.apiUrl;
         for (const radio of document.querySelectorAll('input[name="ttsBackend"]')) {
             radio.checked = radio.value === items.ttsBackend;
         }
-        const backendExplanation = document.getElementById('backendExplanation');
-        if (items.ttsBackend === 'mediapipe') {
-            backendExplanation.textContent = 'MediaPipe runs locally after installing and testing a model. Use the TTS test page to manage downloads.';
-        } else if (items.ttsBackend === 'onnx') {
-            backendExplanation.textContent = 'ONNX q8 supports experimental dictionary-backed English text after installing its model and CMUdict. Unknown words fail locally; there is no server fallback. Long-form reading is not yet verified.';
-        } else if (items.ttsBackend !== 'fastapi') {
-            backendExplanation.textContent = 'Unknown saved backend. Select one explicitly; no server requests will run.';
-        }
-
-        currentVoices = parseVoiceString(items.voice);
-        renderVoiceMixer();
+        applyBackendExplanation(items.ttsBackend);
+        applyVoiceFieldsFromSettings(items);
 
         // Probe connection + voices on open (no aggressive polling).
         // Settings above are already rendered from storage — backend loss cannot blank the UI.
@@ -772,27 +903,7 @@ const restoreOptions = async () => {
             });
         }
 
-        if (items.mode === 'stream') {
-            document.getElementById('modeStream').checked = true;
-        } else {
-            document.getElementById('modeDownload').checked = true;
-        }
-        document.getElementById('defaultSpeed').value = items.defaultSpeed;
-        document.getElementById('defaultVolume').value = items.defaultVolume;
-        document.getElementById('autoScroll').checked = items.autoScroll;
-        document.getElementById('autoplayReader').checked = items.autoplayReader;
-        document.getElementById('continuousReader').checked = items.continuousReader === true;
-        document.getElementById('showFloatingButton').checked = items.showFloatingButton;
-
-        const norm = items.normalizationOptions;
-        document.getElementById('norm_normalize').checked = norm.normalize;
-        document.getElementById('norm_unit').checked = norm.unit_normalization;
-        document.getElementById('norm_url').checked = norm.url_normalization;
-        document.getElementById('norm_email').checked = norm.email_normalization;
-        document.getElementById('norm_plural').checked = norm.optional_pluralization_normalization;
-        document.getElementById('norm_phone').checked = norm.phone_normalization;
-        document.getElementById('norm_symbol').checked = norm.replace_remaining_symbols;
-
+        applyGeneralFormFields(items);
     } catch (e) {
         console.error("Error restoring options", e);
     }
@@ -887,61 +998,88 @@ document.addEventListener('DOMContentLoaded', () => {
     // Setup Autosave Listeners
     const inputs = document.querySelectorAll('input, select');
     inputs.forEach(input => {
-        if (input.id === 'voiceSearch' || input.id === 'apiUrl' || input.name === 'ttsBackend') return;
+        if (input.id === 'voiceSearch' || input.id === 'apiUrl' ||
+            input.id === 'mediaPipeVoice' || input.id === 'onnxVoiceAsset' ||
+            input.name === 'ttsBackend') return;
 
         const eventType = (input.type === 'text' || input.type === 'number') ? 'input' : 'change';
         input.addEventListener(eventType, () => {
-            saveOptions(input.type === 'text');
+            void saveOptions(input.type === 'text');
         });
     });
 
+    const mediaPipeVoiceInput = document.getElementById('mediaPipeVoice');
+    if (mediaPipeVoiceInput) {
+        mediaPipeVoiceInput.addEventListener('change', () => {
+            mediaPipeVoiceInput.value = LocalVoice.normalizeLocalVoiceId(mediaPipeVoiceInput.value);
+            void saveOptions(false);
+        });
+        mediaPipeVoiceInput.addEventListener('input', () => {
+            void saveOptions(true);
+        });
+    }
+
+    async function revertFailedLocalBackend(radio, explanation, isCurrentSelection, error) {
+        if (!isCurrentSelection()) return;
+        // Read the final persisted selection after earlier writes.
+        // Never revert a newer radio choice while this await runs.
+        await backendWriteTail;
+        if (!isCurrentSelection()) return;
+        const { ttsBackend: saved } = await browser.storage.sync.get({ ttsBackend: 'fastapi' });
+        if (!isCurrentSelection()) return;
+        for (const item of document.querySelectorAll('input[name="ttsBackend"]')) {
+            item.checked = item.value === saved;
+        }
+        explanation.textContent = (radio.value === 'onnx' ? 'ONNX' : 'MediaPipe') +
+            ' unavailable: ' + String(error.message || error) +
+            ' Use the TTS test page to install and validate it.';
+    }
+
+    async function applySelectedBackendUi(radio, explanation) {
+        if (radio.value === 'fastapi') {
+            explanation.textContent = 'Using the configured Kokoro server; text is sent to this endpoint.';
+            syncVoiceUiForBackend('fastapi');
+            await refreshBackendStatus(document.getElementById('apiUrl').value);
+            return;
+        }
+        // Cancel any in-flight remote status/voice fetch when switching to local.
+        refreshGeneration++;
+        if (activeRefreshAbort) activeRefreshAbort.abort();
+        explanation.textContent = radio.value === 'mediapipe'
+            ? 'Local MediaPipe requires a downloaded model. Manage and test it on the TTS test page.'
+            : 'Local ONNX q8 supports dictionary-backed English sentences. Install ONNX q8 and CMUdict on the browser TTS test page first; unknown words fail locally.';
+        syncVoiceUiForBackend(radio.value);
+        const status = document.getElementById('apiStatusRow');
+        if (status) status.style.display = 'none';
+    }
+
+    async function onTtsBackendRadioChange(radio) {
+        if (!radio.checked) return;
+        const version = ++backendSelectionVersion;
+        const isCurrentSelection = () => version === backendSelectionVersion &&
+            radio.checked && selectedBackendValue() === radio.value;
+        const explanation = document.getElementById('backendExplanation');
+        if (radio.value === 'mediapipe' || radio.value === 'onnx') {
+            try {
+                await validateSelectedLocalBackend(radio.value);
+            } catch (error) {
+                await revertFailedLocalBackend(radio, explanation, isCurrentSelection, error);
+                return;
+            }
+        }
+        // Validation may have completed after the user chose another backend.
+        if (!isCurrentSelection()) return;
+        // Serialize the writes so a delayed earlier request cannot overwrite
+        // the newest radio selection, including when an autosave was pending.
+        const persisted = await persistPopupSettings(
+            { ttsBackend: radio.value }, radio.value, version);
+        if (!persisted || !isCurrentSelection()) return;
+        await applySelectedBackendUi(radio, explanation);
+    }
+
     for (const radio of document.querySelectorAll('input[name="ttsBackend"]')) {
-        radio.addEventListener('change', async () => {
-            if (!radio.checked) return;
-            const version = ++backendSelectionVersion;
-            const isCurrentSelection = () => version === backendSelectionVersion &&
-                radio.checked && selectedBackendValue() === radio.value;
-            const explanation = document.getElementById('backendExplanation');
-            if (radio.value === 'mediapipe' || radio.value === 'onnx') {
-                try {
-                    await validateSelectedLocalBackend(radio.value);
-                } catch (error) {
-                    if (!isCurrentSelection()) return;
-                    // Read the final persisted selection after earlier writes.
-                    // Never revert a newer radio choice while this await runs.
-                    await backendWriteTail;
-                    if (!isCurrentSelection()) return;
-                    const { ttsBackend: saved } = await browser.storage.sync.get({ ttsBackend: 'fastapi' });
-                    if (!isCurrentSelection()) return;
-                    for (const item of document.querySelectorAll('input[name="ttsBackend"]')) {
-                        item.checked = item.value === saved;
-                    }
-                    explanation.textContent = (radio.value === 'onnx' ? 'ONNX' : 'MediaPipe') +
-                        ' unavailable: ' + String(error.message || error) +
-                        ' Use the TTS test page to install and validate it.';
-                    return;
-                }
-            }
-            // Validation may have completed after the user chose another backend.
-            if (!isCurrentSelection()) return;
-            // Serialize the writes so a delayed earlier request cannot overwrite
-            // the newest radio selection, including when an autosave was pending.
-            const persisted = await persistPopupSettings(
-                { ttsBackend: radio.value }, radio.value, version);
-            if (!persisted || !isCurrentSelection()) return;
-            if (radio.value === 'fastapi') {
-                explanation.textContent = 'Using the configured Kokoro server; text is sent to this endpoint.';
-                await refreshBackendStatus(document.getElementById('apiUrl').value);
-            } else {
-                // Cancel any in-flight remote status/voice fetch when switching to local.
-                refreshGeneration++;
-                if (activeRefreshAbort) activeRefreshAbort.abort();
-                explanation.textContent = radio.value === 'mediapipe'
-                    ? 'Local MediaPipe requires a downloaded model. Manage and test it on the TTS test page.'
-                    : 'Local ONNX q8 supports dictionary-backed English sentences. Install ONNX q8 and CMUdict on the browser TTS test page first; unknown words fail locally.';
-                const status = document.getElementById('apiStatusRow');
-                if (status) status.style.display = 'none';
-            }
+        radio.addEventListener('change', () => {
+            void onTtsBackendRadioChange(radio);
         });
     }
 
@@ -1017,6 +1155,7 @@ if (typeof module !== 'undefined' && module.exports) {
         setApiStatusUI,
         normalizeApiUrl,
         beginHostPermissionRequest,
+        syncVoiceUiForBackend,
         getConnectionStatus: () => connectionStatus,
         getAvailableVoices: () => availableVoices,
         getVoiceFetchStatus: () => voiceFetchStatus,

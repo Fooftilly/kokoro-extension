@@ -14,6 +14,12 @@ function loadPopupDom() {
     document.body.innerHTML = bodyMatch ? bodyMatch[1] : html;
     // Remove script tags from injected HTML — we require scripts explicitly
     document.body.querySelectorAll('script').forEach((s) => s.remove());
+    // Author CSS is required for computed-style checks (e.g. [hidden] vs display:flex).
+    document.querySelectorAll('style[data-popup-css]').forEach((node) => node.remove());
+    const style = document.createElement('style');
+    style.setAttribute('data-popup-css', 'true');
+    style.textContent = fs.readFileSync(path.join(__dirname, '../popup.css'), 'utf8');
+    document.head.appendChild(style);
 }
 
 describe('popup backend-loss resilience (#4)', () => {
@@ -87,6 +93,7 @@ describe('popup backend-loss resilience (#4)', () => {
         global.fetch = jest.fn(() => Promise.reject(new TypeError('Failed to fetch')));
 
         Object.assign(global, require('../api-client.js'));
+        Object.assign(global, { KokoroLocalVoiceMixing: require('../local-voice-mixing.js') });
         popup = loadPopupModule();
     });
 
@@ -110,6 +117,22 @@ describe('popup backend-loss resilience (#4)', () => {
         global.TransformStream = class {};
         jest.spyOn(ModelDataStore.prototype, 'status').mockImplementation(async manifest => ({
             ready: manifest.provider === 'dictionary' ? dictionaryReady : modelReady,
+        }));
+    }
+
+    function allowMediaPipeSelection({ modelReady = true, revision = null } = {}) {
+        const { manifestForVariant } = require('../model-catalog.js');
+        const { ModelDataStore } = require('../model-data-store.js');
+        const approved = revision ?? manifestForVariant('mediapipe', 'cpu').revision;
+        browser.storage.local.get.mockImplementation(async defaults => ({
+            ...defaults, 'mediapipeValidatedRevision:cpu': approved,
+        }));
+        browser.runtime.getURL = jest.fn(() => 'moz-extension://test/');
+        global.caches = { open: jest.fn() };
+        global.Response = class {};
+        global.TransformStream = class {};
+        jest.spyOn(ModelDataStore.prototype, 'status').mockImplementation(async () => ({
+            ready: modelReady,
         }));
     }
 
@@ -370,6 +393,7 @@ describe('popup backend-loss resilience (#4)', () => {
         jest.resetModules();
         loadPopupDom();
         Object.assign(global, require('../api-client.js'));
+        Object.assign(global, { KokoroLocalVoiceMixing: require('../local-voice-mixing.js') });
         loadPopupModule();
         document.dispatchEvent(new Event('DOMContentLoaded'));
         await flushAsync();
@@ -612,6 +636,7 @@ describe('popup backend-loss resilience (#4)', () => {
         jest.resetModules();
         loadPopupDom();
         Object.assign(global, require('../api-client.js'));
+        Object.assign(global, { KokoroLocalVoiceMixing: require('../local-voice-mixing.js') });
         loadPopupModule();
         document.dispatchEvent(new Event('DOMContentLoaded'));
         await flushAsync();
@@ -678,5 +703,132 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(document.getElementById('apiStatus').textContent).toMatch(/reach|Unable/i);
         expect(document.getElementById('retryApi').style.display).not.toBe('none');
         jest.useRealTimers();
+    });
+
+    test('popup migrates legacy localVoice when mediaPipeVoice is unset (#59)', async () => {
+        allowMediaPipeSelection();
+        browser.storage.sync.get.mockImplementation(async (defaults) => {
+            const merged = {
+                ...defaults,
+                apiUrl: 'http://127.0.0.1:8880/v1/',
+                ttsBackend: 'mediapipe',
+                mediaPipeVariant: 'cpu',
+                voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
+                localVoice: 'af_bella',
+                mode: 'stream',
+                theme: 'light',
+            };
+            delete merged.mediaPipeVoice;
+            return merged;
+        });
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        expect(document.getElementById('mediaPipeVoice').value).toBe('af_bella');
+        const getArg = browser.storage.sync.get.mock.calls[0][0];
+        expect(Object.hasOwn(getArg, 'mediaPipeVoice')).toBe(false);
+    });
+
+    test('local-voice containers honor [hidden] under author display:flex (#59)', async () => {
+        allowMediaPipeSelection();
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        const mediaPipeBox = document.getElementById('mediaPipeVoiceContainer');
+        const onnxBox = document.getElementById('onnxVoiceContainer');
+        expect(mediaPipeBox.classList.contains('local-voice-container')).toBe(true);
+        expect(onnxBox.classList.contains('local-voice-container')).toBe(true);
+
+        // FastAPI: both local containers must be display:none despite display:flex.
+        expect(mediaPipeBox.hidden).toBe(true);
+        expect(onnxBox.hidden).toBe(true);
+        expect(getComputedStyle(mediaPipeBox).display).toBe('none');
+        expect(getComputedStyle(onnxBox).display).toBe('none');
+
+        popup.syncVoiceUiForBackend('mediapipe');
+        expect(mediaPipeBox.hidden).toBe(false);
+        expect(onnxBox.hidden).toBe(true);
+        expect(getComputedStyle(mediaPipeBox).display).toBe('flex');
+        expect(getComputedStyle(onnxBox).display).toBe('none');
+
+        popup.syncVoiceUiForBackend('onnx');
+        expect(mediaPipeBox.hidden).toBe(true);
+        expect(onnxBox.hidden).toBe(false);
+        expect(getComputedStyle(mediaPipeBox).display).toBe('none');
+        expect(getComputedStyle(onnxBox).display).toBe('flex');
+
+        popup.syncVoiceUiForBackend('fastapi');
+        expect(mediaPipeBox.hidden).toBe(true);
+        expect(onnxBox.hidden).toBe(true);
+        expect(getComputedStyle(mediaPipeBox).display).toBe('none');
+        expect(getComputedStyle(onnxBox).display).toBe('none');
+    });
+
+    test('ONNX save pins onnxVoiceAsset and leaves FastAPI mix untouched (#59)', async () => {
+        allowOnnxSelection();
+        browser.storage.sync.get.mockImplementation(async (defaults) => ({
+            ...defaults,
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'onnx',
+            voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
+            mediaPipeVoice: 'af_bella',
+            onnxVoiceAsset: 'voices/af.bin',
+            mode: 'stream',
+            theme: 'light',
+        }));
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        expect(document.getElementById('voiceMixerContainer').hidden).toBe(true);
+        expect(document.getElementById('mediaPipeVoiceContainer').hidden).toBe(true);
+        expect(document.getElementById('onnxVoiceContainer').hidden).toBe(false);
+        expect(document.getElementById('onnxVoiceAsset').disabled).toBe(true);
+        expect(document.getElementById('onnxVoiceAsset').readOnly).toBe(true);
+        expect(document.getElementById('onnxVoiceAsset').value).toBe('voices/af.bin');
+        expect(document.getElementById('localVoiceNote').textContent).toMatch(/af\.bin/i);
+        expect(document.getElementById('localVoiceNote').textContent).toMatch(/no effect/i);
+
+        browser.storage.sync.set.mockClear();
+        await popup.saveOptions(false);
+
+        const writes = browser.storage.sync.set.mock.calls.map(([payload]) => payload);
+        expect(writes.some((payload) => payload.onnxVoiceAsset === 'voices/af.bin')).toBe(true);
+        expect(writes.every((payload) => !Object.hasOwn(payload, 'voice'))).toBe(true);
+        expect(writes.every((payload) => !Object.hasOwn(payload, 'mediaPipeVoice'))).toBe(true);
+        expect(writes.every((payload) => !Object.hasOwn(payload, 'localVoice'))).toBe(true);
+    });
+
+    test('MediaPipe save writes mediaPipeVoice only and keeps FastAPI mix (#59)', async () => {
+        allowMediaPipeSelection();
+        browser.storage.sync.get.mockImplementation(async (defaults) => ({
+            ...defaults,
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
+            mediaPipeVoice: 'af_heart',
+            onnxVoiceAsset: 'voices/af.bin',
+            mode: 'stream',
+            theme: 'light',
+        }));
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        expect(document.getElementById('voiceMixerContainer').hidden).toBe(true);
+        expect(document.getElementById('mediaPipeVoiceContainer').hidden).toBe(false);
+        expect(document.getElementById('onnxVoiceContainer').hidden).toBe(true);
+        expect(document.getElementById('mediaPipeVoice').disabled).toBe(false);
+
+        document.getElementById('mediaPipeVoice').value = 'af_bella';
+        browser.storage.sync.set.mockClear();
+        await popup.saveOptions(false);
+
+        const writes = browser.storage.sync.set.mock.calls.map(([payload]) => payload);
+        expect(writes.some((payload) => payload.mediaPipeVoice === 'af_bella')).toBe(true);
+        expect(writes.every((payload) => !Object.hasOwn(payload, 'voice'))).toBe(true);
+        expect(writes.every((payload) => !Object.hasOwn(payload, 'onnxVoiceAsset'))).toBe(true);
     });
 });

@@ -60,6 +60,7 @@ export default [
       'theme-init.js',
       'transliteration-lite.js',
       'tts-providers.js',
+      'local-voice-mixing.js',
       'benchmark-capabilities.js',
       'benchmark-page.js',
     ],
@@ -98,7 +99,7 @@ export default [
   },
   // Classic scripts that optionally export for Jest via CJS interop
   {
-    files: ['content.js', 'api-client.js', 'overlay-position.js', 'floating-mic-position.js', 'benchmark-capabilities.js', 'tts-providers.js'],
+    files: ['content.js', 'api-client.js', 'overlay-position.js', 'floating-mic-position.js', 'benchmark-capabilities.js', 'tts-providers.js', 'local-voice-mixing.js'],
     languageOptions: {
       globals: {
         module: 'readonly',
@@ -126,11 +127,12 @@ export default [
       },
     },
   },
-  // popup.js uses helpers from api-client.js (classic script globals)
+  // popup.js uses helpers from api-client.js / local-voice-mixing.js (classic script globals)
   {
     files: ['popup.js'],
     languageOptions: {
       globals: {
+        KokoroLocalVoiceMixing: 'readonly',
         normalizeVoiceEntry: 'readonly',
         normalizeVoiceIds: 'readonly',
         filterVoicesByPrefix: 'readonly',

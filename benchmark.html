@@ -21,6 +21,7 @@
                 </tbody>
             </table>
             <p>Use the individual model tests below to verify real synthesis. MediaPipe and dictionary-ready ONNX q8 can measure the same English input, but may differ in voice and phonemization; IPA-only measurements must not be ranked against English-text results. A capability check alone does not establish inference or audio quality.</p>
+            <p><strong>Voice mixing:</strong> Weighted FastAPI mixes (for example <code>af_sarah(5)+af_nicole(3)</code>) apply only to the server backend. MediaPipe accepts a single official <code>voiceId</code> per utterance. ONNX currently uses the installed single voice asset; style-vector blending is prepared in-repo for future multi-voice downloads and is not a multi-synthesis PCM mix. Server mixer preferences stay stored separately when you use a local backend.</p>
         </section>
         <section>
             <h2>Real TTS tests and model downloads</h2>

@@ -580,7 +580,7 @@ function formatLocalBenchmarkStatus(entry, metrics, isEnglishMeasurement, englis
         '. Streaming time-to-first-audio was not measured.' +
         (entry.provider === 'onnx'
             ? (isEnglishMeasurement
-                ? ' Same English text as MediaPipe; voices and phonemization may differ.'
+                ? ' Same English text as MediaPipe; voices and phonemization may differ. Local backends use a single voice (no weighted FastAPI-style mix).'
                 : ' IPA timings are not comparable with English-text timings.') +
               (english?.message || ' This ONNX variant is IPA-only; regular English playback is not validated.') +
               ' Unknown English words are not supported and never fall back to FastAPI.'

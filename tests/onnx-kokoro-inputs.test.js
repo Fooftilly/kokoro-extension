@@ -1,5 +1,6 @@
 import {
-    styleForLength, prepareKokoroOnnxInputs, asOnnxRuntimeFeeds
+    styleForLength, blendStyleVectors, styleForLengthWeighted,
+    prepareKokoroOnnxInputs, asOnnxRuntimeFeeds
 } from '../onnx-kokoro-inputs.js';
 
 function voiceFixture() {
@@ -43,6 +44,32 @@ describe('original Kokoro ONNX tensor preparation (#60)', () => {
         const corrupted = voiceFixture();
         new DataView(corrupted.buffer).setFloat32(3 * 256 * 4, NaN, true);
         expect(() => prepareKokoroOnnxInputs([11, 42, 7], corrupted)).toThrow(/non-finite/);
+    });
+
+    test('blends equal-length style vectors with normalized weights (#59)', () => {
+        const a = new Float32Array(256);
+        const b = new Float32Array(256);
+        a[0] = 1;
+        b[0] = 5;
+        a[10] = 2;
+        b[10] = 8;
+        const blended = blendStyleVectors([a, b], [1, 3]);
+        expect(blended[0]).toBeCloseTo(4);
+        expect(blended[10]).toBeCloseTo(6.5);
+        expect(() => blendStyleVectors([a], [0])).toThrow(/positive/);
+        expect(() => blendStyleVectors([a, b], [1])).toThrow(/align/);
+    });
+
+    test('selects per-length styles before blending multiple voice binaries', () => {
+        const first = voiceFixture();
+        const second = voiceFixture();
+        const view = new DataView(second.buffer);
+        for (let i = 0; i < 256; i++) {
+            view.setFloat32((3 * 256 + i) * 4, 1, true);
+        }
+        const blended = styleForLengthWeighted([first, second], [1, 1], 3);
+        expect(blended[0]).toBeCloseTo(0.5);
+        expect(blended[255]).toBeCloseTo((0.255 + 1) / 2);
     });
 
     test('converts the declared model input contract through an injected official Tensor API', () => {
