@@ -118,6 +118,11 @@ class X11Session:
             ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
         xtest.XTestFakeKeyEvent.restype = ctypes.c_int
 
+    def _xfree(self, ptr):
+        if not ptr:
+            return
+        self.x11.XFree(ctypes.cast(ptr, ctypes.c_void_p))
+
     def _window_title(self, window):
         # Prefer _NET_WM_NAME (UTF8); fall back to XA_WM_NAME via XFetchName.
         net_atom = self.x11.XInternAtom(self.display, b'_NET_WM_NAME', False)
@@ -131,22 +136,26 @@ class X11Session:
             self.display, window, net_atom, 0, 1024, False, utf8_atom,
             ctypes.byref(actual_type), ctypes.byref(actual_format),
             ctypes.byref(nitems), ctypes.byref(bytes_after), ctypes.byref(prop))
-        if status == 0 and prop and nitems.value:
+        title = ''
+        if status == 0 and prop:
             try:
-                raw = ctypes.string_at(prop, nitems.value)
-                return raw.decode('utf-8', 'replace')
+                if nitems.value:
+                    title = ctypes.string_at(prop, nitems.value).decode(
+                        'utf-8', 'replace')
             finally:
-                self.x11.XFree(prop)
+                self._xfree(prop)
+            if title:
+                return title
         name = ctypes.c_char_p()
         if self.x11.XFetchName(self.display, window, ctypes.byref(name)) and name:
             try:
-                return name.value.decode('utf-8', 'replace') if name.value else ''
+                title = name.value.decode('utf-8', 'replace') if name.value else ''
             finally:
-                self.x11.XFree(name)
-        return ''
+                self._xfree(name)
+        return title
 
     def _window_class_bits(self, window):
-        hint = _XClassHint()
+        hint = _XClassHint(None, None)
         if not self.x11.XGetClassHint(self.display, window, ctypes.byref(hint)):
             return ''
         bits = []
@@ -156,13 +165,13 @@ class X11Session:
             if hint.res_class:
                 bits.append(hint.res_class.decode('utf-8', 'replace'))
         finally:
-            if hint.res_name:
-                self.x11.XFree(hint.res_name)
-            if hint.res_class:
-                self.x11.XFree(hint.res_class)
+            self._xfree(hint.res_name)
+            self._xfree(hint.res_class)
         return ' '.join(bits)
 
-    def _iter_windows(self, root):
+    def _top_level_windows(self):
+        """Immediate children of the root — enough to find Firefox's frame."""
+        root = self.x11.XDefaultRootWindow(self.display)
         root_ret = ctypes.c_ulong()
         parent = ctypes.c_ulong()
         children = ctypes.POINTER(ctypes.c_ulong)()
@@ -171,35 +180,33 @@ class X11Session:
                 self.display, root, ctypes.byref(root_ret),
                 ctypes.byref(parent), ctypes.byref(children),
                 ctypes.byref(count)):
-            return
+            return []
         try:
-            for index in range(count.value):
-                child = children[index]
-                yield child
-                yield from self._iter_windows(child)
+            return [children[index] for index in range(count.value)]
         finally:
-            if children:
-                self.x11.XFree(children)
+            self._xfree(children)
 
     def focus_client_window(self, name_substr):
-        """Raise + focus a window whose title/WM_CLASS contains substr.
+        """Raise + focus a top-level window whose title/WM_CLASS contains substr.
 
         Firefox under Selenium/Xvfb often has PointerRoot focus (id 1), so Alt+A
-        never reaches browser.commands. Chromium Playwright usually already has
-        a real focused window.
+        never reaches browser.commands. Must run out-of-process from Selenium.
         """
         needle = name_substr.lower()
-        root = self.x11.XDefaultRootWindow(self.display)
+        # Also accept Navigator (Firefox WM_CLASS) when looking for Firefox.
+        needles = {needle}
+        if needle == 'firefox':
+            needles.update({'navigator', 'firefox'})
         matches = []
         seen = []
-        for window in self._iter_windows(root):
+        for window in self._top_level_windows():
             title = self._window_title(window)
             klass = self._window_class_bits(window)
             label = (title + ' ' + klass).strip()
             if label:
                 seen.append(label)
             haystack = label.lower()
-            if haystack and needle in haystack:
+            if haystack and any(item in haystack for item in needles):
                 matches.append((window, label))
         if not matches:
             raise RuntimeError(
@@ -211,7 +218,7 @@ class X11Session:
         self.x11.XSetInputFocus(
             self.display, window, RevertToParent, 0)
         self.x11.XSync(self.display, 0)
-        time.sleep(0.15)
+        time.sleep(0.2)
         focused = ctypes.c_ulong()
         revert = ctypes.c_int()
         self.x11.XGetInputFocus(

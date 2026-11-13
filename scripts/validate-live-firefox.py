@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import secrets
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -31,7 +32,6 @@ from firefox_article_selection_acceptance import (
     origin_article_selection_stage_enabled,
     require_article_selection_backend,
 )
-from native_chromium_x11 import X11Session
 from firefox_epub_acceptance import (
     assert_distinct_chapter_audio_hashes,
     epub_backend_variant,
@@ -2044,21 +2044,24 @@ def _probe_firefox_parse_article(driver, origin, fixture_url, speech):
 def _send_native_read_article_alt_a():
     """Real X11 Alt+A — Selenium keys do not reach browser.commands.onCommand.
 
-    Chromium live shells out to native-chromium-keys.py via Node execFileSync.
-    Firefox is already in Python, so call the same X11Session in-process (no
-    env-argv subprocess). Under Xvfb, Selenium Firefox often has PointerRoot
-    focus — raise/focus a Firefox window before the chord.
+    Run native-firefox-keys.py in a **separate** process (sys.executable + fixed
+    argv). In-process ctypes X11 alongside Selenium/Firefox on the same DISPLAY
+    aborted CI with munmap_chunk. The child focuses a Firefox/Navigator window
+    then plays Alt+A — same XTest stack Chromium uses via Node execFileSync.
     """
-    keys = ["Alt_L", "a"]
-    session = X11Session(focus_name_substr="Firefox")
+    helper = Path(__file__).resolve().parent / "native-firefox-keys.py"
+    argv = [sys.executable, str(helper), "Alt_L", "a"]
     try:
-        session.chord(keys)
-        native_alt_a = session.result(" ".join(keys))
-    except Exception as exc:
+        completed = subprocess.run(
+            argv, check=True, capture_output=True, text=True, timeout=15)
+        native_alt_a = json.loads(completed.stdout.strip())
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        detail = ""
+        if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+            detail = ": " + exc.stderr.strip()[:400]
         raise RuntimeError(
-            "Cannot send native Alt+A for Firefox read-article: " + str(exc))
-    finally:
-        session.close()
+            "Cannot send native Alt+A for Firefox read-article: " +
+            str(exc) + detail)
     if (native_alt_a.get("x11XTest") is not True or
             native_alt_a.get("nativeKeys") != "Alt_L a"):
         raise RuntimeError(

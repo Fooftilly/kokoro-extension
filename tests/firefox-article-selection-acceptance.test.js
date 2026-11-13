@@ -137,17 +137,20 @@ console.log(JSON.stringify({
         expect(source).toContain('offline-real-article-and-selection');
         expect(source).toContain('kokoro-float-btn');
         expect(source).toContain('PARSE_ARTICLE');
-        expect(source).toContain('from native_chromium_x11 import X11Session');
-        expect(source).toContain('focus_name_substr="Firefox"');
+        expect(source).toContain('native-firefox-keys.py');
+        expect(source).toContain('sys.executable');
         expect(source).toContain('findArticleFixtureTab');
         expect(source).toContain("http://127.0.0.1/*");
         expect(source).toContain('Alt_L');
         expect(source).not.toContain('subprocess.check_output');
         expect(source).not.toContain('tabs.query({ url: fixtureUrl })');
+        expect(source).not.toContain('X11Session(');
         const x11 = fs.readFileSync(
             path.join(scriptsDir, 'native_chromium_x11.py'), 'utf8');
         expect(x11).toContain('def focus_client_window');
         expect(x11).toContain('XSetInputFocus');
+        expect(fs.existsSync(
+            path.join(scriptsDir, 'native-firefox-keys.py'))).toBe(true);
         const workflowSource = fs.readFileSync(workflow, 'utf8');
         expect(workflowSource).toContain('KOKORO_NATIVE_PYTHON');
         expect(workflowSource).toContain('xvfb-run');
