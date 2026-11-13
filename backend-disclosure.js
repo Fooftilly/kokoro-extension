@@ -8,7 +8,22 @@
         'and choose one with Use this backend. Preference updates only when you confirm.';
 
     /** Packaged ONNX phoneme vocab/config embedded in phoneme-tokenizer.js (~3.5 KB). */
+    const PACKAGED_ONNX_TOKENIZER_BYTES = 3500;
     const PACKAGED_ONNX_TOKENIZER_LABEL = '~3.5 KB';
+
+    /** Numeric total phrase for UI: downloadable assets plus packaged tokenizer when ONNX. */
+    function modelDataFootprintLabel(entry, formatBytes) {
+        const source = entry && typeof entry === 'object' ? entry : {};
+        const downloadBytes = Number.isSafeInteger(source.totalBytes) ? source.totalBytes : 0;
+        const downloadLabel = typeof formatBytes === 'function'
+            ? formatBytes(downloadBytes)
+            : String(downloadBytes);
+        if (source.provider === 'onnx') {
+            return downloadLabel + ' + ' + PACKAGED_ONNX_TOKENIZER_LABEL +
+                ' packaged tokenizer/config';
+        }
+        return downloadLabel;
+    }
 
     function backendDisclosure(backend) {
         if (backend === 'mediapipe') {
@@ -63,9 +78,11 @@
     const api = Object.freeze({
         CTA_LABEL,
         CTA_HINT,
+        PACKAGED_ONNX_TOKENIZER_BYTES,
         PACKAGED_ONNX_TOKENIZER_LABEL,
         backendDisclosure,
         downloadFootprintNote,
+        modelDataFootprintLabel,
     });
 
     if (typeof module !== 'undefined' && module.exports) module.exports = api;

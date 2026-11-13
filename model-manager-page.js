@@ -205,13 +205,19 @@ function createModelRow(entry) {
     licenseLink.href = source.licenseUrl;
     licenseLink.target = '_blank';
     licenseLink.rel = 'noopener noreferrer';
+    const Disclosure = globalThis.KokoroBackendDisclosure;
+    const sizePhrase = Disclosure && typeof Disclosure.modelDataFootprintLabel === 'function'
+        ? Disclosure.modelDataFootprintLabel(entry, formatModelSize)
+        : formatModelSize(entry.totalBytes);
+    const sizeHeading = entry.provider === 'onnx'
+        ? 'Total model-data footprint: '
+        : 'Model data to download and cache: ';
     provenance.append('Source: ', sourceLink, ' · License: ', licenseLink,
         ' · Pinned revision: ', source.revision.slice(0, 7),
-        ' · Model data to download and cache: ', formatModelSize(entry.totalBytes),
+        ' · ', sizeHeading, sizePhrase,
         ' (browser storage overhead may add to this).');
     const footprint = document.createElement('p');
     footprint.className = 'model-footprint-note';
-    const Disclosure = globalThis.KokoroBackendDisclosure;
     const footprintNote = Disclosure && typeof Disclosure.downloadFootprintNote === 'function'
         ? Disclosure.downloadFootprintNote(entry)
         : '';
