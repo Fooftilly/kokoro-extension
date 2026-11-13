@@ -38,11 +38,12 @@ describe('local voice mixing policy (#59)', () => {
     });
 
     test('mediaPipeVoice falls back to legacy localVoice once', () => {
-        expect(LocalVoice.mediaPipeVoiceFromSettings({ localVoice: 'af_sky' })).toBe('af_sky');
+        expect(LocalVoice.mediaPipeVoiceFromSettings({ localVoice: 'af_bella' })).toBe('af_bella');
         expect(LocalVoice.mediaPipeVoiceFromSettings({
-            mediaPipeVoice: 'af_bella',
-            localVoice: 'af_sky',
-        })).toBe('af_bella');
+            mediaPipeVoice: 'af_sky',
+            localVoice: 'af_bella',
+        })).toBe('af_sky');
+        expect(LocalVoice.mediaPipeVoiceFromSettings({})).toBe('af_heart');
     });
 
     test('onnxVoiceAsset defaults to the catalog-fixed af.bin path', () => {

@@ -218,7 +218,7 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
         apiUrl: 'http://127.0.0.1:8880/v1/',
         ttsBackend: TtsProviders.FASTAPI,
         mediaPipeVariant: 'cpu',
-        mediaPipeVoice: 'af_heart',
+        // Do not default mediaPipeVoice here — that would mask legacy localVoice.
         onnxVoiceAsset: 'voices/af.bin',
         localVoice: 'af_heart',
         voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',

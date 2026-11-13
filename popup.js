@@ -782,7 +782,7 @@ const restoreOptions = async () => {
             apiUrl: 'http://127.0.0.1:8880/v1/',
             ttsBackend: 'fastapi',
             voice: 'af_sarah(0.5)+af_nicole(0.3)+af_sky(0.2)',
-            mediaPipeVoice: LocalVoice.DEFAULT_MEDIAPIPE_VOICE || LocalVoice.DEFAULT_LOCAL_VOICE,
+            // Omit mediaPipeVoice default so legacy localVoice can migrate.
             onnxVoiceAsset: LocalVoice.ONNX_FIXED_VOICE_ASSET || 'voices/af.bin',
             localVoice: LocalVoice.DEFAULT_MEDIAPIPE_VOICE || LocalVoice.DEFAULT_LOCAL_VOICE,
             mode: 'stream',

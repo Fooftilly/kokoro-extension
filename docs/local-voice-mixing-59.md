@@ -33,6 +33,7 @@ Three independent sync keys (never rewritten when switching backends):
 | `browser.storage.sync.onnxVoiceAsset` | ONNX catalog asset | No (fixed `voices/af.bin`) |
 
 Legacy `localVoice` is read once as a MediaPipe fallback when `mediaPipeVoice` is absent.
+Callers must **not** pass a `mediaPipeVoice` default into `browser.storage.sync.get(...)`, or the fallback is masked and upgrades reset to `af_heart`.
 
 - Switching to MediaPipe/ONNX must not clear or rewrite `voice`.
 - Switching between MediaPipe and ONNX must not overwrite the other local preference.

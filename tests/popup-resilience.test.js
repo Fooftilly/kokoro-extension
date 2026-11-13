@@ -705,6 +705,31 @@ describe('popup backend-loss resilience (#4)', () => {
         jest.useRealTimers();
     });
 
+    test('popup migrates legacy localVoice when mediaPipeVoice is unset (#59)', async () => {
+        allowMediaPipeSelection();
+        browser.storage.sync.get.mockImplementation(async (defaults) => {
+            const merged = {
+                ...defaults,
+                apiUrl: 'http://127.0.0.1:8880/v1/',
+                ttsBackend: 'mediapipe',
+                mediaPipeVariant: 'cpu',
+                voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
+                localVoice: 'af_bella',
+                mode: 'stream',
+                theme: 'light',
+            };
+            delete merged.mediaPipeVoice;
+            return merged;
+        });
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        expect(document.getElementById('mediaPipeVoice').value).toBe('af_bella');
+        const getArg = browser.storage.sync.get.mock.calls[0][0];
+        expect(Object.hasOwn(getArg, 'mediaPipeVoice')).toBe(false);
+    });
+
     test('local-voice containers honor [hidden] under author display:flex (#59)', async () => {
         allowMediaPipeSelection();
         document.dispatchEvent(new Event('DOMContentLoaded'));
