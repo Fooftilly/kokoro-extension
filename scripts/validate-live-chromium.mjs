@@ -567,8 +567,8 @@ async function acceptTwoBackendComparison(page, extensionId) {
 // Browser-side readiness poll serialized by Playwright into the reader page.
 // Nested helpers keep CodeFactor method complexity under the gate while the
 // WAV fetch, revision recheck, and Prev/Next assertions stay atomic.
-async function pollRealEpubChapterReady({ title, previousRevision, previousAudioUrl,
-    previousAudioSha256 }) {
+async function pollRealEpubChapterReady(
+    { title, previousRevision, previousAudioUrl, previousAudioSha256, backend }) {
     // Must match READER_ACCEPTANCE_SPEECH in the harness module scope copy.
     const expectedSpeech = {
         'First Chapter': 'Hello first chapter.',
@@ -613,7 +613,7 @@ async function pollRealEpubChapterReady({ title, previousRevision, previousAudio
         () => Boolean(frame && audio),
         () => document.getElementById('filePickerOverlay')?.style.display === 'none',
         () => navMatches(title),
-        () => stored.pendingTitle === title && stored.pendingTtsBackend === 'onnx',
+        () => stored.pendingTitle === title && stored.pendingTtsBackend === backend,
         () => stored.pendingApiUrl === null || stored.pendingApiUrl === '',
         () => stored.pendingAutoplay === false,
         () => Number.isSafeInteger(revision) && revision > previousRevision,
@@ -633,7 +633,7 @@ async function pollRealEpubChapterReady({ title, previousRevision, previousAudio
         () => frame.getElementById('pageTitle')?.textContent === title,
         () => navMatches(title),
     ].every(check => check());
-    const assertValidWav = (bytes, response, audioUrl, revision, backend) => {
+    const assertValidWav = (bytes, response, audioUrl, revision, wavBackend) => {
         const tag = (offset, count) =>
             String.fromCharCode(...bytes.subarray(offset, offset + count));
         const header = bytes.byteLength >= 44
@@ -645,7 +645,7 @@ async function pollRealEpubChapterReady({ title, previousRevision, previousAudio
             return audioBytes;
         }
         throw Error('Real EPUB reader WAV mismatch: ' + JSON.stringify({
-            title, revision, backend,
+            title, revision, backend: wavBackend,
             sourceKind: audioUrl.split(':', 1)[0],
             mime: response.headers.get('content-type'),
             length: bytes.length, riff: tag(0, 4), wave: tag(8, 4),
@@ -688,7 +688,7 @@ async function pollRealEpubChapterReady({ title, previousRevision, previousAudio
         'pendingReaderReloadRevision', 'pendingTitle', 'pendingTtsBackend',
     ]);
     if (latest.pendingReaderReloadRevision !== revision ||
-        latest.pendingTitle !== title || latest.pendingTtsBackend !== 'onnx' ||
+        latest.pendingTitle !== title || latest.pendingTtsBackend !== backend ||
         !stillStable(frame, audio, audioUrl)) {
         return false;
     }
@@ -710,13 +710,17 @@ async function pollRealEpubChapterReady({ title, previousRevision, previousAudio
 // Verify that the real EPUB.js reader and embedded overlay—not a seeded
 // pendingContent shortcut—create a local offline WAV for both chapters.
 // Also cover replacing the book with a TXT file through the same UI.
-async function acceptRealEpubReader(page, extensionId) {
-    await page.evaluate(async () => {
+// backend is 'onnx' or 'mediapipe' (chromium-*-origin scopes).
+async function acceptRealEpubReader(page, extensionId, backend) {
+    if (backend !== 'onnx' && backend !== 'mediapipe') {
+        throw Error('EPUB reader acceptance requires onnx or mediapipe backend');
+    }
+    await page.evaluate(async (ttsBackend) => {
         await chrome.storage.sync.set({
-            ttsBackend: 'onnx', autoplayReader: false, continuousReader: false,
+            ttsBackend, autoplayReader: false, continuousReader: false,
             mediaPipeVariant: 'cpu', localVoice: 'af_heart',
         });
-    });
+    }, backend);
     await page.goto('chrome-extension://' + extensionId + '/reader.html');
     await page.waitForFunction(() =>
         document.querySelector('#fileInput') &&
@@ -774,7 +778,8 @@ async function acceptRealEpubReader(page, extensionId) {
             try {
                 const snapshot = await page.evaluate(
                     pollRealEpubChapterReady,
-                    { title, previousRevision, previousAudioUrl, previousAudioSha256 },
+                    { title, previousRevision, previousAudioUrl, previousAudioSha256,
+                        backend },
                 );
                 if (snapshot && typeof snapshot === 'object' &&
                     snapshot.title === title && snapshot.nav) {
@@ -851,9 +856,9 @@ async function acceptRealEpubReader(page, extensionId) {
     }
     const selected = await page.evaluate(async () =>
         (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
-    if (selected !== 'onnx') throw Error('Reader silently switched local TTS backend');
+    if (selected !== backend) throw Error('Reader silently switched local TTS backend');
     return {
-        success: true, browser: 'Chromium', backend: 'onnx',
+        success: true, browser: 'Chromium', backend,
         epubFileSelectedThroughUi: true, chapterCount: 2,
         first: { title: first.title, revision: first.revision, audioBytes: first.bytes,
             audioSha256: first.audioSha256, speech: first.expectedSpeech },
@@ -1320,9 +1325,11 @@ try {
                 stage = 'offline-real-benchmark-page-controls';
                 localBenchmarkAcceptance = await acceptLocalBenchmarkUi(page, extensionId, manifest);
             }
-            if (originDownload && manifest.provider === 'onnx' && result.success) {
+            if (originDownload && result.success &&
+                (manifest.provider === 'onnx' || manifest.provider === 'mediapipe')) {
                 stage = 'offline-real-epub-chapters-and-txt-reader';
-                epubReaderAcceptance = await acceptRealEpubReader(page, extensionId);
+                epubReaderAcceptance = await acceptRealEpubReader(
+                    page, extensionId, manifest.provider);
             }
             console.log(result.success ? 'REAL MODEL INFERENCE' : 'MODEL INFERENCE FAILURE', result);
             results.push({ provider: manifest.provider, variant: manifest.variant,
