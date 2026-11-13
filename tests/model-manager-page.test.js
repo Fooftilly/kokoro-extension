@@ -478,7 +478,8 @@ describe('ONNX model manager English synthesis diagnostics', () => {
             const footprint = row.querySelector('.model-footprint-note');
             expect(footprint).toBeTruthy();
             if (key.startsWith('onnx-')) {
-                expect(footprint.textContent).toMatch(/Tokenizer\/config|voices\/af\.bin/i);
+                expect(footprint.textContent).toMatch(/Total model-data footprint/i);
+                expect(footprint.textContent).toMatch(/tokenizer\/config|voices\/af\.bin/i);
             } else if (key === 'mediapipe-gpu') {
                 expect(footprint.textContent).toMatch(/unverified/i);
                 expect(row.querySelector('h3').textContent).toMatch(/unverified/i);
