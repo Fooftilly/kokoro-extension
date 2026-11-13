@@ -14,13 +14,13 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent
 LONG_FORM_SENTENCE_COUNT = 24
 LONG_FORM_MAX_CACHE_ENTRIES = 8
 LONG_FORM_MAX_OBJECT_URLS = 8
-ALLOWED_LONG_FORM_BACKENDS = frozenset({"onnx"})
+ALLOWED_LONG_FORM_BACKENDS = frozenset({"onnx", "mediapipe"})
 
 
 def require_long_form_backend(backend):
     if backend not in ALLOWED_LONG_FORM_BACKENDS:
         raise ValueError(
-            "Long-form memory acceptance requires onnx backend, got: " +
+            "Long-form memory acceptance requires onnx or mediapipe backend, got: " +
             repr(backend))
     return backend
 

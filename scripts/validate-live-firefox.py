@@ -2533,7 +2533,7 @@ def accept_firefox_long_form_memory(driver, origin, backend):
 
 
 def run_offline_long_form_memory_acceptance(driver, origin, result, backend):
-    """Opt-in long-form memory stage for Firefox ONNX origin; restores manager UI."""
+    """Opt-in long-form memory stage for Firefox onnx/mediapipe origin; restores manager UI."""
     result["stage"] = "offline-real-long-form-memory"
     report = accept_firefox_long_form_memory(driver, origin, backend)
     _return_to_benchmark_for_model_remove(driver, origin, backend)
@@ -3197,7 +3197,7 @@ def main():
                     run_offline_article_selection_acceptance(
                         driver, state["origin"], result, provider))
 
-            # Real overlay long-form memory bounds (ONNX origin; Chromium #140).
+            # Real overlay long-form memory bounds (onnx/mediapipe origin).
             long_form_memory_acceptance = None
             if origin_long_form_memory_stage_enabled(
                     origin_download, provider, metrics.get("success")):

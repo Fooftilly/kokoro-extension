@@ -307,7 +307,7 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && (inputs.acceptance_scope == 'firefox-mediapipe-origin' || inputs.acceptance_scope == 'firefox-onnx-origin' || inputs.acceptance_scope == 'firefox-dual-comparison' || inputs.acceptance_scope == 'firefox-persistent-restart' || inputs.acceptance_scope == 'firefox-quota-recovery') }}
     # Keep Firefox origin on 24.04 with host Xvfb/XTest for native Alt+A
     # article/selection (Selenium keys do not reach browser.commands).
-    # 60m covers origin + EPUB + article/selection + long-form memory (ONNX).
+    # 60m covers origin + EPUB + article/selection + long-form memory (onnx/mediapipe).
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:

@@ -75,7 +75,10 @@ print(json.dumps({
     'heapOk': assert_long_form_heap_delta(50, 75),
     'heapFail': capture(
         lambda: assert_long_form_heap_delta(0, 300 * 1024 * 1024)),
-    'rejectMp': capture(lambda: require_long_form_backend('mediapipe')),
+    'acceptMp': capture(lambda: require_long_form_backend('mediapipe')),
+    'rejectRemote': capture(lambda: require_long_form_backend('remote')),
+    'mpFixture': load_long_form_fixture('mediapipe')['storage'].get(
+        'pendingTtsBackend'),
 }))
 `], { encoding: 'utf8', cwd: root });
 }
@@ -86,13 +89,14 @@ describe('firefox long-form memory acceptance', () => {
         expect(child.status).toBe(0);
         expect(child.stderr || '').toBe('');
         const snap = JSON.parse(child.stdout.trim());
-        expect(snap.backends).toEqual(['onnx']);
+        expect(snap.backends).toEqual(['mediapipe', 'onnx']);
         expect(snap.sentenceCount).toBe(24);
         expect(snap.bounds).toEqual({ cache: 8, urls: 8 });
         expect(snap.onnxRequired).toBe('onnx');
         expect(snap.probe).toBe(true);
         expect(snap.autoplayOff).toBe(true);
         expect(snap.pendingBackend).toBe('onnx');
+        expect(snap.mpFixture).toBe('mediapipe');
         expect(snap.noSyncTts).toBe(true);
         expect(snap.storageKeys).toEqual(expect.arrayContaining([
             'pendingAcceptanceProbe', 'pendingContent', 'pendingTtsBackend',
@@ -101,7 +105,7 @@ describe('firefox long-form memory acceptance', () => {
         expect(snap.visits[snap.visits.length - 1]).toBeLessThan(23);
         expect(snap.gates).toEqual({
             onnxOrigin: true,
-            mediapipe: false,
+            mediapipe: true,
             noOrigin: false,
             failedPrior: false,
         });
@@ -111,7 +115,8 @@ describe('firefox long-form memory acceptance', () => {
         expect(snap.cacheFail.ok).toBe(false);
         expect(snap.heapOk.growth).toBe(25);
         expect(snap.heapFail.ok).toBe(false);
-        expect(snap.rejectMp.ok).toBe(false);
+        expect(snap.acceptMp.ok).toBe(true);
+        expect(snap.rejectRemote.ok).toBe(false);
     });
 
     test('firefox live harness wires long-form stage after article/selection', () => {
