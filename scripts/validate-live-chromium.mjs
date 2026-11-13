@@ -1,7 +1,7 @@
 // Live model-backed Chromium MV3 validation. Explicit opt-in and no model weights in git.
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { createReadStream, createWriteStream } from 'node:fs';
+import { appendFileSync, createReadStream, createWriteStream, writeSync } from 'node:fs';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import os from 'node:os';
@@ -51,11 +51,18 @@ if (originDownload && !['mediapipe', 'onnx'].includes(providerFilter)) {
 }
 
 const liveStartedAt = Date.now();
+const resultsDir = path.resolve('dist/runtime-acceptance');
+await mkdir(resultsDir, { recursive: true });
+const progressLogPath = path.join(resultsDir, 'progress.log');
+
 function liveHeartbeat(label, detail) {
-    // stderr so CI shows progress even when stdout is fully buffered under xvfb-run.
+    // writeSync(2) bypasses Node's full stderr buffering under non-TTY CI pipes
+    // (process.stderr.write was invisible until the step exited/cancelled).
     const elapsedSec = Math.round((Date.now() - liveStartedAt) / 1000);
     const suffix = detail === undefined ? '' : ' ' + JSON.stringify(detail);
-    process.stderr.write('[live-chromium ' + elapsedSec + 's] ' + label + suffix + '\n');
+    const line = '[live-chromium ' + elapsedSec + 's] ' + label + suffix + '\n';
+    try { writeSync(2, line); } catch { /* ignore */ }
+    try { appendFileSync(progressLogPath, line); } catch { /* ignore */ }
 }
 
 async function withTimeout(promise, ms, label) {
@@ -74,6 +81,9 @@ async function withTimeout(promise, ms, label) {
 }
 
 liveHeartbeat('harness-start', { providerFilter, originDownload, headedConsent });
+// Keepalive so a silent hang still leaves fresh progress.log / Actions log lines.
+const aliveTimer = setInterval(() => liveHeartbeat('alive'), 15000);
+aliveTimer.unref?.();
 
 const variants = [
     ...(providerFilter === 'mediapipe' || providerFilter === 'dictionary' ? [] :
@@ -82,9 +92,7 @@ const variants = [
         [manifestForVariant('mediapipe', 'cpu')]),
 ];
 const sourceDir = path.join(os.tmpdir(), 'kokoro-live-models');
-const resultsDir = path.resolve('dist/runtime-acceptance');
 await mkdir(sourceDir, { recursive: true });
-await mkdir(resultsDir, { recursive: true });
 const local = new Map();
 const byFilename = new Map();
 for (const manifest of (originDownload ? [] : variants)) for (const asset of manifest.assets) {
@@ -355,9 +363,18 @@ async function downloadModelFromOfficialOrigin(page, manifest) {
         failure: request.failure() || null,
     }));
     const button = page.locator(rowSelector + ' .model-download');
+    liveHeartbeat('official-origin-host-permission-start', {
+        provider: manifest.provider, variant: manifest.variant,
+    });
     const hostGrantEvidence = await acceptOfficialOriginHostPermission(
         page, manifest, rowSelector, button, networkEvents);
+    liveHeartbeat('official-origin-host-permission-done', {
+        host: hostGrantEvidence.host,
+    });
     try {
+        liveHeartbeat('official-origin-download-wait-start', {
+            provider: manifest.provider, timeoutMs: 900000,
+        });
         await page.waitForFunction(selector => {
             const row = document.querySelector(selector);
             const status = row?.querySelector('.model-status')?.textContent || '';
@@ -366,6 +383,7 @@ async function downloadModelFromOfficialOrigin(page, manifest) {
             return finished ||
                 /permission.*(denied|failed)|Cannot request|Download failed|Download cancelled|Cannot inspect model cache/i.test(status);
         }, rowSelector, { timeout: 900000 });
+        liveHeartbeat('official-origin-download-wait-done');
     } catch (error) {
         const diagnostics = await captureOfficialOriginDownloadState(page, rowSelector, networkEvents);
         throw Error(manifest.provider + ' official-origin UI acceptance did not settle: ' +
@@ -1325,20 +1343,27 @@ const server = createServer((req, res) => {
     createReadStream(file).pipe(res);
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+liveHeartbeat('loopback-model-server-listening');
 let context;
 try {
+    liveHeartbeat('playwright-import-start');
     const { chromium } = await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE_PATH).href);
     const extension = path.resolve('dist/chrome');
-    context = await chromium.launchPersistentContext(path.join(sourceDir, 'profile'), {
-        channel: 'chromium', headless: !headedConsent,
-        args: ['--disable-extensions-except=' + extension, '--load-extension=' + extension],
-    });
+    liveHeartbeat('chromium-launch-start', { headed: headedConsent === true });
+    context = await withTimeout(chromium.launchPersistentContext(
+        path.join(sourceDir, 'profile'), {
+            channel: 'chromium', headless: !headedConsent,
+            args: ['--disable-extensions-except=' + extension, '--load-extension=' + extension],
+        }), 120000, 'chromium.launchPersistentContext');
+    liveHeartbeat('chromium-launch-done');
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', { timeout: 30000 });
+    liveHeartbeat('service-worker-ready');
     const extensionId = new URL(worker.url()).hostname;
     extensionOrigin = 'chrome-extension://' + extensionId;
     const preflightPage = await context.newPage();
     const errors = [];
     preflightPage.on('pageerror', error => errors.push(String(error)));
+    liveHeartbeat('preflight-goto-benchmark');
     await preflightPage.goto('chrome-extension://' + extensionId + '/benchmark.html');
     await preflightPage.locator('#runCheck').click();
     // Clicking only awaits DOM dispatch, not the async capability inspection.
@@ -1354,6 +1379,7 @@ try {
     }
     const preflight = JSON.parse(await preflightPage.locator('#report').textContent());
     if (!preflight.wasmCompilation) throw Error('Chrome extension CSP blocks WebAssembly compilation');
+    liveHeartbeat('preflight-complete', { browser: preflight.browser });
     // Exercise the production model-data store against its real pinned HTTPS
     // CMUdict URL. This deliberately does not substitute the local loopback
     // transfer used later for heavyweight model inference acceptance.
@@ -1839,10 +1865,13 @@ try {
     // process shutdown/startup. No network model re-download may be needed.
     await context.close();
     context = null;
-    context = await chromium.launchPersistentContext(path.join(sourceDir, 'profile'), {
-        channel: 'chromium', headless: !headedConsent,
-        args: ['--disable-extensions-except=' + extension, '--load-extension=' + extension],
-    });
+    liveHeartbeat('chromium-relaunch-after-restart-start');
+    context = await withTimeout(chromium.launchPersistentContext(
+        path.join(sourceDir, 'profile'), {
+            channel: 'chromium', headless: !headedConsent,
+            args: ['--disable-extensions-except=' + extension, '--load-extension=' + extension],
+        }), 120000, 'chromium.launchPersistentContext (restart)');
+    liveHeartbeat('chromium-relaunch-after-restart-done');
     const restartedWorker = context.serviceWorkers()[0] ||
         await context.waitForEvent('serviceworker', { timeout: 30000 });
     const restartedId = new URL(restartedWorker.url()).hostname;
@@ -2152,6 +2181,8 @@ try {
         if (!reopened.isClosed()) await reopened.close();
     }
 } finally {
+    clearInterval(aliveTimer);
+    liveHeartbeat('harness-teardown');
     if (context) await context.close();
     await new Promise(resolve => server.close(resolve));
 }

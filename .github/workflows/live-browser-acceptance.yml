@@ -111,8 +111,10 @@ jobs:
           # The pinned image already includes Xvfb and browser dependencies.
           # Native optional-host dialog input uses libX11/libXtst via a small
           # standard-library Python helper; no mutable apt mirror is required.
-          xvfb-run -a -s '-screen 0 1440x900x24' \
-            node scripts/validate-live-chromium.mjs
+          # stdbuf line-buffers node stderr/stdout so heartbeats appear in the
+          # Actions log while the step is still running (not only after exit).
+          stdbuf -oL -eL xvfb-run -a -s '-screen 0 1440x900x24' \
+            stdbuf -oL -eL node scripts/validate-live-chromium.mjs
       - name: Execute Chromium real-quota, offline multi-asset recovery acceptance
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.acceptance_scope == 'chromium-quota-recovery' }}
         env:
@@ -128,6 +130,7 @@ jobs:
           path: |
             dist/runtime-acceptance/report.json
             dist/runtime-acceptance/chromium-quota.json
+            dist/runtime-acceptance/progress.log
           if-no-files-found: ignore
 
   firefox-local-inference:

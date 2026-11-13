@@ -122,6 +122,10 @@ console.log(JSON.stringify({ ok, errors }));
         expect(source).toMatch(/path: 'read-article-command-native-x11'/);
         expect(source).toMatch(/function liveHeartbeat\(/);
         expect(source).toMatch(/function withTimeout\(/);
+        expect(source).toMatch(/writeSync\(2,/);
+        expect(source).toMatch(/progress\.log/);
+        expect(source).toMatch(/chromium-launch-start/);
+        expect(source).toMatch(/setInterval\(\(\) => liveHeartbeat\('alive'\)/);
         expect(source).not.toMatch(/keyboard\.press\('Alt\+a'\)/);
         expect(source).not.toMatch(/path: 'parse-article-show-player'/);
         expect(source).not.toMatch(
@@ -137,5 +141,7 @@ console.log(JSON.stringify({ ok, errors }));
         const chromiumJob = workflow.split('chromium-model-inference:')[1]
             ?.split(/\n {2}[a-z]/)[0] || '';
         expect(chromiumJob).toMatch(/timeout-minutes:\s*60\b/);
+        expect(chromiumJob).toMatch(/stdbuf -oL -eL/);
+        expect(chromiumJob).toMatch(/progress\.log/);
     });
 });
