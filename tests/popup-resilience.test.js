@@ -87,6 +87,7 @@ describe('popup backend-loss resilience (#4)', () => {
         global.fetch = jest.fn(() => Promise.reject(new TypeError('Failed to fetch')));
 
         Object.assign(global, require('../api-client.js'));
+        Object.assign(global, { KokoroLocalVoiceMixing: require('../local-voice-mixing.js') });
         popup = loadPopupModule();
     });
 
@@ -370,6 +371,7 @@ describe('popup backend-loss resilience (#4)', () => {
         jest.resetModules();
         loadPopupDom();
         Object.assign(global, require('../api-client.js'));
+        Object.assign(global, { KokoroLocalVoiceMixing: require('../local-voice-mixing.js') });
         loadPopupModule();
         document.dispatchEvent(new Event('DOMContentLoaded'));
         await flushAsync();
@@ -612,6 +614,7 @@ describe('popup backend-loss resilience (#4)', () => {
         jest.resetModules();
         loadPopupDom();
         Object.assign(global, require('../api-client.js'));
+        Object.assign(global, { KokoroLocalVoiceMixing: require('../local-voice-mixing.js') });
         loadPopupModule();
         document.dispatchEvent(new Event('DOMContentLoaded'));
         await flushAsync();
@@ -678,5 +681,33 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(document.getElementById('apiStatus').textContent).toMatch(/reach|Unable/i);
         expect(document.getElementById('retryApi').style.display).not.toBe('none');
         jest.useRealTimers();
+    });
+
+    test('local backend save keeps FastAPI mix and writes localVoice only (#59)', async () => {
+        allowOnnxSelection();
+        browser.storage.sync.get.mockImplementation(async (defaults) => ({
+            ...defaults,
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'onnx',
+            voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
+            localVoice: 'af_heart',
+            mode: 'stream',
+            theme: 'light',
+        }));
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        expect(document.getElementById('voiceMixerContainer').hidden).toBe(true);
+        expect(document.getElementById('localVoiceContainer').hidden).toBe(false);
+        expect(document.getElementById('localVoiceNote').textContent).toMatch(/af\.bin|single/i);
+
+        document.getElementById('localVoice').value = 'af_bella';
+        browser.storage.sync.set.mockClear();
+        await popup.saveOptions(false);
+
+        const writes = browser.storage.sync.set.mock.calls.map(([payload]) => payload);
+        expect(writes.some((payload) => payload.localVoice === 'af_bella')).toBe(true);
+        expect(writes.every((payload) => !Object.hasOwn(payload, 'voice'))).toBe(true);
     });
 });

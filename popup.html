@@ -47,7 +47,8 @@
                 <button type="button" id="retryApi" class="retry-api-btn" title="Retry connection">Retry</button>
             </div>
 
-            <label>VOICE MIXER</label>
+            <label id="voiceSectionLabel">VOICE MIXER</label>
+            <p id="localVoiceNote" class="note" hidden></p>
             <div id="voiceMixerContainer">
                 <div id="selectedVoices"></div>
                 <div class="mt-10">
@@ -55,6 +56,11 @@
                     <div id="voiceDropdown">
                     </div>
                 </div>
+            </div>
+            <div id="localVoiceContainer" class="local-voice-container" hidden>
+                <label for="localVoice" class="inline-label">Local voice ID</label>
+                <input type="text" id="localVoice" value="af_heart" autocomplete="off" spellcheck="false"
+                    pattern="[a-z]{2}_[a-z]+" title="Format: xx_name (for example af_heart)">
             </div>
 
             <div class="settings-grid">
@@ -166,6 +172,7 @@
     </div>
 
     <script src="api-client.js"></script>
+    <script src="local-voice-mixing.js"></script>
     <script src="popup.js"></script>
 </body>
 

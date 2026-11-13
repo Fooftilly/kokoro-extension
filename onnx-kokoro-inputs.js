@@ -49,6 +49,58 @@ export function styleForLength(voiceBinary, tokenCount) {
     return style;
 }
 
+/**
+ * Original linear blend of Kokoro ONNX style vectors (official shape [256]).
+ * Weights are normalized to sum to 1. Not a PCM mix and not derived from kokoro-js.
+ * Product UI stays single-voice until multiple verified voice binaries are catalogued.
+ */
+export function blendStyleVectors(styles, weights) {
+    if (!Array.isArray(styles) || styles.length < 1) {
+        throw new TypeError('At least one style vector is required');
+    }
+    if (!Array.isArray(weights) || weights.length !== styles.length) {
+        throw new TypeError('Style blend weights must align with style vectors');
+    }
+    let weightSum = 0;
+    for (let i = 0; i < styles.length; i++) {
+        const style = styles[i];
+        const weight = weights[i];
+        if (!(style instanceof Float32Array) || style.length !== VOICE_DIMENSION) {
+            throw new TypeError('Each style must be a Float32Array of length 256');
+        }
+        if (!Number.isFinite(weight) || weight < 0) {
+            throw new RangeError('Style blend weights must be finite and non-negative');
+        }
+        weightSum += weight;
+    }
+    if (weightSum <= 0) {
+        throw new RangeError('Style blend weights must sum to a positive value');
+    }
+    const out = new Float32Array(VOICE_DIMENSION);
+    for (let i = 0; i < styles.length; i++) {
+        const scale = weights[i] / weightSum;
+        if (scale === 0) continue;
+        const style = styles[i];
+        for (let j = 0; j < VOICE_DIMENSION; j++) {
+            out[j] += style[j] * scale;
+        }
+    }
+    for (let j = 0; j < VOICE_DIMENSION; j++) {
+        if (!Number.isFinite(out[j])) {
+            throw new TypeError('Blended style contains a non-finite float');
+        }
+    }
+    return out;
+}
+
+export function styleForLengthWeighted(voiceBinaries, weights, tokenCount) {
+    if (!Array.isArray(voiceBinaries) || voiceBinaries.length < 1) {
+        throw new TypeError('At least one voice binary is required');
+    }
+    const styles = voiceBinaries.map((binary) => styleForLength(binary, tokenCount));
+    return blendStyleVectors(styles, weights);
+}
+
 export function prepareKokoroOnnxInputs(phonemeIds, voiceBinary, speed = 1.0) {
     assertPhonemes(phonemeIds);
     if (!Number.isFinite(speed) || speed <= 0 || speed > 4) {

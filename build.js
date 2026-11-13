@@ -22,6 +22,7 @@ const SRC_FILES = [
     'popup.js',
     'api-client.js',
     'tts-providers.js',
+    'local-voice-mixing.js',
     'benchmark.html',
     'benchmark.css',
     'benchmark-capabilities.js',

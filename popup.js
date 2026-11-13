@@ -33,6 +33,36 @@ function normalizeApiUrl(raw) {
     return apiUrl;
 }
 
+const LocalVoice = globalThis.KokoroLocalVoiceMixing || {
+    DEFAULT_LOCAL_VOICE: 'af_heart',
+    normalizeLocalVoiceId: (value) => {
+        if (typeof value !== 'string') return 'af_heart';
+        const trimmed = value.trim().toLowerCase();
+        return /^[a-z]{2}_[a-z]+$/.test(trimmed) ? trimmed : 'af_heart';
+    },
+    isLocalBackend: (backend) => backend === 'mediapipe' || backend === 'onnx',
+    localVoiceLimitationNote: () => '',
+};
+
+/**
+ * FastAPI keeps the weighted mixer; local backends show a single voice ID and
+ * never rewrite the stored server mix string (#59).
+ */
+function syncVoiceUiForBackend(backend) {
+    const mixer = document.getElementById('voiceMixerContainer');
+    const localBox = document.getElementById('localVoiceContainer');
+    const note = document.getElementById('localVoiceNote');
+    const label = document.getElementById('voiceSectionLabel');
+    const local = LocalVoice.isLocalBackend(backend);
+    if (mixer) mixer.hidden = local;
+    if (localBox) localBox.hidden = !local;
+    if (label) label.textContent = local ? 'LOCAL VOICE' : 'VOICE MIXER';
+    if (note) {
+        note.hidden = !local;
+        note.textContent = local ? LocalVoice.localVoiceLimitationNote(backend) : '';
+    }
+}
+
 /**
  * Optional host-permission origin pattern for a non-local API URL.
  * @returns {{ origin: string|null, invalidUrl: boolean }}
@@ -608,7 +638,6 @@ const saveOptions = async (isDebounced = false, options = {}) => {
     const permissionRequestPromise = options.permissionRequestPromise || null;
     const apiUrl = normalizeApiUrl(document.getElementById('apiUrl').value);
     document.getElementById('apiUrl').value = apiUrl;
-    const voice = serializeVoiceString(currentVoices);
     const mode = document.querySelector('input[name="mode"]:checked').value;
     const ttsBackend = selectedBackendValue();
     const selectionVersion = backendSelectionVersion;
@@ -639,7 +668,15 @@ const saveOptions = async (isDebounced = false, options = {}) => {
     };
 
     const theme = document.documentElement.classList.contains('dark-theme') ? 'dark' : 'light';
-    const settings = { apiUrl, voice, mode, ttsBackend, defaultSpeed, defaultVolume, autoScroll, autoplayReader, continuousReader, showFloatingButton, normalizationOptions, theme };
+    // Keep FastAPI `voice` and local `localVoice` on separate keys (#59).
+    const settings = { apiUrl, mode, ttsBackend, defaultSpeed, defaultVolume, autoScroll, autoplayReader, continuousReader, showFloatingButton, normalizationOptions, theme };
+    if (LocalVoice.isLocalBackend(ttsBackend)) {
+        const localInput = document.getElementById('localVoice');
+        settings.localVoice = LocalVoice.normalizeLocalVoiceId(localInput ? localInput.value : '');
+        if (localInput) localInput.value = settings.localVoice;
+    } else {
+        settings.voice = serializeVoiceString(currentVoices);
+    }
 
     const showPermissionDeniedToast = () => {
         const status = document.getElementById('status');
@@ -721,6 +758,7 @@ const restoreOptions = async () => {
             apiUrl: 'http://127.0.0.1:8880/v1/',
             ttsBackend: 'fastapi',
             voice: 'af_sarah(0.5)+af_nicole(0.3)+af_sky(0.2)',
+            localVoice: LocalVoice.DEFAULT_LOCAL_VOICE,
             mode: 'stream',
             defaultSpeed: '1.0',
             defaultVolume: '1.0',
@@ -762,6 +800,11 @@ const restoreOptions = async () => {
         }
 
         currentVoices = parseVoiceString(items.voice);
+        const localVoiceInput = document.getElementById('localVoice');
+        if (localVoiceInput) {
+            localVoiceInput.value = LocalVoice.normalizeLocalVoiceId(items.localVoice);
+        }
+        syncVoiceUiForBackend(items.ttsBackend);
         renderVoiceMixer();
 
         // Probe connection + voices on open (no aggressive polling).
@@ -887,13 +930,23 @@ document.addEventListener('DOMContentLoaded', () => {
     // Setup Autosave Listeners
     const inputs = document.querySelectorAll('input, select');
     inputs.forEach(input => {
-        if (input.id === 'voiceSearch' || input.id === 'apiUrl' || input.name === 'ttsBackend') return;
+        if (input.id === 'voiceSearch' || input.id === 'apiUrl' ||
+            input.id === 'localVoice' || input.name === 'ttsBackend') return;
 
         const eventType = (input.type === 'text' || input.type === 'number') ? 'input' : 'change';
         input.addEventListener(eventType, () => {
             saveOptions(input.type === 'text');
         });
     });
+
+    const localVoiceInput = document.getElementById('localVoice');
+    if (localVoiceInput) {
+        localVoiceInput.addEventListener('change', () => {
+            localVoiceInput.value = LocalVoice.normalizeLocalVoiceId(localVoiceInput.value);
+            saveOptions(false);
+        });
+        localVoiceInput.addEventListener('input', () => saveOptions(true));
+    }
 
     for (const radio of document.querySelectorAll('input[name="ttsBackend"]')) {
         radio.addEventListener('change', async () => {
@@ -931,6 +984,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!persisted || !isCurrentSelection()) return;
             if (radio.value === 'fastapi') {
                 explanation.textContent = 'Using the configured Kokoro server; text is sent to this endpoint.';
+                syncVoiceUiForBackend('fastapi');
                 await refreshBackendStatus(document.getElementById('apiUrl').value);
             } else {
                 // Cancel any in-flight remote status/voice fetch when switching to local.
@@ -939,6 +993,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 explanation.textContent = radio.value === 'mediapipe'
                     ? 'Local MediaPipe requires a downloaded model. Manage and test it on the TTS test page.'
                     : 'Local ONNX q8 supports dictionary-backed English sentences. Install ONNX q8 and CMUdict on the browser TTS test page first; unknown words fail locally.';
+                syncVoiceUiForBackend(radio.value);
                 const status = document.getElementById('apiStatusRow');
                 if (status) status.style.display = 'none';
             }
@@ -1017,6 +1072,7 @@ if (typeof module !== 'undefined' && module.exports) {
         setApiStatusUI,
         normalizeApiUrl,
         beginHostPermissionRequest,
+        syncVoiceUiForBackend,
         getConnectionStatus: () => connectionStatus,
         getAvailableVoices: () => availableVoices,
         getVoiceFetchStatus: () => voiceFetchStatus,
