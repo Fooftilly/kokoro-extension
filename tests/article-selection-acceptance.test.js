@@ -122,6 +122,8 @@ console.log(JSON.stringify({ ok, errors }));
         expect(source).toMatch(/path: 'read-article-command-native-x11'/);
         expect(source).toMatch(/excludeAudioSha256/);
         expect(source).toMatch(/CHECK_PLAYER_ACTIVE/);
+        expect(source).toMatch(/fixtureServer\.closeAllConnections/);
+        expect(source).toMatch(/article-selection-fixture-close/);
         expect(source).toMatch(/function liveHeartbeat\(/);
         expect(source).toMatch(/function withTimeout\(/);
         expect(source).toMatch(/writeSync\(2,/);

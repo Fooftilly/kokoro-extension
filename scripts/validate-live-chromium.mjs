@@ -1191,7 +1191,17 @@ async function acceptRealArticleAndSelection(page, context, extensionId, backend
             userBackendUnchanged: true,
         };
     } finally {
-        await new Promise(resolve => fixtureServer.close(resolve));
+        // Drop keep-alive clients so close() cannot sit until the stall watchdog.
+        liveHeartbeat('article-selection-fixture-close');
+        try { fixtureServer.closeAllConnections?.(); } catch { /* ignore */ }
+        await withTimeout(new Promise(resolve => {
+            fixtureServer.close(() => resolve());
+        }), 5000, 'article-selection fixtureServer.close').catch((closeError) => {
+            liveHeartbeat('article-selection-fixture-close-timeout', {
+                error: String(closeError).slice(0, 160),
+            });
+            try { fixtureServer.closeAllConnections?.(); } catch { /* ignore */ }
+        });
     }
 }
 
@@ -1931,7 +1941,11 @@ try {
 
     // The persistent Chromium profile is reused across an actual browser
     // process shutdown/startup. No network model re-download may be needed.
-    await context.close();
+    liveHeartbeat('chromium-close-before-restart');
+    await withTimeout(context.close(), 30000, 'context.close before restart')
+        .catch((closeError) => liveHeartbeat('chromium-close-before-restart-timeout', {
+            error: String(closeError).slice(0, 160),
+        }));
     context = null;
     liveHeartbeat('chromium-relaunch-after-restart-start');
     context = await withTimeout(chromium.launchPersistentContext(
