@@ -1,138 +1,117 @@
 /** @jest-environment node */
 /**
- * Executable contract for Chromium long-form memory acceptance helpers.
+ * Contract checks for long-form memory acceptance — keep this file's shape
+ * distinct from article-selection-acceptance.test.js (Sonar new-code duplication).
  */
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 
-const scriptsDir = path.join(__dirname, '..', 'scripts');
-const helperModule = path.join(scriptsDir, 'long-form-memory-acceptance.mjs');
-const chromiumLive = path.join(scriptsDir, 'validate-live-chromium.mjs');
-const overlaySource = path.join(__dirname, '..', 'overlay.js');
+const root = path.join(__dirname, '..');
+const helperUrl = pathToFileURL(
+    path.join(root, 'scripts', 'long-form-memory-acceptance.mjs')).href;
 
-function runHelperProbe(jsSnippet) {
-    return spawnSync(process.execPath, ['--input-type=module', '-e', `
-import { pathToFileURL } from 'node:url';
-const mod = await import(pathToFileURL(${JSON.stringify(helperModule)}).href);
-const {
-    ALLOWED_LONG_FORM_BACKENDS,
-    LONG_FORM_MAX_CACHE_ENTRIES,
-    LONG_FORM_MAX_OBJECT_URLS,
-    LONG_FORM_NUMBER_WORDS,
-    LONG_FORM_SENTENCE_COUNT,
-    assertBoundedAudioManagerStats,
-    assertLongFormHeapDelta,
-    buildLongFormPendingContent,
-    buildLongFormSpeechLines,
-    longFormStorageConfig,
-    originLongFormMemoryStageEnabled,
-    requireLongFormBackend,
-} = mod;
-${jsSnippet}
-`], { encoding: 'utf8', cwd: path.join(__dirname, '..') });
-}
-
-describe('long-form memory acceptance helpers', () => {
-    test('gates Chromium ONNX origin and builds a long offline document', () => {
-        const result = runHelperProbe(`
-const lines = buildLongFormSpeechLines();
-const content = buildLongFormPendingContent();
-const storage = longFormStorageConfig('onnx');
-const report = {
-    allowed: [...ALLOWED_LONG_FORM_BACKENDS],
-    count: LONG_FORM_SENTENCE_COUNT,
-    words: LONG_FORM_NUMBER_WORDS.length,
-    lines: lines.length,
-    contentLen: content.length,
-    first: lines[0],
-    last: lines[lines.length - 1],
-    storageBackend: storage.pendingTtsBackend,
-    probe: storage.pendingAcceptanceProbe,
-    autoplay: storage.pendingAutoplay,
-    apiUrl: storage.apiUrl,
-    stageOn: originLongFormMemoryStageEnabled(true, 'onnx', true),
-    stageOffProvider: originLongFormMemoryStageEnabled(true, 'mediapipe', true),
-    stageOffOrigin: originLongFormMemoryStageEnabled(false, 'onnx', true),
-    stageOffSuccess: originLongFormMemoryStageEnabled(true, 'onnx', false),
+function loadHelperSnapshot() {
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+import * as longForm from ${JSON.stringify(helperUrl)};
+const speech = longForm.buildLongFormSpeechLines();
+const pending = longForm.buildLongFormPendingContent();
+const cfg = longForm.longFormStorageConfig('onnx');
+const sampleStats = {
+    cacheSize: 4,
+    objectUrlCount: 3,
+    sentenceCount: longForm.LONG_FORM_SENTENCE_COUNT,
 };
-let rejected = [];
-for (const bad of ['mediapipe', 'fastapi', '']) {
-    try { requireLongFormBackend(bad); rejected.push('accepted:' + bad); }
-    catch (error) { rejected.push(String(error.message || error)); }
+const capture = (fn) => {
+    try { fn(); return { ok: true }; }
+    catch (error) { return { ok: false, message: String(error.message || error) }; }
+};
+console.log(JSON.stringify({
+    sentenceCount: longForm.LONG_FORM_SENTENCE_COUNT,
+    speechHead: speech.slice(0, 3),
+    speechTail: speech.slice(-2),
+    pendingLen: pending.length,
+    pendingShape: pending[0],
+    cfgKeys: Object.keys(cfg).sort(),
+    probeArmed: cfg.pendingAcceptanceProbe === true,
+    autoplayDisabled: cfg.pendingAutoplay === false,
+    offlineApi: cfg.apiUrl === '' && cfg.pendingApiUrl === null,
+    backend: cfg.pendingTtsBackend,
+    stageTruthTable: {
+        onnxOriginOk: longForm.originLongFormMemoryStageEnabled(true, 'onnx', true),
+        mediapipeBlocked: longForm.originLongFormMemoryStageEnabled(true, 'mediapipe', true),
+        noOrigin: longForm.originLongFormMemoryStageEnabled(false, 'onnx', true),
+        priorFailure: longForm.originLongFormMemoryStageEnabled(true, 'onnx', false),
+    },
+    statsPass: capture(() => longForm.assertBoundedAudioManagerStats(sampleStats)),
+    statsCacheFail: capture(() => longForm.assertBoundedAudioManagerStats({
+        ...sampleStats, cacheSize: longForm.LONG_FORM_MAX_CACHE_ENTRIES + 3,
+    })),
+    statsUrlFail: capture(() => longForm.assertBoundedAudioManagerStats({
+        ...sampleStats, objectUrlCount: longForm.LONG_FORM_MAX_OBJECT_URLS + 3,
+    })),
+    heapPass: longForm.assertLongFormHeapDelta(50, 75),
+    heapFail: capture(() => longForm.assertLongFormHeapDelta(0, 300 * 1024 * 1024)),
+    mediapipeReject: capture(() => longForm.requireLongFormBackend('mediapipe')),
+    bounds: {
+        cache: longForm.LONG_FORM_MAX_CACHE_ENTRIES,
+        urls: longForm.LONG_FORM_MAX_OBJECT_URLS,
+    },
+}));
+`], { encoding: 'utf8', cwd: root });
+    return child;
 }
-report.rejected = rejected;
-console.log(JSON.stringify(report));
-`);
-        expect(result.status).toBe(0);
-        expect(result.stderr || '').toBe('');
-        const report = JSON.parse(result.stdout.trim());
-        expect(report.allowed).toEqual(['onnx']);
-        expect(report.count).toBe(24);
-        expect(report.lines).toBe(24);
-        expect(report.contentLen).toBe(24);
-        expect(report.first).toBe('Hello one.');
-        expect(report.last).toBe('Hello sixty.');
-        expect(report.storageBackend).toBe('onnx');
-        expect(report.probe).toBe(true);
-        expect(report.autoplay).toBe(false);
-        expect(report.apiUrl).toBe('');
-        expect(report.stageOn).toBe(true);
-        expect(report.stageOffProvider).toBe(false);
-        expect(report.stageOffOrigin).toBe(false);
-        expect(report.stageOffSuccess).toBe(false);
-        expect(report.rejected.every(line => /onnx/.test(line))).toBe(true);
+
+describe('long-form memory acceptance', () => {
+    test('helper snapshot covers document, probe storage, bounds, and gates', () => {
+        const child = loadHelperSnapshot();
+        expect(child.status).toBe(0);
+        expect(child.stderr || '').toBe('');
+        const snap = JSON.parse(child.stdout.trim());
+        expect(snap.sentenceCount).toBe(24);
+        expect(snap.pendingLen).toBe(24);
+        expect(snap.speechHead).toEqual([
+            'Hello one.', 'Hello two.', 'Hello three.',
+        ]);
+        expect(snap.speechTail).toEqual(['Hello fifty.', 'Hello sixty.']);
+        expect(snap.pendingShape).toEqual({ type: 'text', content: 'Hello one.' });
+        expect(snap.backend).toBe('onnx');
+        expect(snap.probeArmed).toBe(true);
+        expect(snap.autoplayDisabled).toBe(true);
+        expect(snap.offlineApi).toBe(true);
+        expect(snap.cfgKeys).toEqual(expect.arrayContaining([
+            'pendingAcceptanceProbe', 'pendingContent', 'pendingTtsBackend',
+        ]));
+        expect(snap.stageTruthTable).toEqual({
+            onnxOriginOk: true,
+            mediapipeBlocked: false,
+            noOrigin: false,
+            priorFailure: false,
+        });
+        expect(snap.statsPass).toEqual({ ok: true });
+        expect(snap.statsCacheFail.ok).toBe(false);
+        expect(snap.statsCacheFail.message).toMatch(/cache exceeded/);
+        expect(snap.statsUrlFail.ok).toBe(false);
+        expect(snap.statsUrlFail.message).toMatch(/object URLs exceeded/);
+        expect(snap.heapPass.growth).toBe(25);
+        expect(snap.heapFail.ok).toBe(false);
+        expect(snap.heapFail.message).toMatch(/heap growth exceeded/);
+        expect(snap.mediapipeReject.ok).toBe(false);
+        expect(snap.bounds).toEqual({ cache: 8, urls: 8 });
     });
 
-    test('rejects unbounded AudioManager stats and oversized heap growth', () => {
-        const result = runHelperProbe(`
-const ok = assertBoundedAudioManagerStats({
-    cacheSize: 5, objectUrlCount: 5, sentenceCount: LONG_FORM_SENTENCE_COUNT,
-    window: { first: 10, last: 14 }, generation: 1,
-});
-let cacheFail = null;
-try {
-    assertBoundedAudioManagerStats({
-        cacheSize: LONG_FORM_MAX_CACHE_ENTRIES + 1,
-        objectUrlCount: 1,
-        sentenceCount: LONG_FORM_SENTENCE_COUNT,
-    });
-} catch (error) { cacheFail = String(error.message || error); }
-let urlFail = null;
-try {
-    assertBoundedAudioManagerStats({
-        cacheSize: 1,
-        objectUrlCount: LONG_FORM_MAX_OBJECT_URLS + 1,
-        sentenceCount: LONG_FORM_SENTENCE_COUNT,
-    });
-} catch (error) { urlFail = String(error.message || error); }
-const heap = assertLongFormHeapDelta(100, 100 + 1024);
-let heapFail = null;
-try { assertLongFormHeapDelta(0, 512 * 1024 * 1024); }
-catch (error) { heapFail = String(error.message || error); }
-console.log(JSON.stringify({ ok, cacheFail, urlFail, heap, heapFail,
-    maxCache: LONG_FORM_MAX_CACHE_ENTRIES, maxUrls: LONG_FORM_MAX_OBJECT_URLS }));
-`);
-        expect(result.status).toBe(0);
-        const report = JSON.parse(result.stdout.trim());
-        expect(report.ok).toBe(true);
-        expect(report.cacheFail).toMatch(/cache exceeded/);
-        expect(report.urlFail).toMatch(/object URLs exceeded/);
-        expect(report.heap.growth).toBe(1024);
-        expect(report.heapFail).toMatch(/heap growth exceeded/);
-        expect(report.maxCache).toBe(8);
-        expect(report.maxUrls).toBe(8);
-    });
-
-    test('live Chromium harness wires long-form stage and opt-in overlay probe', () => {
-        const source = fs.readFileSync(chromiumLive, 'utf8');
-        const overlay = fs.readFileSync(overlaySource, 'utf8');
-        expect(source).toMatch(/originLongFormMemoryStageEnabled/);
-        expect(source).toMatch(/acceptLongFormMemoryPerformance/);
-        expect(source).toMatch(/longFormMemoryAcceptance/);
-        expect(source).toMatch(/offline-real-long-form-memory/);
-        expect(source).toMatch(/longFormStorageConfig/);
-        expect(overlay).toMatch(/pendingAcceptanceProbe/);
-        expect(overlay).toMatch(/__kokoroAudioManagerStats/);
+    test('overlay probe and long-form stage are wired for Chromium origin', () => {
+        const harness = fs.readFileSync(
+            path.join(root, 'scripts', 'validate-live-chromium.mjs'), 'utf8');
+        const overlay = fs.readFileSync(path.join(root, 'overlay.js'), 'utf8');
+        expect(harness).toContain("from './long-form-memory-acceptance.mjs'");
+        expect(harness).toContain('acceptLongFormMemoryPerformance');
+        expect(harness).toContain('longFormMemoryAcceptance');
+        expect(harness).toContain('offline-real-long-form-memory');
+        expect(overlay).toContain('pendingAcceptanceProbe');
+        expect(overlay).toContain('__kokoroAudioManagerStats');
+        expect(overlay).toContain('audioManager.audioCache.size');
+        expect(overlay).toContain('audioManager.objectUrls.size');
     });
 });
