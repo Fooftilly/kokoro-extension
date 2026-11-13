@@ -1213,13 +1213,19 @@ async function acceptRealArticleAndSelection(page, context, extensionId, backend
     }
 }
 
-function longFormOverlayReady(index) {
-    const spans = document.querySelectorAll('.sentence');
-    return spans.length >= LONG_FORM_SENTENCE_COUNT &&
-        spans[index]?.classList.contains('highlight') &&
-        document.getElementById('audio')?.src.startsWith('blob:') &&
-        document.getElementById('loadingSpinner')?.style.display === 'none' &&
-        typeof window.__kokoroAudioManagerStats === 'function';
+// Playwright serializes waitForFunction predicates into the page — Node
+// module constants like LONG_FORM_SENTENCE_COUNT are not in scope there.
+async function waitLongFormOverlayReady(page, index, label, timeoutMs = 180000) {
+    await withTimeout(
+        page.waitForFunction(({ idx, count }) => {
+            const spans = document.querySelectorAll('.sentence');
+            return spans.length >= count &&
+                spans[idx]?.classList.contains('highlight') &&
+                document.getElementById('audio')?.src.startsWith('blob:') &&
+                document.getElementById('loadingSpinner')?.style.display === 'none' &&
+                typeof window.__kokoroAudioManagerStats === 'function';
+        }, { idx: index, count: LONG_FORM_SENTENCE_COUNT }, { timeout: timeoutMs }),
+        timeoutMs + 10000, label);
 }
 
 async function seedLongFormOverlay(page, context, extensionId, backend) {
@@ -1231,9 +1237,8 @@ async function seedLongFormOverlay(page, context, extensionId, backend) {
         await chrome.storage.local.set(cfg);
     }, storage), 15000, 'long-form storage seed');
     await page.goto('chrome-extension://' + extensionId + '/overlay.html');
-    await withTimeout(
-        page.waitForFunction(longFormOverlayReady, 0, { timeout: 240000 }),
-        250000, 'long-form overlay first sentence');
+    await waitLongFormOverlayReady(
+        page, 0, 'long-form overlay first sentence', 240000);
 }
 
 function readLongFormStats(page) {
@@ -1285,9 +1290,8 @@ async function walkLongFormSentences(page, visitIndexes) {
             await page.evaluate((target) => {
                 document.querySelectorAll('.sentence')[target].click();
             }, index);
-            await withTimeout(
-                page.waitForFunction(longFormOverlayReady, index, { timeout: 180000 }),
-                190000, 'long-form overlay sentence ' + index);
+            await waitLongFormOverlayReady(
+                page, index, 'long-form overlay sentence ' + index);
         }
         await page.waitForTimeout(250);
         const stats = await readLongFormStats(page);
@@ -1313,11 +1317,8 @@ async function jumpLongFormToLastSentence(page, bounds) {
         const spans = document.querySelectorAll('.sentence');
         spans[spans.length - 1].click();
     });
-    await withTimeout(
-        page.waitForFunction(longFormOverlayReady, LONG_FORM_SENTENCE_COUNT - 1, {
-            timeout: 180000,
-        }),
-        190000, 'long-form jump to last sentence');
+    await waitLongFormOverlayReady(
+        page, LONG_FORM_SENTENCE_COUNT - 1, 'long-form jump to last sentence');
     const jumpStats = await readLongFormStats(page);
     assertBoundedAudioManagerStats(jumpStats);
     const finalWav = await readLongFormWavMeta(page);
