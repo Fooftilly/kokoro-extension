@@ -2059,26 +2059,29 @@ try {
     let dictionaryUiDownloadAcceptance = null;
     let popupTestTtsCtaAcceptance = null;
     let twoBackendComparisonAcceptance = null;
-    const saveReport = () => writeFile(path.join(resultsDir, 'report.json'), JSON.stringify({
-        testedAt: new Date().toISOString(), browser: preflight.browser, preflight,
-        dictionaryCacheAcceptance, browserRestartAcceptance,
-        dictionaryUiDownloadAcceptance, popupTestTtsCtaAcceptance,
-        twoBackendComparisonAcceptance,
-        results, originDownload, providerFilter,
-        networkRequirement: providerFilter === 'dictionary'
-            ? 'offline during dictionary persistence/verification; no inference attempted'
-            : 'offline during every local synthesis probe',
-        cachePopulation: originDownload
-            ? providerFilter + ' weights downloaded through real user-facing Download control from official HTTPS origin; no loopback preload'
-            : providerFilter === 'dictionary'
-                ? 'no model weights downloaded; direct pinned dictionary HTTPS and model-manager UI acceptance only'
-                : 'heavy weights preloaded from verified pinned bytes over authenticated loopback; dictionary official HTTPS and model-manager UI checked separately',
-        scope: originDownload
-            ? 'Chromium ' + providerFilter + ' CPU official-origin UI download, pinned bytes/SHA-256 and offline synthesis; other engine and Firefox untested'
-            : providerFilter === 'dictionary'
-                ? 'Chromium dictionary-only UI/Cache acceptance; no large speech models or audio synthesis'
-                : 'Linux Chromium MV3 extension origin; no subjective audio-quality or complete download-manager acceptance',
-    }, null, 2));
+    // Optional currentProvider snapshots mid-loop checks that are not yet in
+    // `results` (pushed only after all stages for that provider finish).
+    const saveReport = (currentProvider = null) => writeFile(
+        path.join(resultsDir, 'report.json'), JSON.stringify({
+            testedAt: new Date().toISOString(), browser: preflight.browser, preflight,
+            dictionaryCacheAcceptance, browserRestartAcceptance,
+            dictionaryUiDownloadAcceptance, popupTestTtsCtaAcceptance,
+            twoBackendComparisonAcceptance,
+            results, currentProvider, originDownload, providerFilter,
+            networkRequirement: providerFilter === 'dictionary'
+                ? 'offline during dictionary persistence/verification; no inference attempted'
+                : 'offline during every local synthesis probe',
+            cachePopulation: originDownload
+                ? providerFilter + ' weights downloaded through real user-facing Download control from official HTTPS origin; no loopback preload'
+                : providerFilter === 'dictionary'
+                    ? 'no model weights downloaded; direct pinned dictionary HTTPS and model-manager UI acceptance only'
+                    : 'heavy weights preloaded from verified pinned bytes over authenticated loopback; dictionary official HTTPS and model-manager UI checked separately',
+            scope: originDownload
+                ? 'Chromium ' + providerFilter + ' CPU official-origin UI download, pinned bytes/SHA-256 and offline synthesis; other engine and Firefox untested'
+                : providerFilter === 'dictionary'
+                    ? 'Chromium dictionary-only UI/Cache acceptance; no large speech models or audio synthesis'
+                    : 'Linux Chromium MV3 extension origin; no subjective audio-quality or complete download-manager acceptance',
+        }, null, 2));
     for (const manifest of variants) {
         // Direct HTTPS CMUdict cache acceptance already ran in the preflight.
         // Never substitute a loopback copy for the dictionary in origin mode.
@@ -2094,6 +2097,20 @@ try {
         let epubReaderAcceptance = null;
         let articleSelectionAcceptance = null;
         let longFormMemoryAcceptance = null;
+        const currentProviderSnapshot = () => ({
+            provider: manifest.provider,
+            variant: manifest.variant,
+            stage,
+            crashed,
+            originModelAcceptance,
+            onnxPlaybackAcceptance,
+            onnxOverlayAcceptance,
+            mediapipeOverlayAcceptance,
+            localBenchmarkAcceptance,
+            epubReaderAcceptance,
+            articleSelectionAcceptance,
+            longFormMemoryAcceptance,
+        });
         page.on('pageerror', error => errors.push(String(error)));
         page.on('crash', () => { crashed = true; });
         try {
@@ -2106,7 +2123,7 @@ try {
                     provider: manifest.provider,
                     success: originModelAcceptance?.success === true,
                 });
-                await saveReport();
+                await saveReport(currentProviderSnapshot());
             } else {
             await page.evaluate(async ({ manifest, port, transferToken }) => {
             const { ModelDataStore } = await import('./model-data-store.js');
@@ -2136,7 +2153,7 @@ try {
             }
             stage = 'offline-model-initialization-and-synthesis';
             liveHeartbeat(stage, { provider: manifest.provider, variant: manifest.variant });
-            await saveReport();
+            await saveReport(currentProviderSnapshot());
             await withTimeout(page.evaluate(({ provider, variant }) => {
             window.__kokoroProbe = { done: false };
             void (async () => {
@@ -2316,14 +2333,14 @@ try {
                 liveHeartbeat(stage, { provider: 'onnx' });
                 onnxOverlayAcceptance = await acceptOverlayControls(
                     page, extensionId, 'onnx');
-                await saveReport();
+                await saveReport(currentProviderSnapshot());
             }
             if (originDownload && manifest.provider === 'mediapipe' && result.success) {
                 stage = 'offline-mediapipe-overlay-controls';
                 liveHeartbeat(stage, { provider: 'mediapipe' });
                 mediapipeOverlayAcceptance = await acceptOverlayControls(
                     page, extensionId, 'mediapipe');
-                await saveReport();
+                await saveReport(currentProviderSnapshot());
             }
             if (originDownload && result.success) {
                 stage = 'offline-real-benchmark-page-controls';
@@ -2333,7 +2350,7 @@ try {
                 }
                 localBenchmarkAcceptance = await acceptLocalBenchmarkUi(
                     page, extensionId, manifest);
-                await saveReport();
+                await saveReport(currentProviderSnapshot());
             }
             if (originDownload && result.success &&
                 (manifest.provider === 'onnx' || manifest.provider === 'mediapipe')) {
@@ -2344,7 +2361,7 @@ try {
                 liveHeartbeat('epub-reader-done', {
                     success: epubReaderAcceptance?.success === true,
                 });
-                await saveReport();
+                await saveReport(currentProviderSnapshot());
             }
             if (originArticleSelectionStageEnabled(
                 originDownload, manifest.provider, result.success)) {
@@ -2355,6 +2372,7 @@ try {
                 liveHeartbeat('article-selection-done', {
                     success: articleSelectionAcceptance?.success === true,
                 });
+                await saveReport(currentProviderSnapshot());
             }
             if (originLongFormMemoryStageEnabled(
                 originDownload, manifest.provider, result.success)) {
@@ -2366,7 +2384,7 @@ try {
                     success: longFormMemoryAcceptance?.success === true,
                     maxCacheSize: longFormMemoryAcceptance?.maxCacheSize,
                 });
-                await saveReport();
+                await saveReport(currentProviderSnapshot());
             }
             console.log(result.success ? 'REAL MODEL INFERENCE' : 'MODEL INFERENCE FAILURE', result);
             results.push({ provider: manifest.provider, variant: manifest.variant,
