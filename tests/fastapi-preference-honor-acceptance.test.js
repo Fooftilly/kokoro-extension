@@ -74,6 +74,11 @@ describe('FastAPI preference-honor acceptance', () => {
         expect(source).toContain('fastapi-preference.txt');
         expect(source).toContain('data:audio');
         expect(source).toContain('__kokoroDownloadProbe');
+        // Probe must not accept non-audio onCreated items (Devin #159).
+        expect(source).toContain('if (!isFastApiDownloadItem(downloadHit))');
+        expect(source).not.toContain(
+            '!isFastApiDownloadItem(downloadHit) &&\n' +
+            '            !downloadHit.id');
         expect(background).toContain('readAsDataURL(blob)');
         expect(background).toContain('await browser.downloads.download');
         const cardIdx = source.indexOf(

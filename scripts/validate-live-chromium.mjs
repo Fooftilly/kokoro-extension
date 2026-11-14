@@ -1342,12 +1342,13 @@ async function honorChromiumDownload(page, worker, apiUrl, speechStub) {
                 const fromSearch = items.find(item =>
                     !beforeIds.includes(item.id) && matchItem(item));
                 if (fromSearch) return fromSearch;
+                // Probe only accelerates discovery; still require audio match
+                // (do not accept unrelated onCreated items with a nonzero id).
                 const armedIds = globalThis.__kokoroDownloadProbe?.ids || [];
                 for (const id of armedIds) {
                     if (beforeIds.includes(id)) continue;
                     const [item] = await chrome.downloads.search({ id });
                     if (item && matchItem(item)) return item;
-                    if (item) return item;
                 }
                 return null;
             }, downloadBefore);
@@ -1376,10 +1377,9 @@ async function honorChromiumDownload(page, worker, apiUrl, speechStub) {
             throw Error(
                 'FastAPI download mode did not hit loopback speech stub');
         }
-        if (!isFastApiDownloadItem(downloadHit) &&
-            !downloadHit.id) {
+        if (!isFastApiDownloadItem(downloadHit)) {
             throw Error(
-                'FastAPI download item missing id: ' +
+                'FastAPI download item was not audio/mpeg: ' +
                 JSON.stringify(downloadHit));
         }
         const afterDownloadBackend = await worker.evaluate(async () =>
