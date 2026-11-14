@@ -35,26 +35,13 @@ export function speechEndpointFromApiUrl(apiUrl) {
     return new URL('audio/speech', base.href).href;
 }
 
-/**
- * Validate a dual-scope FastAPI card acceptance report before saving.
- * Distinct keys from dual-use-this-backend / popup-cta reports (Sonar).
- */
-export function assertFastApiServerCardReport(report) {
-    if (!report || typeof report !== 'object') {
-        throw new Error('FastAPI server-card report missing: ' + String(report));
-    }
-    if (report.success !== true) {
-        throw new Error('FastAPI server-card report not successful');
-    }
-    if (report.serverCardTested !== true) {
-        throw new Error('serverCardTested must be true');
-    }
-    if (report.playableMp3Returned !== true) {
-        throw new Error('playableMp3Returned must be true');
-    }
-    if (report.decodeableMp3 !== true) {
-        throw new Error('decodeableMp3 must be true');
-    }
+function requireTrue(report, key, message) {
+    if (report[key] !== true) throw new Error(message);
+}
+
+function assertFastApiCardAudio(report) {
+    requireTrue(report, 'playableMp3Returned', 'playableMp3Returned must be true');
+    requireTrue(report, 'decodeableMp3', 'decodeableMp3 must be true');
     if (!(report.mp3FixtureBytes > 400)) {
         throw new Error(
             'mp3FixtureBytes too small for a complete frame: ' +
@@ -64,30 +51,49 @@ export function assertFastApiServerCardReport(report) {
         throw new Error(
             'audioDataUrlPrefix mismatch: ' + report.audioDataUrlPrefix);
     }
-    if (report.chooseServerEnabledAfterTest !== true) {
-        throw new Error('chooseServer must enable after a successful test');
-    }
+}
+
+function assertFastApiCardChoose(report) {
+    requireTrue(report, 'chooseServerEnabledAfterTest',
+        'chooseServer must enable after a successful test');
     if (report.backendBeforeChoose !== BACKEND_BEFORE_CHOOSE) {
         throw new Error(
             'backendBeforeChoose must be ' + BACKEND_BEFORE_CHOOSE + ': ' +
             report.backendBeforeChoose);
     }
-    if (report.chooseChangedBackend !== true) {
-        throw new Error('chooseChangedBackend must be true');
-    }
+    requireTrue(report, 'chooseChangedBackend',
+        'chooseChangedBackend must be true');
     if (report.selectedBackend !== 'fastapi') {
         throw new Error(
             'selectedBackend must be fastapi: ' + report.selectedBackend);
     }
-    if (report.preferenceOnlyOnChoose !== true) {
-        throw new Error('preferenceOnlyOnChoose must be true');
-    }
+    requireTrue(report, 'preferenceOnlyOnChoose',
+        'preferenceOnlyOnChoose must be true');
+}
+
+function assertFastApiCardEndpoints(report) {
     if (!String(report.apiUrl || '').includes('/v1')) {
         throw new Error('apiUrl must point at a /v1 FastAPI base');
     }
     if (!String(report.speechEndpoint || '').includes('audio/speech')) {
         throw new Error('speechEndpoint must target audio/speech');
     }
+}
+
+/**
+ * Validate a dual-scope FastAPI card acceptance report before saving.
+ * Distinct keys from dual-use-this-backend / popup-cta reports (Sonar).
+ * Nested helpers keep CodeFactor method complexity under the gate.
+ */
+export function assertFastApiServerCardReport(report) {
+    if (!report || typeof report !== 'object') {
+        throw new Error('FastAPI server-card report missing: ' + String(report));
+    }
+    requireTrue(report, 'success', 'FastAPI server-card report not successful');
+    requireTrue(report, 'serverCardTested', 'serverCardTested must be true');
+    assertFastApiCardAudio(report);
+    assertFastApiCardChoose(report);
+    assertFastApiCardEndpoints(report);
     return true;
 }
 
