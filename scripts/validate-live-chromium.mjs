@@ -619,15 +619,51 @@ async function acceptTwoBackendComparison(page, extensionId) {
     if (await page.locator('#sharedEnglishComparisonRows tr').count() !== 0) {
         throw Error('Editing shared sample did not clear both provider rows');
     }
-    const selectedAfter = await page.evaluate(async () =>
+    const selectedAfterMeasure = await page.evaluate(async () =>
         (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
-    if (selectedAfter !== selectedBefore) {
+    if (selectedAfterMeasure !== selectedBefore) {
         throw Error('Comparison silently changed the selected TTS backend');
     }
+
+    // #61: measurement alone must not select a backend; Use this backend must.
+    // Wait for choose-handler status text (not just sync) so a late ONNX
+    // cache-check completion cannot overwrite a subsequent MediaPipe write.
+    const readSyncBackend = async () => page.evaluate(async () =>
+        (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
+    await page.locator('[data-variant="onnx-q8"] .model-choose').click();
+    await page.waitForFunction(() => {
+        const status = document.querySelector(
+            '[data-variant="onnx-q8"] .model-status')?.textContent || '';
+        return status.includes('ONNX q8 selected for dictionary-supported English');
+    }, null, { timeout: 15000 });
+    const afterOnnxChoose = await readSyncBackend();
+    if (afterOnnxChoose !== 'onnx') {
+        throw Error('Use this backend did not select ONNX: ' + afterOnnxChoose);
+    }
+    await page.locator('[data-variant="mediapipe-cpu"] .model-choose').click();
+    await page.waitForFunction(() => {
+        const status = document.querySelector(
+            '[data-variant="mediapipe-cpu"] .model-status')?.textContent || '';
+        return status.includes('MediaPipe selected for future article and EPUB TTS');
+    }, null, { timeout: 15000 });
+    const afterMediaPipeChoose = await readSyncBackend();
+    if (afterMediaPipeChoose !== 'mediapipe') {
+        throw Error('Use this backend did not select MediaPipe: ' + afterMediaPipeChoose);
+    }
+
     return { success: true, providers: keys, sharedSample: 'Hello world.',
         measurements: measured, rowsBeforeEdit: 2, rowsAfterEdit: 0,
-        bothRetainedOnOnePage: true, backendSelectionUnchanged: true,
-        selectedBackend: selectedAfter, offline: true,
+        bothRetainedOnOnePage: true,
+        backendSelectionUnchangedDuringMeasure: true,
+        selectedBackendBeforeChoose: selectedAfterMeasure,
+        useThisBackend: {
+            onnx: afterOnnxChoose,
+            mediapipe: afterMediaPipeChoose,
+            preferenceOnlyOnChoose: true,
+            onnxStatusConfirmed: true,
+            mediapipeStatusConfirmed: true,
+        },
+        selectedBackend: afterMediaPipeChoose, offline: true,
         serverTestNotTriggered: true, noAutomaticRanking: true, summary };
 }
 
