@@ -23,17 +23,26 @@ ov.assertOverlayWavSnapshot({
 });
 ov.assertOverlaySettings({ rate: 1.25, volume: 0.4, paused: true });
 ov.assertOverlayPlaybackConfirmed({
-    status: ov.expectedOverlayPlayingStatus(0, 3),
+    playingEvent: true, startTime: 0, currentTime: 0.05,
     paused: false, button: 'Pause', readyState: 2,
-    sentenceIndex: 0, sentenceCount: 3,
 });
 ov.assertOverlayPausedAfterToggle({ paused: true, button: 'Play' });
 let pendingRejected = false;
 try {
+    // Status + !paused alone must not count — play() may still be pending.
     ov.assertOverlayPlaybackConfirmed({
-        status: 'Pause', paused: false, button: 'Pause', readyState: 2,
+        status: ov.expectedOverlayPlayingStatus(0, 3),
+        paused: false, button: 'Pause', readyState: 2,
+        playingEvent: false, startTime: 0, currentTime: 0,
     });
 } catch { pendingRejected = true; }
+let stuckTimeRejected = false;
+try {
+    ov.assertOverlayPlaybackConfirmed({
+        playingEvent: true, startTime: 0, currentTime: 0,
+        paused: false, button: 'Pause', readyState: 2,
+    });
+} catch { stuckTimeRejected = true; }
 const onnxReport = ov.buildOverlayControlsReport({
     backend: 'onnx', includeRetry: true, playPauseToggled: true,
     playbackConfirmed: true,
@@ -50,7 +59,8 @@ try { ov.overlaySeedForBackend('fastapi'); } catch { rejected = true; }
 console.log(JSON.stringify({
     allowed: [...ov.ALLOWED_OVERLAY_BACKENDS],
     playingStatus: ov.expectedOverlayPlayingStatus(0, 3),
-    onnxSeed, mpSeed, onnxReport, mpReport, rejected, pendingRejected,
+    onnxSeed, mpSeed, onnxReport, mpReport, rejected,
+    pendingRejected, stuckTimeRejected,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
@@ -68,6 +78,7 @@ describe('overlay controls acceptance', () => {
         expect(snap.mpSeed.pendingContent[2].content).toBe('Hello again.');
         expect(snap.playingStatus).toBe('Playing sentence 1/3');
         expect(snap.pendingRejected).toBe(true);
+        expect(snap.stuckTimeRejected).toBe(true);
         expect(snap.onnxReport).toEqual(expect.objectContaining({
             success: true,
             backend: 'onnx',
@@ -96,10 +107,12 @@ describe('overlay controls acceptance', () => {
         const firefox = fs.readFileSync(firefoxLive, 'utf8');
         expect(chromium).toContain('overlay-controls-acceptance.mjs');
         expect(chromium).toContain('assertOverlayPlaybackConfirmed');
-        expect(chromium).toContain('expectedOverlayPlayingStatus');
+        expect(chromium).toContain('__kokoroPlayProof');
+        expect(chromium).toContain("addEventListener('playing'");
         expect(firefox).toContain('firefox_overlay_controls_acceptance');
         expect(firefox).toContain('assert_overlay_playback_confirmed');
-        expect(firefox).toContain('expected_overlay_playing_status');
+        expect(firefox).toContain('__kokoroPlayProof');
+        expect(firefox).toContain("addEventListener('playing'");
         // Match await/assignment call sites — not helper declarations.
         const chromiumOnnx = chromium.indexOf(
             "await acceptOverlayControls(\n                    page, extensionId, 'onnx')");

@@ -54,7 +54,6 @@ from firefox_overlay_controls_acceptance import (
     assert_overlay_settings,
     assert_overlay_wav_snapshot,
     build_overlay_controls_report,
-    expected_overlay_playing_status,
     overlay_seed_for_backend,
 )
 from reader_acceptance_epub import (
@@ -1283,28 +1282,39 @@ def run_offline_overlay_controls_acceptance(driver, origin, backend):
         return {rate: audio.playbackRate, volume: audio.volume, paused: audio.paused};
     """)
     assert_overlay_settings(settings)
-    playing_status = expected_overlay_playing_status(0, 3)
+    # navigate() sets "Playing sentence" before play() resolves — require
+    # a real playing event and currentTime advance past the pre-click baseline.
     driver.execute_script("""
         const audio = document.getElementById('audio');
-        if (audio) audio.muted = true;
+        if (!audio) return;
+        audio.muted = true;
+        audio.__kokoroPlayProof = {
+            playingEvent: false,
+            startTime: audio.currentTime,
+        };
+        audio.addEventListener('playing', () => {
+            audio.__kokoroPlayProof.playingEvent = true;
+        }, { once: true });
     """)
     driver.find_element(By.ID, "playPause").click()
     WebDriverWait(driver, 30).until(lambda d: d.execute_script("""
-        const status = arguments[0];
         const audio = document.getElementById('audio');
+        const proof = audio?.__kokoroPlayProof;
         return audio && !audio.paused && audio.readyState >= 2 &&
             document.getElementById('playPause')?.textContent === 'Pause' &&
-            document.getElementById('status')?.textContent === status;
-    """, playing_status))
+            proof?.playingEvent === true &&
+            audio.currentTime > proof.startTime;
+    """))
     playing_snap = driver.execute_script("""
         const audio = document.getElementById('audio');
+        const proof = audio?.__kokoroPlayProof || {};
         return {
-            status: document.getElementById('status')?.textContent || '',
+            playingEvent: proof.playingEvent === true,
+            startTime: proof.startTime,
+            currentTime: audio?.currentTime ?? 0,
             paused: audio?.paused,
             button: document.getElementById('playPause')?.textContent || '',
             readyState: audio?.readyState ?? 0,
-            sentenceIndex: 0,
-            sentenceCount: 3,
         };
     """)
     assert_overlay_playback_confirmed(playing_snap)

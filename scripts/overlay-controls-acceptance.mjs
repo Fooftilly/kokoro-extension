@@ -59,17 +59,23 @@ export function expectedOverlayPlayingStatus(sentenceIndex = 0, sentenceCount = 
 }
 
 /**
- * Confirmed playback — not just Pause label / early paused=false while play() pending.
- * Requires the post-play() status text from overlay resume().
+ * Confirmed playback — not Pause label, early paused=false, or navigate()'s
+ * pre-play "Playing sentence" status. Require a real `playing` event and
+ * currentTime advancing past the pre-click baseline.
  */
 export function assertOverlayPlaybackConfirmed(state) {
     if (!state || typeof state !== 'object') {
         throw new Error('Overlay playback state missing: ' + String(state));
     }
-    const expected = expectedOverlayPlayingStatus(
-        state.sentenceIndex ?? 0, state.sentenceCount ?? 3);
-    if (state.status !== expected) {
-        throw new Error('Playback not confirmed (status): ' + JSON.stringify(state));
+    if (state.playingEvent !== true) {
+        throw new Error('Playback not confirmed (playing event): ' +
+            JSON.stringify(state));
+    }
+    const start = Number(state.startTime);
+    const now = Number(state.currentTime);
+    if (!Number.isFinite(start) || !Number.isFinite(now) || !(now > start)) {
+        throw new Error('Playback not confirmed (currentTime): ' +
+            JSON.stringify(state));
     }
     if (state.paused !== false || state.button !== 'Pause') {
         throw new Error('Playback not confirmed (media): ' + JSON.stringify(state));

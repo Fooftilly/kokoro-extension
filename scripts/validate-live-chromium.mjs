@@ -556,7 +556,6 @@ async function acceptOverlayControls(page, extensionId, backend) {
         assertOverlaySettings,
         assertOverlayPlaybackConfirmed,
         assertOverlayPausedAfterToggle,
-        expectedOverlayPlayingStatus,
         buildOverlayControlsReport,
     } = await import('./overlay-controls-acceptance.mjs');
     const includeRetry = backend === 'onnx';
@@ -607,31 +606,41 @@ async function acceptOverlayControls(page, extensionId, backend) {
         return { rate: audio.playbackRate, volume: audio.volume, paused: audio.paused };
     });
     assertOverlaySettings(settings);
-    // Device-level pause/resume: require post-play() status, not early Pause label.
-    const playingStatus = expectedOverlayPlayingStatus(0, 3);
+    // Device-level pause/resume: require playing event + currentTime advance.
+    // navigate() already sets "Playing sentence" before play() resolves.
     await page.evaluate(() => {
         const audio = document.getElementById('audio');
-        if (audio) audio.muted = true;
+        if (!audio) return;
+        audio.muted = true;
+        audio.__kokoroPlayProof = {
+            playingEvent: false,
+            startTime: audio.currentTime,
+        };
+        audio.addEventListener('playing', () => {
+            audio.__kokoroPlayProof.playingEvent = true;
+        }, { once: true });
     });
     await page.locator('#playPause').click();
-    await page.waitForFunction(status => {
+    await page.waitForFunction(() => {
         const audio = document.getElementById('audio');
+        const proof = audio?.__kokoroPlayProof;
         return audio && !audio.paused && audio.readyState >= 2 &&
             document.getElementById('playPause')?.textContent === 'Pause' &&
-            document.getElementById('status')?.textContent === status;
-    }, playingStatus, { timeout: 30000 });
-    assertOverlayPlaybackConfirmed(await page.evaluate(status => {
+            proof?.playingEvent === true &&
+            audio.currentTime > proof.startTime;
+    }, null, { timeout: 30000 });
+    assertOverlayPlaybackConfirmed(await page.evaluate(() => {
         const audio = document.getElementById('audio');
+        const proof = audio?.__kokoroPlayProof || {};
         return {
-            status: document.getElementById('status')?.textContent || '',
+            playingEvent: proof.playingEvent === true,
+            startTime: proof.startTime,
+            currentTime: audio?.currentTime ?? 0,
             paused: audio?.paused,
             button: document.getElementById('playPause')?.textContent || '',
             readyState: audio?.readyState ?? 0,
-            sentenceIndex: 0,
-            sentenceCount: 3,
-            expectedStatus: status,
         };
-    }, playingStatus));
+    }));
     await page.locator('#playPause').click();
     await page.waitForFunction(() => {
         const audio = document.getElementById('audio');
