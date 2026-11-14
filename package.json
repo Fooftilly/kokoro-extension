@@ -35,16 +35,16 @@
   },
   "type": "commonjs",
   "dependencies": {
+    "@mediapipe/tasks-audio": "1.2.2-rc.20261106",
     "@mozilla/readability": "^0.6.0",
     "compromise": "^14.20.0",
-    "compromise-dates": "^3.10.0",
+    "compromise-dates": "^3.11.0",
     "compromise-numbers": "^1.4.0",
     "dompurify": "^3.4.17",
     "epubjs": "^0.3.93",
     "jszip": "^3.10.1",
-    "webextension-polyfill": "^0.12.0",
-    "@mediapipe/tasks-audio": "1.2.2-rc.20261106",
-    "onnxruntime-web": "1.31.1"
+    "onnxruntime-web": "1.31.1",
+    "webextension-polyfill": "^0.12.0"
   },
   "devDependencies": {
     "@babel/core": "^7.28.5",
