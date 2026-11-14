@@ -151,9 +151,16 @@ describe('Measured results export acceptance', () => {
         expect(source).toContain('from_file = json.loads');
         const bridge = fs.readFileSync(path.join(
             root, 'scripts', 'firefox_measured_results_export_acceptance.py'), 'utf8');
-        expect(bridge).toContain('readFileSync(process.argv[1]');
+        const nodeBridge = fs.readFileSync(path.join(
+            root, 'scripts', 'measured-results-export-node-bridge.mjs'), 'utf8');
+        expect(bridge).toContain('measured-results-export-node-bridge.mjs');
+        expect(bridge).toContain('["node", str(_BRIDGE), "constants"]');
+        expect(bridge).toContain('["node", str(_BRIDGE), "assert-payload", tmp_path]');
+        expect(bridge).not.toContain('node", "--input-type=module", "-e"');
         expect(bridge).not.toMatch(
             /assertMeasuredResultsExportPayload\(\s*\+\s*json\.dumps/);
+        expect(nodeBridge).toContain('assert-payload');
+        expect(nodeBridge).toContain('assertMeasuredResultsExportPayload');
         const exportIdx = source.indexOf(
             'measured_results_export = accept_measured_results_export(');
         const editIdx = source.indexOf(
