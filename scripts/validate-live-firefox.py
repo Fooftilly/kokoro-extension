@@ -1964,40 +1964,90 @@ def _honor_firefox_download(driver, origin, api_url):
         raise RuntimeError(
             "Cannot seed Firefox download mode: " + download_seed["error"])
     before_ids = download_seed.get("ids") or []
-    _click_firefox_floating_mic(driver, "download-sentence")
-    download_deadline = time.time() + 30
-    download_hit = None
-    while time.time() < download_deadline:
-        found = _on_extension_page(driver, origin, """
-            const [beforeIds, done] = arguments;
-            const matchItem = (item) => {
-                const name = String(item?.filename || '').toLowerCase();
-                const url = String(item?.url || '').toLowerCase();
-                const mime = String(item?.mime || '').toLowerCase();
-                return name.endsWith('.mp3') ||
-                    url.startsWith('data:audio') ||
-                    url.includes('audio/mpeg') ||
-                    mime.includes('audio/mpeg');
-            };
-            browser.downloads.search({
-                orderBy:['-startTime'], limit:20,
-            }).then(items => {
-                const hit = items.find(item =>
-                    !beforeIds.includes(item.id) && matchItem(item));
-                done(hit || null);
-            }, e => done({error:String(e)}));
-        """, before_ids)
-        if isinstance(found, dict) and found.get("error"):
+    _on_extension_page(driver, origin, """
+        const [done] = arguments;
+        globalThis.__kokoroDownloadProbe = {
+            ids: [],
+            listener(item) {
+                globalThis.__kokoroDownloadProbe.ids.push(item.id);
+            },
+        };
+        browser.downloads.onCreated.addListener(
+            globalThis.__kokoroDownloadProbe.listener);
+        done(true);
+    """)
+    try:
+        _click_firefox_floating_mic(driver, "download-sentence")
+        download_deadline = time.time() + 30
+        download_hit = None
+        while time.time() < download_deadline:
+            found = _on_extension_page(driver, origin, """
+                const [beforeIds, done] = arguments;
+                const matchItem = (item) => {
+                    const name = String(item?.filename || '').toLowerCase();
+                    const url = String(item?.url || '').toLowerCase();
+                    const mime = String(item?.mime || '').toLowerCase();
+                    return name.endsWith('.mp3') ||
+                        url.startsWith('data:audio') ||
+                        url.startsWith('blob:') ||
+                        url.includes('audio/mpeg') ||
+                        mime.includes('audio/mpeg');
+                };
+                browser.downloads.search({
+                    orderBy:['-startTime'], limit:20,
+                }).then(async items => {
+                    const fromSearch = items.find(item =>
+                        !beforeIds.includes(item.id) && matchItem(item));
+                    if (fromSearch) return done(fromSearch);
+                    const armed = globalThis.__kokoroDownloadProbe?.ids || [];
+                    for (const id of armed) {
+                        if (beforeIds.includes(id)) continue;
+                        const found = await browser.downloads.search({ id });
+                        const item = found && found[0];
+                        if (item && matchItem(item)) return done(item);
+                    }
+                    done(null);
+                }, e => done({error:String(e)}));
+            """, before_ids)
+            if isinstance(found, dict) and found.get("error"):
+                raise RuntimeError(
+                    "Firefox download search failed: " + found["error"])
+            if found:
+                download_hit = found
+                break
+            time.sleep(0.2)
+        if not download_hit:
+            diagnostics = _on_extension_page(driver, origin, """
+                const [beforeIds, done] = arguments;
+                browser.downloads.search({
+                    orderBy:['-startTime'], limit:5,
+                }).then(items => done({
+                    beforeIds,
+                    armedIds: globalThis.__kokoroDownloadProbe?.ids || [],
+                    recent: items.map(item => ({
+                        id: item.id,
+                        filename: item.filename || '',
+                        urlPrefix: String(item.url || '').slice(0, 32),
+                        mime: item.mime || '',
+                        state: item.state || '',
+                    })),
+                }), e => done({error:String(e)}));
+            """, before_ids)
             raise RuntimeError(
-                "Firefox download search failed: " + found["error"])
-        if found:
-            download_hit = found
-            break
-        time.sleep(0.2)
-    if not download_hit:
-        raise RuntimeError(
-            "Firefox FastAPI download mode did not create an MP3 download")
-    return download_hit
+                "Firefox FastAPI download mode did not create an MP3 download: "
+                + json.dumps(diagnostics))
+        return download_hit
+    finally:
+        with contextlib.suppress(Exception):
+            _on_extension_page(driver, origin, """
+                const [done] = arguments;
+                const probe = globalThis.__kokoroDownloadProbe;
+                if (probe?.listener) {
+                    browser.downloads.onCreated.removeListener(probe.listener);
+                }
+                delete globalThis.__kokoroDownloadProbe;
+                done(true);
+            """)
 
 
 def _honor_firefox_reader(driver, origin, api_url, speech):

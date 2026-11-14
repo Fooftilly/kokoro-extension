@@ -301,27 +301,13 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
             const blob = await response.blob();
             const filename = sanitizeFilename(tab.title || "audio") + ".mp3";
 
-            // Always use a data: URL for FastAPI downloads. Chrome MV3 service
-            // workers expose createObjectURL, but blob: URLs from the worker
-            // are rejected by downloads.download (live Chromium dual failure).
-            const url = await new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onloadend = () => resolve(reader.result);
-                reader.onerror = reject;
-                reader.readAsDataURL(blob);
-            });
-
             if (typeof browser.downloads === 'undefined') {
                 console.error("Downloads API not available");
                 notify("Kokoro TTS Error", "Downloads API is unavailable.");
                 return;
             }
             try {
-                await browser.downloads.download({
-                    url: url,
-                    filename: filename,
-                    saveAs: false
-                });
+                await downloadFastApiMp3(blob, filename);
             } catch (downloadError) {
                 notify("Kokoro TTS Error",
                     "Download failed: " + (downloadError?.message || downloadError));
@@ -444,6 +430,46 @@ browser.runtime.onMessage.addListener(async (request, sender) => {
     }
 });
 
+
+function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+    });
+}
+
+function prefersBlobDownloadUrl() {
+    // Firefox accepts blob: from the background script. Chromium MV3 service
+    // workers expose createObjectURL, but downloads.download rejects blob: —
+    // use a data: URL there instead (live dual: Chromium needs data:, Firefox
+    // needs blob:; always-data: failed Firefox download honor).
+    const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
+    return /firefox/i.test(ua) && typeof URL.createObjectURL === 'function';
+}
+
+async function downloadFastApiMp3(blob, filename) {
+    let url;
+    let revoke = null;
+    if (prefersBlobDownloadUrl()) {
+        url = URL.createObjectURL(blob);
+        revoke = () => {
+            try { URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
+        };
+    } else {
+        url = await blobToDataUrl(blob);
+    }
+    try {
+        await browser.downloads.download({
+            url: url,
+            filename: filename,
+            saveAs: false
+        });
+    } finally {
+        if (revoke) revoke();
+    }
+}
 
 // Do not confuse an ordinary website's /reader.html with our extension tab.
 function isReaderTabUrl(url) {

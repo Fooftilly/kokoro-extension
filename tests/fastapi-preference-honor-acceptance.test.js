@@ -79,7 +79,8 @@ describe('FastAPI preference-honor acceptance', () => {
         expect(source).not.toContain(
             '!isFastApiDownloadItem(downloadHit) &&\n' +
             '            !downloadHit.id');
-        expect(background).toContain('readAsDataURL(blob)');
+        expect(background).toContain('downloadFastApiMp3');
+        expect(background).toContain('prefersBlobDownloadUrl');
         expect(background).toContain('await browser.downloads.download');
         const cardIdx = source.indexOf(
             'await acceptFastApiServerCard(');
