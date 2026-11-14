@@ -560,15 +560,17 @@ async function acceptOverlayControls(page, extensionId, backend) {
     } = await import('./overlay-controls-acceptance.mjs');
     const includeRetry = backend === 'onnx';
     const seed = overlaySeedForBackend(backend, { includeUnsupported: includeRetry });
-    // Dedicated tab: MediaPipe WASM probe residue on the origin page has made
-    // Chromium detach #audio between overlayReady and the next locator read.
+    // Seed from the existing extension-origin tab — chrome.storage is unavailable
+    // on a fresh about:blank page. Dedicated overlay tab still avoids MediaPipe
+    // WASM probe residue detaching #audio on the probe page.
+    await page.evaluate(async storage => {
+        await chrome.storage.local.set(storage);
+    }, seed);
     const overlayPage = await page.context().newPage();
     try {
-        await overlayPage.evaluate(async storage => {
-            await chrome.storage.local.set(storage);
-        }, seed);
         await overlayPage.goto('chrome-extension://' + extensionId + '/overlay.html');
-        await overlayPage.waitForSelector('#audio', { timeout: 30000 });
+        // #audio is display:none in overlay.css — wait for attached, not visible.
+        await overlayPage.waitForSelector('#audio', { state: 'attached', timeout: 30000 });
         const overlayReady = index => {
             const spans = document.querySelectorAll('.sentence');
             return spans.length === 3 && spans[index]?.classList.contains('highlight') &&

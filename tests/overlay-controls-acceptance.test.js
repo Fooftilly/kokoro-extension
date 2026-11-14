@@ -110,7 +110,15 @@ describe('overlay controls acceptance', () => {
         expect(chromium).toContain('__kokoroPlayProof');
         expect(chromium).toContain("addEventListener('playing'");
         expect(chromium).toContain("page.context().newPage()");
-        expect(chromium).toContain("waitForSelector('#audio'");
+        expect(chromium).toContain("waitForSelector('#audio', { state: 'attached'");
+        // Seed must use the existing extension page, not the blank overlay tab.
+        const seedIdx = chromium.indexOf(
+            'await page.evaluate(async storage => {\n' +
+            '        await chrome.storage.local.set(storage);\n' +
+            '    }, seed);');
+        const newPageIdx = chromium.indexOf('page.context().newPage()');
+        expect(seedIdx).toBeGreaterThan(0);
+        expect(newPageIdx).toBeGreaterThan(seedIdx);
         expect(firefox).toContain('firefox_overlay_controls_acceptance');
         expect(firefox).toContain('assert_overlay_playback_confirmed');
         expect(firefox).toContain('__kokoroPlayProof');
