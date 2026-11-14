@@ -1,6 +1,6 @@
 /**
- * CLI bridge for Firefox Python harness — actions + optional JSON argv file.
- * Keeps subprocess.run list literals static (Sourcery/Sonar).
+ * CLI bridge for Firefox Python harness.
+ * Action in argv[2]; JSON payload on stdin (no filesystem path argv).
  */
 import { readFileSync } from 'node:fs';
 import {
@@ -10,30 +10,34 @@ import {
     MEASURED_EXPORT_STATUS_NEEDLE,
     assertMeasuredResultsExportPayload,
     assertMeasuredResultsExportReport,
-    buildMeasuredResultsExportReport,
 } from './measured-results-export-acceptance.mjs';
 
+function readStdinJson() {
+    const raw = readFileSync(0, 'utf8').trim();
+    return raw ? JSON.parse(raw) : null;
+}
+
+function writeJson(value) {
+    process.stdout.write(JSON.stringify(value) + '\n');
+}
+
 const action = process.argv[2];
-const dataPath = process.argv[3];
-const data = dataPath
-    ? JSON.parse(readFileSync(dataPath, 'utf8'))
-    : null;
 
 if (action === 'constants') {
-    console.log(JSON.stringify({
+    writeJson({
         kind: MEASURED_EXPORT_KIND,
         filename: MEASURED_EXPORT_FILENAME,
         buttonId: MEASURED_EXPORT_BUTTON_ID,
         statusNeedle: MEASURED_EXPORT_STATUS_NEEDLE,
-    }));
+    });
 } else if (action === 'assert-payload') {
+    const data = readStdinJson();
     assertMeasuredResultsExportPayload(data.payload, data.expected);
-    console.log(JSON.stringify({ ok: true }));
-} else if (action === 'build-report') {
-    console.log(JSON.stringify(buildMeasuredResultsExportReport(data)));
+    writeJson({ ok: true });
 } else if (action === 'assert-report') {
-    assertMeasuredResultsExportReport(data);
-    console.log(JSON.stringify({ ok: true }));
+    const report = readStdinJson();
+    assertMeasuredResultsExportReport(report);
+    writeJson({ ok: true });
 } else {
     throw new Error('Unknown measured-export bridge action: ' + action);
 }

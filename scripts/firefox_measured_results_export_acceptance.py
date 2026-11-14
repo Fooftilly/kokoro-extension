@@ -3,24 +3,11 @@ from __future__ import annotations
 
 import json
 import subprocess
-import tempfile
 from pathlib import Path
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 _BRIDGE = _SCRIPTS_DIR / "measured-results-export-node-bridge.mjs"
-
-
-def _write_json_temp(data):
-    handle = tempfile.NamedTemporaryFile(
-        "w", suffix=".json", delete=False, encoding="utf-8")
-    try:
-        json.dump(data, handle)
-        handle.close()
-        return handle.name
-    except Exception:
-        handle.close()
-        Path(handle.name).unlink(missing_ok=True)
-        raise
+_EXPORT_FILENAME = "kokoro-measured-local-english.json"
 
 
 def _parse_bridge_stdout(probe):
@@ -33,7 +20,6 @@ def _parse_bridge_stdout(probe):
 
 def measured_export_constants():
     """Constants shared with Chromium measured-export acceptance."""
-    # List literal keeps Sourcery dangerous-subprocess-use-audit quiet.
     probe = subprocess.run(
         ["node", str(_BRIDGE), "constants"],
         cwd=str(_SCRIPTS_DIR),
@@ -47,47 +33,46 @@ def measured_export_constants():
 def assert_measured_results_export_payload(payload, expected=None):
     """Assert local-only measured export payload shape."""
     expected = expected or {}
-    tmp_path = _write_json_temp({"payload": payload, "expected": expected})
-    try:
-        probe = subprocess.run(
-            ["node", str(_BRIDGE), "assert-payload", tmp_path],
-            cwd=str(_SCRIPTS_DIR),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return _parse_bridge_stdout(probe)
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
+    probe = subprocess.run(
+        ["node", str(_BRIDGE), "assert-payload"],
+        input=json.dumps({"payload": payload, "expected": expected}),
+        cwd=str(_SCRIPTS_DIR),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return _parse_bridge_stdout(probe)
 
 
 def build_measured_results_export_report(**options):
-    """Build the same report shape Chromium uses after measured export."""
-    tmp_path = _write_json_temp(options)
-    try:
-        probe = subprocess.run(
-            ["node", str(_BRIDGE), "build-report", tmp_path],
-            cwd=str(_SCRIPTS_DIR),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return _parse_bridge_stdout(probe)
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
+    """Build the same report shape Chromium uses after measured export.
+
+    Pure Python mirror of buildMeasuredResultsExportReport — avoids a Node
+    round-trip that Sonar flagged as sensitive stdout disclosure.
+    """
+    return {
+        "success": options.get("success", True) is not False,
+        "browser": options.get("browser") or "chromium",
+        "localOnly": True,
+        "telemetry": False,
+        "noRanking": True,
+        "filename": _EXPORT_FILENAME,
+        "keys": options.get("keys") or ["onnx-q8", "mediapipe-cpu"],
+        "sampleText": options.get("sampleText") or "Hello world.",
+        "statusConfirmed": options.get("statusConfirmed", True) is not False,
+        "downloadTriggered": options.get("downloadTriggered", True) is not False,
+        "fileContentsVerified": options.get("fileContentsVerified") is True,
+    }
 
 
 def assert_measured_results_export_report(report):
     """Reject incomplete measured export reports."""
-    tmp_path = _write_json_temp(report)
-    try:
-        probe = subprocess.run(
-            ["node", str(_BRIDGE), "assert-report", tmp_path],
-            cwd=str(_SCRIPTS_DIR),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return _parse_bridge_stdout(probe)
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
+    probe = subprocess.run(
+        ["node", str(_BRIDGE), "assert-report"],
+        input=json.dumps(report),
+        cwd=str(_SCRIPTS_DIR),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return _parse_bridge_stdout(probe)

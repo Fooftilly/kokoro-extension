@@ -155,12 +155,17 @@ describe('Measured results export acceptance', () => {
             root, 'scripts', 'measured-results-export-node-bridge.mjs'), 'utf8');
         expect(bridge).toContain('measured-results-export-node-bridge.mjs');
         expect(bridge).toContain('["node", str(_BRIDGE), "constants"]');
-        expect(bridge).toContain('["node", str(_BRIDGE), "assert-payload", tmp_path]');
+        expect(bridge).toContain('["node", str(_BRIDGE), "assert-payload"]');
+        expect(bridge).toContain('input=json.dumps');
+        expect(bridge).toContain('def build_measured_results_export_report');
         expect(bridge).not.toContain('node", "--input-type=module", "-e"');
         expect(bridge).not.toMatch(
             /assertMeasuredResultsExportPayload\(\s*\+\s*json\.dumps/);
         expect(nodeBridge).toContain('assert-payload');
+        expect(nodeBridge).toContain('readFileSync(0');
         expect(nodeBridge).toContain('assertMeasuredResultsExportPayload');
+        expect(nodeBridge).not.toContain('process.argv[3]');
+        expect(nodeBridge).not.toContain('buildMeasuredResultsExportReport');
         const exportIdx = source.indexOf(
             'measured_results_export = accept_measured_results_export(');
         const editIdx = source.indexOf(
