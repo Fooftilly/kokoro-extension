@@ -548,6 +548,72 @@ async function acceptLocalBenchmarkUi(page, extensionId, manifest) {
         noImplicitFastApi: true, rows: 1 };
 }
 
+/** #61: popup Test TTS backends CTA opens benchmark.html with three cards. */
+async function acceptPopupTestTtsCta(context, extensionId) {
+    const popup = await context.newPage();
+    try {
+        await popup.goto('chrome-extension://' + extensionId + '/popup.html');
+        await popup.waitForSelector('#openBenchmarkBtn', { timeout: 15000 });
+        const surface = await popup.evaluate(() => {
+            const cta = document.getElementById('openBenchmarkBtn');
+            const hint = document.getElementById('openBenchmarkHint');
+            const cards = [...document.querySelectorAll('.backend-card')].map(card => ({
+                title: card.querySelector('.backend-card-title')?.textContent?.trim() || '',
+                meta: card.querySelector('.backend-card-meta')?.textContent?.trim() || '',
+                value: card.querySelector('input[name="ttsBackend"]')?.value || '',
+            }));
+            return {
+                cta: cta?.textContent?.trim() || '',
+                hint: hint?.textContent?.trim() || '',
+                cardCount: cards.length,
+                cards,
+                mediapipeMeta: cards.find(c => c.value === 'mediapipe')?.meta || '',
+            };
+        });
+        if (surface.cta !== 'Test TTS backends') {
+            throw Error('Popup CTA label mismatch: ' + JSON.stringify(surface.cta));
+        }
+        if (!surface.hint.toLowerCase().includes('use this backend')) {
+            throw Error('Popup CTA hint missing Use this backend: ' + surface.hint);
+        }
+        if (surface.cardCount !== 3) {
+            throw Error('Expected three backend cards: ' + JSON.stringify(surface.cards));
+        }
+        const values = surface.cards.map(c => c.value).sort().join(',');
+        if (values !== 'fastapi,mediapipe,onnx') {
+            throw Error('Backend card values mismatch: ' + values);
+        }
+        if (!/GPU not offered/i.test(surface.mediapipeMeta)) {
+            throw Error('MediaPipe card must disclose GPU not offered: ' +
+                surface.mediapipeMeta);
+        }
+        const [benchmarkPage] = await Promise.all([
+            context.waitForEvent('page', { timeout: 15000 }),
+            popup.locator('#openBenchmarkBtn').click(),
+        ]);
+        await benchmarkPage.waitForLoadState('domcontentloaded');
+        const benchmarkUrl = benchmarkPage.url();
+        if (!benchmarkUrl.includes('/benchmark.html')) {
+            throw Error('CTA did not open benchmark.html: ' + benchmarkUrl);
+        }
+        await benchmarkPage.waitForSelector('#sharedEnglishComparisonRows, [data-variant]', {
+            timeout: 15000,
+        });
+        if (!benchmarkPage.isClosed()) await benchmarkPage.close();
+        return {
+            success: true,
+            browser: 'chromium',
+            ctaLabel: surface.cta,
+            threeBackendCards: true,
+            gpuNotOfferedDisclosed: true,
+            openedBenchmarkViaCta: true,
+            benchmarkUrl,
+        };
+    } finally {
+        if (!popup.isClosed()) await popup.close();
+    }
+}
+
 // Both real local engines must contribute to the *same* benchmark page.
 // Per-provider acceptance only proves the one-row case and does not exercise
 // the shared comparison. This runs once, after both pinned models are cached.
@@ -1781,11 +1847,13 @@ try {
     const results = [];
     let browserRestartAcceptance = null;
     let dictionaryUiDownloadAcceptance = null;
+    let popupTestTtsCtaAcceptance = null;
     let twoBackendComparisonAcceptance = null;
     const saveReport = () => writeFile(path.join(resultsDir, 'report.json'), JSON.stringify({
         testedAt: new Date().toISOString(), browser: preflight.browser, preflight,
         dictionaryCacheAcceptance, browserRestartAcceptance,
-        dictionaryUiDownloadAcceptance, twoBackendComparisonAcceptance,
+        dictionaryUiDownloadAcceptance, popupTestTtsCtaAcceptance,
+        twoBackendComparisonAcceptance,
         results, originDownload, providerFilter,
         networkRequirement: providerFilter === 'dictionary'
             ? 'offline during dictionary persistence/verification; no inference attempted'
@@ -2212,6 +2280,24 @@ try {
     }
 
     if (providerFilter === 'both' && !originDownload) {
+        // #61 popup CTA before dual comparison (extension pages; network optional).
+        try {
+            liveHeartbeat('popup-test-tts-cta-start');
+            popupTestTtsCtaAcceptance = await acceptPopupTestTtsCta(
+                context, extensionId);
+            liveHeartbeat('popup-test-tts-cta-done', {
+                success: popupTestTtsCtaAcceptance?.success === true,
+            });
+            await saveReport();
+        } catch (error) {
+            popupTestTtsCtaAcceptance = {
+                success: false,
+                stage: 'popup-test-tts-cta',
+                error: String(error),
+            };
+            await saveReport();
+            throw error;
+        }
         // Reuse both pinned, checksum-verified model caches in one renderer,
         // with HTTP(S) disabled. Runtime memory must be freed after each test
         // while the first provider's measurement stays visible.

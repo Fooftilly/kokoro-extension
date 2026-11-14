@@ -1203,6 +1203,72 @@ def accept_local_benchmark_ui(driver, origin, provider):
 
 
 
+def accept_popup_test_tts_cta(driver, origin):
+    """#61: popup Test TTS backends CTA opens benchmark.html with three cards."""
+    before = list(driver.window_handles)
+    driver.get(origin + "/popup.html")
+    WebDriverWait(driver, 20).until(
+        lambda d: d.find_element(By.ID, "openBenchmarkBtn").is_displayed())
+    surface = driver.execute_script("""
+        const cta=document.getElementById('openBenchmarkBtn');
+        const hint=document.getElementById('openBenchmarkHint');
+        const cards=[...document.querySelectorAll('.backend-card')].map(card=>({
+            title:card.querySelector('.backend-card-title')?.textContent?.trim()||'',
+            meta:card.querySelector('.backend-card-meta')?.textContent?.trim()||'',
+            value:card.querySelector('input[name="ttsBackend"]')?.value||'',
+        }));
+        return {
+            cta:cta?.textContent?.trim()||'',
+            hint:hint?.textContent?.trim()||'',
+            cardCount:cards.length,
+            cards,
+            mediapipeMeta:cards.find(c=>c.value==='mediapipe')?.meta||'',
+        };
+    """)
+    if surface.get("cta") != "Test TTS backends":
+        raise RuntimeError(
+            "Firefox popup CTA label mismatch: " + json.dumps(surface.get("cta")))
+    if "use this backend" not in str(surface.get("hint") or "").lower():
+        raise RuntimeError(
+            "Firefox popup CTA hint missing Use this backend: " +
+            str(surface.get("hint")))
+    if surface.get("cardCount") != 3:
+        raise RuntimeError(
+            "Expected three Firefox backend cards: " + json.dumps(surface.get("cards")))
+    values = ",".join(sorted(c.get("value") or "" for c in surface.get("cards") or []))
+    if values != "fastapi,mediapipe,onnx":
+        raise RuntimeError("Firefox backend card values mismatch: " + values)
+    if "gpu not offered" not in str(surface.get("mediapipeMeta") or "").lower():
+        raise RuntimeError(
+            "MediaPipe card must disclose GPU not offered: " +
+            str(surface.get("mediapipeMeta")))
+    driver.find_element(By.ID, "openBenchmarkBtn").click()
+    WebDriverWait(driver, 15).until(
+        lambda d: len(d.window_handles) > len(before))
+    new_handles = [h for h in driver.window_handles if h not in before]
+    if not new_handles:
+        raise RuntimeError("Firefox CTA did not open a new tab")
+    driver.switch_to.window(new_handles[0])
+    WebDriverWait(driver, 15).until(
+        lambda d: "benchmark.html" in (d.current_url or ""))
+    benchmark_url = driver.current_url
+    WebDriverWait(driver, 15).until(lambda d: d.execute_script("""
+        return Boolean(document.getElementById('sharedEnglishComparisonRows') ||
+            document.querySelector('[data-variant]'));
+    """))
+    driver.close()
+    driver.switch_to.window(before[0])
+    return {
+        "success": True,
+        "browser": "Firefox",
+        "ctaLabel": surface["cta"],
+        "threeBackendCards": True,
+        "gpuNotOfferedDisclosed": True,
+        "openedBenchmarkViaCta": True,
+        "benchmarkUrl": benchmark_url,
+    }
+
+
 def accept_two_backend_comparison(driver, origin):
     """Measure ONNX q8 and MediaPipe CPU sequentially on one real, offline page."""
     keys = ("onnx-q8", "mediapipe-cpu")
@@ -2955,6 +3021,9 @@ def main():
             if not browser_offline or not driver.execute_script("return navigator.onLine === false;"):
                 raise RuntimeError("Firefox did not enter offline mode before inference")
             if dual_comparison:
+                result["stage"] = "popup-test-tts-cta"
+                popup_cta = accept_popup_test_tts_cta(driver, state["origin"])
+                result["popupTestTtsCtaAcceptance"] = popup_cta
                 result["stage"] = "offline-two-provider-same-page-benchmark"
                 comparison = accept_two_backend_comparison(driver, state["origin"])
                 result.update({
@@ -2965,11 +3034,12 @@ def main():
                     "dictionaryCacheAcceptance": dictionary_cache_acceptance,
                     "dictionaryReloadAcceptance": dictionary_reload_acceptance,
                     "dictionaryUiDownloadAcceptance": dictionary_ui_acceptance,
+                    "popupTestTtsCtaAcceptance": popup_cta,
                     "dualComparisonAcceptance": comparison,
                     "offlineAttempted": True,
                     "offlineInference": True,
                     "cachePopulation": "two models and dictionary SHA-256 verified from pinned official sources; authenticated loopback preload, offline same-page synthesis",
-                    "scope": "Firefox/Linux MV3 sequential dual local backend comparison, no subjective quality or EPUB acceptance",
+                    "scope": "Firefox/Linux MV3 popup Test TTS CTA + sequential dual local backend comparison, no subjective quality or EPUB acceptance",
                 })
                 print("FIREFOX DUAL BENCHMARK ACCEPTANCE", json.dumps(result), flush=True)
                 return
