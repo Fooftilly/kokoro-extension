@@ -280,6 +280,83 @@ describe('background.js logic', () => {
         expect(browser.downloads).toBeUndefined();
     });
 
+    test('FastAPI download uses data URL on Chromium (blob: rejected in SW)', async () => {
+        const ua = jest.spyOn(navigator, 'userAgent', 'get')
+            .mockReturnValue('Mozilla/5.0 Chrome/120.0.0.0');
+        browser.downloads = {
+            download: jest.fn(() => Promise.resolve(42)),
+        };
+        global.URL.createObjectURL = jest.fn(() => 'blob:should-not-use');
+        browser.storage.sync.get.mockResolvedValue({
+            ttsBackend: 'fastapi',
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            voice: 'af_sarah', mode: 'download', normalizationOptions: {},
+        });
+        const listener = browser.contextMenus.onClicked.addListener.mock.calls[0][0];
+        fetch.mockClear();
+        await listener(
+            { menuItemId: 'send-to-kokoro', selectionText: 'Download me' },
+            { id: 33, title: 'Download Page' }
+        );
+        expect(fetch.mock.calls.some(([url]) =>
+            String(url).includes('/audio/speech'))).toBe(true);
+        expect(URL.createObjectURL).not.toHaveBeenCalled();
+        expect(browser.downloads.download).toHaveBeenCalledWith(
+            expect.objectContaining({
+                filename: expect.stringMatching(/\.mp3$/),
+                url: expect.stringMatching(/^data:audio/),
+                saveAs: false,
+            })
+        );
+        delete browser.downloads;
+        delete global.URL.createObjectURL;
+        ua.mockRestore();
+    });
+
+    test('FastAPI download uses blob URL on Firefox and defers revoke', async () => {
+        const ua = jest.spyOn(navigator, 'userAgent', 'get')
+            .mockReturnValue('Mozilla/5.0 Firefox/120.0');
+        const listeners = new Set();
+        browser.downloads = {
+            download: jest.fn(() => Promise.resolve(7)),
+            onChanged: {
+                addListener: jest.fn(fn => listeners.add(fn)),
+                removeListener: jest.fn(fn => listeners.delete(fn)),
+            },
+        };
+        global.URL.createObjectURL = jest.fn(() => 'blob:firefox-mp3');
+        global.URL.revokeObjectURL = jest.fn();
+        browser.storage.sync.get.mockResolvedValue({
+            ttsBackend: 'fastapi',
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            voice: 'af_sarah', mode: 'download', normalizationOptions: {},
+        });
+        const listener = browser.contextMenus.onClicked.addListener.mock.calls[0][0];
+        await listener(
+            { menuItemId: 'send-to-kokoro', selectionText: 'Download me' },
+            { id: 34, title: 'Download Page' }
+        );
+        expect(URL.createObjectURL).toHaveBeenCalled();
+        expect(browser.downloads.download).toHaveBeenCalledWith(
+            expect.objectContaining({
+                filename: expect.stringMatching(/\.mp3$/),
+                url: 'blob:firefox-mp3',
+                saveAs: false,
+            })
+        );
+        expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+        expect(listeners.size).toBe(1);
+        for (const fn of [...listeners]) {
+            fn({ id: 7, state: { current: 'complete' } });
+        }
+        expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:firefox-mp3');
+        expect(listeners.size).toBe(0);
+        delete browser.downloads;
+        delete global.URL.createObjectURL;
+        delete global.URL.revokeObjectURL;
+        ua.mockRestore();
+    });
+
     test('capability discovery is read-only and never probes FastAPI or local models', async () => {
         const listener = browser.runtime.onMessage.addListener.mock.calls[0][0];
         fetch.mockClear();

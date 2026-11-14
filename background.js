@@ -301,31 +301,17 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
             const blob = await response.blob();
             const filename = sanitizeFilename(tab.title || "audio") + ".mp3";
 
-            let url;
-            // Check if URL.createObjectURL is available (Firefox / Background Pages)
-            if (typeof URL.createObjectURL === 'function') {
-                url = URL.createObjectURL(blob);
-            } else {
-                // Fallback for Chrome Service Workers (Data URL)
-                const blobToDataURL = (blob) => {
-                    return new Promise((resolve, reject) => {
-                        const reader = new FileReader();
-                        reader.onloadend = () => resolve(reader.result);
-                        reader.onerror = reject;
-                        reader.readAsDataURL(blob);
-                    });
-                };
-                url = await blobToDataURL(blob);
-            }
-
-            if (typeof browser.downloads !== 'undefined') {
-                browser.downloads.download({
-                    url: url,
-                    filename: filename,
-                    saveAs: false
-                });
-            } else {
+            if (typeof browser.downloads === 'undefined') {
                 console.error("Downloads API not available");
+                notify("Kokoro TTS Error", "Downloads API is unavailable.");
+                return;
+            }
+            try {
+                await downloadFastApiMp3(blob, filename);
+            } catch (downloadError) {
+                notify("Kokoro TTS Error",
+                    "Download failed: " + (downloadError?.message || downloadError));
+                return;
             }
 
         } else {
@@ -444,6 +430,78 @@ browser.runtime.onMessage.addListener(async (request, sender) => {
     }
 });
 
+
+function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+    });
+}
+
+function prefersBlobDownloadUrl() {
+    // Firefox accepts blob: from the background script. Chromium MV3 service
+    // workers expose createObjectURL, but downloads.download rejects blob: —
+    // use a data: URL there instead (live dual: Chromium needs data:, Firefox
+    // needs blob:; always-data: failed Firefox download honor).
+    const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
+    return /firefox/i.test(ua) && typeof URL.createObjectURL === 'function';
+}
+
+async function downloadFastApiMp3(blob, filename) {
+    // Chromium SW: data: URL. Firefox: blob: — but downloads.download resolves
+    // when the download *starts*, so keep the blob pinned until onChanged
+    // reports complete/interrupted (same pattern as overlay downloadPinnedSentence).
+    if (!prefersBlobDownloadUrl()) {
+        const dataUrl = await blobToDataUrl(blob);
+        await browser.downloads.download({
+            url: dataUrl,
+            filename: filename,
+            saveAs: false
+        });
+        return;
+    }
+    const url = URL.createObjectURL(blob);
+    const release = () => {
+        try { URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
+    };
+    const events = browser.downloads.onChanged;
+    if (!events?.addListener || !events?.removeListener) {
+        try {
+            await browser.downloads.download({
+                url: url, filename: filename, saveAs: false,
+            });
+        } finally {
+            release();
+        }
+        return;
+    }
+    let downloadId = null;
+    let finished = false;
+    const earlyTerminals = new Set();
+    const finish = () => {
+        if (finished) return;
+        finished = true;
+        events.removeListener(onChanged);
+        release();
+    };
+    const onChanged = delta => {
+        if (!['complete', 'interrupted'].includes(delta.state?.current)) return;
+        if (downloadId === null) earlyTerminals.add(delta.id);
+        else if (delta.id === downloadId) finish();
+    };
+    try {
+        events.addListener(onChanged);
+        downloadId = await browser.downloads.download({
+            url: url, filename: filename, saveAs: false,
+        });
+        if (earlyTerminals.has(downloadId)) finish();
+    } catch (error) {
+        finish();
+        throw error;
+    }
+}
 
 // Do not confuse an ordinary website's /reader.html with our extension tab.
 function isReaderTabUrl(url) {

@@ -945,16 +945,30 @@ async function acceptTwoBackendComparison(page, extensionId) {
 }
 
 /**
- * #61 / KE-27: after local dual stays server-untested, briefly exercise the
- * FastAPI card against a loopback Kokoro-FastAPI speech stub (online).
+ * #61 / KE-27 + KE-29: loopback Kokoro-FastAPI stub for dual FastAPI card
+ * and preference-honor reading paths (online).
  */
 async function startFastApiSpeechStub() {
     const { MINIMAL_MP3_BYTES } = await import(
         './fastapi-server-card-acceptance.mjs');
     const body = Buffer.from(MINIMAL_MP3_BYTES);
+    let speechHits = 0;
     const server = createServer((req, res) => {
         const pathOnly = String(req.url || '').split('?', 1)[0];
+        if (req.method === 'GET' && pathOnly.endsWith('/models')) {
+            const payload = JSON.stringify({
+                data: [{ id: 'kokoro', object: 'model' }],
+            });
+            res.writeHead(200, {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(payload),
+                'Cache-Control': 'no-store',
+            });
+            res.end(payload);
+            return;
+        }
         if (req.method === 'POST' && pathOnly.endsWith('/audio/speech')) {
+            speechHits += 1;
             res.writeHead(200, {
                 'Content-Type': 'audio/mpeg',
                 'Content-Length': body.length,
@@ -971,6 +985,7 @@ async function startFastApiSpeechStub() {
     const apiUrl = 'http://127.0.0.1:' + port + '/v1/';
     return {
         apiUrl,
+        speechHits: () => speechHits,
         async close() {
             await new Promise((resolve) => server.close(resolve));
         },
@@ -1072,6 +1087,443 @@ async function acceptFastApiServerCard(page, apiUrl) {
         chooseChangedBackend: beforeChoose !== selectedBackend,
         decodeableMp3: true,
         audioDurationSec,
+    });
+}
+
+async function readOverlayMpegSnapshot(overlayFrame, stored) {
+    return overlayFrame.evaluate(async (storedState) => {
+        const audio = document.getElementById('audio');
+        const status = document.getElementById('status');
+        const spinner = document.getElementById('loadingSpinner');
+        const audioUrl = audio?.src || '';
+        if (!audioUrl.startsWith('data:audio') ||
+            spinner?.style.display !== 'none' ||
+            status?.textContent === 'Error playing audio.') {
+            return null;
+        }
+        if (storedState.pendingTtsBackend !== 'fastapi') return null;
+        return {
+            mpegDataUrl: true,
+            audioDataUrlPrefix: audioUrl.slice(0, 10),
+            backend: storedState.pendingTtsBackend,
+            serverUrl: storedState.pendingApiUrl || '',
+            pendingText: storedState.pendingText || '',
+            blockCount: Array.isArray(storedState.pendingContent)
+                ? storedState.pendingContent.length : 0,
+        };
+    }, stored);
+}
+
+function pendingFastApiSpeechReady(stored, expectedSpeech, apiUrlNeedle) {
+    if (stored.pendingTtsBackend !== 'fastapi') return false;
+    if (!String(stored.pendingApiUrl || '').includes(apiUrlNeedle)) return false;
+    const blocks = stored.pendingContent;
+    const speechOk = Array.isArray(blocks) &&
+        blocks.some(block => typeof block?.content === 'string' &&
+            block.content.includes(expectedSpeech));
+    const textOk = typeof stored.pendingText === 'string' &&
+        stored.pendingText.includes(expectedSpeech);
+    return speechOk || textOk;
+}
+
+async function pollOverlayFastApiMpegOnce(
+    page, worker, expectedSpeech, mode, apiUrlNeedle,
+) {
+    const stored = await withTimeout(worker.evaluate(async () =>
+        chrome.storage.local.get([
+            'pendingText', 'pendingContent', 'pendingTtsBackend',
+            'pendingApiUrl', 'pendingAutoplay',
+        ]),
+    ), 15000, 'fastapi preference storage poll');
+    if (!pendingFastApiSpeechReady(stored, expectedSpeech, apiUrlNeedle)) {
+        return null;
+    }
+    const hostMode = await withTimeout(page.evaluate(() =>
+        document.getElementById('kokoro-overlay-container')?.dataset.mode ||
+        null,
+    ), 15000, 'fastapi preference overlay mode poll');
+    if (mode && hostMode !== mode) return null;
+    const overlayFrame = page.frames().find(frame =>
+        frame.url().includes('/overlay.html'));
+    if (!overlayFrame) return null;
+    const snapshot = await withTimeout(
+        readOverlayMpegSnapshot(overlayFrame, stored),
+        30000, 'fastapi preference overlay MPEG snapshot');
+    if (!snapshot) return null;
+    return { speech: expectedSpeech, mode: hostMode, ...snapshot };
+}
+
+async function waitForOverlayFastApiMpeg(
+    page, worker, expectedSpeech, mode, options = {},
+) {
+    const apiUrlNeedle = options.apiUrlNeedle || '/v1';
+    const deadline = Date.now() + 90000;
+    let lastError = null;
+    let lastBeat = 0;
+    while (Date.now() < deadline) {
+        const elapsed = Date.now() - (deadline - 90000);
+        if (elapsed - lastBeat >= 15000) {
+            liveHeartbeat('wait-overlay-fastapi-mpeg', {
+                expectedSpeech, mode, elapsedMs: elapsed,
+            });
+            lastBeat = elapsed;
+        }
+        try {
+            const snapshot = await pollOverlayFastApiMpegOnce(
+                page, worker, expectedSpeech, mode, apiUrlNeedle);
+            if (snapshot) return snapshot;
+        } catch (error) {
+            lastError = error;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw Error('Timed out waiting for FastAPI overlay MP3 for ' +
+        expectedSpeech + (lastError ? (': ' + lastError) : ''));
+}
+
+async function clearPendingTtsSession(worker, tabId) {
+    await withTimeout(worker.evaluate(async (id) => {
+        if (id != null) {
+            await chrome.tabs.sendMessage(id, { action: 'REMOVE_PLAYER' })
+                .catch(() => {});
+        }
+        await chrome.storage.local.remove([
+            'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
+            'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
+        ]);
+    }, tabId), 15000, 'clearPendingTtsSession');
+}
+
+async function clickFloatingMicOnSentence(page, elementId) {
+    await page.evaluate((id) => {
+        const el = document.getElementById(id);
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    }, elementId);
+    await page.waitForSelector('#kokoro-float-btn', {
+        state: 'visible', timeout: 15000,
+    });
+    await page.locator('#kokoro-float-btn').click();
+}
+
+async function requireFastApiMpegSnap(snap, label) {
+    if (!snap?.mpegDataUrl || snap.backend !== 'fastapi') {
+        throw Error(label + ' did not honor FastAPI preference: ' +
+            JSON.stringify(snap));
+    }
+    return snap;
+}
+
+async function honorChromiumSelection(page, worker, speech) {
+    liveHeartbeat('fastapi-preference-selection');
+    await clickFloatingMicOnSentence(page, 'selection-sentence');
+    return requireFastApiMpegSnap(
+        await waitForOverlayFastApiMpeg(
+            page, worker, speech.selection, 'popup', {
+                apiUrlNeedle: '127.0.0.1',
+            }),
+        'Selection');
+}
+
+async function honorChromiumArticle(page, worker, tabId, speech) {
+    liveHeartbeat('fastapi-preference-article');
+    await worker.evaluate(async (id) => {
+        await chrome.tabs.update(id, { active: true });
+    }, tabId);
+    const commandBindings = await worker.evaluate(async () => {
+        const commands = await chrome.commands.getAll();
+        return commands.map(entry => ({
+            name: entry.name, shortcut: entry.shortcut || '',
+        }));
+    });
+    const readArticleBinding = commandBindings.find(
+        entry => entry.name === 'read-article');
+    if (!readArticleBinding?.shortcut) {
+        throw Error('read-article command has no registered shortcut: ' +
+            JSON.stringify(commandBindings));
+    }
+    await page.bringToFront();
+    await page.locator('body').click({ position: { x: 8, y: 8 } });
+    await page.waitForTimeout(300);
+    sendNativeReadArticleAltA(readArticleBinding, commandBindings);
+    const articleArmedDeadline = Date.now() + 20000;
+    let articleArmed = null;
+    while (Date.now() < articleArmedDeadline) {
+        const armed = await worker.evaluate(async () =>
+            chrome.storage.local.get([
+                'pendingText', 'pendingContent', 'pendingTtsBackend',
+            ]));
+        if (armed.pendingTtsBackend === 'fastapi' &&
+            typeof armed.pendingText === 'string' &&
+            armed.pendingText.includes(speech.articleFirst)) {
+            articleArmed = armed;
+            break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    if (!articleArmed) {
+        throw Error('Native Alt+A did not arm FastAPI article storage');
+    }
+    return requireFastApiMpegSnap(
+        await waitForOverlayFastApiMpeg(
+            page, worker, speech.articleFirst, 'full', {
+                apiUrlNeedle: '127.0.0.1',
+            }),
+        'Article');
+}
+
+function isFastApiDownloadItem(item) {
+    const name = String(item?.filename || '').toLowerCase();
+    const url = String(item?.url || '').toLowerCase();
+    const mime = String(item?.mime || '').toLowerCase();
+    // Chrome SW FastAPI downloads use data:audio/mpeg (no ".mp3" in URL).
+    return name.endsWith('.mp3') ||
+        url.startsWith('data:audio') ||
+        url.includes('audio/mpeg') ||
+        mime.includes('audio/mpeg') ||
+        (url.startsWith('blob:') && name.includes('.mp3'));
+}
+
+async function honorChromiumDownload(page, worker, apiUrl, speechStub) {
+    liveHeartbeat('fastapi-preference-download');
+    const hitsBefore = speechStub.speechHits();
+    await worker.evaluate(async (url) => {
+        await chrome.storage.sync.set({
+            ttsBackend: 'fastapi',
+            apiUrl: url,
+            mode: 'download',
+            showFloatingButton: true,
+        });
+        await chrome.storage.local.remove([
+            'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
+            'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
+        ]);
+    }, apiUrl);
+    // Arm onCreated before the click — search alone can miss data: URLs
+    // whose filename is empty until the write finishes.
+    await worker.evaluate(() => {
+        globalThis.__kokoroDownloadProbe = {
+            ids: [],
+            listener(item) {
+                globalThis.__kokoroDownloadProbe.ids.push(item.id);
+            },
+        };
+        chrome.downloads.onCreated.addListener(
+            globalThis.__kokoroDownloadProbe.listener);
+    });
+    const downloadBefore = await worker.evaluate(async () => {
+        const items = await chrome.downloads.search({
+            orderBy: ['-startTime'], limit: 20,
+        });
+        return items.map(item => item.id);
+    });
+    try {
+        await clickFloatingMicOnSentence(page, 'download-sentence');
+        const downloadDeadline = Date.now() + 30000;
+        let downloadHit = null;
+        while (Date.now() < downloadDeadline) {
+            downloadHit = await worker.evaluate(async (beforeIds) => {
+                const matchItem = (item) => {
+                    const name = String(item?.filename || '').toLowerCase();
+                    const url = String(item?.url || '').toLowerCase();
+                    const mime = String(item?.mime || '').toLowerCase();
+                    return name.endsWith('.mp3') ||
+                        url.startsWith('data:audio') ||
+                        url.includes('audio/mpeg') ||
+                        mime.includes('audio/mpeg');
+                };
+                const items = await chrome.downloads.search({
+                    orderBy: ['-startTime'], limit: 20,
+                });
+                const fromSearch = items.find(item =>
+                    !beforeIds.includes(item.id) && matchItem(item));
+                if (fromSearch) return fromSearch;
+                // Probe only accelerates discovery; still require audio match
+                // (do not accept unrelated onCreated items with a nonzero id).
+                const armedIds = globalThis.__kokoroDownloadProbe?.ids || [];
+                for (const id of armedIds) {
+                    if (beforeIds.includes(id)) continue;
+                    const [item] = await chrome.downloads.search({ id });
+                    if (item && matchItem(item)) return item;
+                }
+                return null;
+            }, downloadBefore);
+            if (downloadHit) break;
+            await new Promise(resolve => setTimeout(resolve, 200));
+        }
+        if (!downloadHit) {
+            const diagnostics = await worker.evaluate(async (beforeIds) => ({
+                beforeIds,
+                armedIds: globalThis.__kokoroDownloadProbe?.ids || [],
+                recent: (await chrome.downloads.search({
+                    orderBy: ['-startTime'], limit: 5,
+                })).map(item => ({
+                    id: item.id,
+                    filename: item.filename || '',
+                    urlPrefix: String(item.url || '').slice(0, 32),
+                    mime: item.mime || '',
+                    state: item.state || '',
+                })),
+            }), downloadBefore);
+            throw Error(
+                'FastAPI download mode did not create an MP3 download: ' +
+                JSON.stringify(diagnostics));
+        }
+        if (!(speechStub.speechHits() > hitsBefore)) {
+            throw Error(
+                'FastAPI download mode did not hit loopback speech stub');
+        }
+        if (!isFastApiDownloadItem(downloadHit)) {
+            throw Error(
+                'FastAPI download item was not audio/mpeg: ' +
+                JSON.stringify(downloadHit));
+        }
+        const afterDownloadBackend = await worker.evaluate(async () =>
+            (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
+        if (afterDownloadBackend !== 'fastapi') {
+            throw Error(
+                'Download path changed ttsBackend: ' + afterDownloadBackend);
+        }
+        return downloadHit;
+    } finally {
+        await worker.evaluate(() => {
+            const probe = globalThis.__kokoroDownloadProbe;
+            if (probe?.listener) {
+                chrome.downloads.onCreated.removeListener(probe.listener);
+            }
+            delete globalThis.__kokoroDownloadProbe;
+        }).catch(() => {});
+    }
+}
+
+async function honorChromiumReader(context, extensionId, worker, apiUrl, speech) {
+    liveHeartbeat('fastapi-preference-reader');
+    await worker.evaluate(async (url) => {
+        await chrome.storage.sync.set({
+            ttsBackend: 'fastapi',
+            apiUrl: url,
+            mode: 'stream',
+            autoplayReader: true,
+        });
+        await chrome.storage.local.remove([
+            'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
+            'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
+            'pendingReaderReloadRevision',
+        ]);
+    }, apiUrl);
+    const readerPage = await context.newPage();
+    try {
+        await readerPage.goto(
+            'chrome-extension://' + extensionId + '/reader.html',
+            { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await readerPage.locator('#fileInput').setInputFiles({
+            name: 'fastapi-preference.txt',
+            mimeType: 'text/plain',
+            buffer: Buffer.from(speech.reader, 'utf8'),
+        });
+        return requireFastApiMpegSnap(
+            await waitForOverlayFastApiMpeg(
+                readerPage, worker, speech.reader, null, {
+                    apiUrlNeedle: '127.0.0.1',
+                }),
+            'Reader');
+    } finally {
+        if (!readerPage.isClosed()) await readerPage.close().catch(() => {});
+    }
+}
+
+/**
+ * #61 / KE-29: after FastAPI card selects fastapi, prove selection / article /
+ * reader / download paths honor sync preference (loopback stub still up).
+ */
+async function acceptFastApiPreferenceHonor(context, extensionId, speechStub) {
+    const {
+        PREFERENCE_HONOR_SPEECH,
+        buildPreferenceHonorFixtureHtml,
+        buildFastApiPreferenceHonorReport,
+    } = await import('./fastapi-preference-honor-acceptance.mjs');
+
+    const worker = context.serviceWorkers()[0];
+    if (!worker) throw Error('Extension service worker missing for preference honor');
+    const apiUrl = speechStub.apiUrl;
+    const selectedBackend = await worker.evaluate(async () =>
+        (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
+    if (selectedBackend !== 'fastapi') {
+        throw Error(
+            'Preference honor requires fastapi already selected: ' +
+            selectedBackend);
+    }
+
+    await worker.evaluate(async (url) => {
+        await chrome.storage.sync.set({
+            ttsBackend: 'fastapi',
+            apiUrl: url,
+            mode: 'stream',
+            showFloatingButton: true,
+            autoplayReader: false,
+        });
+    }, apiUrl);
+
+    const { server: fixtureServer, url: fixtureUrl } =
+        await startArticleSelectionFixtureServer(
+            buildPreferenceHonorFixtureHtml());
+    const page = await context.newPage();
+    let articleBlockCount = 2;
+    try {
+        liveHeartbeat('fastapi-preference-fixture');
+        await page.goto(fixtureUrl, {
+            waitUntil: 'domcontentloaded', timeout: 30000,
+        });
+        await page.waitForFunction(() =>
+            document.getElementById('selection-sentence') &&
+            document.getElementById('article-first') &&
+            document.getElementById('download-sentence'),
+        null, { timeout: 15000 });
+
+        const tabId = await withTimeout(worker.evaluate(async (url) => {
+            const tabs = await chrome.tabs.query({ url });
+            if (!tabs.length) throw Error('Preference fixture tab missing: ' + url);
+            return tabs[0].id;
+        }, fixtureUrl), 15000, 'preference-honor tab lookup');
+        await ensureArticleSelectionContentScript(worker, tabId);
+        await clearPendingTtsSession(worker, tabId);
+
+        await honorChromiumSelection(page, worker, PREFERENCE_HONOR_SPEECH);
+        await clearPendingTtsSession(worker, tabId);
+        await page.waitForFunction(
+            () => !document.getElementById('kokoro-overlay-container'),
+            null, { timeout: 15000 });
+
+        const articleSnap = await honorChromiumArticle(
+            page, worker, tabId, PREFERENCE_HONOR_SPEECH);
+        articleBlockCount = articleSnap.blockCount || 2;
+        await clearPendingTtsSession(worker, tabId);
+        await page.waitForFunction(
+            () => !document.getElementById('kokoro-overlay-container'),
+            null, { timeout: 15000 });
+
+        await honorChromiumDownload(page, worker, apiUrl, speechStub);
+    } finally {
+        if (!page.isClosed()) await page.close().catch(() => {});
+        try { fixtureServer.closeAllConnections?.(); } catch { /* ignore */ }
+        await withTimeout(new Promise(resolve => {
+            fixtureServer.close(() => resolve());
+        }), 5000, 'preference fixtureServer.close').catch(() => {});
+    }
+
+    await honorChromiumReader(
+        context, extensionId, worker, apiUrl, PREFERENCE_HONOR_SPEECH);
+
+    return buildFastApiPreferenceHonorReport({
+        browser: 'chromium',
+        apiUrl,
+        afterFastApiServerCard: true,
+        articleBlockCount,
+        speechStubHits: speechStub.speechHits(),
     });
 }
 
@@ -2192,6 +2644,7 @@ try {
     let popupTestTtsCtaAcceptance = null;
     let twoBackendComparisonAcceptance = null;
     let fastapiServerCardAcceptance = null;
+    let fastapiPreferenceHonorAcceptance = null;
     // Optional currentProvider snapshots mid-loop checks that are not yet in
     // `results` (pushed only after all stages for that provider finish).
     const saveReport = (currentProvider = null) => writeFile(
@@ -2200,6 +2653,7 @@ try {
             dictionaryCacheAcceptance, browserRestartAcceptance,
             dictionaryUiDownloadAcceptance, popupTestTtsCtaAcceptance,
             twoBackendComparisonAcceptance, fastapiServerCardAcceptance,
+            fastapiPreferenceHonorAcceptance,
             results, currentProvider, originDownload, providerFilter,
             networkRequirement: providerFilter === 'dictionary'
                 ? 'offline during dictionary persistence/verification; no inference attempted'
@@ -2603,6 +3057,15 @@ try {
                     success: fastapiServerCardAcceptance?.success === true,
                 });
                 await saveReport();
+                liveHeartbeat('fastapi-preference-honor-start');
+                fastapiPreferenceHonorAcceptance =
+                    await acceptFastApiPreferenceHonor(
+                        context, extensionId, speechStub);
+                liveHeartbeat('fastapi-preference-honor-done', {
+                    success:
+                        fastapiPreferenceHonorAcceptance?.success === true,
+                });
+                await saveReport();
             } finally {
                 await speechStub.close().catch(() => {});
             }
@@ -2616,6 +3079,11 @@ try {
                 fastapiServerCardAcceptance.success !== true) {
                 fastapiServerCardAcceptance = { success: false,
                     stage: 'fastapi-server-card',
+                    error: String(error) };
+            } else if (!fastapiPreferenceHonorAcceptance ||
+                fastapiPreferenceHonorAcceptance.success !== true) {
+                fastapiPreferenceHonorAcceptance = { success: false,
+                    stage: 'fastapi-preference-honor',
                     error: String(error) };
             }
             await saveReport();
