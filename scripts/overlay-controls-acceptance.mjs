@@ -53,6 +53,43 @@ export function assertOverlaySettings(settings) {
     return true;
 }
 
+/** Status text overlay sets only after audio.play() resolves successfully. */
+export function expectedOverlayPlayingStatus(sentenceIndex = 0, sentenceCount = 3) {
+    return `Playing sentence ${sentenceIndex + 1}/${sentenceCount}`;
+}
+
+/**
+ * Confirmed playback — not just Pause label / early paused=false while play() pending.
+ * Requires the post-play() status text from overlay resume().
+ */
+export function assertOverlayPlaybackConfirmed(state) {
+    if (!state || typeof state !== 'object') {
+        throw new Error('Overlay playback state missing: ' + String(state));
+    }
+    const expected = expectedOverlayPlayingStatus(
+        state.sentenceIndex ?? 0, state.sentenceCount ?? 3);
+    if (state.status !== expected) {
+        throw new Error('Playback not confirmed (status): ' + JSON.stringify(state));
+    }
+    if (state.paused !== false || state.button !== 'Pause') {
+        throw new Error('Playback not confirmed (media): ' + JSON.stringify(state));
+    }
+    if (!(state.readyState >= 2)) {
+        throw new Error('Playback readyState too low: ' + JSON.stringify(state));
+    }
+    return true;
+}
+
+export function assertOverlayPausedAfterToggle(state) {
+    if (!state || typeof state !== 'object') {
+        throw new Error('Overlay pause state missing: ' + String(state));
+    }
+    if (state.paused !== true || state.button !== 'Play') {
+        throw new Error('Pause after toggle not confirmed: ' + JSON.stringify(state));
+    }
+    return true;
+}
+
 export function buildOverlayControlsReport(options = {}) {
     const backend = options.backend || 'unknown';
     const includeRetry = options.includeRetry === true;
@@ -65,6 +102,7 @@ export function buildOverlayControlsReport(options = {}) {
         sentences: 3,
         initiallyPaused: true,
         playPauseToggled: options.playPauseToggled === true,
+        playbackConfirmed: options.playbackConfirmed === true,
         unsupportedSentenceRejected: includeRetry
             ? options.unsupportedSentenceRejected === true
             : false,

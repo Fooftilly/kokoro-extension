@@ -22,20 +22,35 @@ ov.assertOverlayWavSnapshot({
     sampleRateHz: 24000, audioBytes: 1000, initiallyPaused: true,
 });
 ov.assertOverlaySettings({ rate: 1.25, volume: 0.4, paused: true });
+ov.assertOverlayPlaybackConfirmed({
+    status: ov.expectedOverlayPlayingStatus(0, 3),
+    paused: false, button: 'Pause', readyState: 2,
+    sentenceIndex: 0, sentenceCount: 3,
+});
+ov.assertOverlayPausedAfterToggle({ paused: true, button: 'Play' });
+let pendingRejected = false;
+try {
+    ov.assertOverlayPlaybackConfirmed({
+        status: 'Pause', paused: false, button: 'Pause', readyState: 2,
+    });
+} catch { pendingRejected = true; }
 const onnxReport = ov.buildOverlayControlsReport({
     backend: 'onnx', includeRetry: true, playPauseToggled: true,
+    playbackConfirmed: true,
     unsupportedSentenceRejected: true, retryRestoredAudio: true,
     sampleRateHz: 24000, audioBytes: 1000, rate: 1.25, volume: 0.4,
 });
 const mpReport = ov.buildOverlayControlsReport({
     backend: 'mediapipe', includeRetry: false, playPauseToggled: true,
+    playbackConfirmed: true,
     sampleRateHz: 24000, audioBytes: 1000, rate: 1.25, volume: 0.4,
 });
 let rejected = false;
 try { ov.overlaySeedForBackend('fastapi'); } catch { rejected = true; }
 console.log(JSON.stringify({
     allowed: [...ov.ALLOWED_OVERLAY_BACKENDS],
-    onnxSeed, mpSeed, onnxReport, mpReport, rejected,
+    playingStatus: ov.expectedOverlayPlayingStatus(0, 3),
+    onnxSeed, mpSeed, onnxReport, mpReport, rejected, pendingRejected,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
@@ -51,10 +66,13 @@ describe('overlay controls acceptance', () => {
         expect(snap.onnxSeed.pendingContent[2].content).toBe('zzzzqwertyword.');
         expect(snap.mpSeed.pendingTtsBackend).toBe('mediapipe');
         expect(snap.mpSeed.pendingContent[2].content).toBe('Hello again.');
+        expect(snap.playingStatus).toBe('Playing sentence 1/3');
+        expect(snap.pendingRejected).toBe(true);
         expect(snap.onnxReport).toEqual(expect.objectContaining({
             success: true,
             backend: 'onnx',
             playPauseToggled: true,
+            playbackConfirmed: true,
             unsupportedSentenceRejected: true,
             retryRestoredAudio: true,
             retryNotApplicable: false,
@@ -64,6 +82,7 @@ describe('overlay controls acceptance', () => {
             success: true,
             backend: 'mediapipe',
             playPauseToggled: true,
+            playbackConfirmed: true,
             retryNotApplicable: true,
             unsupportedSentenceRejected: false,
         }));
@@ -76,7 +95,11 @@ describe('overlay controls acceptance', () => {
         const chromium = fs.readFileSync(chromiumLive, 'utf8');
         const firefox = fs.readFileSync(firefoxLive, 'utf8');
         expect(chromium).toContain('overlay-controls-acceptance.mjs');
+        expect(chromium).toContain('assertOverlayPlaybackConfirmed');
+        expect(chromium).toContain('expectedOverlayPlayingStatus');
         expect(firefox).toContain('firefox_overlay_controls_acceptance');
+        expect(firefox).toContain('assert_overlay_playback_confirmed');
+        expect(firefox).toContain('expected_overlay_playing_status');
         // Match await/assignment call sites — not helper declarations.
         const chromiumOnnx = chromium.indexOf(
             "await acceptOverlayControls(\n                    page, extensionId, 'onnx')");

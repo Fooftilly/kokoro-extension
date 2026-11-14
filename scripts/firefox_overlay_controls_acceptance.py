@@ -52,6 +52,37 @@ def assert_overlay_settings(settings):
     return True
 
 
+def expected_overlay_playing_status(sentence_index=0, sentence_count=3):
+    out = _run_esm(
+        "import { expectedOverlayPlayingStatus } from "
+        "'./overlay-controls-acceptance.mjs';"
+        "console.log(JSON.stringify(expectedOverlayPlayingStatus("
+        + json.dumps(sentence_index) + ", " + json.dumps(sentence_count)
+        + ")));"
+    )
+    return json.loads(out)
+
+
+def assert_overlay_playback_confirmed(state):
+    _run_esm(
+        "import { assertOverlayPlaybackConfirmed } from "
+        "'./overlay-controls-acceptance.mjs';"
+        "assertOverlayPlaybackConfirmed(" + json.dumps(state) + ");"
+        "console.log(JSON.stringify({ok:true}));"
+    )
+    return True
+
+
+def assert_overlay_paused_after_toggle(state):
+    _run_esm(
+        "import { assertOverlayPausedAfterToggle } from "
+        "'./overlay-controls-acceptance.mjs';"
+        "assertOverlayPausedAfterToggle(" + json.dumps(state) + ");"
+        "console.log(JSON.stringify({ok:true}));"
+    )
+    return True
+
+
 def build_overlay_controls_report(options):
     out = _run_esm(
         "import { buildOverlayControlsReport } from "

@@ -554,6 +554,9 @@ async function acceptOverlayControls(page, extensionId, backend) {
         overlaySeedForBackend,
         assertOverlayWavSnapshot,
         assertOverlaySettings,
+        assertOverlayPlaybackConfirmed,
+        assertOverlayPausedAfterToggle,
+        expectedOverlayPlayingStatus,
         buildOverlayControlsReport,
     } = await import('./overlay-controls-acceptance.mjs');
     const includeRetry = backend === 'onnx';
@@ -604,19 +607,44 @@ async function acceptOverlayControls(page, extensionId, backend) {
         return { rate: audio.playbackRate, volume: audio.volume, paused: audio.paused };
     });
     assertOverlaySettings(settings);
-    // Device-level pause/resume via the real Play/Pause control (muted OK).
-    await page.locator('#playPause').click();
-    await page.waitForFunction(() => {
+    // Device-level pause/resume: require post-play() status, not early Pause label.
+    const playingStatus = expectedOverlayPlayingStatus(0, 3);
+    await page.evaluate(() => {
         const audio = document.getElementById('audio');
-        return audio && !audio.paused &&
-            document.getElementById('playPause')?.textContent === 'Pause';
-    }, null, { timeout: 30000 });
+        if (audio) audio.muted = true;
+    });
+    await page.locator('#playPause').click();
+    await page.waitForFunction(status => {
+        const audio = document.getElementById('audio');
+        return audio && !audio.paused && audio.readyState >= 2 &&
+            document.getElementById('playPause')?.textContent === 'Pause' &&
+            document.getElementById('status')?.textContent === status;
+    }, playingStatus, { timeout: 30000 });
+    assertOverlayPlaybackConfirmed(await page.evaluate(status => {
+        const audio = document.getElementById('audio');
+        return {
+            status: document.getElementById('status')?.textContent || '',
+            paused: audio?.paused,
+            button: document.getElementById('playPause')?.textContent || '',
+            readyState: audio?.readyState ?? 0,
+            sentenceIndex: 0,
+            sentenceCount: 3,
+            expectedStatus: status,
+        };
+    }, playingStatus));
     await page.locator('#playPause').click();
     await page.waitForFunction(() => {
         const audio = document.getElementById('audio');
         return audio && audio.paused &&
             document.getElementById('playPause')?.textContent === 'Play';
     }, null, { timeout: 30000 });
+    assertOverlayPausedAfterToggle(await page.evaluate(() => {
+        const audio = document.getElementById('audio');
+        return {
+            paused: audio?.paused,
+            button: document.getElementById('playPause')?.textContent || '',
+        };
+    }));
     let unsupportedSentenceRejected = false;
     let retryRestoredAudio = false;
     if (includeRetry) {
@@ -657,6 +685,7 @@ async function acceptOverlayControls(page, extensionId, backend) {
         backend,
         includeRetry,
         playPauseToggled: true,
+        playbackConfirmed: true,
         unsupportedSentenceRejected,
         retryRestoredAudio,
         sampleRateHz: firstWav.sampleRateHz,

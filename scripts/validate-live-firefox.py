@@ -49,9 +49,12 @@ from firefox_long_form_memory_acceptance import (
     require_long_form_backend,
 )
 from firefox_overlay_controls_acceptance import (
+    assert_overlay_paused_after_toggle,
+    assert_overlay_playback_confirmed,
     assert_overlay_settings,
     assert_overlay_wav_snapshot,
     build_overlay_controls_report,
+    expected_overlay_playing_status,
     overlay_seed_for_backend,
 )
 from reader_acceptance_epub import (
@@ -1280,17 +1283,43 @@ def run_offline_overlay_controls_acceptance(driver, origin, backend):
         return {rate: audio.playbackRate, volume: audio.volume, paused: audio.paused};
     """)
     assert_overlay_settings(settings)
+    playing_status = expected_overlay_playing_status(0, 3)
+    driver.execute_script("""
+        const audio = document.getElementById('audio');
+        if (audio) audio.muted = true;
+    """)
     driver.find_element(By.ID, "playPause").click()
     WebDriverWait(driver, 30).until(lambda d: d.execute_script("""
+        const status = arguments[0];
         const audio = document.getElementById('audio');
-        return audio && !audio.paused &&
-            document.getElementById('playPause')?.textContent === 'Pause';
-    """))
+        return audio && !audio.paused && audio.readyState >= 2 &&
+            document.getElementById('playPause')?.textContent === 'Pause' &&
+            document.getElementById('status')?.textContent === status;
+    """, playing_status))
+    playing_snap = driver.execute_script("""
+        const audio = document.getElementById('audio');
+        return {
+            status: document.getElementById('status')?.textContent || '',
+            paused: audio?.paused,
+            button: document.getElementById('playPause')?.textContent || '',
+            readyState: audio?.readyState ?? 0,
+            sentenceIndex: 0,
+            sentenceCount: 3,
+        };
+    """)
+    assert_overlay_playback_confirmed(playing_snap)
     driver.find_element(By.ID, "playPause").click()
     WebDriverWait(driver, 30).until(lambda d: d.execute_script("""
         const audio = document.getElementById('audio');
         return audio && audio.paused &&
             document.getElementById('playPause')?.textContent === 'Play';
+    """))
+    assert_overlay_paused_after_toggle(driver.execute_script("""
+        const audio = document.getElementById('audio');
+        return {
+            paused: audio?.paused,
+            button: document.getElementById('playPause')?.textContent || '',
+        };
     """))
     unsupported = False
     retry_restored = False
@@ -1336,6 +1365,7 @@ def run_offline_overlay_controls_acceptance(driver, origin, backend):
         "backend": backend,
         "includeRetry": include_retry,
         "playPauseToggled": True,
+        "playbackConfirmed": True,
         "unsupportedSentenceRejected": unsupported,
         "retryRestoredAudio": retry_restored,
         "sampleRateHz": first_wav["sampleRateHz"],
