@@ -94,6 +94,31 @@ async function withTimeout(promise, ms, label) {
     }
 }
 
+/** Stage progress.log beats while a long Playwright wait runs (stall watchdog). */
+async function withProgressBeats(label, promise, detail = {}) {
+    const started = Date.now();
+    liveHeartbeat(label, { ...detail, phase: 'start' });
+    const timer = setInterval(() => {
+        liveHeartbeat(label, {
+            ...detail,
+            phase: 'waiting',
+            elapsedMs: Date.now() - started,
+        });
+    }, 15000);
+    timer.unref?.();
+    try {
+        const result = await promise;
+        liveHeartbeat(label, {
+            ...detail,
+            phase: 'done',
+            elapsedMs: Date.now() - started,
+        });
+        return result;
+    } finally {
+        clearInterval(timer);
+    }
+}
+
 liveHeartbeat('harness-start', { providerFilter, originDownload, headedConsent });
 // Stderr-only keepalive; progress.log stays stage-gated for the stall watchdog.
 const aliveTimer = setInterval(
@@ -487,11 +512,13 @@ async function downloadModelFromOfficialOrigin(page, manifest) {
 async function acceptLocalBenchmarkUi(page, extensionId, manifest) {
     const key = manifest.provider + '-' + manifest.variant;
     const rowSelector = '[data-variant="' + key + '"]';
+    liveHeartbeat('local-benchmark-ui-goto', { key });
     await page.goto('chrome-extension://' + extensionId + '/benchmark.html');
     await page.waitForFunction(selector => {
         const row = document.querySelector(selector);
         return !!row && row.querySelector('.model-test')?.disabled === false;
     }, rowSelector, { timeout: 30000 });
+    liveHeartbeat('local-benchmark-ui-ready', { key });
     const readEnglishRow = async () => page.evaluate(key => {
         const row = document.querySelector('#sharedEnglishComparisonRows tr[data-backend="' + key + '"]');
         const rows = document.querySelectorAll('#sharedEnglishComparisonRows tr');
@@ -511,37 +538,42 @@ async function acceptLocalBenchmarkUi(page, extensionId, manifest) {
         }
         return { cells, p50Ms: values[0], p95Ms: values[1], rtfP50: values[2] };
     }, key);
+    liveHeartbeat('local-benchmark-ui-first-test-click', { key });
     await page.locator(rowSelector + ' .model-test').click();
-    await page.waitForFunction(key => {
+    await withProgressBeats('local-benchmark-ui-first-wait', page.waitForFunction(key => {
         const model = document.querySelector('[data-variant="' + key + '"]');
         return document.querySelector('#sharedEnglishComparisonRows tr[data-backend="' + key + '"]') &&
             model?.querySelector('.model-choose')?.disabled === false;
-    }, key, { timeout: 180000 });
+    }, key, { timeout: 180000 }), { key });
     const first = await readEnglishRow();
+    liveHeartbeat('local-benchmark-ui-first-row', { key, p50Ms: first.p50Ms });
     await page.locator('#benchmarkText').fill('zzzzqwertyword.');
     const afterEdit = await page.locator('#sharedEnglishComparisonRows tr').count();
     if (afterEdit !== 0) throw Error('Benchmark kept stale result after user edited English sample');
     let ipaOnlyExcluded = null;
     if (manifest.provider === 'onnx') {
         await page.locator(rowSelector + ' .model-test').click();
-        await page.waitForFunction(selector => {
+        await withProgressBeats('local-benchmark-ui-ipa-wait', page.waitForFunction(selector => {
             const model = document.querySelector(selector);
             return model?.querySelector('.model-status')?.textContent.includes('IPA-only diagnostic') &&
                 model.querySelector('.model-choose')?.disabled === true;
-        }, rowSelector, { timeout: 180000 });
+        }, rowSelector, { timeout: 180000 }), { key });
         if (await page.locator('#sharedEnglishComparisonRows tr').count() !== 0) {
             throw Error('IPA-only ONNX fallback entered shared-English comparison');
         }
         ipaOnlyExcluded = true;
+        liveHeartbeat('local-benchmark-ui-ipa-excluded', { key });
     }
     await page.locator('#benchmarkText').fill('Hello world.');
+    liveHeartbeat('local-benchmark-ui-retest-click', { key });
     await page.locator(rowSelector + ' .model-test').click();
-    await page.waitForFunction(key => {
+    await withProgressBeats('local-benchmark-ui-retest-wait', page.waitForFunction(key => {
         const model = document.querySelector('[data-variant="' + key + '"]');
         return document.querySelector('#sharedEnglishComparisonRows tr[data-backend="' + key + '"]') &&
             model?.querySelector('.model-choose')?.disabled === false;
-    }, key, { timeout: 180000 });
+    }, key, { timeout: 180000 }), { key });
     const restored = await readEnglishRow();
+    liveHeartbeat('local-benchmark-ui-done', { key });
     return { success: true, provider: manifest.provider, variant: manifest.variant,
         sharedSample: 'Hello world.', first, restored, clearedOnEdit: true,
         ipaOnlyExcluded, backendSelectionTested: true, networkOffline: true,
@@ -560,6 +592,7 @@ async function acceptOverlayControls(page, extensionId, backend) {
     } = await import('./overlay-controls-acceptance.mjs');
     const includeRetry = backend === 'onnx';
     const seed = overlaySeedForBackend(backend, { includeUnsupported: includeRetry });
+    liveHeartbeat('overlay-controls-start', { backend });
     // Seed from the existing extension-origin tab — chrome.storage is unavailable
     // on a fresh about:blank page. Dedicated overlay tab still avoids MediaPipe
     // WASM probe residue detaching #audio on the probe page.
@@ -577,7 +610,12 @@ async function acceptOverlayControls(page, extensionId, backend) {
                 document.getElementById('audio')?.src.startsWith('blob:') &&
                 document.getElementById('loadingSpinner')?.style.display === 'none';
         };
-        await overlayPage.waitForFunction(overlayReady, 0, { timeout: 180000 });
+        await withProgressBeats(
+            'overlay-controls-wait-ready',
+            overlayPage.waitForFunction(overlayReady, 0, { timeout: 180000 }),
+            { backend },
+        );
+        liveHeartbeat('overlay-controls-ready', { backend });
         // Prefer page.evaluate over locator('#audio') — avoids detach races.
         const firstUrl = await overlayPage.evaluate(() => {
             const audio = document.getElementById('audio');
@@ -620,6 +658,7 @@ async function acceptOverlayControls(page, extensionId, backend) {
             return { rate: audio.playbackRate, volume: audio.volume, paused: audio.paused };
         });
         assertOverlaySettings(settings);
+        liveHeartbeat('overlay-controls-play-pause', { backend });
         // Device-level pause/resume: require playing event + currentTime advance.
         // navigate() already sets "Playing sentence" before play() resolves.
         await overlayPage.evaluate(() => {
@@ -668,20 +707,29 @@ async function acceptOverlayControls(page, extensionId, backend) {
                 button: document.getElementById('playPause')?.textContent || '',
             };
         }));
+        liveHeartbeat('overlay-controls-play-pause-done', { backend });
         let unsupportedSentenceRejected = false;
         let retryRestoredAudio = false;
         if (includeRetry) {
             await overlayPage.locator('#seekFwd').click();
-            await overlayPage.waitForFunction(overlayReady, 1, { timeout: 180000 });
+            await withProgressBeats(
+                'overlay-controls-seek-1',
+                overlayPage.waitForFunction(overlayReady, 1, { timeout: 180000 }),
+                { backend },
+            );
             await overlayPage.locator('#seekFwd').click();
-            await overlayPage.waitForFunction(() => {
-                const retry = document.getElementById('retry');
-                const spans = document.querySelectorAll('.sentence');
-                return spans.length === 3 && spans[2].classList.contains('highlight') &&
-                    document.getElementById('status')?.textContent === 'Error playing audio.' &&
-                    getComputedStyle(retry).display !== 'none' &&
-                    document.getElementById('loadingSpinner')?.style.display === 'none';
-            }, null, { timeout: 180000 });
+            await withProgressBeats(
+                'overlay-controls-unsupported-wait',
+                overlayPage.waitForFunction(() => {
+                    const retry = document.getElementById('retry');
+                    const spans = document.querySelectorAll('.sentence');
+                    return spans.length === 3 && spans[2].classList.contains('highlight') &&
+                        document.getElementById('status')?.textContent === 'Error playing audio.' &&
+                        getComputedStyle(retry).display !== 'none' &&
+                        document.getElementById('loadingSpinner')?.style.display === 'none';
+                }, null, { timeout: 180000 }),
+                { backend },
+            );
             unsupportedSentenceRejected = true;
             await overlayPage.evaluate(async () => {
                 await chrome.storage.local.set({
@@ -694,17 +742,22 @@ async function acceptOverlayControls(page, extensionId, backend) {
                 });
             });
             await overlayPage.locator('#retry').click();
-            await overlayPage.waitForFunction(oldUrl => {
-                const spans = document.querySelectorAll('.sentence');
-                const audio = document.getElementById('audio');
-                return spans.length === 3 && spans[0].classList.contains('highlight') &&
-                    audio?.src.startsWith('blob:') && audio.src !== oldUrl &&
-                    getComputedStyle(document.getElementById('retry')).display === 'none' &&
-                    document.getElementById('loadingSpinner')?.style.display === 'none';
-            }, firstUrl, { timeout: 180000 });
+            await withProgressBeats(
+                'overlay-controls-retry-wait',
+                overlayPage.waitForFunction(oldUrl => {
+                    const spans = document.querySelectorAll('.sentence');
+                    const audio = document.getElementById('audio');
+                    return spans.length === 3 && spans[0].classList.contains('highlight') &&
+                        audio?.src.startsWith('blob:') && audio.src !== oldUrl &&
+                        getComputedStyle(document.getElementById('retry')).display === 'none' &&
+                        document.getElementById('loadingSpinner')?.style.display === 'none';
+                }, firstUrl, { timeout: 180000 }),
+                { backend },
+            );
             retryRestoredAudio = true;
+            liveHeartbeat('overlay-controls-retry-done', { backend });
         }
-        return buildOverlayControlsReport({
+        const report = buildOverlayControlsReport({
             backend,
             includeRetry,
             playPauseToggled: true,
@@ -716,6 +769,8 @@ async function acceptOverlayControls(page, extensionId, backend) {
             rate: settings.rate,
             volume: settings.volume,
         });
+        liveHeartbeat('overlay-controls-done', { backend, success: true });
+        return report;
     } finally {
         if (!overlayPage.isClosed()) await overlayPage.close();
     }
@@ -2258,17 +2313,27 @@ try {
                 }
 
                 stage = 'offline-onnx-overlay-controls';
+                liveHeartbeat(stage, { provider: 'onnx' });
                 onnxOverlayAcceptance = await acceptOverlayControls(
                     page, extensionId, 'onnx');
+                await saveReport();
             }
             if (originDownload && manifest.provider === 'mediapipe' && result.success) {
                 stage = 'offline-mediapipe-overlay-controls';
+                liveHeartbeat(stage, { provider: 'mediapipe' });
                 mediapipeOverlayAcceptance = await acceptOverlayControls(
                     page, extensionId, 'mediapipe');
+                await saveReport();
             }
             if (originDownload && result.success) {
                 stage = 'offline-real-benchmark-page-controls';
-                localBenchmarkAcceptance = await acceptLocalBenchmarkUi(page, extensionId, manifest);
+                liveHeartbeat(stage, { provider: manifest.provider });
+                if (page.isClosed()) {
+                    throw Error('Probe page closed before local benchmark UI');
+                }
+                localBenchmarkAcceptance = await acceptLocalBenchmarkUi(
+                    page, extensionId, manifest);
+                await saveReport();
             }
             if (originDownload && result.success &&
                 (manifest.provider === 'onnx' || manifest.provider === 'mediapipe')) {
