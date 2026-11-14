@@ -1563,6 +1563,92 @@ def accept_two_backend_comparison(driver, origin):
     }
 
 
+def _start_fastapi_speech_stub():
+    """Loopback Kokoro-FastAPI /v1/audio/speech returning a tiny MP3 body."""
+    mp3 = bytes([0xFF, 0xFB, 0x90, 0x00] + ([0] * 100))
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            path_only = self.path.split("?", 1)[0]
+            if path_only.endswith("/audio/speech"):
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/mpeg")
+                self.send_header("Content-Length", str(len(mp3)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(mp3)
+                return
+            self.send_error(404)
+
+        def log_message(self, *args):
+            return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+    return server, f"http://127.0.0.1:{port}/v1/"
+
+
+def accept_fastapi_server_card(driver, origin, api_url):
+    """#61 / KE-27: Test server → playable MP3 → Use this backend → fastapi."""
+    from firefox_fastapi_server_card_acceptance import (
+        build_fastapi_server_card_report,
+    )
+    driver.get(origin + "/benchmark.html")
+    WebDriverWait(driver, 30).until(
+        lambda d: d.execute_script(
+            "return Boolean(window.KokoroBenchmark)"))
+    seeded = driver.execute_async_script("""
+        const apiUrl=arguments[0];
+        const done=arguments[arguments.length-1];
+        browser.storage.sync.set({ttsBackend:'fastapi', apiUrl}).then(
+            ()=>done({ok:true}),
+            e=>done({error:String(e)}));
+    """, api_url)
+    if seeded.get("error"):
+        raise RuntimeError(
+            "Cannot seed FastAPI sync settings: " + seeded["error"])
+
+    sample = driver.execute_script(
+        "return document.getElementById('benchmarkText')?.value||'';")
+    if not str(sample or "").strip():
+        driver.execute_script("""
+            const text=document.getElementById('benchmarkText');
+            text.value='FastAPI server card sample.';
+            text.dispatchEvent(new Event('input',{bubbles:true}));
+        """)
+
+    driver.find_element(By.ID, "testServer").click()
+    WebDriverWait(driver, 30).until(lambda d: d.execute_script("""
+        const status=document.getElementById('serverStatus')?.textContent||'';
+        const audio=document.getElementById('serverAudio');
+        const choose=document.getElementById('chooseServer');
+        return status.includes('Server returned playable MP3') &&
+            audio && !audio.hidden &&
+            String(audio.src||'').startsWith('data:audio') &&
+            choose && choose.disabled===false;
+    """))
+    driver.find_element(By.ID, "chooseServer").click()
+    WebDriverWait(driver, 15).until(lambda d: d.execute_script("""
+        const status=document.getElementById('serverStatus')?.textContent||'';
+        return status.includes('FastAPI selected.');
+    """))
+    selected = driver.execute_async_script("""
+        const done=arguments[arguments.length-1];
+        browser.storage.sync.get({ttsBackend:'fastapi'}).then(
+            data=>done({backend:data.ttsBackend}),
+            e=>done({error:String(e)}));
+    """)
+    if selected.get("error"):
+        raise RuntimeError(
+            "Cannot inspect FastAPI selection: " + selected["error"])
+    if selected.get("backend") != "fastapi":
+        raise RuntimeError(
+            "Firefox FastAPI Use this backend did not select fastapi: " +
+            repr(selected.get("backend")))
+    return build_fastapi_server_card_report(api_url)
+
+
 # Browser-side readiness poll kept as one string so CodeFactor scores the
 # Python orchestration helpers, not the embedded Chromium-parity JS.
 _EPUB_CHAPTER_READY_SCRIPT = """
@@ -3188,6 +3274,19 @@ def main():
                 result["popupTestTtsCtaAcceptance"] = popup_cta
                 result["stage"] = "offline-two-provider-same-page-benchmark"
                 comparison = accept_two_backend_comparison(driver, state["origin"])
+                result["dualComparisonAcceptance"] = comparison
+                # Local dual leaves server untested; FastAPI card needs online.
+                result["stage"] = "fastapi-server-card"
+                _set_firefox_network_offline(driver, False)
+                if not driver.execute_script("return navigator.onLine===true;"):
+                    raise RuntimeError(
+                        "Firefox did not restore online before FastAPI card")
+                speech_server, api_url = _start_fastapi_speech_stub()
+                try:
+                    fastapi_card = accept_fastapi_server_card(
+                        driver, state["origin"], api_url)
+                finally:
+                    speech_server.shutdown()
                 result.update({
                     "status": "passed",
                     "browser": driver.capabilities.get("browserVersion"),
@@ -3198,10 +3297,11 @@ def main():
                     "dictionaryUiDownloadAcceptance": dictionary_ui_acceptance,
                     "popupTestTtsCtaAcceptance": popup_cta,
                     "dualComparisonAcceptance": comparison,
+                    "fastapiServerCardAcceptance": fastapi_card,
                     "offlineAttempted": True,
                     "offlineInference": True,
-                    "cachePopulation": "two models and dictionary SHA-256 verified from pinned official sources; authenticated loopback preload, offline same-page synthesis",
-                    "scope": "Firefox/Linux MV3 popup Test TTS CTA + sequential dual local backend comparison, no subjective quality or EPUB acceptance",
+                    "cachePopulation": "two models and dictionary SHA-256 verified from pinned official sources; authenticated loopback preload, offline same-page synthesis, then loopback FastAPI card",
+                    "scope": "Firefox/Linux MV3 popup Test TTS CTA + dual local backends + FastAPI server card, no subjective quality or EPUB acceptance",
                 })
                 print("FIREFOX DUAL BENCHMARK ACCEPTANCE", json.dumps(result), flush=True)
                 return
