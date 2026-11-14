@@ -41,7 +41,7 @@ const fail = (() => {
 })();
 console.log(JSON.stringify({
     label: cta.POPUP_CTA_LABEL,
-    values: [...cta.EXPECTED_BACKEND_CARD_VALUES].sort(),
+    values: [...cta.EXPECTED_BACKEND_CARD_VALUES],
     ok, report, fail,
 }));
 `], { encoding: 'utf8', cwd: root });
@@ -54,7 +54,7 @@ describe('popup Test TTS CTA acceptance', () => {
         expect(child.stderr || '').toBe('');
         const snap = JSON.parse(child.stdout.trim());
         expect(snap.label).toBe('Test TTS backends');
-        expect(snap.values).toEqual(['fastapi', 'mediapipe', 'onnx']);
+        expect(snap.values).toEqual(['fastapi', 'mediapipe', 'onnx']); // catalog order
         expect(snap.ok).toBe(true);
         expect(snap.report).toEqual(expect.objectContaining({
             success: true,

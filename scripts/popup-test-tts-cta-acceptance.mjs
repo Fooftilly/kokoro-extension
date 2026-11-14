@@ -26,9 +26,12 @@ export function assertPopupTestTtsSurface(surface) {
     if (cards.length !== 3 && surface.cardCount !== 3) {
         throw new Error('Expected three backend cards: ' + JSON.stringify(cards));
     }
-    const values = cards.map(c => c?.value || '').filter(Boolean).sort().join(',');
-    if (values !== EXPECTED_BACKEND_CARD_VALUES.slice().sort().join(',')) {
-        throw new Error('Backend card values mismatch: ' + values);
+    const values = cards.map(c => c?.value || '').filter(Boolean);
+    const expected = [...EXPECTED_BACKEND_CARD_VALUES];
+    const sameSet = values.length === expected.length &&
+        expected.every(v => values.includes(v));
+    if (!sameSet) {
+        throw new Error('Backend card values mismatch: ' + values.join(','));
     }
     const meta = String(surface.mediapipeMeta || '').toLowerCase();
     if (!meta.includes(MEDIAPIPE_GPU_NOT_OFFERED_NEEDLE)) {
