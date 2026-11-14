@@ -1504,6 +1504,9 @@ def accept_two_backend_comparison(driver, origin):
             throw Error('Firefox dual provider rows/summary did not match expectations');
         return summary;
     """)
+    # #61 / KE-30: export measured rows while both still present (local-only).
+    measured_results_export = accept_measured_results_export(
+        driver, sample_text="Hello world.", keys=list(keys))
     remaining = driver.execute_script("""
         const text=document.getElementById('benchmarkText');
         text.value='Another shared English sample.';
@@ -1560,7 +1563,67 @@ def accept_two_backend_comparison(driver, origin):
         "selectedBackend": after_mediapipe, "networkOffline": True,
         "serverTestNotTriggered": True, "noAutomaticRanking": True,
         "summary": summary,
+        "measuredResultsExport": measured_results_export,
     }
+
+
+def accept_measured_results_export(driver, sample_text="Hello world.", keys=None):
+    """#61 / KE-30: click Export measured results while both rows are present."""
+    from firefox_measured_results_export_acceptance import (
+        assert_measured_results_export_payload,
+        assert_measured_results_export_report,
+        build_measured_results_export_report,
+        measured_export_constants,
+    )
+    keys = keys or ["onnx-q8", "mediapipe-cpu"]
+    constants = measured_export_constants()
+    ready = driver.execute_script("""
+        const buttonId=arguments[0];
+        const button=document.getElementById(buttonId);
+        return {
+            exists: !!button,
+            disabled: button?.disabled===true,
+            rowCount: document.querySelectorAll(
+                '#sharedEnglishComparisonRows tr').length,
+            online: navigator.onLine,
+        };
+    """, constants["buttonId"])
+    if (not ready.get("exists") or ready.get("disabled") or
+            ready.get("rowCount", 0) < 2 or ready.get("online") is not False):
+        raise RuntimeError(
+            "Firefox measured export control not ready offline with two rows: " +
+            repr(ready))
+    driver.find_element(By.ID, constants["buttonId"]).click()
+    WebDriverWait(driver, 10).until(lambda d: d.execute_script("""
+        const needle=arguments[0];
+        const payload=globalThis.__kokoroLastMeasuredExport;
+        const status=document.getElementById('measuredExportStatus')?.textContent||'';
+        return payload && typeof payload==='object' && status.includes(needle);
+    """, constants["statusNeedle"]))
+    payload = driver.execute_script(
+        "return globalThis.__kokoroLastMeasuredExport;")
+    assert_measured_results_export_payload(payload, {
+        "keys": keys,
+        "sampleText": sample_text,
+    })
+    status = driver.execute_script(
+        "return document.getElementById('measuredExportStatus')?.textContent||'';")
+    if constants["statusNeedle"] not in status:
+        raise RuntimeError(
+            "Firefox measured export status missing local-only confirmation: " +
+            repr(status))
+    # Prove the click path stayed offline (no FastAPI / model fetch).
+    if driver.execute_script("return navigator.onLine!==false;"):
+        raise RuntimeError("Firefox measured export left the page online")
+    report = build_measured_results_export_report(
+        browser="firefox",
+        keys=keys,
+        sampleText=sample_text,
+        statusConfirmed=True,
+        downloadTriggered=True,
+    )
+    assert_measured_results_export_report(report)
+    return report
 
 
 def _minimal_mp3_fixture_bytes():

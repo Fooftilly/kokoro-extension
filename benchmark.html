@@ -58,6 +58,11 @@
                     </table>
                 </div>
                 <p>Only successful tests of the current shared English sample appear here. IPA-only ONNX and server/network tests are excluded. Values measure completed synthesis, not time to first audio. Voices and phonemization may differ; no automatic ranking or backend selection.</p>
+                <div class="measured-export-controls">
+                    <button type="button" id="exportMeasuredResults" disabled>Export measured results</button>
+                    <p id="measuredExportStatus" role="status" aria-live="polite"></p>
+                </div>
+                <p>Export writes a local JSON file for bug reports. It stays on this device; nothing is uploaded.</p>
             </div>
             <p>Measurements are taken from actual synthesized audio, not GPU adapter detection. Local figures are warm, after engine initialization; server timings exclude audio playback. ONNX q8 measures the same English input only after the optional dictionary has been installed and the entire sample is supported; otherwise it reports non-comparable IPA-only timings. ONNX q8f16 remains IPA-only. A passed IPA probe cannot enable ordinary English playback.</p>
         </section>

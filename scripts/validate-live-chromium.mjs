@@ -892,6 +892,11 @@ async function acceptTwoBackendComparison(page, extensionId) {
         }
         return summary;
     });
+    // #61 / KE-30: export measured rows while both still present (local-only).
+    const measuredResultsExport = await acceptMeasuredResultsExport(page, {
+        sampleText: 'Hello world.',
+        keys,
+    });
     await page.locator('#benchmarkText').fill('Another shared English sample.');
     if (await page.locator('#sharedEnglishComparisonRows tr').count() !== 0) {
         throw Error('Editing shared sample did not clear both provider rows');
@@ -941,7 +946,60 @@ async function acceptTwoBackendComparison(page, extensionId) {
             mediapipeStatusConfirmed: true,
         },
         selectedBackend: afterMediaPipeChoose, offline: true,
-        serverTestNotTriggered: true, noAutomaticRanking: true, summary };
+        serverTestNotTriggered: true, noAutomaticRanking: true, summary,
+        measuredResultsExport };
+}
+
+async function acceptMeasuredResultsExport(page, expected = {}) {
+    const { assertMeasuredResultsExportPayload,
+        assertMeasuredResultsExportReport,
+        buildMeasuredResultsExportReport,
+        MEASURED_EXPORT_BUTTON_ID,
+        MEASURED_EXPORT_FILENAME,
+        MEASURED_EXPORT_STATUS_NEEDLE,
+    } = await import('./measured-results-export-acceptance.mjs');
+    liveHeartbeat('measured-results-export');
+    const exportReady = await page.evaluate((buttonId) => {
+        const button = document.getElementById(buttonId);
+        return {
+            disabled: button?.disabled === true,
+            exists: !!button,
+            rowCount: document.querySelectorAll(
+                '#sharedEnglishComparisonRows tr').length,
+        };
+    }, MEASURED_EXPORT_BUTTON_ID);
+    if (!exportReady.exists || exportReady.disabled || exportReady.rowCount < 2) {
+        throw Error(
+            'Measured export control not ready with two rows: ' +
+            JSON.stringify(exportReady));
+    }
+    const [download] = await Promise.all([
+        page.waitForEvent('download', { timeout: 15000 }),
+        page.locator('#' + MEASURED_EXPORT_BUTTON_ID).click(),
+    ]);
+    const suggested = download.suggestedFilename();
+    if (suggested !== MEASURED_EXPORT_FILENAME) {
+        throw Error('Unexpected measured export filename: ' + suggested);
+    }
+    const payload = await page.evaluate(() => globalThis.__kokoroLastMeasuredExport);
+    assertMeasuredResultsExportPayload(payload, {
+        keys: expected.keys || ['onnx-q8', 'mediapipe-cpu'],
+        sampleText: expected.sampleText || 'Hello world.',
+    });
+    const status = await page.locator('#measuredExportStatus').textContent();
+    if (!status?.includes(MEASURED_EXPORT_STATUS_NEEDLE)) {
+        throw Error('Measured export status missing local-only confirmation: ' +
+            status);
+    }
+    const report = buildMeasuredResultsExportReport({
+        browser: 'chromium',
+        keys: expected.keys || ['onnx-q8', 'mediapipe-cpu'],
+        sampleText: expected.sampleText || 'Hello world.',
+        statusConfirmed: true,
+        downloadTriggered: true,
+    });
+    assertMeasuredResultsExportReport(report);
+    return report;
 }
 
 /**
