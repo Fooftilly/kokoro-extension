@@ -31,6 +31,7 @@ import {
     originLongFormMemoryStageEnabled,
     requireLongFormBackend,
 } from './long-form-memory-acceptance.mjs';
+import { buildCurrentProviderSnapshot } from './live-chromium-report.mjs';
 // The extension's .js modules are ESM while package.json is CommonJS for the
 // build tool. Copy the pure catalog into a temporary .mjs file for the Node harness.
 const catalogFile = path.join(os.tmpdir(), 'kokoro-runtime-model-catalog.mjs');
@@ -2097,7 +2098,7 @@ try {
         let epubReaderAcceptance = null;
         let articleSelectionAcceptance = null;
         let longFormMemoryAcceptance = null;
-        const currentProviderSnapshot = () => ({
+        const currentProviderSnapshot = () => buildCurrentProviderSnapshot({
             provider: manifest.provider,
             variant: manifest.variant,
             stage,
