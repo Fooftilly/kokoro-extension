@@ -1284,15 +1284,42 @@ def accept_two_backend_comparison(driver, origin):
     """)
     if remaining != 0:
         raise RuntimeError("Firefox dual comparison retained stale rows after sample edit")
-    after = selected_backend()
-    if after != before:
+    after_measure = selected_backend()
+    if after_measure != before:
         raise RuntimeError("Firefox dual comparison silently changed the selected backend")
+
+    # #61: measurement alone must not select a backend; Use this backend must.
+    driver.find_element(
+        By.CSS_SELECTOR, '[data-variant="onnx-q8"] .model-choose').click()
+    WebDriverWait(driver, 15).until(
+        lambda d: selected_backend() == "onnx")
+    after_onnx = selected_backend()
+    if after_onnx != "onnx":
+        raise RuntimeError(
+            "Firefox Use this backend did not select ONNX: " + repr(after_onnx))
+    driver.find_element(
+        By.CSS_SELECTOR, '[data-variant="mediapipe-cpu"] .model-choose').click()
+    WebDriverWait(driver, 15).until(
+        lambda d: selected_backend() == "mediapipe")
+    after_mediapipe = selected_backend()
+    if after_mediapipe != "mediapipe":
+        raise RuntimeError(
+            "Firefox Use this backend did not select MediaPipe: " +
+            repr(after_mediapipe))
+
     return {
         "success": True, "providers": list(keys), "sharedSample": "Hello world.",
         "measurements": measurements, "rowsBeforeEdit": 2, "rowsAfterEdit": 0,
         "bothRetainedOnOnePage": True, "backendSelectionUnchanged": True,
-        "selectedBackend": after, "networkOffline": True,
-        "serverTestNotTriggered": True, "noAutomaticRanking": True, "summary": summary,
+        "selectedBackendBeforeChoose": after_measure,
+        "useThisBackend": {
+            "onnx": after_onnx,
+            "mediapipe": after_mediapipe,
+            "preferenceOnlyOnChoose": True,
+        },
+        "selectedBackend": after_mediapipe, "networkOffline": True,
+        "serverTestNotTriggered": True, "noAutomaticRanking": True,
+        "summary": summary,
     }
 
 

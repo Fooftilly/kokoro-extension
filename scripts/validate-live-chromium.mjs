@@ -619,15 +619,42 @@ async function acceptTwoBackendComparison(page, extensionId) {
     if (await page.locator('#sharedEnglishComparisonRows tr').count() !== 0) {
         throw Error('Editing shared sample did not clear both provider rows');
     }
-    const selectedAfter = await page.evaluate(async () =>
+    const selectedAfterMeasure = await page.evaluate(async () =>
         (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
-    if (selectedAfter !== selectedBefore) {
+    if (selectedAfterMeasure !== selectedBefore) {
         throw Error('Comparison silently changed the selected TTS backend');
     }
+
+    // #61: measurement alone must not select a backend; Use this backend must.
+    const readSyncBackend = async () => page.evaluate(async () =>
+        (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
+    await page.locator('[data-variant="onnx-q8"] .model-choose').click();
+    await page.waitForFunction(async () =>
+        (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend === 'onnx',
+        null, { timeout: 15000 });
+    const afterOnnxChoose = await readSyncBackend();
+    if (afterOnnxChoose !== 'onnx') {
+        throw Error('Use this backend did not select ONNX: ' + afterOnnxChoose);
+    }
+    await page.locator('[data-variant="mediapipe-cpu"] .model-choose').click();
+    await page.waitForFunction(async () =>
+        (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend === 'mediapipe',
+        null, { timeout: 15000 });
+    const afterMediaPipeChoose = await readSyncBackend();
+    if (afterMediaPipeChoose !== 'mediapipe') {
+        throw Error('Use this backend did not select MediaPipe: ' + afterMediaPipeChoose);
+    }
+
     return { success: true, providers: keys, sharedSample: 'Hello world.',
         measurements: measured, rowsBeforeEdit: 2, rowsAfterEdit: 0,
         bothRetainedOnOnePage: true, backendSelectionUnchanged: true,
-        selectedBackend: selectedAfter, offline: true,
+        selectedBackendBeforeChoose: selectedAfterMeasure,
+        useThisBackend: {
+            onnx: afterOnnxChoose,
+            mediapipe: afterMediaPipeChoose,
+            preferenceOnlyOnChoose: true,
+        },
+        selectedBackend: afterMediaPipeChoose, offline: true,
         serverTestNotTriggered: true, noAutomaticRanking: true, summary };
 }
 
