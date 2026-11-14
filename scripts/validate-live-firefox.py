@@ -1289,18 +1289,27 @@ def accept_two_backend_comparison(driver, origin):
         raise RuntimeError("Firefox dual comparison silently changed the selected backend")
 
     # #61: measurement alone must not select a backend; Use this backend must.
+    # Wait for choose-handler status text (not just sync) so a late ONNX
+    # cache-check completion cannot overwrite a subsequent MediaPipe write.
+    def model_status_includes(variant, needle):
+        return driver.execute_script("""
+            const status=document.querySelector(
+                '[data-variant="'+arguments[0]+'"] .model-status')?.textContent||'';
+            return status.includes(arguments[1]);
+        """, variant, needle)
+
     driver.find_element(
         By.CSS_SELECTOR, '[data-variant="onnx-q8"] .model-choose').click()
-    WebDriverWait(driver, 15).until(
-        lambda d: selected_backend() == "onnx")
+    WebDriverWait(driver, 15).until(lambda d: model_status_includes(
+        "onnx-q8", "ONNX q8 selected for dictionary-supported English"))
     after_onnx = selected_backend()
     if after_onnx != "onnx":
         raise RuntimeError(
             "Firefox Use this backend did not select ONNX: " + repr(after_onnx))
     driver.find_element(
         By.CSS_SELECTOR, '[data-variant="mediapipe-cpu"] .model-choose').click()
-    WebDriverWait(driver, 15).until(
-        lambda d: selected_backend() == "mediapipe")
+    WebDriverWait(driver, 15).until(lambda d: model_status_includes(
+        "mediapipe-cpu", "MediaPipe selected for future article and EPUB TTS"))
     after_mediapipe = selected_backend()
     if after_mediapipe != "mediapipe":
         raise RuntimeError(
@@ -1310,12 +1319,15 @@ def accept_two_backend_comparison(driver, origin):
     return {
         "success": True, "providers": list(keys), "sharedSample": "Hello world.",
         "measurements": measurements, "rowsBeforeEdit": 2, "rowsAfterEdit": 0,
-        "bothRetainedOnOnePage": True, "backendSelectionUnchanged": True,
+        "bothRetainedOnOnePage": True,
+        "backendSelectionUnchangedDuringMeasure": True,
         "selectedBackendBeforeChoose": after_measure,
         "useThisBackend": {
             "onnx": after_onnx,
             "mediapipe": after_mediapipe,
             "preferenceOnlyOnChoose": True,
+            "onnxStatusConfirmed": True,
+            "mediapipeStatusConfirmed": True,
         },
         "selectedBackend": after_mediapipe, "networkOffline": True,
         "serverTestNotTriggered": True, "noAutomaticRanking": True,
