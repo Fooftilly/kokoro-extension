@@ -45,10 +45,19 @@ console.log(JSON.stringify({
     visitEndsOnLast: visits.includes(longForm.LONG_FORM_SENTENCE_COUNT - 1),
     stageTruthTable: {
         onnxOriginOk: longForm.originLongFormMemoryStageEnabled(true, 'onnx', true),
-        mediapipeBlocked: longForm.originLongFormMemoryStageEnabled(true, 'mediapipe', true),
+        mediapipeOriginOk: longForm.originLongFormMemoryStageEnabled(true, 'mediapipe', true),
         noOrigin: longForm.originLongFormMemoryStageEnabled(false, 'onnx', true),
         priorFailure: longForm.originLongFormMemoryStageEnabled(true, 'onnx', false),
+        remoteBlocked: capture(() => longForm.requireLongFormBackend('remote')),
     },
+    mediapipeStorage: (() => {
+        const cfg = longForm.longFormStorageConfig('mediapipe');
+        return {
+            backend: cfg.pendingTtsBackend,
+            probe: cfg.pendingAcceptanceProbe === true,
+            variant: cfg.mediaPipeVariant,
+        };
+    })(),
     statsPass: capture(() => longForm.assertBoundedAudioManagerStats(sampleStats)),
     windowPass: capture(() => longForm.assertLongFormCacheWindowNear(sampleStats, 2)),
     windowFail: capture(() => longForm.assertLongFormCacheWindowNear(
@@ -61,7 +70,8 @@ console.log(JSON.stringify({
     })),
     heapPass: longForm.assertLongFormHeapDelta(50, 75),
     heapFail: capture(() => longForm.assertLongFormHeapDelta(0, 300 * 1024 * 1024)),
-    mediapipeReject: capture(() => longForm.requireLongFormBackend('mediapipe')),
+    mediapipeAccept: capture(() => longForm.requireLongFormBackend('mediapipe')),
+    backends: [...longForm.ALLOWED_LONG_FORM_BACKENDS].sort(),
     bounds: {
         cache: longForm.LONG_FORM_MAX_CACHE_ENTRIES,
         urls: longForm.LONG_FORM_MAX_OBJECT_URLS,
@@ -94,11 +104,13 @@ describe('long-form memory acceptance', () => {
         expect(snap.seedsLocalTtsBackend).toBe(false);
         expect(snap.visitEndsOnLast).toBe(false);
         expect(snap.visits[snap.visits.length - 1]).toBeLessThan(23);
-        expect(snap.stageTruthTable).toEqual({
-            onnxOriginOk: true,
-            mediapipeBlocked: false,
-            noOrigin: false,
-            priorFailure: false,
+        expect(snap.stageTruthTable.onnxOriginOk).toBe(true);
+        expect(snap.stageTruthTable.mediapipeOriginOk).toBe(true);
+        expect(snap.stageTruthTable.noOrigin).toBe(false);
+        expect(snap.stageTruthTable.priorFailure).toBe(false);
+        expect(snap.stageTruthTable.remoteBlocked.ok).toBe(false);
+        expect(snap.mediapipeStorage).toEqual({
+            backend: 'mediapipe', probe: true, variant: 'cpu',
         });
         expect(snap.statsPass).toEqual({ ok: true });
         expect(snap.windowPass).toEqual({ ok: true });
@@ -110,7 +122,8 @@ describe('long-form memory acceptance', () => {
         expect(snap.heapPass.growth).toBe(25);
         expect(snap.heapFail.ok).toBe(false);
         expect(snap.heapFail.message).toMatch(/heap growth exceeded/);
-        expect(snap.mediapipeReject.ok).toBe(false);
+        expect(snap.mediapipeAccept).toEqual({ ok: true });
+        expect(snap.backends).toEqual(['mediapipe', 'onnx']);
         expect(snap.bounds).toEqual({ cache: 8, urls: 8 });
     });
 
