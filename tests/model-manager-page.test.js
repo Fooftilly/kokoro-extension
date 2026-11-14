@@ -62,6 +62,15 @@ describe('ONNX model manager English synthesis diagnostics', () => {
             permissions: { request: jest.fn() },
             storage: { local: { remove: jest.fn(), set: jest.fn() },
                 sync: { get: jest.fn(), set: jest.fn() } },
+            downloads: {
+                download: jest.fn(async () => 42),
+                onChanged: {
+                    addListener: jest.fn(listener => {
+                        globalThis.__kokoroExportOnChanged = listener;
+                    }),
+                    removeListener: jest.fn(),
+                },
+            },
         };
         global.caches = { open: jest.fn() };
         global.fetch = jest.fn();
@@ -1102,23 +1111,19 @@ describe('ONNX model manager English synthesis diagnostics', () => {
 
         const exportButton = document.getElementById('exportMeasuredResults');
         expect(exportButton.disabled).toBe(false);
-        const createElement = document.createElement.bind(document);
-        const clicked = [];
-        document.createElement = (tag) => {
-            const el = createElement(tag);
-            if (tag === 'a') {
-                el.click = () => clicked.push({
-                    href: el.href, download: el.download,
-                });
-            }
-            return el;
-        };
         exportButton.click();
-        document.createElement = createElement;
-        expect(clicked).toEqual([expect.objectContaining({
-            download: 'kokoro-measured-local-english.json',
-        })]);
-        expect(clicked[0].href).toContain('blob:');
+        await waitFor(() => browser.downloads.download.mock.calls.length === 1);
+        expect(browser.downloads.download).toHaveBeenCalledWith(
+            expect.objectContaining({
+                filename: 'kokoro-measured-local-english.json',
+                saveAs: false,
+                url: expect.stringContaining('blob:'),
+            }));
+        expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+        globalThis.__kokoroExportOnChanged({ id: 42, state: { current: 'complete' } });
+        await waitFor(() => URL.revokeObjectURL.mock.calls.length === 1);
+        expect(URL.revokeObjectURL).toHaveBeenCalledWith(
+            browser.downloads.download.mock.calls[0][0].url);
         expect(globalThis.__kokoroLastMeasuredExport).toEqual(
             expect.objectContaining({
                 kind: 'kokoro-measured-local-english',

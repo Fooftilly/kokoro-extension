@@ -1593,8 +1593,9 @@ def accept_measured_results_export(driver, sample_text="Hello world.", keys=None
         raise RuntimeError(
             "Firefox measured export control not ready offline with two rows: " +
             repr(ready))
+    started_ms = int(time.time() * 1000)
     driver.find_element(By.ID, constants["buttonId"]).click()
-    WebDriverWait(driver, 10).until(lambda d: d.execute_script("""
+    WebDriverWait(driver, 20).until(lambda d: d.execute_script("""
         const needle=arguments[0];
         const payload=globalThis.__kokoroLastMeasuredExport;
         const status=document.getElementById('measuredExportStatus')?.textContent||'';
@@ -1612,6 +1613,38 @@ def accept_measured_results_export(driver, sample_text="Hello world.", keys=None
         raise RuntimeError(
             "Firefox measured export status missing local-only confirmation: " +
             repr(status))
+    # Prove downloads.download completed and the saved JSON matches the payload.
+    download_hit = WebDriverWait(driver, 20).until(lambda d: d.execute_async_script("""
+        const filename=arguments[0];
+        const startedMs=arguments[1];
+        const done=arguments[arguments.length-1];
+        browser.downloads.search({
+            orderBy: ['-startTime'], limit: 20,
+        }).then(items=>{
+            const hit=(items||[]).find(item=>{
+                const path=String(item.filename||'');
+                const started=item.startTime ? Date.parse(item.startTime) : 0;
+                return item.state==='complete' &&
+                    (path===filename || path.endsWith('/'+filename) ||
+                        path.endsWith('\\\\'+filename)) &&
+                    (!started || started>=startedMs-8000);
+            });
+            done(hit ? {id:hit.id,filename:hit.filename,state:hit.state,
+                exists:hit.exists!==false} : null);
+        }, e=>done({error:String(e)}));
+    """, constants["filename"], started_ms))
+    if not download_hit or download_hit.get("error"):
+        raise RuntimeError(
+            "Firefox measured export download not complete: " + repr(download_hit))
+    saved = Path(download_hit["filename"])
+    if not saved.is_file():
+        raise RuntimeError(
+            "Firefox measured export file missing on disk: " + repr(download_hit))
+    from_file = json.loads(saved.read_text(encoding="utf-8"))
+    assert_measured_results_export_payload(from_file, {
+        "keys": keys,
+        "sampleText": sample_text,
+    })
     # Prove the click path stayed offline (no FastAPI / model fetch).
     if driver.execute_script("return navigator.onLine!==false;"):
         raise RuntimeError("Firefox measured export left the page online")
@@ -1621,6 +1654,7 @@ def accept_measured_results_export(driver, sample_text="Hello world.", keys=None
         sampleText=sample_text,
         statusConfirmed=True,
         downloadTriggered=True,
+        fileContentsVerified=True,
     )
     assert_measured_results_export_report(report)
     return report

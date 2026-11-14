@@ -41,6 +41,7 @@ const report = exp.buildMeasuredResultsExportReport({
     browser: 'chromium',
     keys: ['onnx-q8', 'mediapipe-cpu'],
     sampleText: 'Hello world.',
+    fileContentsVerified: true,
 });
 exp.assertMeasuredResultsExportReport(report);
 const fail = (() => {
@@ -88,6 +89,7 @@ describe('Measured results export acceptance', () => {
             noRanking: true,
             downloadTriggered: true,
             statusConfirmed: true,
+            fileContentsVerified: true,
         }));
         expect(snap.fail.ok).toBe(false);
         expect(snap.fail.message).toMatch(/not successful/i);
@@ -102,6 +104,8 @@ describe('Measured results export acceptance', () => {
         expect(html).toContain('id="measuredExportStatus"');
         expect(source).toContain('buildMeasuredEnglishExport');
         expect(source).toContain('exportMeasuredEnglishResults');
+        expect(source).toContain('downloadPinnedMeasuredExport');
+        expect(source).toContain('downloads.onChanged');
         expect(source).toContain('__kokoroLastMeasuredExport');
         expect(source).toContain('kokoro-measured-local-english');
         expect(source).toContain('telemetry: false');
@@ -110,6 +114,7 @@ describe('Measured results export acceptance', () => {
         expect(source).not.toContain('navigator.sendBeacon');
         expect(source).not.toMatch(
             /exportMeasuredEnglishResults[\s\S]*?fetch\(/);
+        expect(source).not.toMatch(/setTimeout\(\s*\(\)\s*=>\s*\{[^}]*revokeObjectURL/);
     });
 
     test('Chromium dual path exports before sample-edit clear', () => {
@@ -119,6 +124,8 @@ describe('Measured results export acceptance', () => {
         expect(source).toContain('measuredResultsExport');
         expect(source).toContain('__kokoroLastMeasuredExport');
         expect(source).toContain('MEASURED_EXPORT_BUTTON_ID');
+        expect(source).toContain('fileContentsVerified: true');
+        expect(source).toContain('readFile(savedPath');
         const exportIdx = source.indexOf(
             'await acceptMeasuredResultsExport(page');
         const editIdx = source.indexOf(
@@ -134,6 +141,9 @@ describe('Measured results export acceptance', () => {
         expect(source).toContain('def accept_measured_results_export');
         expect(source).toContain('measuredResultsExport');
         expect(source).toContain('__kokoroLastMeasuredExport');
+        expect(source).toContain('fileContentsVerified=True');
+        expect(source).toContain('browser.downloads.search');
+        expect(source).toContain('from_file = json.loads');
         const exportIdx = source.indexOf(
             'measured_results_export = accept_measured_results_export(');
         const editIdx = source.indexOf(

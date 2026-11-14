@@ -9,21 +9,27 @@ export const MEASURED_EXPORT_BUTTON_ID = 'exportMeasuredResults';
 export const MEASURED_EXPORT_STATUS_NEEDLE =
     'Measured results exported locally. Nothing was uploaded.';
 
-export function assertMeasuredResultsExportPayload(payload, expected = {}) {
-    if (!payload || typeof payload !== 'object') {
-        throw Error('Measured export payload missing');
-    }
-    if (payload.kind !== MEASURED_EXPORT_KIND) {
-        throw Error('Unexpected measured export kind: ' + payload.kind);
-    }
-    if (payload.localOnly !== true || payload.telemetry !== false ||
-        payload.noRanking !== true) {
-        throw Error('Measured export must stay local-only with no ranking/telemetry');
-    }
-    if (payload.measurementKind !== 'warm-full-clip-synthesis' ||
-        payload.firstAudioMeasured !== false) {
-        throw Error('Measured export must disclose warm full-clip (not first-audio)');
-    }
+function requireMeasuredFlag(payload, key, expected, message) {
+    if (payload[key] !== expected) throw Error(message);
+}
+
+function assertMeasuredExportPrivacy(payload) {
+    requireMeasuredFlag(payload, 'localOnly', true,
+        'Measured export must stay local-only with no ranking/telemetry');
+    requireMeasuredFlag(payload, 'telemetry', false,
+        'Measured export must stay local-only with no ranking/telemetry');
+    requireMeasuredFlag(payload, 'noRanking', true,
+        'Measured export must stay local-only with no ranking/telemetry');
+}
+
+function assertMeasuredExportDisclosure(payload) {
+    requireMeasuredFlag(payload, 'measurementKind', 'warm-full-clip-synthesis',
+        'Measured export must disclose warm full-clip (not first-audio)');
+    requireMeasuredFlag(payload, 'firstAudioMeasured', false,
+        'Measured export must disclose warm full-clip (not first-audio)');
+}
+
+function assertMeasuredExportRows(payload, expected = {}) {
     if (!Array.isArray(payload.measurements) || !payload.measurements.length) {
         throw Error('Measured export has no measurements');
     }
@@ -49,6 +55,19 @@ export function assertMeasuredResultsExportPayload(payload, expected = {}) {
         payload.sampleText !== expected.sampleText) {
         throw Error('Measured export sample mismatch: ' + payload.sampleText);
     }
+}
+
+/** Nested helpers keep CodeFactor method complexity under the gate. */
+export function assertMeasuredResultsExportPayload(payload, expected = {}) {
+    if (!payload || typeof payload !== 'object') {
+        throw Error('Measured export payload missing');
+    }
+    if (payload.kind !== MEASURED_EXPORT_KIND) {
+        throw Error('Unexpected measured export kind: ' + payload.kind);
+    }
+    assertMeasuredExportPrivacy(payload);
+    assertMeasuredExportDisclosure(payload);
+    assertMeasuredExportRows(payload, expected);
     return true;
 }
 
@@ -64,6 +83,7 @@ export function buildMeasuredResultsExportReport(options = {}) {
         sampleText: options.sampleText || 'Hello world.',
         statusConfirmed: options.statusConfirmed !== false,
         downloadTriggered: options.downloadTriggered !== false,
+        fileContentsVerified: options.fileContentsVerified === true,
     };
 }
 
@@ -77,6 +97,9 @@ export function assertMeasuredResultsExportReport(report) {
     }
     if (!report.downloadTriggered || !report.statusConfirmed) {
         throw Error('Measured export UI signals incomplete');
+    }
+    if (report.fileContentsVerified !== true) {
+        throw Error('Measured export file contents were not verified');
     }
     return true;
 }

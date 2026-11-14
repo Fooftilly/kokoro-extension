@@ -959,6 +959,8 @@ async function acceptMeasuredResultsExport(page, expected = {}) {
         MEASURED_EXPORT_STATUS_NEEDLE,
     } = await import('./measured-results-export-acceptance.mjs');
     liveHeartbeat('measured-results-export');
+    const expectKeys = expected.keys || ['onnx-q8', 'mediapipe-cpu'];
+    const expectSample = expected.sampleText || 'Hello world.';
     const exportReady = await page.evaluate((buttonId) => {
         const button = document.getElementById(buttonId);
         return {
@@ -974,18 +976,30 @@ async function acceptMeasuredResultsExport(page, expected = {}) {
             JSON.stringify(exportReady));
     }
     const [download] = await Promise.all([
-        page.waitForEvent('download', { timeout: 15000 }),
+        page.waitForEvent('download', { timeout: 20000 }),
         page.locator('#' + MEASURED_EXPORT_BUTTON_ID).click(),
     ]);
     const suggested = download.suggestedFilename();
     if (suggested !== MEASURED_EXPORT_FILENAME) {
         throw Error('Unexpected measured export filename: ' + suggested);
     }
+    const savedPath = await download.path();
+    if (!savedPath) {
+        throw Error('Measured export download path missing');
+    }
+    const fromFile = JSON.parse(await readFile(savedPath, 'utf8'));
+    assertMeasuredResultsExportPayload(fromFile, {
+        keys: expectKeys, sampleText: expectSample,
+    });
     const payload = await page.evaluate(() => globalThis.__kokoroLastMeasuredExport);
     assertMeasuredResultsExportPayload(payload, {
-        keys: expected.keys || ['onnx-q8', 'mediapipe-cpu'],
-        sampleText: expected.sampleText || 'Hello world.',
+        keys: expectKeys, sampleText: expectSample,
     });
+    await page.waitForFunction(needle => {
+        const status = document.getElementById('measuredExportStatus')
+            ?.textContent || '';
+        return status.includes(needle);
+    }, MEASURED_EXPORT_STATUS_NEEDLE, { timeout: 15000 });
     const status = await page.locator('#measuredExportStatus').textContent();
     if (!status?.includes(MEASURED_EXPORT_STATUS_NEEDLE)) {
         throw Error('Measured export status missing local-only confirmation: ' +
@@ -993,10 +1007,11 @@ async function acceptMeasuredResultsExport(page, expected = {}) {
     }
     const report = buildMeasuredResultsExportReport({
         browser: 'chromium',
-        keys: expected.keys || ['onnx-q8', 'mediapipe-cpu'],
-        sampleText: expected.sampleText || 'Hello world.',
+        keys: expectKeys,
+        sampleText: expectSample,
         statusConfirmed: true,
         downloadTriggered: true,
+        fileContentsVerified: true,
     });
     assertMeasuredResultsExportReport(report);
     return report;

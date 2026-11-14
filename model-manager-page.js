@@ -102,7 +102,47 @@ function updateMeasuredExportButton() {
     if (button) button.disabled = sharedEnglishResults.size === 0;
 }
 
-function exportMeasuredEnglishResults() {
+// Keep the measured-export blob pinned until downloads.onChanged reports a
+// terminal state — same pattern as overlay downloadPinnedSentence / FastAPI
+// background downloads. A zero-delay revoke can drop the file before the
+// browser opens the blob URL.
+async function downloadPinnedMeasuredExport(url, filename) {
+    const release = () => {
+        try { URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
+    };
+    const events = browser.downloads?.onChanged;
+    if (!events?.addListener || !events?.removeListener ||
+        typeof browser.downloads?.download !== 'function') {
+        throw new Error('downloads API unavailable for measured export');
+    }
+    let downloadId = null;
+    let finished = false;
+    const earlyTerminals = new Set();
+    const finish = () => {
+        if (finished) return;
+        finished = true;
+        events.removeListener(onChanged);
+        release();
+    };
+    const onChanged = delta => {
+        if (!['complete', 'interrupted'].includes(delta.state?.current)) return;
+        if (downloadId === null) earlyTerminals.add(delta.id);
+        else if (delta.id === downloadId) finish();
+    };
+    try {
+        events.addListener(onChanged);
+        downloadId = await browser.downloads.download({
+            url, filename, saveAs: false,
+        });
+        if (earlyTerminals.has(downloadId)) finish();
+        return downloadId;
+    } catch (error) {
+        finish();
+        throw error;
+    }
+}
+
+async function exportMeasuredEnglishResults() {
     const payload = buildMeasuredEnglishExport();
     const status = document.getElementById('measuredExportStatus');
     if (!payload.measurements.length) {
@@ -113,19 +153,19 @@ function exportMeasuredEnglishResults() {
     const text = JSON.stringify(payload, null, 2);
     const blob = new Blob([text], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = 'kokoro-measured-local-english.json';
-    anchor.rel = 'noopener';
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    setTimeout(() => {
+    try {
+        await downloadPinnedMeasuredExport(
+            url, 'kokoro-measured-local-english.json');
+        if (status) {
+            status.textContent =
+                'Measured results exported locally. Nothing was uploaded.';
+        }
+    } catch (error) {
         try { URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
-    }, 0);
-    if (status) {
-        status.textContent =
-            'Measured results exported locally. Nothing was uploaded.';
+        if (status) {
+            status.textContent = 'Measured export failed: ' +
+                (error?.message || String(error));
+        }
     }
 }
 
@@ -1014,7 +1054,7 @@ if (page) {
         renderSharedEnglishResults();
     });
     document.getElementById('exportMeasuredResults')?.addEventListener('click', () => {
-        exportMeasuredEnglishResults();
+        void exportMeasuredEnglishResults();
     });
     renderSharedEnglishResults();
     document.getElementById('testServer').addEventListener('click', () => {
