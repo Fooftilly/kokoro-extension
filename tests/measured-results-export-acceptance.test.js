@@ -106,6 +106,8 @@ describe('Measured results export acceptance', () => {
         expect(source).toContain('exportMeasuredEnglishResults');
         expect(source).toContain('downloadPinnedMeasuredExport');
         expect(source).toContain('downloads.onChanged');
+        expect(source).toContain('Measured export download interrupted');
+        expect(source).toContain('return await done');
         expect(source).toContain('__kokoroLastMeasuredExport');
         expect(source).toContain('__kokoroLastMeasuredExportDownloadId');
         expect(source).toContain('kokoro-measured-local-english');

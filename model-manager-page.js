@@ -102,10 +102,9 @@ function updateMeasuredExportButton() {
     if (button) button.disabled = sharedEnglishResults.size === 0;
 }
 
-// Keep the measured-export blob pinned until downloads.onChanged reports a
-// terminal state — same pattern as overlay downloadPinnedSentence / FastAPI
-// background downloads. A zero-delay revoke can drop the file before the
-// browser opens the blob URL.
+// Await downloads.onChanged for this export id. Resolving on download() alone
+// would flash success while the JSON is still writing; treating interrupted
+// like complete would revoke the blob and leave a false success status.
 async function downloadPinnedMeasuredExport(url, filename) {
     const release = () => {
         try { URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
@@ -117,28 +116,48 @@ async function downloadPinnedMeasuredExport(url, filename) {
     }
     let downloadId = null;
     let finished = false;
-    const earlyTerminals = new Set();
-    const finish = () => {
+    const earlyTerminals = new Map();
+    let settle;
+    const done = new Promise((resolve, reject) => {
+        settle = { resolve, reject };
+    });
+    const finish = (error, id) => {
         if (finished) return;
         finished = true;
         events.removeListener(onChanged);
         release();
+        if (error) settle.reject(error);
+        else settle.resolve(id);
     };
     const onChanged = delta => {
-        if (!['complete', 'interrupted'].includes(delta.state?.current)) return;
-        if (downloadId === null) earlyTerminals.add(delta.id);
-        else if (delta.id === downloadId) finish();
+        const state = delta.state?.current;
+        if (state !== 'complete' && state !== 'interrupted') return;
+        if (downloadId === null) {
+            earlyTerminals.set(delta.id, state);
+            return;
+        }
+        if (delta.id !== downloadId) return;
+        if (state === 'interrupted') {
+            finish(new Error('Measured export download interrupted'));
+        } else {
+            finish(null, downloadId);
+        }
     };
     try {
         events.addListener(onChanged);
         downloadId = await browser.downloads.download({
             url, filename, saveAs: false,
         });
-        if (earlyTerminals.has(downloadId)) finish();
-        return downloadId;
+        const early = earlyTerminals.get(downloadId);
+        if (early === 'interrupted') {
+            finish(new Error('Measured export download interrupted'));
+        } else if (early === 'complete') {
+            finish(null, downloadId);
+        }
+        return await done;
     } catch (error) {
-        finish();
-        throw error;
+        finish(error instanceof Error ? error : new Error(String(error)));
+        return await done;
     }
 }
 

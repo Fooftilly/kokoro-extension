@@ -1120,8 +1120,12 @@ describe('ONNX model manager English synthesis diagnostics', () => {
                 url: expect.stringContaining('blob:'),
             }));
         expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+        expect(document.getElementById('measuredExportStatus').textContent)
+            .not.toContain('Nothing was uploaded');
         globalThis.__kokoroExportOnChanged({ id: 42, state: { current: 'complete' } });
-        await waitFor(() => URL.revokeObjectURL.mock.calls.length === 1);
+        await waitFor(() => URL.revokeObjectURL.mock.calls.length === 1 &&
+            document.getElementById('measuredExportStatus').textContent
+                .includes('Nothing was uploaded'));
         expect(URL.revokeObjectURL).toHaveBeenCalledWith(
             browser.downloads.download.mock.calls[0][0].url);
         expect(globalThis.__kokoroLastMeasuredExportDownloadId).toBe(42);
@@ -1137,8 +1141,26 @@ describe('ONNX model manager English synthesis diagnostics', () => {
             }));
         expect(globalThis.__kokoroLastMeasuredExport.measurements.map(r => r.key)
             .sort()).toEqual(['mediapipe-cpu', 'onnx-q8']);
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('interrupted measured export rejects after download starts', async () => {
+        await runProbe();
+        const exportButton = document.getElementById('exportMeasuredResults');
+        expect(exportButton.disabled).toBe(false);
+        exportButton.click();
+        await waitFor(() => browser.downloads.download.mock.calls.length === 1);
         expect(document.getElementById('measuredExportStatus').textContent)
-            .toContain('Nothing was uploaded');
+            .not.toContain('Nothing was uploaded');
+        globalThis.__kokoroExportOnChanged({
+            id: 42, state: { current: 'interrupted' },
+        });
+        await waitFor(() => document.getElementById('measuredExportStatus')
+            .textContent.includes('Measured export failed'));
+        expect(document.getElementById('measuredExportStatus').textContent)
+            .toMatch(/interrupted/i);
+        expect(URL.revokeObjectURL).toHaveBeenCalled();
+        expect(globalThis.__kokoroLastMeasuredExportDownloadId).toBeUndefined();
         expect(global.fetch).not.toHaveBeenCalled();
     });
 
