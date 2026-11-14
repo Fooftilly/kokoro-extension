@@ -40,6 +40,7 @@ jobs:
           python3 -m py_compile scripts/firefox_article_selection_acceptance.py
           python3 -m py_compile scripts/firefox_long_form_memory_acceptance.py
           python3 -m py_compile scripts/firefox_popup_test_tts_cta_acceptance.py
+          python3 -m py_compile scripts/firefox_overlay_controls_acceptance.py
           python3 -m py_compile scripts/validate-live-firefox.py
           python3 -m py_compile scripts/native-firefox-keys.py
           python3 -m py_compile scripts/native_chromium_x11.py

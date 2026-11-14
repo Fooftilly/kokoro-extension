@@ -31,6 +31,7 @@ import {
     originLongFormMemoryStageEnabled,
     requireLongFormBackend,
 } from './long-form-memory-acceptance.mjs';
+import { buildCurrentProviderSnapshot } from './live-chromium-report.mjs';
 // The extension's .js modules are ESM while package.json is CommonJS for the
 // build tool. Copy the pure catalog into a temporary .mjs file for the Node harness.
 const catalogFile = path.join(os.tmpdir(), 'kokoro-runtime-model-catalog.mjs');
@@ -91,6 +92,31 @@ async function withTimeout(promise, ms, label) {
         ]);
     } finally {
         clearTimeout(watchdog);
+    }
+}
+
+/** Stage progress.log beats while a long Playwright wait runs (stall watchdog). */
+async function withProgressBeats(label, promise, detail = {}) {
+    const started = Date.now();
+    liveHeartbeat(label, { ...detail, phase: 'start' });
+    const timer = setInterval(() => {
+        liveHeartbeat(label, {
+            ...detail,
+            phase: 'waiting',
+            elapsedMs: Date.now() - started,
+        });
+    }, 15000);
+    timer.unref?.();
+    try {
+        const result = await promise;
+        liveHeartbeat(label, {
+            ...detail,
+            phase: 'done',
+            elapsedMs: Date.now() - started,
+        });
+        return result;
+    } finally {
+        clearInterval(timer);
     }
 }
 
@@ -487,11 +513,13 @@ async function downloadModelFromOfficialOrigin(page, manifest) {
 async function acceptLocalBenchmarkUi(page, extensionId, manifest) {
     const key = manifest.provider + '-' + manifest.variant;
     const rowSelector = '[data-variant="' + key + '"]';
+    liveHeartbeat('local-benchmark-ui-goto', { key });
     await page.goto('chrome-extension://' + extensionId + '/benchmark.html');
     await page.waitForFunction(selector => {
         const row = document.querySelector(selector);
         return !!row && row.querySelector('.model-test')?.disabled === false;
     }, rowSelector, { timeout: 30000 });
+    liveHeartbeat('local-benchmark-ui-ready', { key });
     const readEnglishRow = async () => page.evaluate(key => {
         const row = document.querySelector('#sharedEnglishComparisonRows tr[data-backend="' + key + '"]');
         const rows = document.querySelectorAll('#sharedEnglishComparisonRows tr');
@@ -511,41 +539,242 @@ async function acceptLocalBenchmarkUi(page, extensionId, manifest) {
         }
         return { cells, p50Ms: values[0], p95Ms: values[1], rtfP50: values[2] };
     }, key);
+    liveHeartbeat('local-benchmark-ui-first-test-click', { key });
     await page.locator(rowSelector + ' .model-test').click();
-    await page.waitForFunction(key => {
+    await withProgressBeats('local-benchmark-ui-first-wait', page.waitForFunction(key => {
         const model = document.querySelector('[data-variant="' + key + '"]');
         return document.querySelector('#sharedEnglishComparisonRows tr[data-backend="' + key + '"]') &&
             model?.querySelector('.model-choose')?.disabled === false;
-    }, key, { timeout: 180000 });
+    }, key, { timeout: 180000 }), { key });
     const first = await readEnglishRow();
+    liveHeartbeat('local-benchmark-ui-first-row', { key, p50Ms: first.p50Ms });
     await page.locator('#benchmarkText').fill('zzzzqwertyword.');
     const afterEdit = await page.locator('#sharedEnglishComparisonRows tr').count();
     if (afterEdit !== 0) throw Error('Benchmark kept stale result after user edited English sample');
     let ipaOnlyExcluded = null;
     if (manifest.provider === 'onnx') {
         await page.locator(rowSelector + ' .model-test').click();
-        await page.waitForFunction(selector => {
+        await withProgressBeats('local-benchmark-ui-ipa-wait', page.waitForFunction(selector => {
             const model = document.querySelector(selector);
             return model?.querySelector('.model-status')?.textContent.includes('IPA-only diagnostic') &&
                 model.querySelector('.model-choose')?.disabled === true;
-        }, rowSelector, { timeout: 180000 });
+        }, rowSelector, { timeout: 180000 }), { key });
         if (await page.locator('#sharedEnglishComparisonRows tr').count() !== 0) {
             throw Error('IPA-only ONNX fallback entered shared-English comparison');
         }
         ipaOnlyExcluded = true;
+        liveHeartbeat('local-benchmark-ui-ipa-excluded', { key });
     }
     await page.locator('#benchmarkText').fill('Hello world.');
+    liveHeartbeat('local-benchmark-ui-retest-click', { key });
     await page.locator(rowSelector + ' .model-test').click();
-    await page.waitForFunction(key => {
+    await withProgressBeats('local-benchmark-ui-retest-wait', page.waitForFunction(key => {
         const model = document.querySelector('[data-variant="' + key + '"]');
         return document.querySelector('#sharedEnglishComparisonRows tr[data-backend="' + key + '"]') &&
             model?.querySelector('.model-choose')?.disabled === false;
-    }, key, { timeout: 180000 });
+    }, key, { timeout: 180000 }), { key });
     const restored = await readEnglishRow();
+    liveHeartbeat('local-benchmark-ui-done', { key });
     return { success: true, provider: manifest.provider, variant: manifest.variant,
         sharedSample: 'Hello world.', first, restored, clearedOnEdit: true,
         ipaOnlyExcluded, backendSelectionTested: true, networkOffline: true,
         noImplicitFastApi: true, rows: 1 };
+}
+
+/** #57: real overlay controls for ONNX (incl. Retry) and MediaPipe. */
+async function acceptOverlayControls(page, extensionId, backend) {
+    const {
+        overlaySeedForBackend,
+        assertOverlayWavSnapshot,
+        assertOverlaySettings,
+        assertOverlayPlaybackConfirmed,
+        assertOverlayPausedAfterToggle,
+        buildOverlayControlsReport,
+    } = await import('./overlay-controls-acceptance.mjs');
+    const includeRetry = backend === 'onnx';
+    const seed = overlaySeedForBackend(backend, { includeUnsupported: includeRetry });
+    liveHeartbeat('overlay-controls-start', { backend });
+    // Seed from the existing extension-origin tab — chrome.storage is unavailable
+    // on a fresh about:blank page. Dedicated overlay tab still avoids MediaPipe
+    // WASM probe residue detaching #audio on the probe page.
+    await page.evaluate(async storage => {
+        await chrome.storage.local.set(storage);
+    }, seed);
+    const overlayPage = await page.context().newPage();
+    try {
+        await overlayPage.goto('chrome-extension://' + extensionId + '/overlay.html');
+        // #audio is display:none in overlay.css — wait for attached, not visible.
+        await overlayPage.waitForSelector('#audio', { state: 'attached', timeout: 30000 });
+        const overlayReady = index => {
+            const spans = document.querySelectorAll('.sentence');
+            return spans.length === 3 && spans[index]?.classList.contains('highlight') &&
+                document.getElementById('audio')?.src.startsWith('blob:') &&
+                document.getElementById('loadingSpinner')?.style.display === 'none';
+        };
+        await withProgressBeats(
+            'overlay-controls-wait-ready',
+            overlayPage.waitForFunction(overlayReady, 0, { timeout: 180000 }),
+            { backend },
+        );
+        liveHeartbeat('overlay-controls-ready', { backend });
+        // Prefer page.evaluate over locator('#audio') — avoids detach races.
+        const firstUrl = await overlayPage.evaluate(() => {
+            const audio = document.getElementById('audio');
+            if (!audio?.src?.startsWith('blob:')) {
+                throw Error('Overlay #audio missing after ready');
+            }
+            return audio.src;
+        });
+        const firstWav = await overlayPage.evaluate(async () => {
+            const audio = document.getElementById('audio');
+            const bytes = new Uint8Array(await (await fetch(audio.src)).arrayBuffer());
+            const wav = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+            const tag = (start, length) =>
+                String.fromCharCode(...bytes.subarray(start, start + length));
+            const audioBytes = wav.getUint32(40, true);
+            if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
+                wav.getUint32(24, true) !== 24000 || audioBytes < 2 ||
+                bytes.length !== 44 + audioBytes) {
+                throw Error('Overlay emitted malformed WAV');
+            }
+            if (!audio.paused || document.getElementById('playPause').textContent !== 'Play') {
+                throw Error('Autoplay-disabled overlay unexpectedly started playing');
+            }
+            if (navigator.onLine !== false) throw Error('Overlay was not offline');
+            return { sampleRateHz: 24000, audioBytes, initiallyPaused: true };
+        });
+        assertOverlayWavSnapshot(firstWav);
+        await overlayPage.locator('#seekFwd').click();
+        await overlayPage.waitForFunction(overlayReady, 1, { timeout: 180000 });
+        await overlayPage.locator('#seekBack').click();
+        await overlayPage.waitForFunction(overlayReady, 0, { timeout: 180000 });
+        await overlayPage.locator('#speed').selectOption('1.25');
+        await overlayPage.evaluate(() => {
+            const slider = document.getElementById('volumeControl');
+            slider.value = '0.4';
+            slider.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        const settings = await overlayPage.evaluate(() => {
+            const audio = document.getElementById('audio');
+            return { rate: audio.playbackRate, volume: audio.volume, paused: audio.paused };
+        });
+        assertOverlaySettings(settings);
+        liveHeartbeat('overlay-controls-play-pause', { backend });
+        // Device-level pause/resume: require playing event + currentTime advance.
+        // navigate() already sets "Playing sentence" before play() resolves.
+        await overlayPage.evaluate(() => {
+            const audio = document.getElementById('audio');
+            if (!audio) return;
+            audio.muted = true;
+            audio.__kokoroPlayProof = {
+                playingEvent: false,
+                startTime: audio.currentTime,
+            };
+            audio.addEventListener('playing', () => {
+                audio.__kokoroPlayProof.playingEvent = true;
+            }, { once: true });
+        });
+        await overlayPage.locator('#playPause').click();
+        await overlayPage.waitForFunction(() => {
+            const audio = document.getElementById('audio');
+            const proof = audio?.__kokoroPlayProof;
+            return audio && !audio.paused && audio.readyState >= 2 &&
+                document.getElementById('playPause')?.textContent === 'Pause' &&
+                proof?.playingEvent === true &&
+                audio.currentTime > proof.startTime;
+        }, null, { timeout: 30000 });
+        assertOverlayPlaybackConfirmed(await overlayPage.evaluate(() => {
+            const audio = document.getElementById('audio');
+            const proof = audio?.__kokoroPlayProof || {};
+            return {
+                playingEvent: proof.playingEvent === true,
+                startTime: proof.startTime,
+                currentTime: audio?.currentTime ?? 0,
+                paused: audio?.paused,
+                button: document.getElementById('playPause')?.textContent || '',
+                readyState: audio?.readyState ?? 0,
+            };
+        }));
+        await overlayPage.locator('#playPause').click();
+        await overlayPage.waitForFunction(() => {
+            const audio = document.getElementById('audio');
+            return audio && audio.paused &&
+                document.getElementById('playPause')?.textContent === 'Play';
+        }, null, { timeout: 30000 });
+        assertOverlayPausedAfterToggle(await overlayPage.evaluate(() => {
+            const audio = document.getElementById('audio');
+            return {
+                paused: audio?.paused,
+                button: document.getElementById('playPause')?.textContent || '',
+            };
+        }));
+        liveHeartbeat('overlay-controls-play-pause-done', { backend });
+        let unsupportedSentenceRejected = false;
+        let retryRestoredAudio = false;
+        if (includeRetry) {
+            await overlayPage.locator('#seekFwd').click();
+            await withProgressBeats(
+                'overlay-controls-seek-1',
+                overlayPage.waitForFunction(overlayReady, 1, { timeout: 180000 }),
+                { backend },
+            );
+            await overlayPage.locator('#seekFwd').click();
+            await withProgressBeats(
+                'overlay-controls-unsupported-wait',
+                overlayPage.waitForFunction(() => {
+                    const retry = document.getElementById('retry');
+                    const spans = document.querySelectorAll('.sentence');
+                    return spans.length === 3 && spans[2].classList.contains('highlight') &&
+                        document.getElementById('status')?.textContent === 'Error playing audio.' &&
+                        getComputedStyle(retry).display !== 'none' &&
+                        document.getElementById('loadingSpinner')?.style.display === 'none';
+                }, null, { timeout: 180000 }),
+                { backend },
+            );
+            unsupportedSentenceRejected = true;
+            await overlayPage.evaluate(async () => {
+                await chrome.storage.local.set({
+                    pendingText: 'Hello world. Hello world. Hello world.',
+                    pendingContent: [
+                        { type: 'text', content: 'Hello world.' },
+                        { type: 'text', content: 'Hello world.' },
+                        { type: 'text', content: 'Hello world.' },
+                    ],
+                });
+            });
+            await overlayPage.locator('#retry').click();
+            await withProgressBeats(
+                'overlay-controls-retry-wait',
+                overlayPage.waitForFunction(oldUrl => {
+                    const spans = document.querySelectorAll('.sentence');
+                    const audio = document.getElementById('audio');
+                    return spans.length === 3 && spans[0].classList.contains('highlight') &&
+                        audio?.src.startsWith('blob:') && audio.src !== oldUrl &&
+                        getComputedStyle(document.getElementById('retry')).display === 'none' &&
+                        document.getElementById('loadingSpinner')?.style.display === 'none';
+                }, firstUrl, { timeout: 180000 }),
+                { backend },
+            );
+            retryRestoredAudio = true;
+            liveHeartbeat('overlay-controls-retry-done', { backend });
+        }
+        const report = buildOverlayControlsReport({
+            backend,
+            includeRetry,
+            playPauseToggled: true,
+            playbackConfirmed: true,
+            unsupportedSentenceRejected,
+            retryRestoredAudio,
+            sampleRateHz: firstWav.sampleRateHz,
+            audioBytes: firstWav.audioBytes,
+            rate: settings.rate,
+            volume: settings.volume,
+        });
+        liveHeartbeat('overlay-controls-done', { backend, success: true });
+        return report;
+    } finally {
+        if (!overlayPage.isClosed()) await overlayPage.close();
+    }
 }
 
 /** #61: popup Test TTS backends CTA opens benchmark.html with three cards. */
@@ -1831,26 +2060,29 @@ try {
     let dictionaryUiDownloadAcceptance = null;
     let popupTestTtsCtaAcceptance = null;
     let twoBackendComparisonAcceptance = null;
-    const saveReport = () => writeFile(path.join(resultsDir, 'report.json'), JSON.stringify({
-        testedAt: new Date().toISOString(), browser: preflight.browser, preflight,
-        dictionaryCacheAcceptance, browserRestartAcceptance,
-        dictionaryUiDownloadAcceptance, popupTestTtsCtaAcceptance,
-        twoBackendComparisonAcceptance,
-        results, originDownload, providerFilter,
-        networkRequirement: providerFilter === 'dictionary'
-            ? 'offline during dictionary persistence/verification; no inference attempted'
-            : 'offline during every local synthesis probe',
-        cachePopulation: originDownload
-            ? providerFilter + ' weights downloaded through real user-facing Download control from official HTTPS origin; no loopback preload'
-            : providerFilter === 'dictionary'
-                ? 'no model weights downloaded; direct pinned dictionary HTTPS and model-manager UI acceptance only'
-                : 'heavy weights preloaded from verified pinned bytes over authenticated loopback; dictionary official HTTPS and model-manager UI checked separately',
-        scope: originDownload
-            ? 'Chromium ' + providerFilter + ' CPU official-origin UI download, pinned bytes/SHA-256 and offline synthesis; other engine and Firefox untested'
-            : providerFilter === 'dictionary'
-                ? 'Chromium dictionary-only UI/Cache acceptance; no large speech models or audio synthesis'
-                : 'Linux Chromium MV3 extension origin; no subjective audio-quality or complete download-manager acceptance',
-    }, null, 2));
+    // Optional currentProvider snapshots mid-loop checks that are not yet in
+    // `results` (pushed only after all stages for that provider finish).
+    const saveReport = (currentProvider = null) => writeFile(
+        path.join(resultsDir, 'report.json'), JSON.stringify({
+            testedAt: new Date().toISOString(), browser: preflight.browser, preflight,
+            dictionaryCacheAcceptance, browserRestartAcceptance,
+            dictionaryUiDownloadAcceptance, popupTestTtsCtaAcceptance,
+            twoBackendComparisonAcceptance,
+            results, currentProvider, originDownload, providerFilter,
+            networkRequirement: providerFilter === 'dictionary'
+                ? 'offline during dictionary persistence/verification; no inference attempted'
+                : 'offline during every local synthesis probe',
+            cachePopulation: originDownload
+                ? providerFilter + ' weights downloaded through real user-facing Download control from official HTTPS origin; no loopback preload'
+                : providerFilter === 'dictionary'
+                    ? 'no model weights downloaded; direct pinned dictionary HTTPS and model-manager UI acceptance only'
+                    : 'heavy weights preloaded from verified pinned bytes over authenticated loopback; dictionary official HTTPS and model-manager UI checked separately',
+            scope: originDownload
+                ? 'Chromium ' + providerFilter + ' CPU official-origin UI download, pinned bytes/SHA-256 and offline synthesis; other engine and Firefox untested'
+                : providerFilter === 'dictionary'
+                    ? 'Chromium dictionary-only UI/Cache acceptance; no large speech models or audio synthesis'
+                    : 'Linux Chromium MV3 extension origin; no subjective audio-quality or complete download-manager acceptance',
+        }, null, 2));
     for (const manifest of variants) {
         // Direct HTTPS CMUdict cache acceptance already ran in the preflight.
         // Never substitute a loopback copy for the dictionary in origin mode.
@@ -1861,10 +2093,25 @@ try {
         let originModelAcceptance = null;
         let onnxPlaybackAcceptance = null;
         let onnxOverlayAcceptance = null;
+        let mediapipeOverlayAcceptance = null;
         let localBenchmarkAcceptance = null;
         let epubReaderAcceptance = null;
         let articleSelectionAcceptance = null;
         let longFormMemoryAcceptance = null;
+        const currentProviderSnapshot = () => buildCurrentProviderSnapshot({
+            provider: manifest.provider,
+            variant: manifest.variant,
+            stage,
+            crashed,
+            originModelAcceptance,
+            onnxPlaybackAcceptance,
+            onnxOverlayAcceptance,
+            mediapipeOverlayAcceptance,
+            localBenchmarkAcceptance,
+            epubReaderAcceptance,
+            articleSelectionAcceptance,
+            longFormMemoryAcceptance,
+        });
         page.on('pageerror', error => errors.push(String(error)));
         page.on('crash', () => { crashed = true; });
         try {
@@ -1877,7 +2124,7 @@ try {
                     provider: manifest.provider,
                     success: originModelAcceptance?.success === true,
                 });
-                await saveReport();
+                await saveReport(currentProviderSnapshot());
             } else {
             await page.evaluate(async ({ manifest, port, transferToken }) => {
             const { ModelDataStore } = await import('./model-data-store.js');
@@ -1907,7 +2154,7 @@ try {
             }
             stage = 'offline-model-initialization-and-synthesis';
             liveHeartbeat(stage, { provider: manifest.provider, variant: manifest.variant });
-            await saveReport();
+            await saveReport(currentProviderSnapshot());
             await withTimeout(page.evaluate(({ provider, variant }) => {
             window.__kokoroProbe = { done: false };
             void (async () => {
@@ -2083,112 +2330,28 @@ try {
                         JSON.stringify(onnxPlaybackAcceptance));
                 }
 
-                // Exercise the real packaged overlay page, not just AudioManager.
-                // Use three distinct blocks to avoid sentence-merging heuristics:
-                // the third contains an unsupported word to expose real Retry.
-                // Autoplay is deliberately disabled so navigation is deterministic
-                // even on CI runners without an audio output device.
                 stage = 'offline-onnx-overlay-controls';
-                await page.evaluate(async () => {
-                    await chrome.storage.local.set({
-                        pendingTtsBackend: 'onnx', pendingApiUrl: null,
-                        pendingText: 'Hello world. Hello world. zzzzqwertyword.',
-                        pendingContent: [
-                            { type: 'text', content: 'Hello world.' },
-                            { type: 'text', content: 'Hello world.' },
-                            { type: 'text', content: 'zzzzqwertyword.' },
-                        ],
-                        pendingTitle: 'ONNX overlay acceptance',
-                        pendingAutoplay: false,
-                    });
-                });
-                await page.goto('chrome-extension://' + extensionId + '/overlay.html');
-                const overlayReady = index => {
-                    const spans = document.querySelectorAll('.sentence');
-                    return spans.length === 3 && spans[index]?.classList.contains('highlight') &&
-                        document.getElementById('audio')?.src.startsWith('blob:') &&
-                        document.getElementById('loadingSpinner')?.style.display === 'none';
-                };
-                await page.waitForFunction(overlayReady, 0, { timeout: 180000 });
-                const firstUrl = await page.locator('#audio').evaluate(audio => audio.src);
-                const firstWav = await page.evaluate(async () => {
-                    const audio = document.getElementById('audio');
-                    const bytes = new Uint8Array(await (await fetch(audio.src)).arrayBuffer());
-                    const wav = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-                    const tag = (start, length) =>
-                        String.fromCharCode(...bytes.subarray(start, start + length));
-                    const audioBytes = wav.getUint32(40, true);
-                    if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
-                        wav.getUint32(24, true) !== 24000 || audioBytes < 2 ||
-                        bytes.length !== 44 + audioBytes) throw Error('Overlay emitted malformed ONNX WAV');
-                    if (!audio.paused || document.getElementById('playPause').textContent !== 'Play') {
-                        throw Error('Autoplay-disabled overlay unexpectedly started playing');
-                    }
-                    if (navigator.onLine !== false) throw Error('Overlay was not offline');
-                    return { sampleRateHz: 24000, audioBytes, initiallyPaused: true };
-                });
-                await page.locator('#seekFwd').click();
-                await page.waitForFunction(overlayReady, 1, { timeout: 180000 });
-                await page.locator('#seekBack').click();
-                await page.waitForFunction(overlayReady, 0, { timeout: 180000 });
-                await page.locator('#speed').selectOption('1.25');
-                await page.evaluate(() => {
-                    const slider = document.getElementById('volumeControl');
-                    slider.value = '0.4';
-                    slider.dispatchEvent(new Event('input', { bubbles: true }));
-                });
-                const settings = await page.evaluate(() => {
-                    const audio = document.getElementById('audio');
-                    return { rate: audio.playbackRate, volume: audio.volume, paused: audio.paused };
-                });
-                if (Math.abs(settings.rate - 1.25) > 0.001 ||
-                    Math.abs(settings.volume - 0.4) > 0.001 || !settings.paused) {
-                    throw Error('Overlay speed/volume or paused navigation state failed: ' +
-                        JSON.stringify(settings));
-                }
-                // Retry must not be clickable in a healthy session. Navigate
-                // into a genuinely unsupported English sentence to exercise
-                // the player failure state, then repair the input and Retry.
-                await page.locator('#seekFwd').click();
-                await page.waitForFunction(overlayReady, 1, { timeout: 180000 });
-                await page.locator('#seekFwd').click();
-                await page.waitForFunction(() => {
-                    const retry = document.getElementById('retry');
-                    const spans = document.querySelectorAll('.sentence');
-                    return spans.length === 3 && spans[2].classList.contains('highlight') &&
-                        document.getElementById('status')?.textContent === 'Error playing audio.' &&
-                        getComputedStyle(retry).display !== 'none' &&
-                        document.getElementById('loadingSpinner')?.style.display === 'none';
-                }, null, { timeout: 180000 });
-                await page.evaluate(async () => {
-                    await chrome.storage.local.set({
-                        pendingText: 'Hello world. Hello world. Hello world.',
-                        pendingContent: [
-                            { type: 'text', content: 'Hello world.' },
-                            { type: 'text', content: 'Hello world.' },
-                            { type: 'text', content: 'Hello world.' },
-                        ],
-                    });
-                });
-                await page.locator('#retry').click();
-                await page.waitForFunction(oldUrl => {
-                    const spans = document.querySelectorAll('.sentence');
-                    const audio = document.getElementById('audio');
-                    return spans.length === 3 && spans[0].classList.contains('highlight') &&
-                        audio?.src.startsWith('blob:') && audio.src !== oldUrl &&
-                        getComputedStyle(document.getElementById('retry')).display === 'none' &&
-                        document.getElementById('loadingSpinner')?.style.display === 'none';
-                }, firstUrl, { timeout: 180000 });
-                onnxOverlayAcceptance = {
-                    success: true, controls: ['next', 'previous', 'speed', 'volume', 'retry-after-error'],
-                    sentences: 3, unsupportedSentenceRejected: true, retryRestoredAudio: true,
-                    ...firstWav, rate: settings.rate, volume: settings.volume,
-                    networkOffline: true,
-                };
+                liveHeartbeat(stage, { provider: 'onnx' });
+                onnxOverlayAcceptance = await acceptOverlayControls(
+                    page, extensionId, 'onnx');
+                await saveReport(currentProviderSnapshot());
+            }
+            if (originDownload && manifest.provider === 'mediapipe' && result.success) {
+                stage = 'offline-mediapipe-overlay-controls';
+                liveHeartbeat(stage, { provider: 'mediapipe' });
+                mediapipeOverlayAcceptance = await acceptOverlayControls(
+                    page, extensionId, 'mediapipe');
+                await saveReport(currentProviderSnapshot());
             }
             if (originDownload && result.success) {
                 stage = 'offline-real-benchmark-page-controls';
-                localBenchmarkAcceptance = await acceptLocalBenchmarkUi(page, extensionId, manifest);
+                liveHeartbeat(stage, { provider: manifest.provider });
+                if (page.isClosed()) {
+                    throw Error('Probe page closed before local benchmark UI');
+                }
+                localBenchmarkAcceptance = await acceptLocalBenchmarkUi(
+                    page, extensionId, manifest);
+                await saveReport(currentProviderSnapshot());
             }
             if (originDownload && result.success &&
                 (manifest.provider === 'onnx' || manifest.provider === 'mediapipe')) {
@@ -2199,7 +2362,7 @@ try {
                 liveHeartbeat('epub-reader-done', {
                     success: epubReaderAcceptance?.success === true,
                 });
-                await saveReport();
+                await saveReport(currentProviderSnapshot());
             }
             if (originArticleSelectionStageEnabled(
                 originDownload, manifest.provider, result.success)) {
@@ -2210,6 +2373,7 @@ try {
                 liveHeartbeat('article-selection-done', {
                     success: articleSelectionAcceptance?.success === true,
                 });
+                await saveReport(currentProviderSnapshot());
             }
             if (originLongFormMemoryStageEnabled(
                 originDownload, manifest.provider, result.success)) {
@@ -2221,12 +2385,13 @@ try {
                     success: longFormMemoryAcceptance?.success === true,
                     maxCacheSize: longFormMemoryAcceptance?.maxCacheSize,
                 });
-                await saveReport();
+                await saveReport(currentProviderSnapshot());
             }
             console.log(result.success ? 'REAL MODEL INFERENCE' : 'MODEL INFERENCE FAILURE', result);
             results.push({ provider: manifest.provider, variant: manifest.variant,
                 offlineAttempted: true, offlineInference: result.success === true,
                 originModelAcceptance, onnxPlaybackAcceptance, onnxOverlayAcceptance,
+                mediapipeOverlayAcceptance,
                 localBenchmarkAcceptance, epubReaderAcceptance,
                 articleSelectionAcceptance, longFormMemoryAcceptance, ...result });
             await saveReport();
@@ -2237,6 +2402,7 @@ try {
             const failure = { provider: manifest.provider, variant: manifest.variant,
                 success: false, crashed, stage, originModelAcceptance,
                 onnxPlaybackAcceptance, onnxOverlayAcceptance,
+                mediapipeOverlayAcceptance,
                 localBenchmarkAcceptance, epubReaderAcceptance,
                 articleSelectionAcceptance, longFormMemoryAcceptance,
                 error: String(error) };
