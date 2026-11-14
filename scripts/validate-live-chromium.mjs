@@ -550,6 +550,10 @@ async function acceptLocalBenchmarkUi(page, extensionId, manifest) {
 
 /** #61: popup Test TTS backends CTA opens benchmark.html with three cards. */
 async function acceptPopupTestTtsCta(context, extensionId) {
+    const {
+        assertPopupTestTtsSurface,
+        buildPopupCtaAcceptanceReport,
+    } = await import('./popup-test-tts-cta-acceptance.mjs');
     const popup = await context.newPage();
     try {
         await popup.goto('chrome-extension://' + extensionId + '/popup.html');
@@ -570,23 +574,7 @@ async function acceptPopupTestTtsCta(context, extensionId) {
                 mediapipeMeta: cards.find(c => c.value === 'mediapipe')?.meta || '',
             };
         });
-        if (surface.cta !== 'Test TTS backends') {
-            throw Error('Popup CTA label mismatch: ' + JSON.stringify(surface.cta));
-        }
-        if (!surface.hint.toLowerCase().includes('use this backend')) {
-            throw Error('Popup CTA hint missing Use this backend: ' + surface.hint);
-        }
-        if (surface.cardCount !== 3) {
-            throw Error('Expected three backend cards: ' + JSON.stringify(surface.cards));
-        }
-        const values = surface.cards.map(c => c.value).sort().join(',');
-        if (values !== 'fastapi,mediapipe,onnx') {
-            throw Error('Backend card values mismatch: ' + values);
-        }
-        if (!/GPU not offered/i.test(surface.mediapipeMeta)) {
-            throw Error('MediaPipe card must disclose GPU not offered: ' +
-                surface.mediapipeMeta);
-        }
+        assertPopupTestTtsSurface(surface);
         const [benchmarkPage] = await Promise.all([
             context.waitForEvent('page', { timeout: 15000 }),
             popup.locator('#openBenchmarkBtn').click(),
@@ -600,15 +588,9 @@ async function acceptPopupTestTtsCta(context, extensionId) {
             timeout: 15000,
         });
         if (!benchmarkPage.isClosed()) await benchmarkPage.close();
-        return {
-            success: true,
-            browser: 'chromium',
-            ctaLabel: surface.cta,
-            threeBackendCards: true,
-            gpuNotOfferedDisclosed: true,
-            openedBenchmarkViaCta: true,
-            benchmarkUrl,
-        };
+        return buildPopupCtaAcceptanceReport({
+            browser: 'chromium', benchmarkUrl,
+        });
     } finally {
         if (!popup.isClosed()) await popup.close();
     }

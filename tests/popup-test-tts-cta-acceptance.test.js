@@ -1,61 +1,84 @@
 /** @jest-environment node */
 /**
- * Contract for popup Test TTS backends CTA live acceptance (#61) —
- * distinct shape from dual-use-this-backend harness probes.
+ * Contract for popup Test TTS backends CTA (#61) — shape distinct from
+ * dual-use-this-backend-acceptance.test.js (Sonar new-code duplication).
  */
+const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 
 const root = path.join(__dirname, '..');
+const helperUrl = pathToFileURL(
+    path.join(root, 'scripts', 'popup-test-tts-cta-acceptance.mjs')).href;
 const chromiumLive = path.join(root, 'scripts', 'validate-live-chromium.mjs');
 const firefoxLive = path.join(root, 'scripts', 'validate-live-firefox.py');
-const workflow = path.join(
-    root, '.github', 'workflows', 'live-browser-acceptance.yml');
+
+function loadHelperSnapshot() {
+    return spawnSync(process.execPath, ['--input-type=module', '-e', `
+import * as cta from ${JSON.stringify(helperUrl)};
+const ok = cta.assertPopupTestTtsSurface({
+    cta: cta.POPUP_CTA_LABEL,
+    hint: 'Confirm with Use this backend on the test page.',
+    cardCount: 3,
+    cards: [
+        { value: 'fastapi', title: 'server', meta: 'default' },
+        { value: 'mediapipe', title: 'mp', meta: 'CPU/WASM · GPU not offered' },
+        { value: 'onnx', title: 'onnx', meta: 'WASM CPU' },
+    ],
+    mediapipeMeta: 'CPU/WASM · GPU not offered',
+});
+const report = cta.buildPopupCtaAcceptanceReport({
+    browser: 'chromium', benchmarkUrl: 'chrome-extension://x/benchmark.html',
+});
+const fail = (() => {
+    try {
+        cta.assertPopupTestTtsSurface({ cta: 'wrong', hint: '', cards: [] });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
+console.log(JSON.stringify({
+    label: cta.POPUP_CTA_LABEL,
+    values: [...cta.EXPECTED_BACKEND_CARD_VALUES].sort(),
+    ok, report, fail,
+}));
+`], { encoding: 'utf8', cwd: root });
+}
 
 describe('popup Test TTS CTA acceptance', () => {
-    test('Chromium dual path opens popup CTA before dual comparison', () => {
-        const source = fs.readFileSync(chromiumLive, 'utf8');
-        expect(source).toContain('async function acceptPopupTestTtsCta');
-        expect(source).toContain('popupTestTtsCtaAcceptance');
-        expect(source).toContain("popup.goto('chrome-extension://' + extensionId + '/popup.html')");
-        expect(source).toContain("locator('#openBenchmarkBtn').click()");
-        expect(source).toContain('context.waitForEvent(\'page\'');
-        expect(source).toContain('GPU not offered');
-        expect(source).toContain('threeBackendCards');
-        expect(source).toContain('openedBenchmarkViaCta');
-        const ctaIdx = source.indexOf('async function acceptPopupTestTtsCta');
-        const dualIdx = source.indexOf('async function acceptTwoBackendComparison');
-        const callCta = source.indexOf('acceptPopupTestTtsCta(');
-        const callDual = source.indexOf('acceptTwoBackendComparison(');
-        expect(ctaIdx).toBeGreaterThan(0);
-        expect(dualIdx).toBeGreaterThan(ctaIdx);
-        expect(callCta).toBeGreaterThan(0);
-        expect(callDual).toBeGreaterThan(callCta);
+    test('shared helper validates surface and builds report', () => {
+        const child = loadHelperSnapshot();
+        expect(child.status).toBe(0);
+        expect(child.stderr || '').toBe('');
+        const snap = JSON.parse(child.stdout.trim());
+        expect(snap.label).toBe('Test TTS backends');
+        expect(snap.values).toEqual(['fastapi', 'mediapipe', 'onnx']);
+        expect(snap.ok).toBe(true);
+        expect(snap.report).toEqual(expect.objectContaining({
+            success: true,
+            threeBackendCards: true,
+            gpuNotOfferedDisclosed: true,
+            openedBenchmarkViaCta: true,
+        }));
+        expect(snap.fail.ok).toBe(false);
+        expect(snap.fail.message).toMatch(/CTA label mismatch/i);
     });
 
-    test('Firefox dual path opens popup CTA before dual comparison', () => {
-        const source = fs.readFileSync(firefoxLive, 'utf8');
-        expect(source).toContain('def accept_popup_test_tts_cta');
-        expect(source).toContain('popupTestTtsCtaAcceptance');
-        expect(source).toContain('accept_popup_test_tts_cta(driver, state["origin"])');
-        expect(source).toMatch(
+    test('Chromium and Firefox dual scopes wire popup CTA before dual', () => {
+        const chromium = fs.readFileSync(chromiumLive, 'utf8');
+        const firefox = fs.readFileSync(firefoxLive, 'utf8');
+        expect(chromium).toContain('acceptPopupTestTtsCta');
+        expect(chromium).toContain('popup-test-tts-cta-acceptance.mjs');
+        expect(chromium).toContain("locator('#openBenchmarkBtn').click()");
+        expect(firefox).toContain('accept_popup_test_tts_cta');
+        expect(firefox).toContain('firefox_popup_test_tts_cta_acceptance');
+        expect(firefox).toMatch(
             /find_element\(\s*By\.ID,\s*["']openBenchmarkBtn["']\s*\)\.click\(\)/);
-        expect(source).toContain('GPU not offered');
-        expect(source).toContain('threeBackendCards');
-        expect(source).toContain('openedBenchmarkViaCta');
-        const ctaIdx = source.indexOf('def accept_popup_test_tts_cta');
-        const dualIdx = source.indexOf('def accept_two_backend_comparison');
-        const callCta = source.indexOf('accept_popup_test_tts_cta(');
-        const callDual = source.indexOf('accept_two_backend_comparison(');
-        expect(ctaIdx).toBeGreaterThan(0);
-        expect(dualIdx).toBeGreaterThan(ctaIdx);
-        expect(callCta).toBeGreaterThan(0);
-        expect(callDual).toBeGreaterThan(callCta);
-    });
-
-    test('dual-comparison workflow scopes still exist for live dispatch', () => {
-        const source = fs.readFileSync(workflow, 'utf8');
-        expect(source).toContain('- chromium-dual-comparison');
-        expect(source).toContain('- firefox-dual-comparison');
+        expect(chromium.indexOf('acceptPopupTestTtsCta('))
+            .toBeLessThan(chromium.indexOf('acceptTwoBackendComparison('));
+        expect(firefox.indexOf('accept_popup_test_tts_cta('))
+            .toBeLessThan(firefox.indexOf('accept_two_backend_comparison('));
     });
 });

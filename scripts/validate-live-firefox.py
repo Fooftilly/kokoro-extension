@@ -1205,6 +1205,10 @@ def accept_local_benchmark_ui(driver, origin, provider):
 
 def accept_popup_test_tts_cta(driver, origin):
     """#61: popup Test TTS backends CTA opens benchmark.html with three cards."""
+    from firefox_popup_test_tts_cta_acceptance import (
+        assert_popup_test_tts_surface,
+        build_popup_cta_acceptance_report,
+    )
     before = list(driver.window_handles)
     driver.get(origin + "/popup.html")
     WebDriverWait(driver, 20).until(
@@ -1225,23 +1229,7 @@ def accept_popup_test_tts_cta(driver, origin):
             mediapipeMeta:cards.find(c=>c.value==='mediapipe')?.meta||'',
         };
     """)
-    if surface.get("cta") != "Test TTS backends":
-        raise RuntimeError(
-            "Firefox popup CTA label mismatch: " + json.dumps(surface.get("cta")))
-    if "use this backend" not in str(surface.get("hint") or "").lower():
-        raise RuntimeError(
-            "Firefox popup CTA hint missing Use this backend: " +
-            str(surface.get("hint")))
-    if surface.get("cardCount") != 3:
-        raise RuntimeError(
-            "Expected three Firefox backend cards: " + json.dumps(surface.get("cards")))
-    values = ",".join(sorted(c.get("value") or "" for c in surface.get("cards") or []))
-    if values != "fastapi,mediapipe,onnx":
-        raise RuntimeError("Firefox backend card values mismatch: " + values)
-    if "gpu not offered" not in str(surface.get("mediapipeMeta") or "").lower():
-        raise RuntimeError(
-            "MediaPipe card must disclose GPU not offered: " +
-            str(surface.get("mediapipeMeta")))
+    assert_popup_test_tts_surface(surface)
     driver.find_element(By.ID, "openBenchmarkBtn").click()
     WebDriverWait(driver, 15).until(
         lambda d: len(d.window_handles) > len(before))
@@ -1258,15 +1246,7 @@ def accept_popup_test_tts_cta(driver, origin):
     """))
     driver.close()
     driver.switch_to.window(before[0])
-    return {
-        "success": True,
-        "browser": "Firefox",
-        "ctaLabel": surface["cta"],
-        "threeBackendCards": True,
-        "gpuNotOfferedDisclosed": True,
-        "openedBenchmarkViaCta": True,
-        "benchmarkUrl": benchmark_url,
-    }
+    return build_popup_cta_acceptance_report(benchmark_url)
 
 
 def accept_two_backend_comparison(driver, origin):
