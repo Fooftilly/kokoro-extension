@@ -944,6 +944,137 @@ async function acceptTwoBackendComparison(page, extensionId) {
         serverTestNotTriggered: true, noAutomaticRanking: true, summary };
 }
 
+/**
+ * #61 / KE-27: after local dual stays server-untested, briefly exercise the
+ * FastAPI card against a loopback Kokoro-FastAPI speech stub (online).
+ */
+async function startFastApiSpeechStub() {
+    const { MINIMAL_MP3_BYTES } = await import(
+        './fastapi-server-card-acceptance.mjs');
+    const body = Buffer.from(MINIMAL_MP3_BYTES);
+    const server = createServer((req, res) => {
+        const pathOnly = String(req.url || '').split('?', 1)[0];
+        if (req.method === 'POST' && pathOnly.endsWith('/audio/speech')) {
+            res.writeHead(200, {
+                'Content-Type': 'audio/mpeg',
+                'Content-Length': body.length,
+                'Cache-Control': 'no-store',
+            });
+            res.end(body);
+            return;
+        }
+        res.writeHead(404);
+        res.end();
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+    const apiUrl = 'http://127.0.0.1:' + port + '/v1/';
+    return {
+        apiUrl,
+        async close() {
+            await new Promise((resolve) => server.close(resolve));
+        },
+    };
+}
+
+async function acceptFastApiServerCard(page, apiUrl) {
+    const {
+        SERVER_PLAYABLE_MP3_NEEDLE,
+        FASTAPI_SELECTED_NEEDLE,
+        BACKEND_BEFORE_CHOOSE,
+        buildFastApiServerCardReport,
+    } = await import('./fastapi-server-card-acceptance.mjs');
+
+    // testFastApi refuses unless the selected backend is already fastapi.
+    await page.evaluate(async (url) => {
+        await chrome.storage.sync.set({
+            ttsBackend: 'fastapi',
+            apiUrl: url,
+        });
+    }, apiUrl);
+
+    const sample = await page.locator('#benchmarkText').inputValue();
+    if (!String(sample || '').trim()) {
+        await page.locator('#benchmarkText').fill('FastAPI server card sample.');
+    }
+
+    await page.locator('#testServer').click();
+    await page.waitForFunction((needle) => {
+        const status = document.getElementById('serverStatus')?.textContent || '';
+        const audio = document.getElementById('serverAudio');
+        const choose = document.getElementById('chooseServer');
+        return status.includes(needle) &&
+            audio && !audio.hidden &&
+            String(audio.src || '').startsWith('data:audio') &&
+            choose && choose.disabled === false;
+    }, SERVER_PLAYABLE_MP3_NEEDLE, { timeout: 30000 });
+
+    // Prove the stub MP3 actually decodes (not just a data: URL prefix).
+    const audioDurationSec = await page.evaluate(async () => {
+        const audio = document.getElementById('serverAudio');
+        if (!audio) throw Error('serverAudio missing after FastAPI test');
+        if (audio.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+            await new Promise((resolve, reject) => {
+                const onReady = () => {
+                    cleanup();
+                    resolve();
+                };
+                const onError = () => {
+                    cleanup();
+                    reject(Error('serverAudio failed to decode stub MP3'));
+                };
+                const cleanup = () => {
+                    audio.removeEventListener('loadeddata', onReady);
+                    audio.removeEventListener('error', onError);
+                };
+                audio.addEventListener('loadeddata', onReady, { once: true });
+                audio.addEventListener('error', onError, { once: true });
+                audio.load();
+            });
+        }
+        if (!(audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) ||
+            !(Number.isFinite(audio.duration) && audio.duration > 0)) {
+            throw Error('Stub MP3 did not become decodeable: readyState=' +
+                audio.readyState + ' duration=' + audio.duration);
+        }
+        return audio.duration;
+    });
+
+    // Switch away from fastapi so chooseServer must write the preference.
+    await page.evaluate(async (backend) => {
+        await chrome.storage.sync.set({ ttsBackend: backend });
+    }, BACKEND_BEFORE_CHOOSE);
+    const beforeChoose = await page.evaluate(async () =>
+        (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
+    if (beforeChoose !== BACKEND_BEFORE_CHOOSE) {
+        throw Error(
+            'Could not seed non-fastapi before chooseServer: ' + beforeChoose);
+    }
+
+    await page.locator('#chooseServer').click();
+    await page.waitForFunction((needle) => {
+        const status = document.getElementById('serverStatus')?.textContent || '';
+        return status.includes(needle);
+    }, FASTAPI_SELECTED_NEEDLE, { timeout: 15000 });
+
+    const selectedBackend = await page.evaluate(async () =>
+        (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
+    if (selectedBackend !== 'fastapi') {
+        throw Error(
+            'FastAPI Use this backend did not select fastapi: ' + selectedBackend);
+    }
+
+    return buildFastApiServerCardReport({
+        browser: 'chromium',
+        apiUrl,
+        afterLocalDualComparison: true,
+        backendBeforeChoose: beforeChoose,
+        chooseChangedBackend: beforeChoose !== selectedBackend,
+        decodeableMp3: true,
+        audioDurationSec,
+    });
+}
+
 // Browser-side readiness poll serialized by Playwright into the reader page.
 // Nested helpers keep CodeFactor method complexity under the gate while the
 // WAV fetch, revision recheck, and Prev/Next assertions stay atomic.
@@ -2060,6 +2191,7 @@ try {
     let dictionaryUiDownloadAcceptance = null;
     let popupTestTtsCtaAcceptance = null;
     let twoBackendComparisonAcceptance = null;
+    let fastapiServerCardAcceptance = null;
     // Optional currentProvider snapshots mid-loop checks that are not yet in
     // `results` (pushed only after all stages for that provider finish).
     const saveReport = (currentProvider = null) => writeFile(
@@ -2067,7 +2199,7 @@ try {
             testedAt: new Date().toISOString(), browser: preflight.browser, preflight,
             dictionaryCacheAcceptance, browserRestartAcceptance,
             dictionaryUiDownloadAcceptance, popupTestTtsCtaAcceptance,
-            twoBackendComparisonAcceptance,
+            twoBackendComparisonAcceptance, fastapiServerCardAcceptance,
             results, currentProvider, originDownload, providerFilter,
             networkRequirement: providerFilter === 'dictionary'
                 ? 'offline during dictionary persistence/verification; no inference attempted'
@@ -2458,10 +2590,34 @@ try {
             if (errors.length) throw Error('Extension errors during two-backend comparison: ' +
                 errors.join('; '));
             await saveReport();
+
+            // Local dual must leave the server card untested; FastAPI card
+            // needs a brief online window + loopback /v1/audio/speech stub.
+            liveHeartbeat('fastapi-server-card-start');
+            await context.setOffline(false);
+            const speechStub = await startFastApiSpeechStub();
+            try {
+                fastapiServerCardAcceptance = await acceptFastApiServerCard(
+                    comparisonPage, speechStub.apiUrl);
+                liveHeartbeat('fastapi-server-card-done', {
+                    success: fastapiServerCardAcceptance?.success === true,
+                });
+                await saveReport();
+            } finally {
+                await speechStub.close().catch(() => {});
+            }
         } catch (error) {
-            twoBackendComparisonAcceptance = { success: false,
-                stage: 'offline-two-backend-same-page-benchmark',
-                error: String(error) };
+            if (!twoBackendComparisonAcceptance ||
+                twoBackendComparisonAcceptance.success !== true) {
+                twoBackendComparisonAcceptance = { success: false,
+                    stage: 'offline-two-backend-same-page-benchmark',
+                    error: String(error) };
+            } else if (!fastapiServerCardAcceptance ||
+                fastapiServerCardAcceptance.success !== true) {
+                fastapiServerCardAcceptance = { success: false,
+                    stage: 'fastapi-server-card',
+                    error: String(error) };
+            }
             await saveReport();
             throw error;
         } finally {
