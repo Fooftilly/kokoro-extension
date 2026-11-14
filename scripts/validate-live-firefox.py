@@ -1590,13 +1590,28 @@ def _minimal_mp3_fixture_bytes():
 
 
 def _start_fastapi_speech_stub():
-    """Loopback Kokoro-FastAPI /v1/audio/speech returning a decodeable MP3."""
+    """Loopback Kokoro-FastAPI stub for card + preference-honor paths."""
     mp3 = _minimal_mp3_fixture_bytes()
+    hits = {"speech": 0}
 
     class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            path_only = self.path.split("?", 1)[0]
+            if path_only.endswith("/models"):
+                payload = b'{"data":[{"id":"kokoro","object":"model"}]}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            self.send_error(404)
+
         def do_POST(self):
             path_only = self.path.split("?", 1)[0]
             if path_only.endswith("/audio/speech"):
+                hits["speech"] += 1
                 self.send_response(200)
                 self.send_header("Content-Type", "audio/mpeg")
                 self.send_header("Content-Length", str(len(mp3)))
@@ -1612,7 +1627,7 @@ def _start_fastapi_speech_stub():
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     port = server.server_address[1]
-    return server, f"http://127.0.0.1:{port}/v1/"
+    return server, f"http://127.0.0.1:{port}/v1/", hits
 
 
 def accept_fastapi_server_card(driver, origin, api_url):
@@ -1731,6 +1746,350 @@ def accept_fastapi_server_card(driver, origin, api_url):
         backend_before_choose=before["backend"],
         choose_changed_backend=before["backend"] != selected["backend"],
         audio_duration_sec=float(audio_duration),
+    )
+
+
+def _wait_overlay_fastapi_mpeg(driver, origin, expected_speech, mode=None):
+    """Poll until overlay plays a FastAPI data:audio MP3 for expected speech."""
+    deadline = time.time() + 90
+    last_error = None
+    while time.time() < deadline:
+        try:
+            snap = _on_extension_page(driver, origin, """
+                const [expectedSpeech, mode, done] = arguments;
+                (async () => {
+                    const stored = await browser.storage.local.get([
+                        'pendingText', 'pendingContent', 'pendingTtsBackend',
+                        'pendingApiUrl',
+                    ]);
+                    if (stored.pendingTtsBackend !== 'fastapi') {
+                        done(null); return;
+                    }
+                    if (!String(stored.pendingApiUrl || '').includes('127.0.0.1')) {
+                        done(null); return;
+                    }
+                    const blocks = stored.pendingContent;
+                    const speechOk = Array.isArray(blocks) &&
+                        blocks.some(block => typeof block?.content === 'string' &&
+                            block.content.includes(expectedSpeech));
+                    const textOk = typeof stored.pendingText === 'string' &&
+                        stored.pendingText.includes(expectedSpeech);
+                    if (!speechOk && !textOk) { done(null); return; }
+                    done({
+                        pendingTtsBackend: stored.pendingTtsBackend,
+                        pendingApiUrl: stored.pendingApiUrl || '',
+                        pendingText: stored.pendingText || '',
+                        blockCount: Array.isArray(stored.pendingContent)
+                            ? stored.pendingContent.length : 0,
+                        armed: true,
+                        mode,
+                    });
+                })().catch(e => done({ error: String(e) }));
+            """, expected_speech, mode)
+            if isinstance(snap, dict) and snap.get("error"):
+                last_error = snap["error"]
+            elif isinstance(snap, dict) and snap.get("armed"):
+                # Confirm the visible overlay audio element when on a content page.
+                mpeg = driver.execute_script("""
+                    const expected = arguments[0];
+                    const mode = arguments[1];
+                    const host = document.getElementById('kokoro-overlay-container');
+                    if (mode && (!host || host.dataset.mode !== mode)) return null;
+                    const frame = [...document.querySelectorAll('iframe')].find(
+                        el => (el.src || '').includes('overlay.html'));
+                    if (!frame || !frame.contentDocument) return null;
+                    const audio = frame.contentDocument.getElementById('audio');
+                    const spinner = frame.contentDocument.getElementById(
+                        'loadingSpinner');
+                    const status = frame.contentDocument.getElementById('status');
+                    const src = audio?.src || '';
+                    if (!src.startsWith('data:audio')) return null;
+                    if (spinner && spinner.style.display !== 'none') return null;
+                    if (status && status.textContent === 'Error playing audio.') {
+                        return null;
+                    }
+                    return {
+                        mpegDataUrl: true,
+                        audioDataUrlPrefix: src.slice(0, 10),
+                        hostMode: host?.dataset?.mode || null,
+                    };
+                """, expected_speech, mode)
+                if mpeg and mpeg.get("mpegDataUrl"):
+                    return {
+                        "speech": expected_speech,
+                        "mode": mpeg.get("hostMode"),
+                        "mpegDataUrl": True,
+                        "audioDataUrlPrefix": mpeg.get("audioDataUrlPrefix"),
+                        "backend": snap.get("pendingTtsBackend"),
+                        "serverUrl": snap.get("pendingApiUrl"),
+                        "pendingText": snap.get("pendingText"),
+                        "blockCount": snap.get("blockCount") or 0,
+                    }
+                # Reader page: overlay iframe may be same-origin extension.
+                reader_mpeg = driver.execute_script("""
+                    const frame = document.getElementById('playerFrame') ||
+                        [...document.querySelectorAll('iframe')].find(
+                            el => (el.src || '').includes('overlay.html'));
+                    if (!frame) return null;
+                    let doc = null;
+                    try { doc = frame.contentDocument; } catch (e) { return null; }
+                    if (!doc) return null;
+                    const audio = doc.getElementById('audio');
+                    const spinner = doc.getElementById('loadingSpinner');
+                    const status = doc.getElementById('status');
+                    const src = audio?.src || '';
+                    if (!src.startsWith('data:audio')) return null;
+                    if (spinner && spinner.style.display !== 'none') return null;
+                    if (status && status.textContent === 'Error playing audio.') {
+                        return null;
+                    }
+                    return {
+                        mpegDataUrl: true,
+                        audioDataUrlPrefix: src.slice(0, 10),
+                    };
+                """)
+                if reader_mpeg and reader_mpeg.get("mpegDataUrl"):
+                    return {
+                        "speech": expected_speech,
+                        "mode": None,
+                        "mpegDataUrl": True,
+                        "audioDataUrlPrefix": reader_mpeg.get(
+                            "audioDataUrlPrefix"),
+                        "backend": snap.get("pendingTtsBackend"),
+                        "serverUrl": snap.get("pendingApiUrl"),
+                        "pendingText": snap.get("pendingText"),
+                        "blockCount": snap.get("blockCount") or 0,
+                    }
+        except Exception as exc:
+            last_error = exc
+        time.sleep(0.1)
+    raise RuntimeError(
+        "Timed out waiting for Firefox FastAPI overlay MP3 for " +
+        expected_speech +
+        ((": " + str(last_error)) if last_error else ""))
+
+
+def _clear_firefox_pending_tts(driver, origin, fixture_url=None):
+    script = """
+        const [fixtureUrl, done] = arguments;
+        (async () => {
+            if (fixtureUrl) {
+                const tab = await findArticleFixtureTab(fixtureUrl);
+                await browser.tabs.sendMessage(
+                    tab.id, { action: 'REMOVE_PLAYER' }).catch(() => {});
+            }
+            await browser.storage.local.remove([
+                'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
+                'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
+                'pendingReaderReloadRevision',
+            ]);
+            done({ ok: true });
+        })().catch(e => done({ error: String(e) }));
+    """
+    if fixture_url:
+        script = _ARTICLE_FIND_FIXTURE_TAB_JS + script
+    cleared = _on_extension_page(driver, origin, script, fixture_url)
+    if cleared.get("error"):
+        raise RuntimeError(
+            "Cannot clear Firefox pending TTS session: " + cleared["error"])
+
+
+def accept_fastapi_preference_honor(driver, origin, api_url, speech_hits):
+    """#61 / KE-29: selection/article/reader/download honor fastapi preference."""
+    from firefox_fastapi_preference_honor_acceptance import (
+        build_fastapi_preference_honor_report,
+        preference_honor_fixture_html,
+        preference_honor_speech,
+    )
+    speech = preference_honor_speech()
+    html = preference_honor_fixture_html()
+    fixture_server, fixture_url = _start_article_selection_fixture_server(html)
+    article_block_count = 2
+    try:
+        seeded = driver.execute_async_script("""
+            const apiUrl=arguments[0];
+            const done=arguments[arguments.length-1];
+            browser.storage.sync.set({
+                ttsBackend:'fastapi', apiUrl, mode:'stream',
+                showFloatingButton:true, autoplayReader:false,
+            }).then(()=>done({ok:true}), e=>done({error:String(e)}));
+        """, api_url)
+        if seeded.get("error"):
+            raise RuntimeError(
+                "Cannot seed FastAPI preference honor settings: " +
+                seeded["error"])
+        _clear_firefox_pending_tts(driver, origin)
+        driver.get(fixture_url)
+        WebDriverWait(driver, 15).until(
+            lambda d: d.find_element(By.ID, "selection-sentence") and
+            d.find_element(By.ID, "article-first") and
+            d.find_element(By.ID, "download-sentence"))
+        _ensure_article_content_script(driver, origin, fixture_url)
+
+        # Selection via floating mic.
+        driver.execute_script("""
+            const el = document.getElementById('selection-sentence');
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        """)
+        WebDriverWait(driver, 15).until(
+            lambda d: d.find_element(By.ID, "kokoro-float-btn").is_displayed())
+        driver.find_element(By.ID, "kokoro-float-btn").click()
+        selection_snap = _wait_overlay_fastapi_mpeg(
+            driver, origin, speech["selection"], "popup")
+        if (not selection_snap.get("mpegDataUrl") or
+                selection_snap.get("backend") != "fastapi"):
+            raise RuntimeError(
+                "Firefox selection did not honor FastAPI: " +
+                json.dumps(selection_snap))
+        _clear_firefox_pending_tts(driver, origin, fixture_url)
+        WebDriverWait(driver, 15).until(
+            lambda d: d.execute_script(
+                "return !document.getElementById('kokoro-overlay-container')"))
+
+        # Article via native Alt+A.
+        prepared = _prepare_firefox_read_article(driver, origin, fixture_url)
+        _send_native_read_article_alt_a()
+        armed_deadline = time.time() + 20
+        armed = None
+        while time.time() < armed_deadline:
+            pending = _read_article_pending_storage(driver, origin)
+            if (pending.get("pendingTtsBackend") == "fastapi" and
+                    isinstance(pending.get("pendingText"), str) and
+                    speech["articleFirst"] in pending["pendingText"]):
+                armed = pending
+                break
+            time.sleep(0.1)
+        if not armed:
+            raise RuntimeError(
+                "Native Alt+A did not arm Firefox FastAPI article storage: " +
+                json.dumps({"prepared": prepared}))
+        article_snap = _wait_overlay_fastapi_mpeg(
+            driver, origin, speech["articleFirst"], "full")
+        article_block_count = article_snap.get("blockCount") or 2
+        if (not article_snap.get("mpegDataUrl") or
+                article_snap.get("backend") != "fastapi"):
+            raise RuntimeError(
+                "Firefox article did not honor FastAPI: " +
+                json.dumps(article_snap))
+        _clear_firefox_pending_tts(driver, origin, fixture_url)
+        WebDriverWait(driver, 15).until(
+            lambda d: d.execute_script(
+                "return !document.getElementById('kokoro-overlay-container')"))
+
+        # Download mode → MP3 via chrome.downloads.
+        download_seed = driver.execute_async_script("""
+            const apiUrl=arguments[0];
+            const done=arguments[arguments.length-1];
+            browser.storage.sync.set({
+                ttsBackend:'fastapi', apiUrl, mode:'download',
+                showFloatingButton:true,
+            }).then(
+                () => browser.downloads.search({
+                    orderBy:['-startTime'], limit:20,
+                }),
+                e => ({error:String(e)})
+            ).then(
+                items => Array.isArray(items)
+                    ? done({ids: items.map(i => i.id)})
+                    : done(items),
+                e => done({error:String(e)}));
+        """, api_url)
+        if download_seed.get("error"):
+            raise RuntimeError(
+                "Cannot seed Firefox download mode: " + download_seed["error"])
+        before_ids = download_seed.get("ids") or []
+        driver.execute_script("""
+            const el = document.getElementById('download-sentence');
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        """)
+        WebDriverWait(driver, 15).until(
+            lambda d: d.find_element(By.ID, "kokoro-float-btn").is_displayed())
+        driver.find_element(By.ID, "kokoro-float-btn").click()
+        download_deadline = time.time() + 30
+        download_hit = None
+        while time.time() < download_deadline:
+            found = driver.execute_async_script("""
+                const beforeIds=arguments[0];
+                const done=arguments[arguments.length-1];
+                browser.downloads.search({
+                    orderBy:['-startTime'], limit:20,
+                }).then(items => {
+                    const hit = items.find(item =>
+                        !beforeIds.includes(item.id) &&
+                        String(item.filename || item.url || '')
+                            .toLowerCase().includes('.mp3'));
+                    done(hit || null);
+                }, e => done({error:String(e)}));
+            """, before_ids)
+            if isinstance(found, dict) and found.get("error"):
+                raise RuntimeError(
+                    "Firefox download search failed: " + found["error"])
+            if found:
+                download_hit = found
+                break
+            time.sleep(0.2)
+        if not download_hit:
+            raise RuntimeError(
+                "Firefox FastAPI download mode did not create an MP3 download")
+    finally:
+        with contextlib.suppress(Exception):
+            fixture_server.shutdown()
+
+    # Reader TXT path (same sendToPlayer preference wiring as EPUB).
+    reader_seed = driver.execute_async_script("""
+        const apiUrl=arguments[0];
+        const done=arguments[arguments.length-1];
+        browser.storage.sync.set({
+            ttsBackend:'fastapi', apiUrl, mode:'stream',
+            autoplayReader:true,
+        }).then(() => browser.storage.local.remove([
+            'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
+            'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
+            'pendingReaderReloadRevision',
+        ])).then(
+            () => done({ok:true}),
+            e => done({error:String(e)}));
+    """, api_url)
+    if reader_seed.get("error"):
+        raise RuntimeError(
+            "Cannot seed Firefox reader FastAPI settings: " +
+            reader_seed["error"])
+    driver.get(origin + "/reader.html")
+    WebDriverWait(driver, 30).until(
+        lambda d: d.find_element(By.ID, "fileInput"))
+    # Inject a File into the reader input (Selenium set_files helper).
+    tmp_txt = tempfile.NamedTemporaryFile(
+        mode="w", suffix="-fastapi-preference.txt", delete=False,
+        encoding="utf-8")
+    try:
+        tmp_txt.write(speech["reader"])
+        tmp_txt.close()
+        driver.find_element(By.ID, "fileInput").send_keys(tmp_txt.name)
+        reader_snap = _wait_overlay_fastapi_mpeg(
+            driver, origin, speech["reader"], None)
+        if (not reader_snap.get("mpegDataUrl") or
+                reader_snap.get("backend") != "fastapi"):
+            raise RuntimeError(
+                "Firefox reader did not honor FastAPI: " +
+                json.dumps(reader_snap))
+    finally:
+        with contextlib.suppress(Exception):
+            Path(tmp_txt.name).unlink()
+
+    return build_fastapi_preference_honor_report(
+        api_url,
+        article_block_count=article_block_count,
+        speech_stub_hits=speech_hits.get("speech") if speech_hits else None,
     )
 
 
@@ -3366,10 +3725,13 @@ def main():
                 if not driver.execute_script("return navigator.onLine===true;"):
                     raise RuntimeError(
                         "Firefox did not restore online before FastAPI card")
-                speech_server, api_url = _start_fastapi_speech_stub()
+                speech_server, api_url, speech_hits = _start_fastapi_speech_stub()
                 try:
                     fastapi_card = accept_fastapi_server_card(
                         driver, state["origin"], api_url)
+                    result["stage"] = "fastapi-preference-honor"
+                    fastapi_honor = accept_fastapi_preference_honor(
+                        driver, state["origin"], api_url, speech_hits)
                 finally:
                     speech_server.shutdown()
                 result.update({
@@ -3383,10 +3745,11 @@ def main():
                     "popupTestTtsCtaAcceptance": popup_cta,
                     "dualComparisonAcceptance": comparison,
                     "fastapiServerCardAcceptance": fastapi_card,
+                    "fastapiPreferenceHonorAcceptance": fastapi_honor,
                     "offlineAttempted": True,
                     "offlineInference": True,
-                    "cachePopulation": "two models and dictionary SHA-256 verified from pinned official sources; authenticated loopback preload, offline same-page synthesis, then loopback FastAPI card",
-                    "scope": "Firefox/Linux MV3 popup Test TTS CTA + dual local backends + FastAPI server card, no subjective quality or EPUB acceptance",
+                    "cachePopulation": "two models and dictionary SHA-256 verified from pinned official sources; authenticated loopback preload, offline same-page synthesis, then loopback FastAPI card + preference honor",
+                    "scope": "Firefox/Linux MV3 popup Test TTS CTA + dual local backends + FastAPI server card + preference honor on selection/article/reader/download",
                 })
                 print("FIREFOX DUAL BENCHMARK ACCEPTANCE", json.dumps(result), flush=True)
                 return
