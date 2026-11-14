@@ -48,6 +48,12 @@ from firefox_long_form_memory_acceptance import (
     origin_long_form_memory_stage_enabled,
     require_long_form_backend,
 )
+from firefox_overlay_controls_acceptance import (
+    assert_overlay_settings,
+    assert_overlay_wav_snapshot,
+    build_overlay_controls_report,
+    overlay_seed_for_backend,
+)
 from reader_acceptance_epub import (
     READER_ACCEPTANCE_SPEECH,
     build_reader_acceptance_epub,
@@ -1201,6 +1207,142 @@ def accept_local_benchmark_ui(driver, origin, provider):
         "noImplicitFastApi": True, "rows": 1,
     }
 
+
+
+def run_offline_overlay_controls_acceptance(driver, origin, backend):
+    """#57: real overlay controls for ONNX (Retry) and MediaPipe (nav/play-pause)."""
+    include_retry = backend == "onnx"
+    seed = overlay_seed_for_backend(backend, include_unsupported=include_retry)
+    saved = driver.execute_async_script("""
+        const [seed, done] = arguments;
+        browser.storage.local.set(seed).then(
+            () => done({success: true}),
+            e => done({success: false, error: String(e)}));
+    """, seed)
+    if not saved.get("success"):
+        raise RuntimeError(
+            "Cannot seed Firefox " + backend + " overlay: " + str(saved))
+    driver.get(origin + "/overlay.html")
+
+    def overlay_ready(index):
+        return driver.execute_script("""
+            const spans = document.querySelectorAll('.sentence');
+            const audio = document.getElementById('audio');
+            return spans.length === 3 &&
+                spans[arguments[0]]?.classList.contains('highlight') &&
+                audio?.src.startsWith('blob:') &&
+                document.getElementById('loadingSpinner')?.style.display === 'none';
+        """, index)
+
+    WebDriverWait(driver, 180).until(lambda d: overlay_ready(0))
+    first_wav = driver.execute_async_script("""
+        const done = arguments[arguments.length - 1];
+        (async () => {
+            const audio = document.getElementById('audio');
+            const bytes = new Uint8Array(await (await fetch(audio.src)).arrayBuffer());
+            const h = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+            const tag = (offset, length) => String.fromCharCode(
+                ...bytes.subarray(offset, offset + length));
+            const audioBytes = h.getUint32(40, true);
+            if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
+                h.getUint32(24, true) !== 24000 || audioBytes < 2 ||
+                bytes.length !== 44 + audioBytes)
+                throw Error('Firefox overlay returned malformed WAV');
+            if (!audio.paused ||
+                document.getElementById('playPause').textContent !== 'Play')
+                throw Error('Autoplay-disabled Firefox overlay started playing');
+            if (navigator.onLine !== false)
+                throw Error('Firefox overlay not offline');
+            return {success: true, firstUrl: audio.src, sampleRateHz: 24000,
+                audioBytes, initiallyPaused: true};
+        })().then(done, e => done({success: false, error: String(e)}));
+    """)
+    if not first_wav.get("success"):
+        raise RuntimeError(
+            "Firefox " + backend + " overlay WAV invalid: " + str(first_wav))
+    assert_overlay_wav_snapshot({
+        "sampleRateHz": first_wav["sampleRateHz"],
+        "audioBytes": first_wav["audioBytes"],
+        "initiallyPaused": first_wav["initiallyPaused"],
+    })
+    driver.find_element(By.ID, "seekFwd").click()
+    WebDriverWait(driver, 180).until(lambda d: overlay_ready(1))
+    driver.find_element(By.ID, "seekBack").click()
+    WebDriverWait(driver, 180).until(lambda d: overlay_ready(0))
+    settings = driver.execute_script("""
+        const speed = document.getElementById('speed');
+        speed.value = '1.25';
+        speed.dispatchEvent(new Event('change', {bubbles: true}));
+        const volume = document.getElementById('volumeControl');
+        volume.value = '0.4';
+        volume.dispatchEvent(new Event('input', {bubbles: true}));
+        const audio = document.getElementById('audio');
+        return {rate: audio.playbackRate, volume: audio.volume, paused: audio.paused};
+    """)
+    assert_overlay_settings(settings)
+    driver.find_element(By.ID, "playPause").click()
+    WebDriverWait(driver, 30).until(lambda d: d.execute_script("""
+        const audio = document.getElementById('audio');
+        return audio && !audio.paused &&
+            document.getElementById('playPause')?.textContent === 'Pause';
+    """))
+    driver.find_element(By.ID, "playPause").click()
+    WebDriverWait(driver, 30).until(lambda d: d.execute_script("""
+        const audio = document.getElementById('audio');
+        return audio && audio.paused &&
+            document.getElementById('playPause')?.textContent === 'Play';
+    """))
+    unsupported = False
+    retry_restored = False
+    if include_retry:
+        driver.find_element(By.ID, "seekFwd").click()
+        WebDriverWait(driver, 180).until(lambda d: overlay_ready(1))
+        driver.find_element(By.ID, "seekFwd").click()
+        WebDriverWait(driver, 180).until(lambda d: d.execute_script("""
+            const retry = document.getElementById('retry');
+            const spans = document.querySelectorAll('.sentence');
+            return spans.length === 3 && spans[2].classList.contains('highlight') &&
+                document.getElementById('status')?.textContent === 'Error playing audio.' &&
+                getComputedStyle(retry).display !== 'none' &&
+                document.getElementById('loadingSpinner')?.style.display === 'none';
+        """))
+        unsupported = True
+        repaired = driver.execute_async_script("""
+            const done = arguments[arguments.length - 1];
+            browser.storage.local.set({
+                pendingText: 'Hello world. Hello world. Hello world.',
+                pendingContent: [
+                    {type: 'text', content: 'Hello world.'},
+                    {type: 'text', content: 'Hello world.'},
+                    {type: 'text', content: 'Hello world.'}
+                ]
+            }).then(() => done({success: true}),
+                e => done({success: false, error: String(e)}));
+        """)
+        if not repaired.get("success"):
+            raise RuntimeError(
+                "Cannot repair Firefox overlay input: " + str(repaired))
+        driver.find_element(By.ID, "retry").click()
+        WebDriverWait(driver, 180).until(lambda d: d.execute_script("""
+            const spans = document.querySelectorAll('.sentence');
+            const audio = document.getElementById('audio');
+            return spans.length === 3 && spans[0].classList.contains('highlight') &&
+                audio?.src.startsWith('blob:') && audio.src !== arguments[0] &&
+                getComputedStyle(document.getElementById('retry')).display === 'none' &&
+                document.getElementById('loadingSpinner')?.style.display === 'none';
+        """, first_wav["firstUrl"]))
+        retry_restored = True
+    return build_overlay_controls_report({
+        "backend": backend,
+        "includeRetry": include_retry,
+        "playPauseToggled": True,
+        "unsupportedSentenceRejected": unsupported,
+        "retryRestoredAudio": retry_restored,
+        "sampleRateHz": first_wav["sampleRateHz"],
+        "audioBytes": first_wav["audioBytes"],
+        "rate": settings["rate"],
+        "volume": settings["volume"],
+    })
 
 
 def accept_popup_test_tts_cta(driver, origin):
@@ -3138,128 +3280,27 @@ def main():
                     raise RuntimeError("Firefox ONNX AudioManager offline playback acceptance failed: " +
                                        str(playback_acceptance))
 
-            # Real extension overlay UI acceptance, not a direct provider call.
-            # Three separate blocks prevent accidental sentence merging;
-            # the last unsupported English sentence must expose real Retry.
-            # Autoplay is disabled for deterministic headless controls.
             overlay_acceptance = None
+            mediapipe_overlay_acceptance = None
             if origin_download and provider == "onnx" and metrics.get("success"):
-                saved = driver.execute_async_script("""
-                    const done=arguments[arguments.length-1];
-                    browser.storage.local.set({
-                        pendingTtsBackend:'onnx',pendingApiUrl:null,
-                        pendingText:'Hello world. Hello world. zzzzqwertyword.',
-                        pendingContent:[
-                            {type:'text',content:'Hello world.'},
-                            {type:'text',content:'Hello world.'},
-                            {type:'text',content:'zzzzqwertyword.'}
-                        ],
-                        pendingTitle:'ONNX overlay acceptance',
-                        pendingAutoplay:false
-                    }).then(()=>done({success:true}),e=>done({success:false,error:String(e)}));
-                """)
-                if not saved.get("success"):
-                    raise RuntimeError("Cannot seed Firefox ONNX overlay: " + str(saved))
-                driver.get(state["origin"] + "/overlay.html")
-                def overlay_ready(index):
-                    return driver.execute_script("""
-                        const spans=document.querySelectorAll('.sentence');
-                        const audio=document.getElementById('audio');
-                        return spans.length===3 &&
-                            spans[arguments[0]]?.classList.contains('highlight') &&
-                            audio?.src.startsWith('blob:') &&
-                            document.getElementById('loadingSpinner')?.style.display==='none';
-                    """, index)
-                WebDriverWait(driver, 180).until(lambda d: overlay_ready(0))
-                first_wav = driver.execute_async_script("""
-                    const done=arguments[arguments.length-1];
-                    (async()=>{
-                        const audio=document.getElementById('audio');
-                        const bytes=new Uint8Array(await (await fetch(audio.src)).arrayBuffer());
-                        const h=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
-                        const tag=(offset,length)=>String.fromCharCode(
-                            ...bytes.subarray(offset,offset+length));
-                        const audioBytes=h.getUint32(40,true);
-                        if(tag(0,4)!=='RIFF'||tag(8,4)!=='WAVE'||
-                            h.getUint32(24,true)!==24000||audioBytes<2||
-                            bytes.length!==44+audioBytes)
-                            throw Error('Firefox overlay returned malformed ONNX WAV');
-                        if(!audio.paused||document.getElementById('playPause').textContent!=='Play')
-                            throw Error('Autoplay-disabled Firefox overlay unexpectedly started playing');
-                        if(navigator.onLine!==false)throw Error('Firefox overlay not offline');
-                        return {success:true,firstUrl:audio.src,sampleRateHz:24000,
-                            audioBytes,initiallyPaused:true};
-                    })().then(done,e=>done({success:false,error:String(e)}));
-                """)
-                if not first_wav.get("success"):
-                    raise RuntimeError("Firefox ONNX overlay WAV invalid: " + str(first_wav))
-                driver.find_element(By.ID, "seekFwd").click()
-                WebDriverWait(driver, 180).until(lambda d: overlay_ready(1))
-                driver.find_element(By.ID, "seekBack").click()
-                WebDriverWait(driver, 180).until(lambda d: overlay_ready(0))
-                settings = driver.execute_script("""
-                    const speed=document.getElementById('speed');
-                    speed.value='1.25';
-                    speed.dispatchEvent(new Event('change',{bubbles:true}));
-                    const volume=document.getElementById('volumeControl');
-                    volume.value='0.4';
-                    volume.dispatchEvent(new Event('input',{bubbles:true}));
-                    const audio=document.getElementById('audio');
-                    return {rate:audio.playbackRate,volume:audio.volume,paused:audio.paused};
-                """)
-                if (abs(settings["rate"] - 1.25) > 0.001 or
-                        abs(settings["volume"] - 0.4) > 0.001 or
-                        not settings["paused"]):
-                    raise RuntimeError("Firefox ONNX overlay controls failed: " + str(settings))
-                # Trigger a real unsupported-word playback error before Retry.
-                # A healthy player intentionally keeps Retry hidden.
-                driver.find_element(By.ID, "seekFwd").click()
-                WebDriverWait(driver, 180).until(lambda d: overlay_ready(1))
-                driver.find_element(By.ID, "seekFwd").click()
-                WebDriverWait(driver, 180).until(lambda d: d.execute_script("""
-                    const retry=document.getElementById('retry');
-                    const spans=document.querySelectorAll('.sentence');
-                    return spans.length===3&&spans[2].classList.contains('highlight')&&
-                        document.getElementById('status')?.textContent==='Error playing audio.'&&
-                        getComputedStyle(retry).display!=='none'&&
-                        document.getElementById('loadingSpinner')?.style.display==='none';
-                """))
-                repaired = driver.execute_async_script("""
-                    const done=arguments[arguments.length-1];
-                    browser.storage.local.set({
-                        pendingText:'Hello world. Hello world. Hello world.',
-                        pendingContent:[
-                            {type:'text',content:'Hello world.'},
-                            {type:'text',content:'Hello world.'},
-                            {type:'text',content:'Hello world.'}
-                        ]
-                    }).then(()=>done({success:true}),e=>done({success:false,error:String(e)}));
-                """)
-                if not repaired.get("success"):
-                    raise RuntimeError("Cannot repair Firefox overlay input: " + str(repaired))
-                driver.find_element(By.ID, "retry").click()
-                WebDriverWait(driver, 180).until(lambda d: d.execute_script("""
-                    const spans=document.querySelectorAll('.sentence');
-                    const audio=document.getElementById('audio');
-                    return spans.length===3&&spans[0].classList.contains('highlight')&&
-                        audio?.src.startsWith('blob:')&&audio.src!==arguments[0]&&
-                        getComputedStyle(document.getElementById('retry')).display==='none'&&
-                        document.getElementById('loadingSpinner')?.style.display==='none';
-                """, first_wav["firstUrl"]))
-                overlay_acceptance = {
-                    "success": True, "sentences": 3, "initiallyPaused": True,
-                    "unsupportedSentenceRejected": True, "retryRestoredAudio": True,
-                    "sampleRateHz": first_wav["sampleRateHz"],
-                    "audioBytes": first_wav["audioBytes"],
-                    "controls": ["next", "previous", "speed", "volume", "retry-after-error"],
-                    "rate": settings["rate"], "volume": settings["volume"],
-                    "networkOffline": True,
-                }
+                overlay_acceptance = run_offline_overlay_controls_acceptance(
+                    driver, state["origin"], "onnx")
                 # Remove must still be driven by the existing manager UI.
                 driver.get(state["origin"] + "/benchmark.html")
                 WebDriverWait(driver, 30).until(
                     lambda d: d.execute_script("return Boolean(window.KokoroBenchmark)") and
                     d.find_element(By.CSS_SELECTOR, '[data-variant="onnx-q8"] .model-remove').is_enabled()
+                )
+            if origin_download and provider == "mediapipe" and metrics.get("success"):
+                mediapipe_overlay_acceptance = (
+                    run_offline_overlay_controls_acceptance(
+                        driver, state["origin"], "mediapipe"))
+                driver.get(state["origin"] + "/benchmark.html")
+                WebDriverWait(driver, 30).until(
+                    lambda d: d.execute_script("return Boolean(window.KokoroBenchmark)") and
+                    d.find_element(
+                        By.CSS_SELECTOR,
+                        '[data-variant="mediapipe-cpu"] .model-remove').is_enabled()
                 )
 
             benchmark_acceptance = None
@@ -3357,6 +3398,7 @@ def main():
                 "originModelAcceptance": origin_model_acceptance,
                 "onnxPlaybackAcceptance": playback_acceptance,
                 "onnxOverlayAcceptance": overlay_acceptance,
+                "mediapipeOverlayAcceptance": mediapipe_overlay_acceptance,
                 "localBenchmarkAcceptance": benchmark_acceptance,
                 "epubReaderAcceptance": epub_reader_acceptance,
                 "articleSelectionAcceptance": article_selection_acceptance,
@@ -3392,6 +3434,9 @@ def main():
                 result["onnxPlaybackAcceptance"] = playback_acceptance
             if "overlay_acceptance" in locals() and overlay_acceptance is not None:
                 result["onnxOverlayAcceptance"] = overlay_acceptance
+            if ("mediapipe_overlay_acceptance" in locals() and
+                    mediapipe_overlay_acceptance is not None):
+                result["mediapipeOverlayAcceptance"] = mediapipe_overlay_acceptance
             if "benchmark_acceptance" in locals() and benchmark_acceptance is not None:
                 result["localBenchmarkAcceptance"] = benchmark_acceptance
             if "epub_reader_acceptance" in locals() and epub_reader_acceptance is not None:
