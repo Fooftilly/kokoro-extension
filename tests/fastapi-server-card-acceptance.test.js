@@ -20,6 +20,10 @@ import * as card from ${JSON.stringify(helperUrl)};
 const apiUrl = 'http://127.0.0.1:9/v1/';
 const report = card.buildFastApiServerCardReport({
     browser: 'chromium', apiUrl, afterLocalDualComparison: true,
+    backendBeforeChoose: card.BACKEND_BEFORE_CHOOSE,
+    chooseChangedBackend: true,
+    decodeableMp3: true,
+    audioDurationSec: 0.13,
 });
 card.assertFastApiServerCardReport(report);
 const endpoint = card.speechEndpointFromApiUrl(apiUrl);
@@ -33,6 +37,7 @@ const fail = (() => {
 })();
 console.log(JSON.stringify({
     bytes: card.MINIMAL_MP3_BYTES.length,
+    before: card.BACKEND_BEFORE_CHOOSE,
     needle: card.SERVER_PLAYABLE_MP3_NEEDLE,
     selected: card.FASTAPI_SELECTED_NEEDLE,
     endpoint, report, fail,
@@ -46,7 +51,8 @@ describe('FastAPI server-card acceptance', () => {
         expect(child.status).toBe(0);
         expect(child.stderr || '').toBe('');
         const snap = JSON.parse(child.stdout.trim());
-        expect(snap.bytes).toBeGreaterThan(16);
+        expect(snap.bytes).toBeGreaterThan(400);
+        expect(snap.before).toBe('mediapipe');
         expect(snap.needle).toMatch(/playable MP3/i);
         expect(snap.selected).toBe('FastAPI selected.');
         expect(snap.endpoint).toContain('/v1/audio/speech');
@@ -54,6 +60,9 @@ describe('FastAPI server-card acceptance', () => {
             success: true,
             serverCardTested: true,
             playableMp3Returned: true,
+            decodeableMp3: true,
+            backendBeforeChoose: 'mediapipe',
+            chooseChangedBackend: true,
             selectedBackend: 'fastapi',
             preferenceOnlyOnChoose: true,
             afterLocalDualComparison: true,
@@ -70,13 +79,19 @@ describe('FastAPI server-card acceptance', () => {
         expect(source).toContain("locator('#chooseServer').click()");
         expect(source).toContain('SERVER_PLAYABLE_MP3_NEEDLE');
         expect(source).toContain('FASTAPI_SELECTED_NEEDLE');
+        expect(source).toContain('BACKEND_BEFORE_CHOOSE');
+        expect(source).toContain('HAVE_CURRENT_DATA');
         expect(source).toContain('fastapiServerCardAcceptance');
         const dualIdx = source.indexOf(
             'await acceptTwoBackendComparison(');
         const cardIdx = source.indexOf(
             'await acceptFastApiServerCard(');
+        const playableIdx = source.indexOf('SERVER_PLAYABLE_MP3_NEEDLE');
+        const seedBeforeChoose = source.indexOf(
+            '}, BACKEND_BEFORE_CHOOSE);');
         expect(dualIdx).toBeGreaterThan(0);
         expect(cardIdx).toBeGreaterThan(dualIdx);
+        expect(seedBeforeChoose).toBeGreaterThan(playableIdx);
     });
 
     test('Firefox dual path wires FastAPI card after local dual', () => {
@@ -84,11 +99,14 @@ describe('FastAPI server-card acceptance', () => {
         expect(source).toContain('firefox_fastapi_server_card_acceptance');
         expect(source).toContain('def accept_fastapi_server_card');
         expect(source).toContain('_start_fastapi_speech_stub');
+        expect(source).toContain('_minimal_mp3_fixture_bytes');
+        expect(source).toContain('HAVE_CURRENT_DATA');
         expect(source).toMatch(
             /find_element\(\s*By\.ID,\s*["']testServer["']\s*\)\.click\(\)/);
         expect(source).toMatch(
             /find_element\(\s*By\.ID,\s*["']chooseServer["']\s*\)\.click\(\)/);
         expect(source).toContain('fastapiServerCardAcceptance');
+        expect(source).toContain('backend_before_choose');
         const dualIdx = source.indexOf(
             'accept_two_backend_comparison(driver, state["origin"])');
         const cardIdx = source.indexOf(

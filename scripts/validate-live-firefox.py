@@ -1563,9 +1563,35 @@ def accept_two_backend_comparison(driver, origin):
     }
 
 
+def _minimal_mp3_fixture_bytes():
+    """Load the shared ffprobe-valid MP3 from the ESM helper (single source)."""
+    scripts_dir = Path(__file__).resolve().parent
+    probe = subprocess.run(
+        [
+            "node", "--input-type=module", "-e",
+            "import { MINIMAL_MP3_BYTES } from "
+            "'./fastapi-server-card-acceptance.mjs';"
+            "process.stdout.write(Buffer.from(MINIMAL_MP3_BYTES));",
+        ],
+        cwd=str(scripts_dir),
+        capture_output=True,
+        check=False,
+    )
+    if probe.returncode != 0 or not probe.stdout:
+        raise RuntimeError(
+            "Cannot load shared MINIMAL_MP3_BYTES: " +
+            (probe.stderr.decode("utf-8", "replace") if probe.stderr else
+             "empty stdout"))
+    if len(probe.stdout) < 400:
+        raise RuntimeError(
+            "Shared MP3 fixture too small for a complete frame: " +
+            str(len(probe.stdout)))
+    return probe.stdout
+
+
 def _start_fastapi_speech_stub():
-    """Loopback Kokoro-FastAPI /v1/audio/speech returning a tiny MP3 body."""
-    mp3 = bytes([0xFF, 0xFB, 0x90, 0x00] + ([0] * 100))
+    """Loopback Kokoro-FastAPI /v1/audio/speech returning a decodeable MP3."""
+    mp3 = _minimal_mp3_fixture_bytes()
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_POST(self):
@@ -1598,6 +1624,7 @@ def accept_fastapi_server_card(driver, origin, api_url):
     WebDriverWait(driver, 30).until(
         lambda d: d.execute_script(
             "return Boolean(window.KokoroBenchmark)"))
+    # testFastApi refuses unless the selected backend is already fastapi.
     seeded = driver.execute_async_script("""
         const apiUrl=arguments[0];
         const done=arguments[arguments.length-1];
@@ -1628,6 +1655,59 @@ def accept_fastapi_server_card(driver, origin, api_url):
             String(audio.src||'').startsWith('data:audio') &&
             choose && choose.disabled===false;
     """))
+    # Prove the stub MP3 actually decodes (not just a data: URL prefix).
+    audio_duration = driver.execute_async_script("""
+        const done=arguments[arguments.length-1];
+        (async () => {
+            const audio=document.getElementById('serverAudio');
+            if (!audio) throw Error('serverAudio missing after FastAPI test');
+            if (audio.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+                await new Promise((resolve, reject) => {
+                    const onReady=()=>{cleanup(); resolve();};
+                    const onError=()=>{cleanup();
+                        reject(Error('serverAudio failed to decode stub MP3'));};
+                    const cleanup=()=>{
+                        audio.removeEventListener('loadeddata', onReady);
+                        audio.removeEventListener('error', onError);
+                    };
+                    audio.addEventListener('loadeddata', onReady, {once:true});
+                    audio.addEventListener('error', onError, {once:true});
+                    audio.load();
+                });
+            }
+            if (!(audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) ||
+                !(Number.isFinite(audio.duration) && audio.duration > 0)) {
+                throw Error('Stub MP3 did not become decodeable: readyState=' +
+                    audio.readyState + ' duration=' + audio.duration);
+            }
+            done(audio.duration);
+        })().catch(e => done({error:String(e)}));
+    """)
+    if isinstance(audio_duration, dict) and audio_duration.get("error"):
+        raise RuntimeError(audio_duration["error"])
+    if not (isinstance(audio_duration, (int, float)) and audio_duration > 0):
+        raise RuntimeError(
+            "Firefox stub MP3 duration missing: " + repr(audio_duration))
+
+    # Switch away from fastapi so chooseServer must write the preference.
+    before = driver.execute_async_script("""
+        const backend=arguments[0];
+        const done=arguments[arguments.length-1];
+        browser.storage.sync.set({ttsBackend:backend}).then(
+            ()=>browser.storage.sync.get({ttsBackend:'fastapi'}),
+            e=>({error:String(e)})
+        ).then(
+            data=>done(data.error ? data : {backend:data.ttsBackend}),
+            e=>done({error:String(e)}));
+    """, "mediapipe")
+    if before.get("error"):
+        raise RuntimeError(
+            "Cannot seed non-fastapi before chooseServer: " + before["error"])
+    if before.get("backend") != "mediapipe":
+        raise RuntimeError(
+            "Could not seed non-fastapi before chooseServer: " +
+            repr(before.get("backend")))
+
     driver.find_element(By.ID, "chooseServer").click()
     WebDriverWait(driver, 15).until(lambda d: d.execute_script("""
         const status=document.getElementById('serverStatus')?.textContent||'';
@@ -1646,7 +1726,12 @@ def accept_fastapi_server_card(driver, origin, api_url):
         raise RuntimeError(
             "Firefox FastAPI Use this backend did not select fastapi: " +
             repr(selected.get("backend")))
-    return build_fastapi_server_card_report(api_url)
+    return build_fastapi_server_card_report(
+        api_url,
+        backend_before_choose=before["backend"],
+        choose_changed_backend=before["backend"] != selected["backend"],
+        audio_duration_sec=float(audio_duration),
+    )
 
 
 # Browser-side readiness poll kept as one string so CodeFactor scores the

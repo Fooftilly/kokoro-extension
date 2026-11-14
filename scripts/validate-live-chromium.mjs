@@ -981,9 +981,11 @@ async function acceptFastApiServerCard(page, apiUrl) {
     const {
         SERVER_PLAYABLE_MP3_NEEDLE,
         FASTAPI_SELECTED_NEEDLE,
+        BACKEND_BEFORE_CHOOSE,
         buildFastApiServerCardReport,
     } = await import('./fastapi-server-card-acceptance.mjs');
 
+    // testFastApi refuses unless the selected backend is already fastapi.
     await page.evaluate(async (url) => {
         await chrome.storage.sync.set({
             ttsBackend: 'fastapi',
@@ -1007,6 +1009,48 @@ async function acceptFastApiServerCard(page, apiUrl) {
             choose && choose.disabled === false;
     }, SERVER_PLAYABLE_MP3_NEEDLE, { timeout: 30000 });
 
+    // Prove the stub MP3 actually decodes (not just a data: URL prefix).
+    const audioDurationSec = await page.evaluate(async () => {
+        const audio = document.getElementById('serverAudio');
+        if (!audio) throw Error('serverAudio missing after FastAPI test');
+        if (audio.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+            await new Promise((resolve, reject) => {
+                const onReady = () => {
+                    cleanup();
+                    resolve();
+                };
+                const onError = () => {
+                    cleanup();
+                    reject(Error('serverAudio failed to decode stub MP3'));
+                };
+                const cleanup = () => {
+                    audio.removeEventListener('loadeddata', onReady);
+                    audio.removeEventListener('error', onError);
+                };
+                audio.addEventListener('loadeddata', onReady, { once: true });
+                audio.addEventListener('error', onError, { once: true });
+                audio.load();
+            });
+        }
+        if (!(audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) ||
+            !(Number.isFinite(audio.duration) && audio.duration > 0)) {
+            throw Error('Stub MP3 did not become decodeable: readyState=' +
+                audio.readyState + ' duration=' + audio.duration);
+        }
+        return audio.duration;
+    });
+
+    // Switch away from fastapi so chooseServer must write the preference.
+    await page.evaluate(async (backend) => {
+        await chrome.storage.sync.set({ ttsBackend: backend });
+    }, BACKEND_BEFORE_CHOOSE);
+    const beforeChoose = await page.evaluate(async () =>
+        (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
+    if (beforeChoose !== BACKEND_BEFORE_CHOOSE) {
+        throw Error(
+            'Could not seed non-fastapi before chooseServer: ' + beforeChoose);
+    }
+
     await page.locator('#chooseServer').click();
     await page.waitForFunction((needle) => {
         const status = document.getElementById('serverStatus')?.textContent || '';
@@ -1024,6 +1068,10 @@ async function acceptFastApiServerCard(page, apiUrl) {
         browser: 'chromium',
         apiUrl,
         afterLocalDualComparison: true,
+        backendBeforeChoose: beforeChoose,
+        chooseChangedBackend: beforeChoose !== selectedBackend,
+        decodeableMp3: true,
+        audioDurationSec,
     });
 }
 

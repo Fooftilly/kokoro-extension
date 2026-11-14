@@ -3,15 +3,23 @@
  * Chromium imports this; Firefox loads asserts via Node for the same shapes.
  */
 
-/** Short MPEG frame bytes — enough for FETCH_TTS_AUDIO → data:audio/mpeg. */
-export const MINIMAL_MP3_BYTES = Uint8Array.from([
-    0xFF, 0xFB, 0x90, 0x00,
-    ...Array(100).fill(0),
-]);
+/**
+ * ffprobe-valid silent mono MP3 (~0.13s, LAME). Generated once with:
+ * ffmpeg -f lavfi -i anullsrc=r=44100:cl=mono -t 0.1 -q:a 9 -acodec libmp3lame
+ * Do not shrink below a complete MPEG frame — truncated fixtures pass URL
+ * prefix checks while remaining undecodable.
+ */
+export const MINIMAL_MP3_BASE64 =
+    'SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjYwLjE2LjEwMAAAAAAAAAAAAAAA//tAwAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAAFAAACvgBoaGhoaGhoaGhoaGhoaGhoaGhojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo60tLS0tLS0tLS0tLS0tLS0tLS0tNra2tra2tra2tra2tra2tra2tra//////////////////////////8AAAAATGF2YzYwLjMxAAAAAAAAAAAAAAAAJAMGAAAAAAAAAr4QurGFAAAAAAD/+xDEAAPAAAGkAAAAIAAANIAAAARMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/7EMQpg8AAAaQAAAAgAAA0gAAABFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//sQxFMDwAABpAAAACAAADSAAAAEVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVX/+xDEfIPAAAGkAAAAIAAANIAAAARVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/7EMSmA8AAAaQAAAAgAAA0gAAABFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV';
+
+export const MINIMAL_MP3_BYTES = Uint8Array.from(
+    Buffer.from(MINIMAL_MP3_BASE64, 'base64'));
 
 export const SERVER_PLAYABLE_MP3_NEEDLE = 'Server returned playable MP3';
 export const FASTAPI_SELECTED_NEEDLE = 'FastAPI selected.';
 export const SERVER_STATUS_NOT_TESTED = 'Not tested';
+/** Backend used to prove chooseServer writes (testFastApi needs fastapi first). */
+export const BACKEND_BEFORE_CHOOSE = 'mediapipe';
 
 /** Normalize apiUrl so `new URL('audio/speech', base)` matches Kokoro-FastAPI. */
 export function normalizeFastApiBaseUrl(baseUrl) {
@@ -44,12 +52,28 @@ export function assertFastApiServerCardReport(report) {
     if (report.playableMp3Returned !== true) {
         throw new Error('playableMp3Returned must be true');
     }
+    if (report.decodeableMp3 !== true) {
+        throw new Error('decodeableMp3 must be true');
+    }
+    if (!(report.mp3FixtureBytes > 400)) {
+        throw new Error(
+            'mp3FixtureBytes too small for a complete frame: ' +
+            report.mp3FixtureBytes);
+    }
     if (report.audioDataUrlPrefix !== 'data:audio') {
         throw new Error(
             'audioDataUrlPrefix mismatch: ' + report.audioDataUrlPrefix);
     }
     if (report.chooseServerEnabledAfterTest !== true) {
         throw new Error('chooseServer must enable after a successful test');
+    }
+    if (report.backendBeforeChoose !== BACKEND_BEFORE_CHOOSE) {
+        throw new Error(
+            'backendBeforeChoose must be ' + BACKEND_BEFORE_CHOOSE + ': ' +
+            report.backendBeforeChoose);
+    }
+    if (report.chooseChangedBackend !== true) {
+        throw new Error('chooseChangedBackend must be true');
     }
     if (report.selectedBackend !== 'fastapi') {
         throw new Error(
@@ -75,8 +99,12 @@ export function buildFastApiServerCardReport(options = {}) {
         browser: options.browser || 'unknown',
         serverCardTested: true,
         playableMp3Returned: true,
+        decodeableMp3: options.decodeableMp3 !== false,
+        mp3FixtureBytes: MINIMAL_MP3_BYTES.length,
         audioDataUrlPrefix: 'data:audio',
         chooseServerEnabledAfterTest: true,
+        backendBeforeChoose: options.backendBeforeChoose || BACKEND_BEFORE_CHOOSE,
+        chooseChangedBackend: options.chooseChangedBackend !== false,
         preferenceOnlyOnChoose: true,
         selectedBackend: 'fastapi',
         fastapiSelectedStatus: true,
@@ -84,6 +112,7 @@ export function buildFastApiServerCardReport(options = {}) {
         apiUrl,
         speechEndpoint: speechEndpointFromApiUrl(apiUrl),
         afterLocalDualComparison: options.afterLocalDualComparison !== false,
+        audioDurationSec: options.audioDurationSec || null,
     };
     assertFastApiServerCardReport(report);
     return report;

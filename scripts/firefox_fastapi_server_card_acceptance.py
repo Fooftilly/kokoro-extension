@@ -6,19 +6,26 @@ from pathlib import Path
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 
 
-def build_fastapi_server_card_report(api_url, browser="Firefox"):
+def build_fastapi_server_card_report(
+        api_url, browser="Firefox", backend_before_choose="mediapipe",
+        choose_changed_backend=True, audio_duration_sec=None):
     """Build the same report shape Chromium uses after a successful card test."""
+    options = {
+        "browser": browser,
+        "apiUrl": api_url,
+        "afterLocalDualComparison": True,
+        "backendBeforeChoose": backend_before_choose,
+        "chooseChangedBackend": choose_changed_backend,
+        "decodeableMp3": True,
+        "audioDurationSec": audio_duration_sec,
+    }
     probe = subprocess.run(
         [
             "node", "--input-type=module", "-e",
             "import { buildFastApiServerCardReport } from "
             "'./fastapi-server-card-acceptance.mjs';"
             "console.log(JSON.stringify(buildFastApiServerCardReport("
-            + json.dumps({
-                "browser": browser,
-                "apiUrl": api_url,
-                "afterLocalDualComparison": True,
-            })
+            + json.dumps(options)
             + ")));",
         ],
         cwd=str(_SCRIPTS_DIR),
