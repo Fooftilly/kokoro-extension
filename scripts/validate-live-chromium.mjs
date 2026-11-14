@@ -534,10 +534,11 @@ async function acceptLocalBenchmarkUi(page, extensionId, manifest) {
         }
         const cells = Array.from(row.cells, cell => cell.textContent.trim());
         const values = cells.slice(1).map(Number.parseFloat);
-        if (values.length !== 3 || values.some(v => !Number.isFinite(v) || v <= 0)) {
+        if (values.length !== 4 || values.some(v => !Number.isFinite(v) || v <= 0)) {
             throw Error('Local comparison displayed invalid measured timings: ' + JSON.stringify(cells));
         }
-        return { cells, p50Ms: values[0], p95Ms: values[1], rtfP50: values[2] };
+        return { cells, coldPrepMs: values[0], p50Ms: values[1],
+            p95Ms: values[2], rtfP50: values[3] };
     }, key);
     liveHeartbeat('local-benchmark-ui-first-test-click', { key });
     await page.locator(rowSelector + ' .model-test').click();
@@ -866,13 +867,13 @@ async function acceptTwoBackendComparison(page, extensionId) {
             }
             const cells = Array.from(row.cells, c => c.textContent.trim());
             const numbers = cells.slice(1).map(Number.parseFloat);
-            if (numbers.length !== 3 ||
+            if (numbers.length !== 4 ||
                 numbers.some(v => !Number.isFinite(v) || v <= 0)) {
                 throw Error('Invalid shared-sample benchmark metrics: ' +
                     JSON.stringify(cells));
             }
-            return { key, label: cells[0], p50Ms: numbers[0],
-                p95Ms: numbers[1], rtfP50: numbers[2],
+            return { key, label: cells[0], coldPrepMs: numbers[0],
+                p50Ms: numbers[1], p95Ms: numbers[2], rtfP50: numbers[3],
                 rowCount: tbody.rows.length };
         }, key);
         measured.push(row);

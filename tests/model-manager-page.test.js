@@ -89,7 +89,10 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         };
         globalThis.KokoroBackendDisclosure = require('../backend-disclosure.js');
         engine = {
-            initialize: jest.fn(async () => {}),
+            // Tiny delay so coldPrepMs (init + first synth) is > 0 in jsdom.
+            initialize: jest.fn(async () => {
+                await new Promise(resolve => setTimeout(resolve, 5));
+            }),
             synthesizePhonemes: jest.fn(async () => audio()),
             synthesize: jest.fn(async () => audio()),
             close: jest.fn(async () => {}),
@@ -512,6 +515,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
             .toBe(true);
         expect(message).toContain('warm (3 runs, shared English text)');
         expect(message).toContain('after untimed warm-up');
+        expect(message).toContain('Cold prep (init + first synth):');
         expect(message).toContain('Measured the shared English text through the dictionary-backed ONNX path');
         expect(message).not.toContain('IPA-only diagnostic');
         expect(window.KokoroBenchmark.summarizeRuns).toHaveBeenCalledWith(
@@ -1090,6 +1094,8 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(comparison.querySelector('[data-backend="onnx-q8"]')).not.toBeNull();
         expect(comparison.textContent).toContain('12 ms');
         expect(comparison.textContent).toContain('15 ms');
+        expect(comparison.querySelector('[data-backend="onnx-q8"]').cells)
+            .toHaveLength(5);
         expect(status.textContent).toContain('One local backend measured');
 
         installedModels.add('cpu');
@@ -1104,6 +1110,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(comparison.querySelector('[data-backend="mediapipe-cpu"]')).not.toBeNull();
         expect(comparison.querySelector('[data-backend="onnx-q8"]')).not.toBeNull();
         expect(status.textContent).toContain('Measured 2 local backend paths');
+        expect(status.textContent).toContain('cold prep + three warm runs');
         expect(status.textContent).toContain('No ranking is inferred');
         expect(engine.synthesize).toHaveBeenCalledTimes(8); // two untimed + six measured
         expect(global.fetch).not.toHaveBeenCalled();
@@ -1136,11 +1143,15 @@ describe('ONNX model manager English synthesis diagnostics', () => {
                 telemetry: false,
                 noRanking: true,
                 measurementKind: 'warm-full-clip-synthesis',
+                coldPrepMeasured: true,
                 firstAudioMeasured: false,
                 sampleText: 'Hello world.',
             }));
         expect(globalThis.__kokoroLastMeasuredExport.measurements.map(r => r.key)
             .sort()).toEqual(['mediapipe-cpu', 'onnx-q8']);
+        for (const row of globalThis.__kokoroLastMeasuredExport.measurements) {
+            expect(row.coldPrepMs).toBeGreaterThan(0);
+        }
         expect(global.fetch).not.toHaveBeenCalled();
     });
 
@@ -1169,7 +1180,9 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         const onnxProvider = require('../onnx-provider.js').OnnxKokoroProvider;
         const onnxEngine = engine;
         const mediapipeEngine = {
-            initialize: jest.fn(async () => {}),
+            initialize: jest.fn(async () => {
+                await new Promise(resolve => setTimeout(resolve, 5));
+            }),
             synthesize: jest.fn(async () => audio()),
             close: jest.fn(async () => {}),
         };
