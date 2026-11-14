@@ -1114,6 +1114,45 @@ async function readOverlayMpegSnapshot(overlayFrame, stored) {
     }, stored);
 }
 
+function pendingFastApiSpeechReady(stored, expectedSpeech, apiUrlNeedle) {
+    if (stored.pendingTtsBackend !== 'fastapi') return false;
+    if (!String(stored.pendingApiUrl || '').includes(apiUrlNeedle)) return false;
+    const blocks = stored.pendingContent;
+    const speechOk = Array.isArray(blocks) &&
+        blocks.some(block => typeof block?.content === 'string' &&
+            block.content.includes(expectedSpeech));
+    const textOk = typeof stored.pendingText === 'string' &&
+        stored.pendingText.includes(expectedSpeech);
+    return speechOk || textOk;
+}
+
+async function pollOverlayFastApiMpegOnce(
+    page, worker, expectedSpeech, mode, apiUrlNeedle,
+) {
+    const stored = await withTimeout(worker.evaluate(async () =>
+        chrome.storage.local.get([
+            'pendingText', 'pendingContent', 'pendingTtsBackend',
+            'pendingApiUrl', 'pendingAutoplay',
+        ]),
+    ), 15000, 'fastapi preference storage poll');
+    if (!pendingFastApiSpeechReady(stored, expectedSpeech, apiUrlNeedle)) {
+        return null;
+    }
+    const hostMode = await withTimeout(page.evaluate(() =>
+        document.getElementById('kokoro-overlay-container')?.dataset.mode ||
+        null,
+    ), 15000, 'fastapi preference overlay mode poll');
+    if (mode && hostMode !== mode) return null;
+    const overlayFrame = page.frames().find(frame =>
+        frame.url().includes('/overlay.html'));
+    if (!overlayFrame) return null;
+    const snapshot = await withTimeout(
+        readOverlayMpegSnapshot(overlayFrame, stored),
+        30000, 'fastapi preference overlay MPEG snapshot');
+    if (!snapshot) return null;
+    return { speech: expectedSpeech, mode: hostMode, ...snapshot };
+}
+
 async function waitForOverlayFastApiMpeg(
     page, worker, expectedSpeech, mode, options = {},
 ) {
@@ -1130,50 +1169,9 @@ async function waitForOverlayFastApiMpeg(
             lastBeat = elapsed;
         }
         try {
-            const stored = await withTimeout(worker.evaluate(async () =>
-                chrome.storage.local.get([
-                    'pendingText', 'pendingContent', 'pendingTtsBackend',
-                    'pendingApiUrl', 'pendingAutoplay',
-                ]),
-            ), 15000, 'fastapi preference storage poll');
-            if (stored.pendingTtsBackend !== 'fastapi') {
-                await new Promise(resolve => setTimeout(resolve, 100));
-                continue;
-            }
-            if (!String(stored.pendingApiUrl || '').includes(apiUrlNeedle)) {
-                await new Promise(resolve => setTimeout(resolve, 100));
-                continue;
-            }
-            const blocks = stored.pendingContent;
-            const speechOk = Array.isArray(blocks) &&
-                blocks.some(block => typeof block?.content === 'string' &&
-                    block.content.includes(expectedSpeech));
-            const textOk = typeof stored.pendingText === 'string' &&
-                stored.pendingText.includes(expectedSpeech);
-            if (!speechOk && !textOk) {
-                await new Promise(resolve => setTimeout(resolve, 100));
-                continue;
-            }
-            const hostMode = await withTimeout(page.evaluate(() =>
-                document.getElementById('kokoro-overlay-container')?.dataset.mode ||
-                null,
-            ), 15000, 'fastapi preference overlay mode poll');
-            if (mode && hostMode !== mode) {
-                await new Promise(resolve => setTimeout(resolve, 100));
-                continue;
-            }
-            const overlayFrame = page.frames().find(frame =>
-                frame.url().includes('/overlay.html'));
-            if (!overlayFrame) {
-                await new Promise(resolve => setTimeout(resolve, 100));
-                continue;
-            }
-            const snapshot = await withTimeout(
-                readOverlayMpegSnapshot(overlayFrame, stored),
-                30000, 'fastapi preference overlay MPEG snapshot');
-            if (snapshot) {
-                return { speech: expectedSpeech, mode: hostMode, ...snapshot };
-            }
+            const snapshot = await pollOverlayFastApiMpegOnce(
+                page, worker, expectedSpeech, mode, apiUrlNeedle);
+            if (snapshot) return snapshot;
         } catch (error) {
             lastError = error;
         }
@@ -1194,6 +1192,172 @@ async function clearPendingTtsSession(worker, tabId) {
             'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
         ]);
     }, tabId), 15000, 'clearPendingTtsSession');
+}
+
+async function clickFloatingMicOnSentence(page, elementId) {
+    await page.evaluate((id) => {
+        const el = document.getElementById(id);
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    }, elementId);
+    await page.waitForSelector('#kokoro-float-btn', {
+        state: 'visible', timeout: 15000,
+    });
+    await page.locator('#kokoro-float-btn').click();
+}
+
+async function requireFastApiMpegSnap(snap, label) {
+    if (!snap?.mpegDataUrl || snap.backend !== 'fastapi') {
+        throw Error(label + ' did not honor FastAPI preference: ' +
+            JSON.stringify(snap));
+    }
+    return snap;
+}
+
+async function honorChromiumSelection(page, worker, speech) {
+    liveHeartbeat('fastapi-preference-selection');
+    await clickFloatingMicOnSentence(page, 'selection-sentence');
+    return requireFastApiMpegSnap(
+        await waitForOverlayFastApiMpeg(
+            page, worker, speech.selection, 'popup', {
+                apiUrlNeedle: '127.0.0.1',
+            }),
+        'Selection');
+}
+
+async function honorChromiumArticle(page, worker, tabId, speech) {
+    liveHeartbeat('fastapi-preference-article');
+    await worker.evaluate(async (id) => {
+        await chrome.tabs.update(id, { active: true });
+    }, tabId);
+    const commandBindings = await worker.evaluate(async () => {
+        const commands = await chrome.commands.getAll();
+        return commands.map(entry => ({
+            name: entry.name, shortcut: entry.shortcut || '',
+        }));
+    });
+    const readArticleBinding = commandBindings.find(
+        entry => entry.name === 'read-article');
+    if (!readArticleBinding?.shortcut) {
+        throw Error('read-article command has no registered shortcut: ' +
+            JSON.stringify(commandBindings));
+    }
+    await page.bringToFront();
+    await page.locator('body').click({ position: { x: 8, y: 8 } });
+    await page.waitForTimeout(300);
+    sendNativeReadArticleAltA(readArticleBinding, commandBindings);
+    const articleArmedDeadline = Date.now() + 20000;
+    let articleArmed = null;
+    while (Date.now() < articleArmedDeadline) {
+        const armed = await worker.evaluate(async () =>
+            chrome.storage.local.get([
+                'pendingText', 'pendingContent', 'pendingTtsBackend',
+            ]));
+        if (armed.pendingTtsBackend === 'fastapi' &&
+            typeof armed.pendingText === 'string' &&
+            armed.pendingText.includes(speech.articleFirst)) {
+            articleArmed = armed;
+            break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    if (!articleArmed) {
+        throw Error('Native Alt+A did not arm FastAPI article storage');
+    }
+    return requireFastApiMpegSnap(
+        await waitForOverlayFastApiMpeg(
+            page, worker, speech.articleFirst, 'full', {
+                apiUrlNeedle: '127.0.0.1',
+            }),
+        'Article');
+}
+
+async function honorChromiumDownload(page, worker, apiUrl) {
+    liveHeartbeat('fastapi-preference-download');
+    await worker.evaluate(async (url) => {
+        await chrome.storage.sync.set({
+            ttsBackend: 'fastapi',
+            apiUrl: url,
+            mode: 'download',
+            showFloatingButton: true,
+        });
+        await chrome.storage.local.remove([
+            'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
+            'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
+        ]);
+    }, apiUrl);
+    const downloadBefore = await worker.evaluate(async () => {
+        const items = await chrome.downloads.search({
+            orderBy: ['-startTime'], limit: 20,
+        });
+        return items.map(item => item.id);
+    });
+    await clickFloatingMicOnSentence(page, 'download-sentence');
+    const downloadDeadline = Date.now() + 30000;
+    let downloadHit = null;
+    while (Date.now() < downloadDeadline) {
+        downloadHit = await worker.evaluate(async (beforeIds) => {
+            const items = await chrome.downloads.search({
+                orderBy: ['-startTime'], limit: 20,
+            });
+            return items.find(item =>
+                !beforeIds.includes(item.id) &&
+                String(item.filename || item.url || '')
+                    .toLowerCase().includes('.mp3')) || null;
+        }, downloadBefore);
+        if (downloadHit) break;
+        await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    if (!downloadHit) {
+        throw Error('FastAPI download mode did not create an MP3 download');
+    }
+    const afterDownloadBackend = await worker.evaluate(async () =>
+        (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
+    if (afterDownloadBackend !== 'fastapi') {
+        throw Error(
+            'Download path changed ttsBackend: ' + afterDownloadBackend);
+    }
+    return downloadHit;
+}
+
+async function honorChromiumReader(context, extensionId, worker, apiUrl, speech) {
+    liveHeartbeat('fastapi-preference-reader');
+    await worker.evaluate(async (url) => {
+        await chrome.storage.sync.set({
+            ttsBackend: 'fastapi',
+            apiUrl: url,
+            mode: 'stream',
+            autoplayReader: true,
+        });
+        await chrome.storage.local.remove([
+            'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
+            'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
+            'pendingReaderReloadRevision',
+        ]);
+    }, apiUrl);
+    const readerPage = await context.newPage();
+    try {
+        await readerPage.goto(
+            'chrome-extension://' + extensionId + '/reader.html',
+            { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await readerPage.locator('#fileInput').setInputFiles({
+            name: 'fastapi-preference.txt',
+            mimeType: 'text/plain',
+            buffer: Buffer.from(speech.reader, 'utf8'),
+        });
+        return requireFastApiMpegSnap(
+            await waitForOverlayFastApiMpeg(
+                readerPage, worker, speech.reader, null, {
+                    apiUrlNeedle: '127.0.0.1',
+                }),
+            'Reader');
+    } finally {
+        if (!readerPage.isClosed()) await readerPage.close().catch(() => {});
+    }
 }
 
 /**
@@ -1252,144 +1416,21 @@ async function acceptFastApiPreferenceHonor(context, extensionId, speechStub) {
         await ensureArticleSelectionContentScript(worker, tabId);
         await clearPendingTtsSession(worker, tabId);
 
-        liveHeartbeat('fastapi-preference-selection');
-        await page.evaluate(() => {
-            const el = document.getElementById('selection-sentence');
-            const range = document.createRange();
-            range.selectNodeContents(el);
-            const selection = window.getSelection();
-            selection.removeAllRanges();
-            selection.addRange(range);
-            document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-        });
-        await page.waitForSelector('#kokoro-float-btn', {
-            state: 'visible', timeout: 15000,
-        });
-        await page.locator('#kokoro-float-btn').click();
-        const selectionSnap = await waitForOverlayFastApiMpeg(
-            page, worker, PREFERENCE_HONOR_SPEECH.selection, 'popup', {
-                apiUrlNeedle: '127.0.0.1',
-            });
-        if (!selectionSnap.mpegDataUrl ||
-            selectionSnap.backend !== 'fastapi') {
-            throw Error('Selection did not honor FastAPI preference: ' +
-                JSON.stringify(selectionSnap));
-        }
+        await honorChromiumSelection(page, worker, PREFERENCE_HONOR_SPEECH);
         await clearPendingTtsSession(worker, tabId);
         await page.waitForFunction(
             () => !document.getElementById('kokoro-overlay-container'),
             null, { timeout: 15000 });
 
-        liveHeartbeat('fastapi-preference-article');
-        await worker.evaluate(async (id) => {
-            await chrome.tabs.update(id, { active: true });
-        }, tabId);
-        const commandBindings = await worker.evaluate(async () => {
-            const commands = await chrome.commands.getAll();
-            return commands.map(entry => ({
-                name: entry.name, shortcut: entry.shortcut || '',
-            }));
-        });
-        const readArticleBinding = commandBindings.find(
-            entry => entry.name === 'read-article');
-        if (!readArticleBinding?.shortcut) {
-            throw Error('read-article command has no registered shortcut: ' +
-                JSON.stringify(commandBindings));
-        }
-        await page.bringToFront();
-        await page.locator('body').click({ position: { x: 8, y: 8 } });
-        await page.waitForTimeout(300);
-        sendNativeReadArticleAltA(readArticleBinding, commandBindings);
-        const articleArmedDeadline = Date.now() + 20000;
-        let articleArmed = null;
-        while (Date.now() < articleArmedDeadline) {
-            const armed = await worker.evaluate(async () =>
-                chrome.storage.local.get([
-                    'pendingText', 'pendingContent', 'pendingTtsBackend',
-                ]));
-            if (armed.pendingTtsBackend === 'fastapi' &&
-                typeof armed.pendingText === 'string' &&
-                armed.pendingText.includes(
-                    PREFERENCE_HONOR_SPEECH.articleFirst)) {
-                articleArmed = armed;
-                break;
-            }
-            await new Promise(resolve => setTimeout(resolve, 100));
-        }
-        if (!articleArmed) {
-            throw Error('Native Alt+A did not arm FastAPI article storage');
-        }
-        const articleSnap = await waitForOverlayFastApiMpeg(
-            page, worker, PREFERENCE_HONOR_SPEECH.articleFirst, 'full', {
-                apiUrlNeedle: '127.0.0.1',
-            });
+        const articleSnap = await honorChromiumArticle(
+            page, worker, tabId, PREFERENCE_HONOR_SPEECH);
         articleBlockCount = articleSnap.blockCount || 2;
-        if (!articleSnap.mpegDataUrl || articleSnap.backend !== 'fastapi') {
-            throw Error('Article did not honor FastAPI preference: ' +
-                JSON.stringify(articleSnap));
-        }
         await clearPendingTtsSession(worker, tabId);
         await page.waitForFunction(
             () => !document.getElementById('kokoro-overlay-container'),
             null, { timeout: 15000 });
 
-        liveHeartbeat('fastapi-preference-download');
-        await worker.evaluate(async (url) => {
-            await chrome.storage.sync.set({
-                ttsBackend: 'fastapi',
-                apiUrl: url,
-                mode: 'download',
-                showFloatingButton: true,
-            });
-            await chrome.storage.local.remove([
-                'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
-                'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
-            ]);
-        }, apiUrl);
-        const downloadBefore = await worker.evaluate(async () => {
-            const items = await chrome.downloads.search({
-                orderBy: ['-startTime'], limit: 20,
-            });
-            return items.map(item => item.id);
-        });
-        await page.evaluate(() => {
-            const el = document.getElementById('download-sentence');
-            const range = document.createRange();
-            range.selectNodeContents(el);
-            const selection = window.getSelection();
-            selection.removeAllRanges();
-            selection.addRange(range);
-            document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-        });
-        await page.waitForSelector('#kokoro-float-btn', {
-            state: 'visible', timeout: 15000,
-        });
-        await page.locator('#kokoro-float-btn').click();
-        const downloadDeadline = Date.now() + 30000;
-        let downloadHit = null;
-        while (Date.now() < downloadDeadline) {
-            downloadHit = await worker.evaluate(async (beforeIds) => {
-                const items = await chrome.downloads.search({
-                    orderBy: ['-startTime'], limit: 20,
-                });
-                return items.find(item =>
-                    !beforeIds.includes(item.id) &&
-                    String(item.filename || item.url || '')
-                        .toLowerCase().includes('.mp3')) || null;
-            }, downloadBefore);
-            if (downloadHit) break;
-            await new Promise(resolve => setTimeout(resolve, 200));
-        }
-        if (!downloadHit) {
-            throw Error('FastAPI download mode did not create an MP3 download');
-        }
-        // Confirm sync preference stayed fastapi through download.
-        const afterDownloadBackend = await worker.evaluate(async () =>
-            (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
-        if (afterDownloadBackend !== 'fastapi') {
-            throw Error(
-                'Download path changed ttsBackend: ' + afterDownloadBackend);
-        }
+        await honorChromiumDownload(page, worker, apiUrl);
     } finally {
         if (!page.isClosed()) await page.close().catch(() => {});
         try { fixtureServer.closeAllConnections?.(); } catch { /* ignore */ }
@@ -1398,41 +1439,8 @@ async function acceptFastApiPreferenceHonor(context, extensionId, speechStub) {
         }), 5000, 'preference fixtureServer.close').catch(() => {});
     }
 
-    liveHeartbeat('fastapi-preference-reader');
-    await worker.evaluate(async (url) => {
-        await chrome.storage.sync.set({
-            ttsBackend: 'fastapi',
-            apiUrl: url,
-            mode: 'stream',
-            autoplayReader: true,
-        });
-        await chrome.storage.local.remove([
-            'pendingText', 'pendingContent', 'pendingVoice', 'pendingTitle',
-            'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
-            'pendingReaderReloadRevision',
-        ]);
-    }, apiUrl);
-    const readerPage = await context.newPage();
-    try {
-        await readerPage.goto(
-            'chrome-extension://' + extensionId + '/reader.html',
-            { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await readerPage.locator('#fileInput').setInputFiles({
-            name: 'fastapi-preference.txt',
-            mimeType: 'text/plain',
-            buffer: Buffer.from(PREFERENCE_HONOR_SPEECH.reader, 'utf8'),
-        });
-        const readerSnap = await waitForOverlayFastApiMpeg(
-            readerPage, worker, PREFERENCE_HONOR_SPEECH.reader, null, {
-                apiUrlNeedle: '127.0.0.1',
-            });
-        if (!readerSnap.mpegDataUrl || readerSnap.backend !== 'fastapi') {
-            throw Error('Reader did not honor FastAPI preference: ' +
-                JSON.stringify(readerSnap));
-        }
-    } finally {
-        if (!readerPage.isClosed()) await readerPage.close().catch(() => {});
-    }
+    await honorChromiumReader(
+        context, extensionId, worker, apiUrl, PREFERENCE_HONOR_SPEECH);
 
     return buildFastApiPreferenceHonorReport({
         browser: 'chromium',

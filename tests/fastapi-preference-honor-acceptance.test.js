@@ -83,8 +83,17 @@ describe('FastAPI preference-honor acceptance', () => {
         expect(source).toContain('firefox_fastapi_preference_honor_acceptance');
         expect(source).toContain('def accept_fastapi_preference_honor');
         expect(source).toContain('_wait_overlay_fastapi_mpeg');
+        expect(source).toContain('_OVERLAY_FASTAPI_MPEG_SCRIPT');
+        expect(source).toContain('switch_to.frame');
+        expect(source).toContain('_seed_firefox_fastapi_sync');
+        expect(source).toContain('_honor_firefox_download');
         expect(source).toContain('fastapiPreferenceHonorAcceptance');
         expect(source).toContain('mode:\'download\'');
+        // Download/reader storage must run on an extension page, not HTTP fixture.
+        expect(source).toMatch(
+            /_honor_firefox_download[\s\S]*?_on_extension_page\(/);
+        expect(source).not.toMatch(
+            /download_seed = driver\.execute_async_script/);
         const cardIdx = source.indexOf(
             'fastapi_card = accept_fastapi_server_card(');
         const honorIdx = source.indexOf(
