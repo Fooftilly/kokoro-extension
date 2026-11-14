@@ -560,148 +560,163 @@ async function acceptOverlayControls(page, extensionId, backend) {
     } = await import('./overlay-controls-acceptance.mjs');
     const includeRetry = backend === 'onnx';
     const seed = overlaySeedForBackend(backend, { includeUnsupported: includeRetry });
-    await page.evaluate(async storage => {
-        await chrome.storage.local.set(storage);
-    }, seed);
-    await page.goto('chrome-extension://' + extensionId + '/overlay.html');
-    const overlayReady = index => {
-        const spans = document.querySelectorAll('.sentence');
-        return spans.length === 3 && spans[index]?.classList.contains('highlight') &&
-            document.getElementById('audio')?.src.startsWith('blob:') &&
-            document.getElementById('loadingSpinner')?.style.display === 'none';
-    };
-    await page.waitForFunction(overlayReady, 0, { timeout: 180000 });
-    const firstUrl = await page.locator('#audio').evaluate(audio => audio.src);
-    const firstWav = await page.evaluate(async () => {
-        const audio = document.getElementById('audio');
-        const bytes = new Uint8Array(await (await fetch(audio.src)).arrayBuffer());
-        const wav = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        const tag = (start, length) =>
-            String.fromCharCode(...bytes.subarray(start, start + length));
-        const audioBytes = wav.getUint32(40, true);
-        if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
-            wav.getUint32(24, true) !== 24000 || audioBytes < 2 ||
-            bytes.length !== 44 + audioBytes) {
-            throw Error('Overlay emitted malformed WAV');
-        }
-        if (!audio.paused || document.getElementById('playPause').textContent !== 'Play') {
-            throw Error('Autoplay-disabled overlay unexpectedly started playing');
-        }
-        if (navigator.onLine !== false) throw Error('Overlay was not offline');
-        return { sampleRateHz: 24000, audioBytes, initiallyPaused: true };
-    });
-    assertOverlayWavSnapshot(firstWav);
-    await page.locator('#seekFwd').click();
-    await page.waitForFunction(overlayReady, 1, { timeout: 180000 });
-    await page.locator('#seekBack').click();
-    await page.waitForFunction(overlayReady, 0, { timeout: 180000 });
-    await page.locator('#speed').selectOption('1.25');
-    await page.evaluate(() => {
-        const slider = document.getElementById('volumeControl');
-        slider.value = '0.4';
-        slider.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    const settings = await page.evaluate(() => {
-        const audio = document.getElementById('audio');
-        return { rate: audio.playbackRate, volume: audio.volume, paused: audio.paused };
-    });
-    assertOverlaySettings(settings);
-    // Device-level pause/resume: require playing event + currentTime advance.
-    // navigate() already sets "Playing sentence" before play() resolves.
-    await page.evaluate(() => {
-        const audio = document.getElementById('audio');
-        if (!audio) return;
-        audio.muted = true;
-        audio.__kokoroPlayProof = {
-            playingEvent: false,
-            startTime: audio.currentTime,
-        };
-        audio.addEventListener('playing', () => {
-            audio.__kokoroPlayProof.playingEvent = true;
-        }, { once: true });
-    });
-    await page.locator('#playPause').click();
-    await page.waitForFunction(() => {
-        const audio = document.getElementById('audio');
-        const proof = audio?.__kokoroPlayProof;
-        return audio && !audio.paused && audio.readyState >= 2 &&
-            document.getElementById('playPause')?.textContent === 'Pause' &&
-            proof?.playingEvent === true &&
-            audio.currentTime > proof.startTime;
-    }, null, { timeout: 30000 });
-    assertOverlayPlaybackConfirmed(await page.evaluate(() => {
-        const audio = document.getElementById('audio');
-        const proof = audio?.__kokoroPlayProof || {};
-        return {
-            playingEvent: proof.playingEvent === true,
-            startTime: proof.startTime,
-            currentTime: audio?.currentTime ?? 0,
-            paused: audio?.paused,
-            button: document.getElementById('playPause')?.textContent || '',
-            readyState: audio?.readyState ?? 0,
-        };
-    }));
-    await page.locator('#playPause').click();
-    await page.waitForFunction(() => {
-        const audio = document.getElementById('audio');
-        return audio && audio.paused &&
-            document.getElementById('playPause')?.textContent === 'Play';
-    }, null, { timeout: 30000 });
-    assertOverlayPausedAfterToggle(await page.evaluate(() => {
-        const audio = document.getElementById('audio');
-        return {
-            paused: audio?.paused,
-            button: document.getElementById('playPause')?.textContent || '',
-        };
-    }));
-    let unsupportedSentenceRejected = false;
-    let retryRestoredAudio = false;
-    if (includeRetry) {
-        await page.locator('#seekFwd').click();
-        await page.waitForFunction(overlayReady, 1, { timeout: 180000 });
-        await page.locator('#seekFwd').click();
-        await page.waitForFunction(() => {
-            const retry = document.getElementById('retry');
+    // Dedicated tab: MediaPipe WASM probe residue on the origin page has made
+    // Chromium detach #audio between overlayReady and the next locator read.
+    const overlayPage = await page.context().newPage();
+    try {
+        await overlayPage.evaluate(async storage => {
+            await chrome.storage.local.set(storage);
+        }, seed);
+        await overlayPage.goto('chrome-extension://' + extensionId + '/overlay.html');
+        await overlayPage.waitForSelector('#audio', { timeout: 30000 });
+        const overlayReady = index => {
             const spans = document.querySelectorAll('.sentence');
-            return spans.length === 3 && spans[2].classList.contains('highlight') &&
-                document.getElementById('status')?.textContent === 'Error playing audio.' &&
-                getComputedStyle(retry).display !== 'none' &&
+            return spans.length === 3 && spans[index]?.classList.contains('highlight') &&
+                document.getElementById('audio')?.src.startsWith('blob:') &&
                 document.getElementById('loadingSpinner')?.style.display === 'none';
-        }, null, { timeout: 180000 });
-        unsupportedSentenceRejected = true;
-        await page.evaluate(async () => {
-            await chrome.storage.local.set({
-                pendingText: 'Hello world. Hello world. Hello world.',
-                pendingContent: [
-                    { type: 'text', content: 'Hello world.' },
-                    { type: 'text', content: 'Hello world.' },
-                    { type: 'text', content: 'Hello world.' },
-                ],
-            });
-        });
-        await page.locator('#retry').click();
-        await page.waitForFunction(oldUrl => {
-            const spans = document.querySelectorAll('.sentence');
+        };
+        await overlayPage.waitForFunction(overlayReady, 0, { timeout: 180000 });
+        // Prefer page.evaluate over locator('#audio') — avoids detach races.
+        const firstUrl = await overlayPage.evaluate(() => {
             const audio = document.getElementById('audio');
-            return spans.length === 3 && spans[0].classList.contains('highlight') &&
-                audio?.src.startsWith('blob:') && audio.src !== oldUrl &&
-                getComputedStyle(document.getElementById('retry')).display === 'none' &&
-                document.getElementById('loadingSpinner')?.style.display === 'none';
-        }, firstUrl, { timeout: 180000 });
-        retryRestoredAudio = true;
+            if (!audio?.src?.startsWith('blob:')) {
+                throw Error('Overlay #audio missing after ready');
+            }
+            return audio.src;
+        });
+        const firstWav = await overlayPage.evaluate(async () => {
+            const audio = document.getElementById('audio');
+            const bytes = new Uint8Array(await (await fetch(audio.src)).arrayBuffer());
+            const wav = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+            const tag = (start, length) =>
+                String.fromCharCode(...bytes.subarray(start, start + length));
+            const audioBytes = wav.getUint32(40, true);
+            if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
+                wav.getUint32(24, true) !== 24000 || audioBytes < 2 ||
+                bytes.length !== 44 + audioBytes) {
+                throw Error('Overlay emitted malformed WAV');
+            }
+            if (!audio.paused || document.getElementById('playPause').textContent !== 'Play') {
+                throw Error('Autoplay-disabled overlay unexpectedly started playing');
+            }
+            if (navigator.onLine !== false) throw Error('Overlay was not offline');
+            return { sampleRateHz: 24000, audioBytes, initiallyPaused: true };
+        });
+        assertOverlayWavSnapshot(firstWav);
+        await overlayPage.locator('#seekFwd').click();
+        await overlayPage.waitForFunction(overlayReady, 1, { timeout: 180000 });
+        await overlayPage.locator('#seekBack').click();
+        await overlayPage.waitForFunction(overlayReady, 0, { timeout: 180000 });
+        await overlayPage.locator('#speed').selectOption('1.25');
+        await overlayPage.evaluate(() => {
+            const slider = document.getElementById('volumeControl');
+            slider.value = '0.4';
+            slider.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        const settings = await overlayPage.evaluate(() => {
+            const audio = document.getElementById('audio');
+            return { rate: audio.playbackRate, volume: audio.volume, paused: audio.paused };
+        });
+        assertOverlaySettings(settings);
+        // Device-level pause/resume: require playing event + currentTime advance.
+        // navigate() already sets "Playing sentence" before play() resolves.
+        await overlayPage.evaluate(() => {
+            const audio = document.getElementById('audio');
+            if (!audio) return;
+            audio.muted = true;
+            audio.__kokoroPlayProof = {
+                playingEvent: false,
+                startTime: audio.currentTime,
+            };
+            audio.addEventListener('playing', () => {
+                audio.__kokoroPlayProof.playingEvent = true;
+            }, { once: true });
+        });
+        await overlayPage.locator('#playPause').click();
+        await overlayPage.waitForFunction(() => {
+            const audio = document.getElementById('audio');
+            const proof = audio?.__kokoroPlayProof;
+            return audio && !audio.paused && audio.readyState >= 2 &&
+                document.getElementById('playPause')?.textContent === 'Pause' &&
+                proof?.playingEvent === true &&
+                audio.currentTime > proof.startTime;
+        }, null, { timeout: 30000 });
+        assertOverlayPlaybackConfirmed(await overlayPage.evaluate(() => {
+            const audio = document.getElementById('audio');
+            const proof = audio?.__kokoroPlayProof || {};
+            return {
+                playingEvent: proof.playingEvent === true,
+                startTime: proof.startTime,
+                currentTime: audio?.currentTime ?? 0,
+                paused: audio?.paused,
+                button: document.getElementById('playPause')?.textContent || '',
+                readyState: audio?.readyState ?? 0,
+            };
+        }));
+        await overlayPage.locator('#playPause').click();
+        await overlayPage.waitForFunction(() => {
+            const audio = document.getElementById('audio');
+            return audio && audio.paused &&
+                document.getElementById('playPause')?.textContent === 'Play';
+        }, null, { timeout: 30000 });
+        assertOverlayPausedAfterToggle(await overlayPage.evaluate(() => {
+            const audio = document.getElementById('audio');
+            return {
+                paused: audio?.paused,
+                button: document.getElementById('playPause')?.textContent || '',
+            };
+        }));
+        let unsupportedSentenceRejected = false;
+        let retryRestoredAudio = false;
+        if (includeRetry) {
+            await overlayPage.locator('#seekFwd').click();
+            await overlayPage.waitForFunction(overlayReady, 1, { timeout: 180000 });
+            await overlayPage.locator('#seekFwd').click();
+            await overlayPage.waitForFunction(() => {
+                const retry = document.getElementById('retry');
+                const spans = document.querySelectorAll('.sentence');
+                return spans.length === 3 && spans[2].classList.contains('highlight') &&
+                    document.getElementById('status')?.textContent === 'Error playing audio.' &&
+                    getComputedStyle(retry).display !== 'none' &&
+                    document.getElementById('loadingSpinner')?.style.display === 'none';
+            }, null, { timeout: 180000 });
+            unsupportedSentenceRejected = true;
+            await overlayPage.evaluate(async () => {
+                await chrome.storage.local.set({
+                    pendingText: 'Hello world. Hello world. Hello world.',
+                    pendingContent: [
+                        { type: 'text', content: 'Hello world.' },
+                        { type: 'text', content: 'Hello world.' },
+                        { type: 'text', content: 'Hello world.' },
+                    ],
+                });
+            });
+            await overlayPage.locator('#retry').click();
+            await overlayPage.waitForFunction(oldUrl => {
+                const spans = document.querySelectorAll('.sentence');
+                const audio = document.getElementById('audio');
+                return spans.length === 3 && spans[0].classList.contains('highlight') &&
+                    audio?.src.startsWith('blob:') && audio.src !== oldUrl &&
+                    getComputedStyle(document.getElementById('retry')).display === 'none' &&
+                    document.getElementById('loadingSpinner')?.style.display === 'none';
+            }, firstUrl, { timeout: 180000 });
+            retryRestoredAudio = true;
+        }
+        return buildOverlayControlsReport({
+            backend,
+            includeRetry,
+            playPauseToggled: true,
+            playbackConfirmed: true,
+            unsupportedSentenceRejected,
+            retryRestoredAudio,
+            sampleRateHz: firstWav.sampleRateHz,
+            audioBytes: firstWav.audioBytes,
+            rate: settings.rate,
+            volume: settings.volume,
+        });
+    } finally {
+        if (!overlayPage.isClosed()) await overlayPage.close();
     }
-    return buildOverlayControlsReport({
-        backend,
-        includeRetry,
-        playPauseToggled: true,
-        playbackConfirmed: true,
-        unsupportedSentenceRejected,
-        retryRestoredAudio,
-        sampleRateHz: firstWav.sampleRateHz,
-        audioBytes: firstWav.audioBytes,
-        rate: settings.rate,
-        volume: settings.volume,
-    });
 }
 
 /** #61: popup Test TTS backends CTA opens benchmark.html with three cards. */

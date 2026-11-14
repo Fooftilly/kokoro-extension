@@ -109,6 +109,8 @@ describe('overlay controls acceptance', () => {
         expect(chromium).toContain('assertOverlayPlaybackConfirmed');
         expect(chromium).toContain('__kokoroPlayProof');
         expect(chromium).toContain("addEventListener('playing'");
+        expect(chromium).toContain("page.context().newPage()");
+        expect(chromium).toContain("waitForSelector('#audio'");
         expect(firefox).toContain('firefox_overlay_controls_acceptance');
         expect(firefox).toContain('assert_overlay_playback_confirmed');
         expect(firefox).toContain('__kokoroPlayProof');
