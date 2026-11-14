@@ -62,6 +62,132 @@ function renderSharedEnglishResults() {
         : sharedEnglishResults.size === 1
             ? 'One local backend measured. Test another on the same English sample to compare.'
             : 'Run at least two local English tests to compare their measured timings.';
+    updateMeasuredExportButton();
+}
+
+// #61: optional local-only JSON export of measured English rows (no telemetry).
+function buildMeasuredEnglishExport() {
+    const sampleText = document.getElementById('benchmarkText')?.value.trim() || '';
+    const measurements = [];
+    for (const entry of variants) {
+        const result = sharedEnglishResults.get(entry.key);
+        if (!result) continue;
+        measurements.push({
+            key: entry.key,
+            label: entry.label,
+            synthesisP50Ms: result.synthesisP50Ms,
+            synthesisP95Ms: result.synthesisP95Ms,
+            realTimeFactorP50: result.realTimeFactorP50,
+        });
+    }
+    return {
+        kind: 'kokoro-measured-local-english',
+        localOnly: true,
+        telemetry: false,
+        noRanking: true,
+        measurementKind: 'warm-full-clip-synthesis',
+        firstAudioMeasured: false,
+        sampleText,
+        browser: {
+            userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
+            online: typeof navigator !== 'undefined' ? navigator.onLine : null,
+        },
+        measurements,
+        exportedAt: new Date().toISOString(),
+    };
+}
+
+function updateMeasuredExportButton() {
+    const button = document.getElementById('exportMeasuredResults');
+    if (button) button.disabled = sharedEnglishResults.size === 0;
+}
+
+// Await downloads.onChanged for this export id. Resolving on download() alone
+// would flash success while the JSON is still writing; treating interrupted
+// like complete would revoke the blob and leave a false success status.
+async function downloadPinnedMeasuredExport(url, filename) {
+    const release = () => {
+        try { URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
+    };
+    const events = browser.downloads?.onChanged;
+    if (!events?.addListener || !events?.removeListener ||
+        typeof browser.downloads?.download !== 'function') {
+        throw new Error('downloads API unavailable for measured export');
+    }
+    let downloadId = null;
+    let finished = false;
+    const earlyTerminals = new Map();
+    let settle;
+    const done = new Promise((resolve, reject) => {
+        settle = { resolve, reject };
+    });
+    const finish = (error, id) => {
+        if (finished) return;
+        finished = true;
+        events.removeListener(onChanged);
+        release();
+        if (error) settle.reject(error);
+        else settle.resolve(id);
+    };
+    const onChanged = delta => {
+        const state = delta.state?.current;
+        if (state !== 'complete' && state !== 'interrupted') return;
+        if (downloadId === null) {
+            earlyTerminals.set(delta.id, state);
+            return;
+        }
+        if (delta.id !== downloadId) return;
+        if (state === 'interrupted') {
+            finish(new Error('Measured export download interrupted'));
+        } else {
+            finish(null, downloadId);
+        }
+    };
+    try {
+        events.addListener(onChanged);
+        downloadId = await browser.downloads.download({
+            url, filename, saveAs: false,
+        });
+        const early = earlyTerminals.get(downloadId);
+        if (early === 'interrupted') {
+            finish(new Error('Measured export download interrupted'));
+        } else if (early === 'complete') {
+            finish(null, downloadId);
+        }
+        return await done;
+    } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)));
+        return await done;
+    }
+}
+
+async function exportMeasuredEnglishResults() {
+    const payload = buildMeasuredEnglishExport();
+    const status = document.getElementById('measuredExportStatus');
+    if (!payload.measurements.length) {
+        if (status) status.textContent = 'No measured local English results to export.';
+        return;
+    }
+    globalThis.__kokoroLastMeasuredExport = payload;
+    delete globalThis.__kokoroLastMeasuredExportDownloadId;
+    const text = JSON.stringify(payload, null, 2);
+    const blob = new Blob([text], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    try {
+        const downloadId = await downloadPinnedMeasuredExport(
+            url, 'kokoro-measured-local-english.json');
+        globalThis.__kokoroLastMeasuredExportDownloadId = downloadId;
+        if (status) {
+            status.textContent =
+                'Measured results exported locally. Nothing was uploaded.';
+        }
+    } catch (error) {
+        try { URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
+        if (status) {
+            status.textContent = 'Measured export failed: ' +
+                (error?.message || String(error));
+        }
+    }
 }
 
 function forgetSharedEnglishResult(entry) {
@@ -947,6 +1073,9 @@ if (page) {
         sharedEnglishEpoch++;
         sharedEnglishResults.clear();
         renderSharedEnglishResults();
+    });
+    document.getElementById('exportMeasuredResults')?.addEventListener('click', () => {
+        void exportMeasuredEnglishResults();
     });
     renderSharedEnglishResults();
     document.getElementById('testServer').addEventListener('click', () => {
