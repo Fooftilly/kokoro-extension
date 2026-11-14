@@ -313,11 +313,16 @@ describe('background.js logic', () => {
         ua.mockRestore();
     });
 
-    test('FastAPI download uses blob URL on Firefox', async () => {
+    test('FastAPI download uses blob URL on Firefox and defers revoke', async () => {
         const ua = jest.spyOn(navigator, 'userAgent', 'get')
             .mockReturnValue('Mozilla/5.0 Firefox/120.0');
+        const listeners = new Set();
         browser.downloads = {
             download: jest.fn(() => Promise.resolve(7)),
+            onChanged: {
+                addListener: jest.fn(fn => listeners.add(fn)),
+                removeListener: jest.fn(fn => listeners.delete(fn)),
+            },
         };
         global.URL.createObjectURL = jest.fn(() => 'blob:firefox-mp3');
         global.URL.revokeObjectURL = jest.fn();
@@ -339,7 +344,13 @@ describe('background.js logic', () => {
                 saveAs: false,
             })
         );
+        expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+        expect(listeners.size).toBe(1);
+        for (const fn of [...listeners]) {
+            fn({ id: 7, state: { current: 'complete' } });
+        }
         expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:firefox-mp3');
+        expect(listeners.size).toBe(0);
         delete browser.downloads;
         delete global.URL.createObjectURL;
         delete global.URL.revokeObjectURL;

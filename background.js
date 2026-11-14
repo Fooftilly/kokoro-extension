@@ -450,24 +450,56 @@ function prefersBlobDownloadUrl() {
 }
 
 async function downloadFastApiMp3(blob, filename) {
-    let url;
-    let revoke = null;
-    if (prefersBlobDownloadUrl()) {
-        url = URL.createObjectURL(blob);
-        revoke = () => {
-            try { URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
-        };
-    } else {
-        url = await blobToDataUrl(blob);
-    }
-    try {
+    // Chromium SW: data: URL. Firefox: blob: — but downloads.download resolves
+    // when the download *starts*, so keep the blob pinned until onChanged
+    // reports complete/interrupted (same pattern as overlay downloadPinnedSentence).
+    if (!prefersBlobDownloadUrl()) {
+        const dataUrl = await blobToDataUrl(blob);
         await browser.downloads.download({
-            url: url,
+            url: dataUrl,
             filename: filename,
             saveAs: false
         });
-    } finally {
-        if (revoke) revoke();
+        return;
+    }
+    const url = URL.createObjectURL(blob);
+    const release = () => {
+        try { URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
+    };
+    const events = browser.downloads.onChanged;
+    if (!events?.addListener || !events?.removeListener) {
+        try {
+            await browser.downloads.download({
+                url: url, filename: filename, saveAs: false,
+            });
+        } finally {
+            release();
+        }
+        return;
+    }
+    let downloadId = null;
+    let finished = false;
+    const earlyTerminals = new Set();
+    const finish = () => {
+        if (finished) return;
+        finished = true;
+        events.removeListener(onChanged);
+        release();
+    };
+    const onChanged = delta => {
+        if (!['complete', 'interrupted'].includes(delta.state?.current)) return;
+        if (downloadId === null) earlyTerminals.add(delta.id);
+        else if (delta.id === downloadId) finish();
+    };
+    try {
+        events.addListener(onChanged);
+        downloadId = await browser.downloads.download({
+            url: url, filename: filename, saveAs: false,
+        });
+        if (earlyTerminals.has(downloadId)) finish();
+    } catch (error) {
+        finish();
+        throw error;
     }
 }
 

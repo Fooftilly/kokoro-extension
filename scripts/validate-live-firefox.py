@@ -1944,44 +1944,58 @@ def _honor_firefox_article(driver, origin, fixture_url, speech):
 
 
 def _honor_firefox_download(driver, origin, api_url):
-    download_seed = _on_extension_page(driver, origin, """
-        const [apiUrl, done] = arguments;
-        browser.storage.sync.set({
-            ttsBackend:'fastapi', apiUrl, mode:'download',
-            showFloatingButton:true,
-        }).then(
-            () => browser.downloads.search({
-                orderBy:['-startTime'], limit:20,
-            }),
-            e => ({error:String(e)})
-        ).then(
-            items => Array.isArray(items)
-                ? done({ids: items.map(i => i.id)})
-                : done(items),
-            e => done({error:String(e)}));
-    """, api_url)
-    if download_seed.get("error"):
-        raise RuntimeError(
-            "Cannot seed Firefox download mode: " + download_seed["error"])
-    before_ids = download_seed.get("ids") or []
-    _on_extension_page(driver, origin, """
-        const [done] = arguments;
-        globalThis.__kokoroDownloadProbe = {
-            ids: [],
-            listener(item) {
-                globalThis.__kokoroDownloadProbe.ids.push(item.id);
-            },
-        };
-        browser.downloads.onCreated.addListener(
-            globalThis.__kokoroDownloadProbe.listener);
-        done(true);
-    """)
+    # Keep one extension tab open for the whole download probe lifetime.
+    # _on_extension_page closes the tab after each call, which disarms
+    # downloads.onCreated (Devin #159).
+    fixture_handle = driver.current_window_handle
+    handles_before = set(driver.window_handles)
+    driver.switch_to.new_window("tab")
+    ext_handle = next(iter(set(driver.window_handles) - handles_before))
     try:
+        driver.get(origin + "/benchmark.html")
+        WebDriverWait(driver, 30).until(
+            lambda d: d.execute_script(
+                "return Boolean(window.KokoroBenchmark)"))
+        download_seed = _extension_async(driver, """
+            const [apiUrl, done] = arguments;
+            browser.storage.sync.set({
+                ttsBackend:'fastapi', apiUrl, mode:'download',
+                showFloatingButton:true,
+            }).then(
+                () => browser.downloads.search({
+                    orderBy:['-startTime'], limit:20,
+                }),
+                e => ({error:String(e)})
+            ).then(
+                items => Array.isArray(items)
+                    ? done({ids: items.map(i => i.id)})
+                    : done(items),
+                e => done({error:String(e)}));
+        """, api_url)
+        if download_seed.get("error"):
+            raise RuntimeError(
+                "Cannot seed Firefox download mode: "
+                + download_seed["error"])
+        before_ids = download_seed.get("ids") or []
+        _extension_async(driver, """
+            const [done] = arguments;
+            globalThis.__kokoroDownloadProbe = {
+                ids: [],
+                listener(item) {
+                    globalThis.__kokoroDownloadProbe.ids.push(item.id);
+                },
+            };
+            browser.downloads.onCreated.addListener(
+                globalThis.__kokoroDownloadProbe.listener);
+            done(true);
+        """)
+        driver.switch_to.window(fixture_handle)
         _click_firefox_floating_mic(driver, "download-sentence")
         download_deadline = time.time() + 30
         download_hit = None
         while time.time() < download_deadline:
-            found = _on_extension_page(driver, origin, """
+            driver.switch_to.window(ext_handle)
+            found = _extension_async(driver, """
                 const [beforeIds, done] = arguments;
                 const matchItem = (item) => {
                     const name = String(item?.filename || '').toLowerCase();
@@ -2009,6 +2023,7 @@ def _honor_firefox_download(driver, origin, api_url):
                     done(null);
                 }, e => done({error:String(e)}));
             """, before_ids)
+            driver.switch_to.window(fixture_handle)
             if isinstance(found, dict) and found.get("error"):
                 raise RuntimeError(
                     "Firefox download search failed: " + found["error"])
@@ -2017,7 +2032,8 @@ def _honor_firefox_download(driver, origin, api_url):
                 break
             time.sleep(0.2)
         if not download_hit:
-            diagnostics = _on_extension_page(driver, origin, """
+            driver.switch_to.window(ext_handle)
+            diagnostics = _extension_async(driver, """
                 const [beforeIds, done] = arguments;
                 browser.downloads.search({
                     orderBy:['-startTime'], limit:5,
@@ -2033,13 +2049,15 @@ def _honor_firefox_download(driver, origin, api_url):
                     })),
                 }), e => done({error:String(e)}));
             """, before_ids)
+            driver.switch_to.window(fixture_handle)
             raise RuntimeError(
                 "Firefox FastAPI download mode did not create an MP3 download: "
                 + json.dumps(diagnostics))
         return download_hit
     finally:
         with contextlib.suppress(Exception):
-            _on_extension_page(driver, origin, """
+            driver.switch_to.window(ext_handle)
+            _extension_async(driver, """
                 const [done] = arguments;
                 const probe = globalThis.__kokoroDownloadProbe;
                 if (probe?.listener) {
@@ -2048,6 +2066,9 @@ def _honor_firefox_download(driver, origin, api_url):
                 delete globalThis.__kokoroDownloadProbe;
                 done(true);
             """)
+            driver.close()
+        with contextlib.suppress(Exception):
+            driver.switch_to.window(fixture_handle)
 
 
 def _honor_firefox_reader(driver, origin, api_url, speech):

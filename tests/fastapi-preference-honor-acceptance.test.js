@@ -101,9 +101,13 @@ describe('FastAPI preference-honor acceptance', () => {
         expect(source).toContain('_honor_firefox_download');
         expect(source).toContain('fastapiPreferenceHonorAcceptance');
         expect(source).toContain('mode:\'download\'');
-        // Download/reader storage must run on an extension page, not HTTP fixture.
+        // Download probe must keep one extension tab open (not _on_extension_page).
         expect(source).toMatch(
-            /_honor_firefox_download[\s\S]*?_on_extension_page\(/);
+            /_honor_firefox_download[\s\S]*?__kokoroDownloadProbe/);
+        expect(source).toMatch(
+            /_honor_firefox_download[\s\S]*?_extension_async\(/);
+        expect(source).toMatch(
+            /Keep one extension tab open for the whole download probe/);
         expect(source).not.toMatch(
             /download_seed = driver\.execute_async_script/);
         const cardIdx = source.indexOf(
