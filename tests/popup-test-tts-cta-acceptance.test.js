@@ -69,16 +69,23 @@ describe('popup Test TTS CTA acceptance', () => {
     test('Chromium and Firefox dual scopes wire popup CTA before dual', () => {
         const chromium = fs.readFileSync(chromiumLive, 'utf8');
         const firefox = fs.readFileSync(firefoxLive, 'utf8');
-        expect(chromium).toContain('acceptPopupTestTtsCta');
         expect(chromium).toContain('popup-test-tts-cta-acceptance.mjs');
         expect(chromium).toContain("locator('#openBenchmarkBtn').click()");
-        expect(firefox).toContain('accept_popup_test_tts_cta');
         expect(firefox).toContain('firefox_popup_test_tts_cta_acceptance');
         expect(firefox).toMatch(
             /find_element\(\s*By\.ID,\s*["']openBenchmarkBtn["']\s*\)\.click\(\)/);
-        expect(chromium.indexOf('acceptPopupTestTtsCta('))
-            .toBeLessThan(chromium.indexOf('acceptTwoBackendComparison('));
-        expect(firefox.indexOf('accept_popup_test_tts_cta('))
-            .toBeLessThan(firefox.indexOf('accept_two_backend_comparison('));
+        // Match await/assignment call sites — not `async function` / `def` decls.
+        const chromiumCtaCall = chromium.indexOf('await acceptPopupTestTtsCta(');
+        const chromiumDualCall = chromium.indexOf(
+            'await acceptTwoBackendComparison(');
+        expect(chromiumCtaCall).toBeGreaterThan(0);
+        expect(chromiumDualCall).toBeGreaterThan(chromiumCtaCall);
+        const firefoxCtaCall = firefox.indexOf(
+            'accept_popup_test_tts_cta(driver, state["origin"])');
+        const firefoxDualCall = firefox.indexOf(
+            'accept_two_backend_comparison(driver, state["origin"])');
+        expect(firefoxCtaCall).toBeGreaterThan(0);
+        expect(firefoxDualCall).toBeGreaterThan(firefoxCtaCall);
     });
 });
+
