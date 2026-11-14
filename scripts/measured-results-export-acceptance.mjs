@@ -9,6 +9,24 @@ export const MEASURED_EXPORT_BUTTON_ID = 'exportMeasuredResults';
 export const MEASURED_EXPORT_STATUS_NEEDLE =
     'Measured results exported locally. Nothing was uploaded.';
 
+/**
+ * Playwright's download.suggestedFilename() for chrome.downloads.download
+ * often returns a UUID.json GUID even when the extension requested
+ * MEASURED_EXPORT_FILENAME. Accept the canonical name, auto-renames, or a
+ * GUID.json — file contents are asserted separately.
+ */
+export function isAcceptableMeasuredExportFilename(name) {
+    const base = String(name || '').split(/[/\\]/).pop() || '';
+    if (base === MEASURED_EXPORT_FILENAME) return true;
+    const stem = MEASURED_EXPORT_FILENAME.replace(/\.json$/i, '');
+    const renamed = new RegExp(
+        '^' + stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
+        '(?:\\s*\\(\\d+\\)|-\\d+)?\\.json$', 'i');
+    if (renamed.test(base)) return true;
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/i
+        .test(base);
+}
+
 function requireMeasuredFlag(payload, key, expected, message) {
     if (payload[key] !== expected) throw Error(message);
 }
@@ -72,7 +90,7 @@ export function assertMeasuredResultsExportPayload(payload, expected = {}) {
 }
 
 export function buildMeasuredResultsExportReport(options = {}) {
-    return {
+    const report = {
         success: options.success !== false,
         browser: options.browser || 'chromium',
         localOnly: true,
@@ -85,6 +103,10 @@ export function buildMeasuredResultsExportReport(options = {}) {
         downloadTriggered: options.downloadTriggered !== false,
         fileContentsVerified: options.fileContentsVerified === true,
     };
+    if (options.playwrightSuggestedFilename != null) {
+        report.playwrightSuggestedFilename = options.playwrightSuggestedFilename;
+    }
+    return report;
 }
 
 export function assertMeasuredResultsExportReport(report) {

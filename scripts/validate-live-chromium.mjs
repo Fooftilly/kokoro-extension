@@ -954,8 +954,8 @@ async function acceptMeasuredResultsExport(page, expected = {}) {
     const { assertMeasuredResultsExportPayload,
         assertMeasuredResultsExportReport,
         buildMeasuredResultsExportReport,
+        isAcceptableMeasuredExportFilename,
         MEASURED_EXPORT_BUTTON_ID,
-        MEASURED_EXPORT_FILENAME,
         MEASURED_EXPORT_STATUS_NEEDLE,
     } = await import('./measured-results-export-acceptance.mjs');
     liveHeartbeat('measured-results-export');
@@ -979,8 +979,10 @@ async function acceptMeasuredResultsExport(page, expected = {}) {
         page.waitForEvent('download', { timeout: 20000 }),
         page.locator('#' + MEASURED_EXPORT_BUTTON_ID).click(),
     ]);
-    const suggested = download.suggestedFilename();
-    if (suggested !== MEASURED_EXPORT_FILENAME) {
+    const suggested = download.suggestedFilename() || '';
+    // chrome.downloads.download often surfaces a UUID.json suggested name in
+    // Playwright even when the extension requested the canonical filename.
+    if (!isAcceptableMeasuredExportFilename(suggested)) {
         throw Error('Unexpected measured export filename: ' + suggested);
     }
     const savedPath = await download.path();
@@ -998,7 +1000,8 @@ async function acceptMeasuredResultsExport(page, expected = {}) {
     await page.waitForFunction(needle => {
         const status = document.getElementById('measuredExportStatus')
             ?.textContent || '';
-        return status.includes(needle);
+        const downloadId = globalThis.__kokoroLastMeasuredExportDownloadId;
+        return status.includes(needle) && Number.isFinite(downloadId);
     }, MEASURED_EXPORT_STATUS_NEEDLE, { timeout: 15000 });
     const status = await page.locator('#measuredExportStatus').textContent();
     if (!status?.includes(MEASURED_EXPORT_STATUS_NEEDLE)) {
@@ -1012,6 +1015,7 @@ async function acceptMeasuredResultsExport(page, expected = {}) {
         statusConfirmed: true,
         downloadTriggered: true,
         fileContentsVerified: true,
+        playwrightSuggestedFilename: suggested,
     });
     assertMeasuredResultsExportReport(report);
     return report;

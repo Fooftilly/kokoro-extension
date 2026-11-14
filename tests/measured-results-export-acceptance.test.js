@@ -67,6 +67,13 @@ console.log(JSON.stringify({
     filename: exp.MEASURED_EXPORT_FILENAME,
     buttonId: exp.MEASURED_EXPORT_BUTTON_ID,
     statusNeedle: exp.MEASURED_EXPORT_STATUS_NEEDLE,
+    acceptCanonical: exp.isAcceptableMeasuredExportFilename(
+        exp.MEASURED_EXPORT_FILENAME),
+    acceptGuid: exp.isAcceptableMeasuredExportFilename(
+        '49fc190f-3ab7-44d9-ae35-c20f953bf83d.json'),
+    acceptRename: exp.isAcceptableMeasuredExportFilename(
+        'kokoro-measured-local-english (1).json'),
+    rejectOther: exp.isAcceptableMeasuredExportFilename('notes.txt'),
     report, fail, badPayload,
 }));
 `], { encoding: 'utf8', cwd: root });
@@ -82,6 +89,10 @@ describe('Measured results export acceptance', () => {
         expect(snap.filename).toBe('kokoro-measured-local-english.json');
         expect(snap.buttonId).toBe('exportMeasuredResults');
         expect(snap.statusNeedle).toMatch(/Nothing was uploaded/i);
+        expect(snap.acceptCanonical).toBe(true);
+        expect(snap.acceptGuid).toBe(true);
+        expect(snap.acceptRename).toBe(true);
+        expect(snap.rejectOther).toBe(false);
         expect(snap.report).toEqual(expect.objectContaining({
             success: true,
             localOnly: true,
@@ -129,6 +140,9 @@ describe('Measured results export acceptance', () => {
         expect(source).toContain('MEASURED_EXPORT_BUTTON_ID');
         expect(source).toContain('fileContentsVerified: true');
         expect(source).toContain('readFile(savedPath');
+        expect(source).toContain('isAcceptableMeasuredExportFilename');
+        expect(source).not.toContain(
+            "if (suggested !== MEASURED_EXPORT_FILENAME)");
         const exportIdx = source.indexOf(
             'await acceptMeasuredResultsExport(page');
         const editIdx = source.indexOf(
