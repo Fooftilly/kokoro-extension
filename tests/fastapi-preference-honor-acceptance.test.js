@@ -64,12 +64,18 @@ describe('FastAPI preference-honor acceptance', () => {
 
     test('Chromium dual path wires preference honor after FastAPI card', () => {
         const source = fs.readFileSync(chromiumLive, 'utf8');
+        const background = fs.readFileSync(
+            path.join(root, 'background.js'), 'utf8');
         expect(source).toContain('fastapi-preference-honor-acceptance.mjs');
         expect(source).toContain('async function acceptFastApiPreferenceHonor');
         expect(source).toContain('waitForOverlayFastApiMpeg');
         expect(source).toContain('fastapiPreferenceHonorAcceptance');
         expect(source).toContain('mode: \'download\'');
         expect(source).toContain('fastapi-preference.txt');
+        expect(source).toContain('data:audio');
+        expect(source).toContain('__kokoroDownloadProbe');
+        expect(background).toContain('readAsDataURL(blob)');
+        expect(background).toContain('await browser.downloads.download');
         const cardIdx = source.indexOf(
             'await acceptFastApiServerCard(');
         const honorIdx = source.indexOf(

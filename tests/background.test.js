@@ -280,6 +280,36 @@ describe('background.js logic', () => {
         expect(browser.downloads).toBeUndefined();
     });
 
+    test('FastAPI download mode always uses a data URL for chrome.downloads', async () => {
+        browser.downloads = {
+            download: jest.fn(() => Promise.resolve(42)),
+        };
+        global.URL.createObjectURL = jest.fn(() => 'blob:should-not-use');
+        browser.storage.sync.get.mockResolvedValue({
+            ttsBackend: 'fastapi',
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            voice: 'af_sarah', mode: 'download', normalizationOptions: {},
+        });
+        const listener = browser.contextMenus.onClicked.addListener.mock.calls[0][0];
+        fetch.mockClear();
+        await listener(
+            { menuItemId: 'send-to-kokoro', selectionText: 'Download me' },
+            { id: 33, title: 'Download Page' }
+        );
+        expect(fetch.mock.calls.some(([url]) =>
+            String(url).includes('/audio/speech'))).toBe(true);
+        expect(URL.createObjectURL).not.toHaveBeenCalled();
+        expect(browser.downloads.download).toHaveBeenCalledWith(
+            expect.objectContaining({
+                filename: expect.stringMatching(/\.mp3$/),
+                url: expect.stringMatching(/^data:audio/),
+                saveAs: false,
+            })
+        );
+        delete browser.downloads;
+        delete global.URL.createObjectURL;
+    });
+
     test('capability discovery is read-only and never probes FastAPI or local models', async () => {
         const listener = browser.runtime.onMessage.addListener.mock.calls[0][0];
         fetch.mockClear();

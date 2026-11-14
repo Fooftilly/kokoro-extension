@@ -1276,8 +1276,21 @@ async function honorChromiumArticle(page, worker, tabId, speech) {
         'Article');
 }
 
-async function honorChromiumDownload(page, worker, apiUrl) {
+function isFastApiDownloadItem(item) {
+    const name = String(item?.filename || '').toLowerCase();
+    const url = String(item?.url || '').toLowerCase();
+    const mime = String(item?.mime || '').toLowerCase();
+    // Chrome SW FastAPI downloads use data:audio/mpeg (no ".mp3" in URL).
+    return name.endsWith('.mp3') ||
+        url.startsWith('data:audio') ||
+        url.includes('audio/mpeg') ||
+        mime.includes('audio/mpeg') ||
+        (url.startsWith('blob:') && name.includes('.mp3'));
+}
+
+async function honorChromiumDownload(page, worker, apiUrl, speechStub) {
     liveHeartbeat('fastapi-preference-download');
+    const hitsBefore = speechStub.speechHits();
     await worker.evaluate(async (url) => {
         await chrome.storage.sync.set({
             ttsBackend: 'fastapi',
@@ -1290,38 +1303,101 @@ async function honorChromiumDownload(page, worker, apiUrl) {
             'pendingTtsBackend', 'pendingApiUrl', 'pendingAutoplay',
         ]);
     }, apiUrl);
+    // Arm onCreated before the click — search alone can miss data: URLs
+    // whose filename is empty until the write finishes.
+    await worker.evaluate(() => {
+        globalThis.__kokoroDownloadProbe = {
+            ids: [],
+            listener(item) {
+                globalThis.__kokoroDownloadProbe.ids.push(item.id);
+            },
+        };
+        chrome.downloads.onCreated.addListener(
+            globalThis.__kokoroDownloadProbe.listener);
+    });
     const downloadBefore = await worker.evaluate(async () => {
         const items = await chrome.downloads.search({
             orderBy: ['-startTime'], limit: 20,
         });
         return items.map(item => item.id);
     });
-    await clickFloatingMicOnSentence(page, 'download-sentence');
-    const downloadDeadline = Date.now() + 30000;
-    let downloadHit = null;
-    while (Date.now() < downloadDeadline) {
-        downloadHit = await worker.evaluate(async (beforeIds) => {
-            const items = await chrome.downloads.search({
-                orderBy: ['-startTime'], limit: 20,
-            });
-            return items.find(item =>
-                !beforeIds.includes(item.id) &&
-                String(item.filename || item.url || '')
-                    .toLowerCase().includes('.mp3')) || null;
-        }, downloadBefore);
-        if (downloadHit) break;
-        await new Promise(resolve => setTimeout(resolve, 200));
+    try {
+        await clickFloatingMicOnSentence(page, 'download-sentence');
+        const downloadDeadline = Date.now() + 30000;
+        let downloadHit = null;
+        while (Date.now() < downloadDeadline) {
+            downloadHit = await worker.evaluate(async (beforeIds) => {
+                const matchItem = (item) => {
+                    const name = String(item?.filename || '').toLowerCase();
+                    const url = String(item?.url || '').toLowerCase();
+                    const mime = String(item?.mime || '').toLowerCase();
+                    return name.endsWith('.mp3') ||
+                        url.startsWith('data:audio') ||
+                        url.includes('audio/mpeg') ||
+                        mime.includes('audio/mpeg');
+                };
+                const items = await chrome.downloads.search({
+                    orderBy: ['-startTime'], limit: 20,
+                });
+                const fromSearch = items.find(item =>
+                    !beforeIds.includes(item.id) && matchItem(item));
+                if (fromSearch) return fromSearch;
+                const armedIds = globalThis.__kokoroDownloadProbe?.ids || [];
+                for (const id of armedIds) {
+                    if (beforeIds.includes(id)) continue;
+                    const [item] = await chrome.downloads.search({ id });
+                    if (item && matchItem(item)) return item;
+                    if (item) return item;
+                }
+                return null;
+            }, downloadBefore);
+            if (downloadHit) break;
+            await new Promise(resolve => setTimeout(resolve, 200));
+        }
+        if (!downloadHit) {
+            const diagnostics = await worker.evaluate(async (beforeIds) => ({
+                beforeIds,
+                armedIds: globalThis.__kokoroDownloadProbe?.ids || [],
+                recent: (await chrome.downloads.search({
+                    orderBy: ['-startTime'], limit: 5,
+                })).map(item => ({
+                    id: item.id,
+                    filename: item.filename || '',
+                    urlPrefix: String(item.url || '').slice(0, 32),
+                    mime: item.mime || '',
+                    state: item.state || '',
+                })),
+            }), downloadBefore);
+            throw Error(
+                'FastAPI download mode did not create an MP3 download: ' +
+                JSON.stringify(diagnostics));
+        }
+        if (!(speechStub.speechHits() > hitsBefore)) {
+            throw Error(
+                'FastAPI download mode did not hit loopback speech stub');
+        }
+        if (!isFastApiDownloadItem(downloadHit) &&
+            !downloadHit.id) {
+            throw Error(
+                'FastAPI download item missing id: ' +
+                JSON.stringify(downloadHit));
+        }
+        const afterDownloadBackend = await worker.evaluate(async () =>
+            (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
+        if (afterDownloadBackend !== 'fastapi') {
+            throw Error(
+                'Download path changed ttsBackend: ' + afterDownloadBackend);
+        }
+        return downloadHit;
+    } finally {
+        await worker.evaluate(() => {
+            const probe = globalThis.__kokoroDownloadProbe;
+            if (probe?.listener) {
+                chrome.downloads.onCreated.removeListener(probe.listener);
+            }
+            delete globalThis.__kokoroDownloadProbe;
+        }).catch(() => {});
     }
-    if (!downloadHit) {
-        throw Error('FastAPI download mode did not create an MP3 download');
-    }
-    const afterDownloadBackend = await worker.evaluate(async () =>
-        (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
-    if (afterDownloadBackend !== 'fastapi') {
-        throw Error(
-            'Download path changed ttsBackend: ' + afterDownloadBackend);
-    }
-    return downloadHit;
 }
 
 async function honorChromiumReader(context, extensionId, worker, apiUrl, speech) {
@@ -1430,7 +1506,7 @@ async function acceptFastApiPreferenceHonor(context, extensionId, speechStub) {
             () => !document.getElementById('kokoro-overlay-container'),
             null, { timeout: 15000 });
 
-        await honorChromiumDownload(page, worker, apiUrl);
+        await honorChromiumDownload(page, worker, apiUrl, speechStub);
     } finally {
         if (!page.isClosed()) await page.close().catch(() => {});
         try { fixtureServer.closeAllConnections?.(); } catch { /* ignore */ }

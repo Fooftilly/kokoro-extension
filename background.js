@@ -301,31 +301,31 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
             const blob = await response.blob();
             const filename = sanitizeFilename(tab.title || "audio") + ".mp3";
 
-            let url;
-            // Check if URL.createObjectURL is available (Firefox / Background Pages)
-            if (typeof URL.createObjectURL === 'function') {
-                url = URL.createObjectURL(blob);
-            } else {
-                // Fallback for Chrome Service Workers (Data URL)
-                const blobToDataURL = (blob) => {
-                    return new Promise((resolve, reject) => {
-                        const reader = new FileReader();
-                        reader.onloadend = () => resolve(reader.result);
-                        reader.onerror = reject;
-                        reader.readAsDataURL(blob);
-                    });
-                };
-                url = await blobToDataURL(blob);
-            }
+            // Always use a data: URL for FastAPI downloads. Chrome MV3 service
+            // workers expose createObjectURL, but blob: URLs from the worker
+            // are rejected by downloads.download (live Chromium dual failure).
+            const url = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            });
 
-            if (typeof browser.downloads !== 'undefined') {
-                browser.downloads.download({
+            if (typeof browser.downloads === 'undefined') {
+                console.error("Downloads API not available");
+                notify("Kokoro TTS Error", "Downloads API is unavailable.");
+                return;
+            }
+            try {
+                await browser.downloads.download({
                     url: url,
                     filename: filename,
                     saveAs: false
                 });
-            } else {
-                console.error("Downloads API not available");
+            } catch (downloadError) {
+                notify("Kokoro TTS Error",
+                    "Download failed: " + (downloadError?.message || downloadError));
+                return;
             }
 
         } else {

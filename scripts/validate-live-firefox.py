@@ -1970,13 +1970,20 @@ def _honor_firefox_download(driver, origin, api_url):
     while time.time() < download_deadline:
         found = _on_extension_page(driver, origin, """
             const [beforeIds, done] = arguments;
+            const matchItem = (item) => {
+                const name = String(item?.filename || '').toLowerCase();
+                const url = String(item?.url || '').toLowerCase();
+                const mime = String(item?.mime || '').toLowerCase();
+                return name.endsWith('.mp3') ||
+                    url.startsWith('data:audio') ||
+                    url.includes('audio/mpeg') ||
+                    mime.includes('audio/mpeg');
+            };
             browser.downloads.search({
                 orderBy:['-startTime'], limit:20,
             }).then(items => {
                 const hit = items.find(item =>
-                    !beforeIds.includes(item.id) &&
-                    String(item.filename || item.url || '')
-                        .toLowerCase().includes('.mp3'));
+                    !beforeIds.includes(item.id) && matchItem(item));
                 done(hit || null);
             }, e => done({error:String(e)}));
         """, before_ids)
