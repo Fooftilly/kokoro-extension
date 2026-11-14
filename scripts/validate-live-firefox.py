@@ -1593,16 +1593,19 @@ def accept_measured_results_export(driver, sample_text="Hello world.", keys=None
         raise RuntimeError(
             "Firefox measured export control not ready offline with two rows: " +
             repr(ready))
-    started_ms = int(time.time() * 1000)
     driver.find_element(By.ID, constants["buttonId"]).click()
     WebDriverWait(driver, 20).until(lambda d: d.execute_script("""
         const needle=arguments[0];
         const payload=globalThis.__kokoroLastMeasuredExport;
+        const downloadId=globalThis.__kokoroLastMeasuredExportDownloadId;
         const status=document.getElementById('measuredExportStatus')?.textContent||'';
-        return payload && typeof payload==='object' && status.includes(needle);
+        return payload && typeof payload==='object' &&
+            Number.isFinite(downloadId) && status.includes(needle);
     """, constants["statusNeedle"]))
     payload = driver.execute_script(
         "return globalThis.__kokoroLastMeasuredExport;")
+    download_id = driver.execute_script(
+        "return globalThis.__kokoroLastMeasuredExportDownloadId;")
     assert_measured_results_export_payload(payload, {
         "keys": keys,
         "sampleText": sample_text,
@@ -1613,26 +1616,18 @@ def accept_measured_results_export(driver, sample_text="Hello world.", keys=None
         raise RuntimeError(
             "Firefox measured export status missing local-only confirmation: " +
             repr(status))
-    # Prove downloads.download completed and the saved JSON matches the payload.
+    # Look up by download id so Firefox auto-renames (file (1).json) still match.
     download_hit = WebDriverWait(driver, 20).until(lambda d: d.execute_async_script("""
-        const filename=arguments[0];
-        const startedMs=arguments[1];
+        const downloadId=arguments[0];
         const done=arguments[arguments.length-1];
-        browser.downloads.search({
-            orderBy: ['-startTime'], limit: 20,
-        }).then(items=>{
-            const hit=(items||[]).find(item=>{
-                const path=String(item.filename||'');
-                const started=item.startTime ? Date.parse(item.startTime) : 0;
-                return item.state==='complete' &&
-                    (path===filename || path.endsWith('/'+filename) ||
-                        path.endsWith('\\\\'+filename)) &&
-                    (!started || started>=startedMs-8000);
-            });
-            done(hit ? {id:hit.id,filename:hit.filename,state:hit.state,
-                exists:hit.exists!==false} : null);
+        browser.downloads.search({ id: downloadId }).then(items=>{
+            const hit=(items||[])[0];
+            if(!hit || hit.state!=='complete' || !hit.filename)
+                return done(null);
+            done({id:hit.id,filename:hit.filename,state:hit.state,
+                exists:hit.exists!==false});
         }, e=>done({error:String(e)}));
-    """, constants["filename"], started_ms))
+    """, download_id))
     if not download_hit or download_hit.get("error"):
         raise RuntimeError(
             "Firefox measured export download not complete: " + repr(download_hit))

@@ -107,6 +107,7 @@ describe('Measured results export acceptance', () => {
         expect(source).toContain('downloadPinnedMeasuredExport');
         expect(source).toContain('downloads.onChanged');
         expect(source).toContain('__kokoroLastMeasuredExport');
+        expect(source).toContain('__kokoroLastMeasuredExportDownloadId');
         expect(source).toContain('kokoro-measured-local-english');
         expect(source).toContain('telemetry: false');
         expect(source).toContain('noRanking: true');
@@ -143,7 +144,14 @@ describe('Measured results export acceptance', () => {
         expect(source).toContain('__kokoroLastMeasuredExport');
         expect(source).toContain('fileContentsVerified=True');
         expect(source).toContain('browser.downloads.search');
+        expect(source).toContain("__kokoroLastMeasuredExportDownloadId");
+        expect(source).toContain('search({ id: downloadId })');
         expect(source).toContain('from_file = json.loads');
+        const bridge = fs.readFileSync(path.join(
+            root, 'scripts', 'firefox_measured_results_export_acceptance.py'), 'utf8');
+        expect(bridge).toContain('readFileSync(process.argv[1]');
+        expect(bridge).not.toMatch(
+            /assertMeasuredResultsExportPayload\(\s*\+\s*json\.dumps/);
         const exportIdx = source.indexOf(
             'measured_results_export = accept_measured_results_export(');
         const editIdx = source.indexOf(

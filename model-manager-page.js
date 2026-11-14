@@ -150,12 +150,14 @@ async function exportMeasuredEnglishResults() {
         return;
     }
     globalThis.__kokoroLastMeasuredExport = payload;
+    delete globalThis.__kokoroLastMeasuredExportDownloadId;
     const text = JSON.stringify(payload, null, 2);
     const blob = new Blob([text], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     try {
-        await downloadPinnedMeasuredExport(
+        const downloadId = await downloadPinnedMeasuredExport(
             url, 'kokoro-measured-local-english.json');
+        globalThis.__kokoroLastMeasuredExportDownloadId = downloadId;
         if (status) {
             status.textContent =
                 'Measured results exported locally. Nothing was uploaded.';

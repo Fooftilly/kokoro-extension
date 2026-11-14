@@ -1124,6 +1124,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         await waitFor(() => URL.revokeObjectURL.mock.calls.length === 1);
         expect(URL.revokeObjectURL).toHaveBeenCalledWith(
             browser.downloads.download.mock.calls[0][0].url);
+        expect(globalThis.__kokoroLastMeasuredExportDownloadId).toBe(42);
         expect(globalThis.__kokoroLastMeasuredExport).toEqual(
             expect.objectContaining({
                 kind: 'kokoro-measured-local-english',
