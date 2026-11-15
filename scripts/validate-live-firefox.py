@@ -4512,6 +4512,25 @@ def main():
                                        json.dumps(idle))
                 metrics["idleReleaseAcceptance"] = idle
 
+            if origin_download and provider == "onnx" and metrics.get("success"):
+                result["stage"] = "offline-onnx-long-sentence-chunks"
+                probe = subprocess.run(
+                    ["node", "--input-type=module", "-e",
+                     "import {probeOnnxLongText} from './scripts/onnx-long-text-probe.mjs';"
+                     "process.stdout.write(probeOnnxLongText.toString());"],
+                    check=True, capture_output=True, text=True,
+                ).stdout
+                long_text = driver.execute_async_script(
+                    "const done=arguments[arguments.length-1]; (" + probe +
+                    ")(arguments[0]).then(done,e=>done({success:false,error:String(e)}));",
+                    {"apiName": "browser"},
+                )
+                if (long_text.get("success") is not True or
+                        long_text.get("offline") is not True):
+                    raise RuntimeError("Firefox ONNX long-text synthesis failed: " +
+                                       json.dumps(long_text))
+                metrics["longTextAcceptance"] = long_text
+
             playback_acceptance = None
             if origin_download and provider == "onnx" and metrics.get("success"):
                 playback_acceptance = driver.execute_async_script("""

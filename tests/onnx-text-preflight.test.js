@@ -17,7 +17,6 @@ describe('ONNX English validation before model allocation (#60)', () => {
         ['unknown word', 'unknown', /Missing English pronunciation/],
         ['unsupported script', 'привет', /Unsupported English text/],
         ['unsupported number', 'hello 123', /Unsupported English text/],
-        ['token overflow', 'hello '.repeat(130), /at most 510/],
     ])('rejects %s without reading model bytes or loading WASM', async (_name, text, error) => {
         const { provider, loadDictionary, cacheStorage, loadSDK, fetchImpl } = fixture();
         await expect(provider.synthesize(text)).rejects.toThrow(error);

@@ -1,7 +1,7 @@
 // Original, strict English grapheme-to-phoneme frontend for Kokoro ONNX.
 // Pronunciations are separately downloaded CMUdict data; see data/CMUDICT_LICENSE.
 // No copied third-party phonemizer or executable WASM implementation.
-import { tokenizePhonemes } from './phoneme-tokenizer.js';
+import { tokenizePhonemes, MAX_PHONEMES } from './phoneme-tokenizer.js';
 import { dictionaryManifest } from './model-catalog.js';
 import { ModelDataStore } from './model-data-store.js';
 
@@ -93,7 +93,7 @@ export function listUnsupportedEnglishWords(text, dictionary) {
     return unsupported;
 }
 
-export function phonemizeEnglish(text, dictionary) {
+function renderEnglishPhonemes(text, dictionary) {
     if (typeof text !== 'string' || !text.trim() || text.length > 20000 ||
         !(dictionary instanceof Map)) {
         throw new TypeError('Bounded English text and a dictionary are required');
@@ -119,10 +119,38 @@ export function phonemizeEnglish(text, dictionary) {
             output.push(item);
         }
     }
-    const phonemes = output.join(' ').replace(/\s+([.,!?;:)"”—])/g, '$1')
+    return output.join(' ').replace(/\s+([.,!?;:)"”—])/g, '$1')
         .replace(/(["“(])\s+/g, '$1');
+}
+
+export function phonemizeEnglish(text, dictionary) {
+    const phonemes = renderEnglishPhonemes(text, dictionary);
     tokenizePhonemes(phonemes); // fail rather than discard unsupported symbols
     return phonemes;
+}
+
+// Validate the whole request before model startup, then split only at the
+// existing normalized word separators. Attached punctuation stays with its
+// word; no partial words, missing pronunciations or unknown symbols are dropped.
+export function phonemizeEnglishChunks(text, dictionary) {
+    const phonemes = renderEnglishPhonemes(text, dictionary);
+    const chunks = [];
+    let current = '';
+    let count = 0;
+    for (const word of phonemes.split(' ')) {
+        const wordTokens = tokenizePhonemes(word);
+        const nextCount = count + (current ? 1 : 0) + wordTokens.length;
+        if (nextCount > MAX_PHONEMES) {
+            chunks.push(current);
+            current = word;
+            count = wordTokens.length;
+        } else {
+            current += (current ? ' ' : '') + word;
+            count = nextCount;
+        }
+    }
+    if (current) chunks.push(current);
+    return chunks;
 }
 
 export async function loadCachedEnglishLexicon(browserApi, cacheStorage, fetchImpl = () => {}) {

@@ -4,9 +4,9 @@
 // Out-of-vocabulary words fail closed; do not silently send text to FastAPI.
 import { manifestForVariant } from './model-catalog.js';
 import { ModelDataStore } from './model-data-store.js';
-import { prepareKokoroOnnxInputs, asOnnxRuntimeFeeds } from './onnx-kokoro-inputs.js';
+import { prepareKokoroOnnxInputs, asOnnxRuntimeFeeds, assertKokoroSpeed } from './onnx-kokoro-inputs.js';
 import { tokenizePhonemes } from './phoneme-tokenizer.js';
-import { loadCachedEnglishLexicon, phonemizeEnglish } from './english-g2p.js';
+import { loadCachedEnglishLexicon, phonemizeEnglishChunks } from './english-g2p.js';
 import { validateKokoroPcm } from './pcm-wav.js';
 
 export class OnnxKokoroProvider {
@@ -27,6 +27,7 @@ export class OnnxKokoroProvider {
         this.dictionary = null;
         this.dictionaryLoading = null;
         this.closing = null;
+        this.cancellationGeneration = 0;
         this.loadDictionary = loadDictionary ||
             (() => loadCachedEnglishLexicon(this.browserApi, this.cacheStorage, this.fetchImpl));
     }
@@ -94,11 +95,15 @@ export class OnnxKokoroProvider {
     // The official ONNX graph consumes phoneme IDs, not words.
     // Keep this entrypoint for IPA-only model diagnostics.
     async synthesizePhonemes(phonemes, { speed = 1 } = {}) {
+        const generation = this.cancellationGeneration;
+        assertKokoroSpeed(speed);
         const tokens = tokenizePhonemes(phonemes);
         await this.initialize();
+        this.assertNotCancelled(generation);
         const inputs = prepareKokoroOnnxInputs(tokens, this.voice, speed);
         const feeds = asOnnxRuntimeFeeds(this.engine, inputs);
         const outputs = await this.session.run(feeds);
+        this.assertNotCancelled(generation);
         const name = this.session.outputNames[0];
         const audio = outputs[name];
         if (!audio?.data || audio.data.length === 0 ||
@@ -132,18 +137,48 @@ export class OnnxKokoroProvider {
         if (typeof text !== 'string' || !text.trim() || text.length > 20000) {
             throw new TypeError('Bounded English text required');
         }
-        // Validate the dictionary-backed text before allocating model weights
-        // and the WASM session. Missing words or an overlong phoneme sequence
-        // must fail locally even when the large model has not been loaded.
+        assertKokoroSpeed(speed);
+        const generation = this.cancellationGeneration;
+        // Preflight every word before any partial inference. Long supported
+        // sentences use bounded graphs rather than truncation or remote speech.
         const dictionary = await this.englishLexicon();
-        return this.synthesizePhonemes(phonemizeEnglish(text, dictionary), { speed });
+        this.assertNotCancelled(generation);
+        const chunks = phonemizeEnglishChunks(text, dictionary);
+        const audio = [];
+        let sampleCount = 0;
+        for (const chunk of chunks) {
+            this.assertNotCancelled(generation);
+            const result = await this.synthesizePhonemes(chunk, { speed });
+            this.assertNotCancelled(generation);
+            if (chunks.length === 1) return result;
+            sampleCount += result.samples.length;
+            // Same ten-minute bound as the PCM validator and WAV encoder.
+            if (sampleCount > 24000 * 60 * 10) {
+                throw new RangeError('ONNX speech exceeds the ten-minute audio limit');
+            }
+            audio.push(result.samples);
+        }
+        const samples = new Float32Array(sampleCount);
+        let offset = 0;
+        for (const chunk of audio) {
+            samples.set(chunk, offset);
+            offset += chunk.length;
+        }
+        return { samples, sampleRateHz: 24000 };
+    }
+
+    assertNotCancelled(generation) {
+        if (generation !== this.cancellationGeneration) {
+            throw new DOMException('ONNX speech cancelled', 'AbortError');
+        }
     }
 
     async cancel() {
+        this.cancellationGeneration++;
         // ONNX Runtime Web does not expose an AbortSignal for an active
         // InferenceSession.run(). The playback manager invalidates the old
         // generation and waits for the current run to settle before starting
-        // another, so stale PCM is never played or converted to a WAV URL.
+        // another. Fence its PCM and skip all remaining long-text chunks.
         // Do not release the session here while native WASM inference runs.
     }
 

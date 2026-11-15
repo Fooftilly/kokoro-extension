@@ -34,6 +34,7 @@ import {
 } from './long-form-memory-acceptance.mjs';
 import { buildCurrentProviderSnapshot } from './live-chromium-report.mjs';
 import { probeLocalProviderIdleRelease } from './local-provider-idle-probe.mjs';
+import { probeOnnxLongText } from './onnx-long-text-probe.mjs';
 import {
     assertOnnxOovG2pDisclosure,
     assertOovG2pDisclosureReport,
@@ -3285,6 +3286,14 @@ try {
                 liveHeartbeat('local-provider-idle-release-done', result.idleReleaseAcceptance);
             }
             if (originDownload && manifest.provider === 'onnx' && result.success) {
+                stage = 'offline-onnx-long-sentence-chunks';
+                liveHeartbeat(stage);
+                await page.exposeFunction('__kokoroLongTextProgress', detail =>
+                    liveHeartbeat('onnx-long-text-native-chunk-completed', detail));
+                result.longTextAcceptance = await withTimeout(page.evaluate(
+                    probeOnnxLongText, { apiName: 'chrome' }),
+                240000, 'ONNX bounded long sentence and cancellation');
+                liveHeartbeat('onnx-long-text-done', result.longTextAcceptance);
                 stage = 'offline-audio-manager-onnx-english-wav-playback';
                 onnxPlaybackAcceptance = await page.evaluate(async (oovWord) => {
                     const { AudioManager } = await import('./audio-manager.js');
