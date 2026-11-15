@@ -24,6 +24,10 @@ function normalizeVariantKeys(raw) {
         .sort((a, b) => a.localeCompare(b));
 }
 
+function expectedAcceptedKeys() {
+    return [...ACCEPTED_MODEL_VARIANTS].sort((a, b) => a.localeCompare(b));
+}
+
 /**
  * Normalize product-offered catalog entries from listModelVariants().
  * @param {Array<{key?: string}>|string[]} listed
@@ -46,36 +50,33 @@ export function observeCatalogVariantKeys(listed) {
     return normalizeVariantKeys(keys);
 }
 
-/**
- * Assert dual disclosure against catalog evidence + honesty flags.
- * Fail closed if onnx-q8f16 (or other non-accepted catalog keys) are missing
- * from observedCatalogVariantKeys, or if non-accepted variants are claimed measured.
- *
- * @param {object} report
- */
-export function assertModelVariantsDisclosure(report) {
+function requireDisclosureBlock(report) {
     if (!report || typeof report !== 'object') {
         throw Error('Model variants disclosure report missing');
     }
-    const block = report.modelVariants && typeof report.modelVariants === 'object'
+    return report.modelVariants && typeof report.modelVariants === 'object'
         ? report.modelVariants
         : report;
+}
 
+function assertAcceptedVariants(block) {
     const accepted = normalizeVariantKeys(block.acceptedVariants);
     if (!accepted) {
         throw Error(
             'acceptedVariants must be an array of documented keys: ' +
             JSON.stringify(block.acceptedVariants));
     }
-    const expectedAccepted = [...ACCEPTED_MODEL_VARIANTS]
-        .sort((a, b) => a.localeCompare(b));
+    const expectedAccepted = expectedAcceptedKeys();
     if (accepted.length !== expectedAccepted.length ||
         accepted.some((key, index) => key !== expectedAccepted[index])) {
         throw Error(
             'acceptedVariants must be exactly onnx-q8 + mediapipe-cpu: ' +
             JSON.stringify(block.acceptedVariants));
     }
+    return expectedAccepted;
+}
 
+function assertObservedCatalogEvidence(block, expectedAccepted) {
     const observed = normalizeVariantKeys(block.observedCatalogVariantKeys);
     if (!observed) {
         throw Error(
@@ -108,7 +109,10 @@ export function assertModelVariantsDisclosure(report) {
             REQUIRED_NON_ACCEPTED_CATALOG_VARIANT + ': ' +
             JSON.stringify(nonAccepted));
     }
+    return { observed, nonAccepted };
+}
 
+function assertHonestyFlags(block) {
     // Catalog offers extras (e.g. onnx-q8f16) — honesty must not claim they
     // are absent from the product catalog.
     if (block.otherCatalogVariantsOffered !== true) {
@@ -131,8 +135,9 @@ export function assertModelVariantsDisclosure(report) {
             'Model variants disclosure must set assertedFromCatalog true: ' +
             JSON.stringify(block.assertedFromCatalog));
     }
+}
 
-    const needleLower = MODEL_VARIANTS_DISCLOSURE_NEEDLE.toLowerCase();
+function assertDisclosureNeedle(block) {
     const needle = String(block.disclosureNeedle || '').toLowerCase();
     if (!needle.includes('other catalog variants not measured') ||
         !needle.includes('only onnx-q8 + mediapipe-cpu accepted') ||
@@ -147,6 +152,22 @@ export function assertModelVariantsDisclosure(report) {
             'Model variants disclosure text missing from report block: ' +
             JSON.stringify(block));
     }
+}
+
+/**
+ * Assert dual disclosure against catalog evidence + honesty flags.
+ * Fail closed if onnx-q8f16 (or other non-accepted catalog keys) are missing
+ * from observedCatalogVariantKeys, or if non-accepted variants are claimed measured.
+ *
+ * @param {object} report
+ */
+export function assertModelVariantsDisclosure(report) {
+    const block = requireDisclosureBlock(report);
+    const expectedAccepted = assertAcceptedVariants(block);
+    const { observed, nonAccepted } =
+        assertObservedCatalogEvidence(block, expectedAccepted);
+    assertHonestyFlags(block);
+    assertDisclosureNeedle(block);
 
     return {
         success: true,
@@ -173,8 +194,7 @@ export function buildModelVariantsDisclosureReport(options = {}) {
         throw Error(
             'observedCatalogVariantKeys or listedVariants required from catalog');
     }
-    const accepted = [...ACCEPTED_MODEL_VARIANTS]
-        .sort((a, b) => a.localeCompare(b));
+    const accepted = expectedAcceptedKeys();
     const nonAccepted = observed.filter((key) => !accepted.includes(key));
     return {
         success: options.success !== false,
