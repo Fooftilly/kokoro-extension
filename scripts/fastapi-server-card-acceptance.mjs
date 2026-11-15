@@ -63,11 +63,19 @@ function assertFastApiStreamingTtfa(report) {
             'firstAudioP50Ms must be a finite nonnegative ms value: ' +
             report.firstAudioP50Ms);
     }
+    // Dual stubs delay the first body chunk (~100ms). Full-buffer TTFA
+    // (firstAudioMs === synthesisMs) must not pass as "streaming".
     if (!(Number.isFinite(report.synthesisP50Ms) &&
-        report.synthesisP50Ms >= report.firstAudioP50Ms)) {
+        report.synthesisP50Ms > report.firstAudioP50Ms)) {
         throw new Error(
-            'synthesisP50Ms must be >= firstAudioP50Ms: ' +
+            'synthesisP50Ms must be strictly greater than firstAudioP50Ms ' +
+            '(streamed first byte vs full response): ' +
             report.synthesisP50Ms + ' vs ' + report.firstAudioP50Ms);
+    }
+    if (!(report.firstAudioP50Ms >= 50)) {
+        throw new Error(
+            'firstAudioP50Ms must reflect the delayed first chunk (>=50ms): ' +
+            report.firstAudioP50Ms);
     }
 }
 
@@ -120,9 +128,9 @@ export function buildFastApiServerCardReport(options = {}) {
     const apiUrl = normalizeFastApiBaseUrl(
         options.apiUrl || 'http://127.0.0.1:0/v1/');
     const firstAudioP50Ms = Number.isFinite(options.firstAudioP50Ms)
-        ? options.firstAudioP50Ms : 12;
+        ? options.firstAudioP50Ms : 110;
     const synthesisP50Ms = Number.isFinite(options.synthesisP50Ms)
-        ? options.synthesisP50Ms : Math.max(firstAudioP50Ms, 40);
+        ? options.synthesisP50Ms : Math.max(firstAudioP50Ms + 40, 160);
     const report = {
         success: true,
         browser: options.browser || 'unknown',

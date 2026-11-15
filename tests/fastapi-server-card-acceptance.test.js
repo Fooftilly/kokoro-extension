@@ -25,8 +25,8 @@ const report = card.buildFastApiServerCardReport({
     decodeableMp3: true,
     audioDurationSec: 0.13,
     streamingTtfaMeasured: true,
-    firstAudioP50Ms: 15,
-    synthesisP50Ms: 42,
+    firstAudioP50Ms: 110,
+    synthesisP50Ms: 160,
 });
 card.assertFastApiServerCardReport(report);
 const endpoint = card.speechEndpointFromApiUrl(apiUrl);
@@ -48,13 +48,24 @@ const failTtfa = (() => {
         return { ok: false, message: String(error.message || error) };
     }
 })();
+const failBuffered = (() => {
+    try {
+        // Equal first-audio and full-response p50 = buffered fake TTFA.
+        card.assertFastApiServerCardReport({
+            ...report, firstAudioP50Ms: 120, synthesisP50Ms: 120,
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
 console.log(JSON.stringify({
     bytes: card.MINIMAL_MP3_BYTES.length,
     before: card.BACKEND_BEFORE_CHOOSE,
     needle: card.SERVER_PLAYABLE_MP3_NEEDLE,
     ttfaNeedle: card.SERVER_STREAMING_TTFA_NEEDLE,
     selected: card.FASTAPI_SELECTED_NEEDLE,
-    endpoint, report, fail, failTtfa,
+    endpoint, report, fail, failTtfa, failBuffered,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
@@ -77,8 +88,8 @@ describe('FastAPI server-card acceptance', () => {
             playableMp3Returned: true,
             decodeableMp3: true,
             streamingTtfaMeasured: true,
-            firstAudioP50Ms: 15,
-            synthesisP50Ms: 42,
+            firstAudioP50Ms: 110,
+            synthesisP50Ms: 160,
             backendBeforeChoose: 'mediapipe',
             chooseChangedBackend: true,
             selectedBackend: 'fastapi',
@@ -89,6 +100,8 @@ describe('FastAPI server-card acceptance', () => {
         expect(snap.fail.message).toMatch(/not successful/i);
         expect(snap.failTtfa.ok).toBe(false);
         expect(snap.failTtfa.message).toMatch(/streamingTtfaMeasured/i);
+        expect(snap.failBuffered.ok).toBe(false);
+        expect(snap.failBuffered.message).toMatch(/strictly greater/i);
     });
 
     test('Chromium dual path wires FastAPI card after local dual', () => {

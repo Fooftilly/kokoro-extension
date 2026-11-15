@@ -1102,8 +1102,8 @@ async function testFastApi() {
         if (!['http:', 'https:'].includes(base.protocol)) throw new TypeError('Unsupported server URL');
         const endpoint = new URL('audio/speech', base.href.endsWith('/') ? base : base.href + '/');
         setMessage(status, 'Testing the explicitly configured FastAPI server…');
+        const audio = document.getElementById('serverAudio');
         const runs = [];
-        let lastDataUrl = null;
         for (let n = 0; n < 3; n++) {
             const wallStarted = performance.now();
             const result = await browser.runtime.sendMessage({
@@ -1120,20 +1120,18 @@ async function testFastApi() {
                 throw new Error(
                     'Streaming TTFA was not measured (need a streamed response body)');
             }
-            lastDataUrl = result.dataUrl;
+            // Decode each warm clip before counting it — a late valid MP3
+            // must not launder earlier non-audio bodies into the p50.
+            audio.src = result.dataUrl;
+            audio.hidden = false;
+            const durationSec = await waitServerAudioDuration(audio);
             runs.push({
                 kind: 'warm',
                 firstAudioMs: result.firstAudioMs,
                 synthesisMs,
-                // Duration filled after the final clip decodes once.
-                audioDurationSec: 1,
+                audioDurationSec: durationSec,
             });
         }
-        const audio = document.getElementById('serverAudio');
-        audio.src = lastDataUrl;
-        audio.hidden = false;
-        const durationSec = await waitServerAudioDuration(audio);
-        for (const run of runs) run.audioDurationSec = durationSec;
         const metrics = window.KokoroBenchmark.summarizeRuns(runs);
         status.dataset.streamingTtfaMeasured = 'true';
         status.dataset.firstAudioP50Ms = String(metrics.firstAudioP50Ms);

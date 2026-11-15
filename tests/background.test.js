@@ -462,4 +462,55 @@ describe('background.js logic', () => {
         expect(result.dataUrl).toBe('data:audio/mpeg;base64,...');
         expect(result.firstAudioMs).toBeNull();
     });
+
+    test('FETCH_TTS_AUDIO firstAudioMs stops at first chunk, not full buffer', async () => {
+        jest.useFakeTimers();
+        const first = Uint8Array.from([1, 2, 3, 4]);
+        const rest = Uint8Array.from([5, 6, 7, 8]);
+        let step = 0;
+        fetch.mockResolvedValue({
+            ok: true,
+            status: 200,
+            headers: { get: () => 'audio/mpeg' },
+            body: {
+                getReader() {
+                    return {
+                        async read() {
+                            step += 1;
+                            if (step === 1) {
+                                // First nonempty chunk after 100ms wall delay.
+                                await new Promise((resolve) => {
+                                    setTimeout(resolve, 100);
+                                });
+                                return { done: false, value: first };
+                            }
+                            if (step === 2) {
+                                // Remaining body arrives much later.
+                                await new Promise((resolve) => {
+                                    setTimeout(resolve, 400);
+                                });
+                                return { done: false, value: rest };
+                            }
+                            return { done: true, value: undefined };
+                        },
+                    };
+                },
+            },
+        });
+        const onMessageListener = browser.runtime.onMessage.addListener.mock.calls[0][0];
+        const pending = onMessageListener({
+            action: 'FETCH_TTS_AUDIO',
+            endpoint: 'http://localhost:8880/v1/audio/speech',
+            payload: { input: 'Chunked' },
+        }, {});
+        await jest.advanceTimersByTimeAsync(100);
+        await jest.advanceTimersByTimeAsync(400);
+        const result = await pending;
+        expect(result.success).toBe(true);
+        expect(Number.isFinite(result.firstAudioMs)).toBe(true);
+        // Must reflect first-chunk time (~100ms), not full-buffer (~500ms).
+        expect(result.firstAudioMs).toBeGreaterThanOrEqual(90);
+        expect(result.firstAudioMs).toBeLessThan(300);
+        jest.useRealTimers();
+    });
 });
