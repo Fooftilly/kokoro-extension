@@ -1790,10 +1790,12 @@ def accept_fastapi_server_card(driver, origin, api_url):
         const choose=document.getElementById('chooseServer');
         return text.includes('Server returned playable MP3') &&
             text.includes('First body byte (TTFB) p50') &&
-            text.includes('Playback / start-of-audio was not measured') &&
+            text.includes('playback start p50') &&
+            text.includes('not MediaSource streaming TTFA') &&
             status?.dataset?.streamingFirstBodyByteMeasured==='true' &&
-            status?.dataset?.playbackStartNotMeasured==='true' &&
+            status?.dataset?.playbackStartMeasured==='true' &&
             Number.isFinite(Number(status?.dataset?.firstBodyByteP50Ms)) &&
+            Number.isFinite(Number(status?.dataset?.playbackStartP50Ms)) &&
             audio && !audio.hidden &&
             String(audio.src||'').startsWith('data:audio') &&
             choose && choose.disabled===false;
@@ -1832,7 +1834,7 @@ def accept_fastapi_server_card(driver, origin, api_url):
         raise RuntimeError(
             "Firefox stub MP3 duration missing: " + repr(audio_duration))
 
-    # Capture TTFB / playback-not-measured BEFORE chooseServer — selection
+    # Capture TTFB / playback-start BEFORE chooseServer — selection
     # replaces status text with "FastAPI selected." (dataset still survives).
     ttfb = driver.execute_script("""
         const status=document.getElementById('serverStatus');
@@ -1842,9 +1844,11 @@ def accept_fastapi_server_card(driver, origin, api_url):
                 status?.dataset?.streamingFirstBodyByteMeasured==='true',
             firstBodyByteP50Ms:Number(status?.dataset?.firstBodyByteP50Ms),
             synthesisP50Ms:Number(status?.dataset?.synthesisP50Ms),
-            playbackStartNotMeasured:
-                status?.dataset?.playbackStartNotMeasured==='true' &&
-                text.includes('Playback / start-of-audio was not measured'),
+            playbackStartMeasured:
+                status?.dataset?.playbackStartMeasured==='true' &&
+                text.includes('playback start p50') &&
+                text.includes('not MediaSource streaming TTFA'),
+            playbackStartP50Ms:Number(status?.dataset?.playbackStartP50Ms),
         };
     """)
 
@@ -1892,10 +1896,10 @@ def accept_fastapi_server_card(driver, origin, api_url):
         audio_duration_sec=float(audio_duration),
         streaming_first_body_byte_measured=bool(
             ttfb.get("streamingFirstBodyByteMeasured")),
-        playback_start_not_measured=bool(
-            ttfb.get("playbackStartNotMeasured")),
+        playback_start_measured=bool(ttfb.get("playbackStartMeasured")),
         first_body_byte_p50_ms=ttfb.get("firstBodyByteP50Ms"),
         synthesis_p50_ms=ttfb.get("synthesisP50Ms"),
+        playback_start_p50_ms=ttfb.get("playbackStartP50Ms"),
     )
 
 

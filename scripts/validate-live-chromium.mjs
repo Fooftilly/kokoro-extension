@@ -1099,7 +1099,8 @@ async function acceptFastApiServerCard(page, apiUrl) {
     const {
         SERVER_PLAYABLE_MP3_NEEDLE,
         SERVER_FIRST_BODY_BYTE_NEEDLE,
-        SERVER_PLAYBACK_NOT_MEASURED_NEEDLE,
+        SERVER_PLAYBACK_START_NEEDLE,
+        SERVER_NOT_MEDIASOURCE_NEEDLE,
         FASTAPI_SELECTED_NEEDLE,
         BACKEND_BEFORE_CHOOSE,
         buildFastApiServerCardReport,
@@ -1126,17 +1127,20 @@ async function acceptFastApiServerCard(page, apiUrl) {
         const choose = document.getElementById('chooseServer');
         return text.includes(needles.playable) &&
             text.includes(needles.ttfb) &&
-            text.includes(needles.noPlayback) &&
+            text.includes(needles.playbackStart) &&
+            text.includes(needles.notMediaSource) &&
             status?.dataset?.streamingFirstBodyByteMeasured === 'true' &&
-            status?.dataset?.playbackStartNotMeasured === 'true' &&
+            status?.dataset?.playbackStartMeasured === 'true' &&
             Number.isFinite(Number(status?.dataset?.firstBodyByteP50Ms)) &&
+            Number.isFinite(Number(status?.dataset?.playbackStartP50Ms)) &&
             audio && !audio.hidden &&
             String(audio.src || '').startsWith('data:audio') &&
             choose && choose.disabled === false;
     }, {
         playable: SERVER_PLAYABLE_MP3_NEEDLE,
         ttfb: SERVER_FIRST_BODY_BYTE_NEEDLE,
-        noPlayback: SERVER_PLAYBACK_NOT_MEASURED_NEEDLE,
+        playbackStart: SERVER_PLAYBACK_START_NEEDLE,
+        notMediaSource: SERVER_NOT_MEDIASOURCE_NEEDLE,
     }, { timeout: 60000 });
 
     // Prove the stub MP3 actually decodes (not just a data: URL prefix).
@@ -1170,9 +1174,9 @@ async function acceptFastApiServerCard(page, apiUrl) {
         return audio.duration;
     });
 
-    // Capture TTFB / playback-not-measured BEFORE chooseServer — selection
+    // Capture TTFB / playback-start BEFORE chooseServer — selection
     // replaces status text with "FastAPI selected." (dataset still survives).
-    const ttfb = await page.evaluate((noPlaybackNeedle) => {
+    const ttfb = await page.evaluate((needles) => {
         const status = document.getElementById('serverStatus');
         const text = status?.textContent || '';
         return {
@@ -1180,11 +1184,16 @@ async function acceptFastApiServerCard(page, apiUrl) {
                 status?.dataset?.streamingFirstBodyByteMeasured === 'true',
             firstBodyByteP50Ms: Number(status?.dataset?.firstBodyByteP50Ms),
             synthesisP50Ms: Number(status?.dataset?.synthesisP50Ms),
-            playbackStartNotMeasured:
-                status?.dataset?.playbackStartNotMeasured === 'true' &&
-                text.includes(noPlaybackNeedle),
+            playbackStartMeasured:
+                status?.dataset?.playbackStartMeasured === 'true' &&
+                text.includes(needles.playbackStart) &&
+                text.includes(needles.notMediaSource),
+            playbackStartP50Ms: Number(status?.dataset?.playbackStartP50Ms),
         };
-    }, SERVER_PLAYBACK_NOT_MEASURED_NEEDLE);
+    }, {
+        playbackStart: SERVER_PLAYBACK_START_NEEDLE,
+        notMediaSource: SERVER_NOT_MEDIASOURCE_NEEDLE,
+    });
 
     // Switch away from fastapi so chooseServer must write the preference.
     await page.evaluate(async (backend) => {
@@ -1219,9 +1228,10 @@ async function acceptFastApiServerCard(page, apiUrl) {
         decodeableMp3: true,
         audioDurationSec,
         streamingFirstBodyByteMeasured: ttfb.streamingFirstBodyByteMeasured,
-        playbackStartNotMeasured: ttfb.playbackStartNotMeasured,
+        playbackStartMeasured: ttfb.playbackStartMeasured,
         firstBodyByteP50Ms: ttfb.firstBodyByteP50Ms,
         synthesisP50Ms: ttfb.synthesisP50Ms,
+        playbackStartP50Ms: ttfb.playbackStartP50Ms,
     });
 }
 

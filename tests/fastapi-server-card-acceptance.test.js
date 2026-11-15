@@ -1,6 +1,6 @@
 /** @jest-environment node */
 /**
- * Contract for dual-scope FastAPI server card (#61 / KE-27 + KE-34 TTFB).
+ * Contract for dual-scope FastAPI server card (#61 / KE-27 + KE-34 TTFB + KE-40 playback-start).
  * Shape distinct from dual-use-this-backend and popup-cta (Sonar).
  */
 const { spawnSync } = require('child_process');
@@ -25,9 +25,10 @@ const report = card.buildFastApiServerCardReport({
     decodeableMp3: true,
     audioDurationSec: 0.13,
     streamingFirstBodyByteMeasured: true,
-    playbackStartNotMeasured: true,
+    playbackStartMeasured: true,
     firstBodyByteP50Ms: 110,
     synthesisP50Ms: 160,
+    playbackStartP50Ms: 200,
 });
 card.assertFastApiServerCardReport(report);
 const endpoint = card.speechEndpointFromApiUrl(apiUrl);
@@ -59,14 +60,25 @@ const failBuffered = (() => {
         return { ok: false, message: String(error.message || error) };
     }
 })();
+const failPlayback = (() => {
+    try {
+        card.assertFastApiServerCardReport({
+            ...report, playbackStartP50Ms: 100,
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
 console.log(JSON.stringify({
     bytes: card.MINIMAL_MP3_BYTES.length,
     before: card.BACKEND_BEFORE_CHOOSE,
     needle: card.SERVER_PLAYABLE_MP3_NEEDLE,
     ttfbNeedle: card.SERVER_FIRST_BODY_BYTE_NEEDLE,
-    noPlayback: card.SERVER_PLAYBACK_NOT_MEASURED_NEEDLE,
+    playbackNeedle: card.SERVER_PLAYBACK_START_NEEDLE,
+    notMediaSource: card.SERVER_NOT_MEDIASOURCE_NEEDLE,
     selected: card.FASTAPI_SELECTED_NEEDLE,
-    endpoint, report, fail, failTtfb, failBuffered,
+    endpoint, report, fail, failTtfb, failBuffered, failPlayback,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
@@ -81,7 +93,8 @@ describe('FastAPI server-card acceptance', () => {
         expect(snap.before).toBe('mediapipe');
         expect(snap.needle).toMatch(/playable MP3/i);
         expect(snap.ttfbNeedle).toMatch(/First body byte \(TTFB\) p50/i);
-        expect(snap.noPlayback).toMatch(/Playback \/ start-of-audio was not measured/i);
+        expect(snap.playbackNeedle).toMatch(/playback start p50/i);
+        expect(snap.notMediaSource).toMatch(/not MediaSource streaming TTFA/i);
         expect(snap.selected).toBe('FastAPI selected.');
         expect(snap.endpoint).toContain('/v1/audio/speech');
         expect(snap.report).toEqual(expect.objectContaining({
@@ -90,9 +103,11 @@ describe('FastAPI server-card acceptance', () => {
             playableMp3Returned: true,
             decodeableMp3: true,
             streamingFirstBodyByteMeasured: true,
-            playbackStartNotMeasured: true,
+            playbackStartMeasured: true,
+            playbackStartNotMeasured: false,
             firstBodyByteP50Ms: 110,
             synthesisP50Ms: 160,
+            playbackStartP50Ms: 200,
             backendBeforeChoose: 'mediapipe',
             chooseChangedBackend: true,
             selectedBackend: 'fastapi',
@@ -105,6 +120,8 @@ describe('FastAPI server-card acceptance', () => {
         expect(snap.failTtfb.message).toMatch(/streamingFirstBodyByteMeasured/i);
         expect(snap.failBuffered.ok).toBe(false);
         expect(snap.failBuffered.message).toMatch(/strictly greater/i);
+        expect(snap.failPlayback.ok).toBe(false);
+        expect(snap.failPlayback.message).toMatch(/playbackStartP50Ms/i);
     });
 
     test('Chromium dual path wires FastAPI card after local dual', () => {
@@ -115,9 +132,11 @@ describe('FastAPI server-card acceptance', () => {
         expect(source).toContain("locator('#chooseServer').click()");
         expect(source).toContain('SERVER_PLAYABLE_MP3_NEEDLE');
         expect(source).toContain('SERVER_FIRST_BODY_BYTE_NEEDLE');
-        expect(source).toContain('SERVER_PLAYBACK_NOT_MEASURED_NEEDLE');
+        expect(source).toContain('SERVER_PLAYBACK_START_NEEDLE');
+        expect(source).toContain('SERVER_NOT_MEDIASOURCE_NEEDLE');
         expect(source).toContain('streamingFirstBodyByteMeasured');
-        expect(source).toContain('playbackStartNotMeasured');
+        expect(source).toContain('playbackStartMeasured');
+        expect(source).toContain('playbackStartP50Ms');
         expect(source).toContain('setTimeout(() => {');
         expect(source).toContain('FASTAPI_SELECTED_NEEDLE');
         expect(source).toContain('BACKEND_BEFORE_CHOOSE');
@@ -128,9 +147,9 @@ describe('FastAPI server-card acceptance', () => {
         const cardIdx = source.indexOf(
             'await acceptFastApiServerCard(');
         const playableIdx = source.indexOf('SERVER_PLAYABLE_MP3_NEEDLE');
-        // TTFB snapshot must precede chooseServer (status text is replaced).
+        // Playback-start snapshot must precede chooseServer (status text is replaced).
         const ttfbCaptureIdx = source.indexOf(
-            'Capture TTFB / playback-not-measured BEFORE chooseServer');
+            'Capture TTFB / playback-start BEFORE chooseServer');
         const chooseIdx = source.indexOf(
             "locator('#chooseServer').click()");
         const seedBeforeChoose = source.indexOf(
@@ -150,9 +169,11 @@ describe('FastAPI server-card acceptance', () => {
         expect(source).toContain('_minimal_mp3_fixture_bytes');
         expect(source).toContain('HAVE_CURRENT_DATA');
         expect(source).toContain('First body byte (TTFB) p50');
-        expect(source).toContain('Playback / start-of-audio was not measured');
+        expect(source).toContain('playback start p50');
+        expect(source).toContain('not MediaSource streaming TTFA');
         expect(source).toContain('streamingFirstBodyByteMeasured');
-        expect(source).toContain('playbackStartNotMeasured');
+        expect(source).toContain('playbackStartMeasured');
+        expect(source).toContain('playbackStartP50Ms');
         expect(source).toContain('time.sleep(0.1)');
         expect(source).toMatch(
             /find_element\(\s*By\.ID,\s*["']testServer["']\s*\)\.click\(\)/);
@@ -165,7 +186,7 @@ describe('FastAPI server-card acceptance', () => {
         const cardIdx = source.indexOf(
             'fastapi_card = accept_fastapi_server_card(');
         const ttfbCaptureIdx = source.indexOf(
-            'Capture TTFB / playback-not-measured BEFORE chooseServer');
+            'Capture TTFB / playback-start BEFORE chooseServer');
         const chooseIdx = source.indexOf(
             'find_element(By.ID, "chooseServer").click()');
         expect(dualIdx).toBeGreaterThan(0);

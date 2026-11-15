@@ -10,8 +10,9 @@ def build_fastapi_server_card_report(
         api_url, browser="Firefox", backend_before_choose="mediapipe",
         choose_changed_backend=True, audio_duration_sec=None,
         streaming_first_body_byte_measured=True,
-        playback_start_not_measured=True,
-        first_body_byte_p50_ms=None, synthesis_p50_ms=None):
+        playback_start_measured=True,
+        first_body_byte_p50_ms=None, synthesis_p50_ms=None,
+        playback_start_p50_ms=None):
     """Build the same report shape Chromium uses after a successful card test."""
     options = {
         "browser": browser,
@@ -22,12 +23,14 @@ def build_fastapi_server_card_report(
         "decodeableMp3": True,
         "audioDurationSec": audio_duration_sec,
         "streamingFirstBodyByteMeasured": streaming_first_body_byte_measured,
-        "playbackStartNotMeasured": playback_start_not_measured,
+        "playbackStartMeasured": playback_start_measured,
     }
     if first_body_byte_p50_ms is not None:
         options["firstBodyByteP50Ms"] = first_body_byte_p50_ms
     if synthesis_p50_ms is not None:
         options["synthesisP50Ms"] = synthesis_p50_ms
+    if playback_start_p50_ms is not None:
+        options["playbackStartP50Ms"] = playback_start_p50_ms
     probe = subprocess.run(
         [
             "node", "--input-type=module", "-e",
