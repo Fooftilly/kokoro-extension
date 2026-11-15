@@ -101,10 +101,13 @@ export class OnnxKokoroProvider {
         const outputs = await this.session.run(feeds);
         const name = this.session.outputNames[0];
         const audio = outputs[name];
-        if (!(audio?.data instanceof Float32Array) || audio.data.length === 0 ||
+        if (!audio?.data || audio.data.length === 0 ||
             !Array.isArray(audio.dims) || audio.dims.reduce((v, d) => v * d, 1) !== audio.data.length) {
             throw new Error('ONNX graph did not return valid float32 audio');
         }
+        // SDK output may belong to another JavaScript realm (notably Firefox).
+        // The shared PCM validator checks genuine Float32 views across realms,
+        // as well as the sample rate, size, finiteness and silence bounds.
         validateKokoroPcm(audio.data, 24000);
         return { samples: audio.data, sampleRateHz: 24000 };
     }
