@@ -1,0 +1,1 @@
+Fix false MediaPipe long-form stall: report every validated position, allow 30m CPU scope based on measured workload, retain 180s watchdog and all assertions. Application code is unchanged from the four completed idle probes.
