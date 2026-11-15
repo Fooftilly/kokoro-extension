@@ -1446,6 +1446,37 @@ def assert_progressive_streaming_ttfa_unmeasured(report, browser="Firefox"):
     return json.loads(probe.stdout.strip())
 
 
+def assert_broader_g2p_disclosure(browser="Firefox"):
+    """#61 / KE-55: multi-lang / long-form G2P not measured; short English only."""
+    scripts_dir = Path(__file__).resolve().parent
+    probe = subprocess.run(
+        [
+            "node", "--input-type=module", "-e",
+            "import { assertBroaderG2pDisclosure, "
+            "assertBroaderG2pDisclosureReport, "
+            "buildBroaderG2pDisclosureReport, "
+            "MULTI_LANG_PROBE_WORD } from "
+            "'./broader-g2p-disclosure-acceptance.mjs';"
+            "const report = buildBroaderG2pDisclosureReport({"
+            "browser: " + json.dumps(browser) + ","
+            "multiLangProbeWord: MULTI_LANG_PROBE_WORD,"
+            "});"
+            "assertBroaderG2pDisclosure(report);"
+            "assertBroaderG2pDisclosureReport(report);"
+            "console.log(JSON.stringify(report));",
+        ],
+        cwd=str(scripts_dir),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        raise RuntimeError(
+            "Broader G2P disclosure assert failed: " +
+            (probe.stderr or probe.stdout or "unknown error"))
+    return json.loads(probe.stdout.strip())
+
+
 def assert_store_signing_disclosure_from_payload(payload, browser="Firefox"):
     """#61 / KE-46: assert nested storeSigning from a real measured export payload.
 
@@ -4179,6 +4210,12 @@ def main():
                     preflight, browser="Firefox")
                 result["gpuExecutionDisclosureAcceptance"] = (
                     gpu_execution_disclosure)
+                # #61 / KE-55: multi-lang / long-form G2P not measured.
+                result["stage"] = "broader-g2p-disclosure"
+                broader_g2p_disclosure = assert_broader_g2p_disclosure(
+                    browser="Firefox")
+                result["broaderG2pDisclosureAcceptance"] = (
+                    broader_g2p_disclosure)
                 result["stage"] = "popup-test-tts-cta"
                 popup_cta = accept_popup_test_tts_cta(driver, state["origin"])
                 result["popupTestTtsCtaAcceptance"] = popup_cta
@@ -4241,6 +4278,7 @@ def main():
                     "dictionaryReloadAcceptance": dictionary_reload_acceptance,
                     "dictionaryUiDownloadAcceptance": dictionary_ui_acceptance,
                     "gpuExecutionDisclosureAcceptance": gpu_execution_disclosure,
+                    "broaderG2pDisclosureAcceptance": broader_g2p_disclosure,
                     "storeSigningDisclosureAcceptance": store_signing_disclosure,
                     "progressiveStreamingTtfaAcceptance": (
                         result.get("progressiveStreamingTtfaAcceptance")),

@@ -3040,6 +3040,7 @@ try {
     let dictionaryUiDownloadAcceptance = null;
     let popupTestTtsCtaAcceptance = null;
     let gpuExecutionDisclosureAcceptance = null;
+    let broaderG2pDisclosureAcceptance = null;
     let storeSigningDisclosureAcceptance = null;
     let progressiveStreamingTtfaAcceptance = null;
     let twoBackendComparisonAcceptance = null;
@@ -3053,7 +3054,8 @@ try {
             testedAt: new Date().toISOString(), browser: preflight.browser, preflight,
             dictionaryCacheAcceptance, browserRestartAcceptance,
             dictionaryUiDownloadAcceptance, popupTestTtsCtaAcceptance,
-            gpuExecutionDisclosureAcceptance, storeSigningDisclosureAcceptance,
+            gpuExecutionDisclosureAcceptance, broaderG2pDisclosureAcceptance,
+            storeSigningDisclosureAcceptance,
             progressiveStreamingTtfaAcceptance,
             twoBackendComparisonAcceptance, fastapiServerCardAcceptance,
             fastapiPreferenceHonorAcceptance, oovG2pDisclosureAcceptance,
@@ -3458,6 +3460,36 @@ try {
             success: gpuExecutionDisclosureAcceptance?.success === true,
             webgpuAdapterStatus:
                 gpuExecutionDisclosureAcceptance?.webgpuAdapterStatus,
+        });
+        await saveReport();
+
+        // #61 / KE-55: multi-lang / long-form G2P not measured; short English
+        // dictionary-gated only (additive to KE-41b / #169).
+        liveHeartbeat('broader-g2p-disclosure-start');
+        const {
+            assertBroaderG2pDisclosure,
+            assertBroaderG2pDisclosureReport,
+            buildBroaderG2pDisclosureReport,
+            MULTI_LANG_PROBE_WORD,
+        } = await import('./broader-g2p-disclosure-acceptance.mjs');
+        broaderG2pDisclosureAcceptance = buildBroaderG2pDisclosureReport({
+            browser: 'chromium',
+            multiLangProbeWord: MULTI_LANG_PROBE_WORD,
+        });
+        assertBroaderG2pDisclosure(broaderG2pDisclosureAcceptance);
+        assertBroaderG2pDisclosureReport(broaderG2pDisclosureAcceptance);
+        liveHeartbeat('broader-g2p-disclosure-done', {
+            success: broaderG2pDisclosureAcceptance?.success === true,
+            multiLangG2pMeasured:
+                broaderG2pDisclosureAcceptance?.multiLangG2pMeasured,
+            longFormPronunciationQualityMeasured:
+                broaderG2pDisclosureAcceptance
+                    ?.longFormPronunciationQualityMeasured,
+            dictionaryGatedShortEnglishOnly:
+                broaderG2pDisclosureAcceptance
+                    ?.dictionaryGatedShortEnglishOnly,
+            multiLangProbeExcluded:
+                broaderG2pDisclosureAcceptance?.multiLangProbeExcluded,
         });
         await saveReport();
 

@@ -91,6 +91,7 @@ export default [
       'model-manager-page.js',
       'server-audio-playback-start.js',
       'store-signing-disclosure.js',
+      'broader-g2p-disclosure.js',
       'dom-utils.js',
       'text-processor.js',
     ],
@@ -103,7 +104,7 @@ export default [
   },
   // Classic scripts that optionally export for Jest via CJS interop
   {
-    files: ['content.js', 'api-client.js', 'overlay-position.js', 'floating-mic-position.js', 'benchmark-capabilities.js', 'tts-providers.js', 'local-voice-mixing.js', 'backend-disclosure.js', 'gpu-execution-disclosure.js', 'store-signing-disclosure.js', 'longer-shared-english-sample.js'],
+    files: ['content.js', 'api-client.js', 'overlay-position.js', 'floating-mic-position.js', 'benchmark-capabilities.js', 'tts-providers.js', 'local-voice-mixing.js', 'backend-disclosure.js', 'gpu-execution-disclosure.js', 'broader-g2p-disclosure.js', 'store-signing-disclosure.js', 'longer-shared-english-sample.js'],
     languageOptions: {
       globals: {
         module: 'readonly',
