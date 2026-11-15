@@ -1,7 +1,8 @@
 /** @jest-environment node */
 /**
  * Contract for other model variants / verified-GPU-when-offered disclosure
- * (#57 / #61 / KE-53). Dual scopes accept only onnx-q8 + MediaPipe CPU.
+ * (#57 / #61 / KE-53). Dual scopes accept only onnx-q8 + MediaPipe CPU;
+ * catalog evidence (incl. onnx-q8f16) must be observed.
  */
 const { spawnSync } = require('child_process');
 const fs = require('fs');
@@ -14,234 +15,157 @@ const helperUrl = pathToFileURL(
 const firefoxLive = path.join(root, 'scripts', 'validate-live-firefox.py');
 const chromiumLive = path.join(root, 'scripts', 'validate-live-chromium.mjs');
 
+const CATALOG_WITH_Q8F16 = [
+    'mediapipe-cpu', 'onnx-fp16', 'onnx-int8', 'onnx-q8', 'onnx-q8f16',
+];
+
 function loadHelperSnapshot() {
     return spawnSync(process.execPath, ['--input-type=module', '-e', `
 import * as variants from ${JSON.stringify(helperUrl)};
-const ok = variants.assertModelVariantsDisclosure({
-    acceptedVariants: ['onnx-q8', 'mediapipe-cpu'],
-    otherModelVariantsOffered: false,
-    otherModelVariantsMeasured: false,
-    verifiedGpuWhenOfferedMeasured: false,
-    disclosureNeedle: variants.MODEL_VARIANTS_DISCLOSURE_NEEDLE,
-});
+const observed = ${JSON.stringify(CATALOG_WITH_Q8F16)};
+const capture = (fn) => {
+    try { return { ok: true, value: fn() }; }
+    catch (error) { return { ok: false, message: String(error.message || error) }; }
+};
 const report = variants.buildModelVariantsDisclosureReport({
     browser: 'Firefox',
+    observedCatalogVariantKeys: observed,
 });
+const ok = variants.assertModelVariantsDisclosure(report);
 const nested = variants.assertModelVariantsDisclosure({
     modelVariants: {
         acceptedVariants: ['mediapipe-cpu', 'onnx-q8'],
-        otherModelVariantsOffered: false,
+        observedCatalogVariantKeys: observed,
+        otherCatalogVariantsOffered: true,
         otherModelVariantsMeasured: false,
         verifiedGpuWhenOfferedMeasured: false,
+        assertedFromCatalog: true,
         disclosureNeedle: variants.MODEL_VARIANTS_DISCLOSURE_NEEDLE,
     },
 });
-const failExtraVariant = (() => {
-    try {
-        variants.assertModelVariantsDisclosure({
-            acceptedVariants: ['onnx-q8', 'mediapipe-cpu', 'onnx-q8f16'],
-            otherModelVariantsOffered: false,
-            otherModelVariantsMeasured: false,
-            verifiedGpuWhenOfferedMeasured: false,
-            disclosureNeedle: variants.MODEL_VARIANTS_DISCLOSURE_NEEDLE,
-        });
-        return { ok: true };
-    } catch (error) {
-        return { ok: false, message: String(error.message || error) };
-    }
-})();
-const failOffered = (() => {
-    try {
-        variants.assertModelVariantsDisclosure({
-            acceptedVariants: ['onnx-q8', 'mediapipe-cpu'],
-            otherModelVariantsOffered: true,
-            otherModelVariantsMeasured: false,
-            verifiedGpuWhenOfferedMeasured: false,
-            disclosureNeedle: variants.MODEL_VARIANTS_DISCLOSURE_NEEDLE,
-        });
-        return { ok: true };
-    } catch (error) {
-        return { ok: false, message: String(error.message || error) };
-    }
-})();
-const failMeasured = (() => {
-    try {
-        variants.assertModelVariantsDisclosure({
-            acceptedVariants: ['onnx-q8', 'mediapipe-cpu'],
-            otherModelVariantsOffered: false,
-            otherModelVariantsMeasured: true,
-            verifiedGpuWhenOfferedMeasured: false,
-            disclosureNeedle: variants.MODEL_VARIANTS_DISCLOSURE_NEEDLE,
-        });
-        return { ok: true };
-    } catch (error) {
-        return { ok: false, message: String(error.message || error) };
-    }
-})();
-const failGpuWhenOffered = (() => {
-    try {
-        variants.assertModelVariantsDisclosure({
-            acceptedVariants: ['onnx-q8', 'mediapipe-cpu'],
-            otherModelVariantsOffered: false,
-            otherModelVariantsMeasured: false,
-            verifiedGpuWhenOfferedMeasured: true,
-            disclosureNeedle: variants.MODEL_VARIANTS_DISCLOSURE_NEEDLE,
-        });
-        return { ok: true };
-    } catch (error) {
-        return { ok: false, message: String(error.message || error) };
-    }
-})();
-const failNeedle = (() => {
-    try {
-        variants.assertModelVariantsDisclosure({
-            acceptedVariants: ['onnx-q8', 'mediapipe-cpu'],
-            otherModelVariantsOffered: false,
-            otherModelVariantsMeasured: false,
-            verifiedGpuWhenOfferedMeasured: false,
-            disclosureNeedle: 'variants ok',
-        });
-        return { ok: true };
-    } catch (error) {
-        return { ok: false, message: String(error.message || error) };
-    }
-})();
+const failNoQ8f16 = capture(() => variants.assertModelVariantsDisclosure({
+    acceptedVariants: ['onnx-q8', 'mediapipe-cpu'],
+    observedCatalogVariantKeys: ['mediapipe-cpu', 'onnx-q8'],
+    otherCatalogVariantsOffered: true,
+    otherModelVariantsMeasured: false,
+    verifiedGpuWhenOfferedMeasured: false,
+    assertedFromCatalog: true,
+    disclosureNeedle: variants.MODEL_VARIANTS_DISCLOSURE_NEEDLE,
+}));
+const failHardCodedNoEvidence = capture(() => variants.assertModelVariantsDisclosure({
+    acceptedVariants: ['onnx-q8', 'mediapipe-cpu'],
+    otherCatalogVariantsOffered: true,
+    otherModelVariantsMeasured: false,
+    verifiedGpuWhenOfferedMeasured: false,
+    assertedFromCatalog: true,
+    disclosureNeedle: variants.MODEL_VARIANTS_DISCLOSURE_NEEDLE,
+}));
+const failClaimedNotOffered = capture(() => variants.assertModelVariantsDisclosure({
+    acceptedVariants: ['onnx-q8', 'mediapipe-cpu'],
+    observedCatalogVariantKeys: observed,
+    otherCatalogVariantsOffered: false,
+    otherModelVariantsMeasured: false,
+    verifiedGpuWhenOfferedMeasured: false,
+    assertedFromCatalog: true,
+    disclosureNeedle: variants.MODEL_VARIANTS_DISCLOSURE_NEEDLE,
+}));
+const failMeasured = capture(() => variants.assertModelVariantsDisclosure({
+    ...report,
+    otherModelVariantsMeasured: true,
+}));
+const failExtraAccepted = capture(() => variants.assertModelVariantsDisclosure({
+    ...report,
+    acceptedVariants: ['onnx-q8', 'mediapipe-cpu', 'onnx-q8f16'],
+}));
 console.log(JSON.stringify({
     needle: variants.MODEL_VARIANTS_DISCLOSURE_NEEDLE,
     accepted: variants.ACCEPTED_MODEL_VARIANTS,
+    requiredNonAccepted: variants.REQUIRED_NON_ACCEPTED_CATALOG_VARIANT,
     ok, report, nested,
-    failExtraVariant, failOffered, failMeasured, failGpuWhenOffered, failNeedle,
+    failNoQ8f16, failHardCodedNoEvidence, failClaimedNotOffered,
+    failMeasured, failExtraAccepted,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
 
 describe('Model variants disclosure acceptance (KE-53)', () => {
-    test('shared acceptance helper asserts and builds dual report', () => {
+    test('asserts from catalog evidence including onnx-q8f16', () => {
         const child = loadHelperSnapshot();
         expect(child.status).toBe(0);
         expect(child.stderr || '').toBe('');
         const snap = JSON.parse(child.stdout.trim());
-        expect(snap.needle).toBe(
-            'other model variants not offered; verified GPU when offered not measured');
+        expect(snap.needle).toMatch(/other catalog variants not measured/);
         expect(snap.accepted).toEqual(['mediapipe-cpu', 'onnx-q8']);
+        expect(snap.requiredNonAccepted).toBe('onnx-q8f16');
         expect(snap.ok).toEqual(expect.objectContaining({
             success: true,
             acceptedVariants: ['mediapipe-cpu', 'onnx-q8'],
-            otherModelVariantsOffered: false,
+            otherCatalogVariantsOffered: true,
             otherModelVariantsMeasured: false,
             verifiedGpuWhenOfferedMeasured: false,
+            assertedFromCatalog: true,
         }));
-        expect(snap.report).toEqual(expect.objectContaining({
-            success: true,
-            browser: 'Firefox',
-            acceptedVariants: ['mediapipe-cpu', 'onnx-q8'],
-            otherModelVariantsOffered: false,
-            otherModelVariantsMeasured: false,
-            verifiedGpuWhenOfferedMeasured: false,
-            assertedFromDual: true,
-        }));
+        expect(snap.ok.observedCatalogVariantKeys).toEqual(
+            expect.arrayContaining(['onnx-q8', 'mediapipe-cpu', 'onnx-q8f16']));
+        expect(snap.ok.nonAcceptedCatalogVariants).toEqual(
+            expect.arrayContaining(['onnx-q8f16']));
+        expect(snap.report.assertedFromCatalog).toBe(true);
+        expect(snap.report.otherCatalogVariantsOffered).toBe(true);
         expect(snap.nested.success).toBe(true);
-        expect(snap.failExtraVariant.ok).toBe(false);
-        expect(snap.failExtraVariant.message).toMatch(/exactly onnx-q8/i);
-        expect(snap.failOffered.ok).toBe(false);
-        expect(snap.failOffered.message).toMatch(/must not be offered/i);
+        expect(snap.failNoQ8f16.ok).toBe(false);
+        expect(snap.failNoQ8f16.message).toMatch(/onnx-q8f16/i);
+        expect(snap.failHardCodedNoEvidence.ok).toBe(false);
+        expect(snap.failHardCodedNoEvidence.message).toMatch(
+            /observedCatalogVariantKeys/i);
+        expect(snap.failClaimedNotOffered.ok).toBe(false);
+        expect(snap.failClaimedNotOffered.message).toMatch(
+            /otherCatalogVariantsOffered must be true/i);
         expect(snap.failMeasured.ok).toBe(false);
-        expect(snap.failMeasured.message).toMatch(/must not be reported as measured/i);
-        expect(snap.failGpuWhenOffered.ok).toBe(false);
-        expect(snap.failGpuWhenOffered.message).toMatch(
-            /Verified GPU when offered must not be reported as measured/i);
-        expect(snap.failNeedle.ok).toBe(false);
-        expect(snap.failNeedle.message).toMatch(/needle missing/i);
+        expect(snap.failExtraAccepted.ok).toBe(false);
     });
 
-    test('source wiring: dual Chromium + Firefox assert exclusive module', () => {
+    test('dual Chromium + Firefox observe catalog before assert', () => {
         const firefox = fs.readFileSync(firefoxLive, 'utf8');
         const chromium = fs.readFileSync(chromiumLive, 'utf8');
 
-        expect(firefox).toContain('model-variants-disclosure-acceptance.mjs');
+        expect(firefox).toContain('observeCatalogVariantKeys');
+        expect(firefox).toContain('observedCatalogVariantKeys');
         expect(firefox).toContain('assert_model_variants_disclosure');
-        expect(firefox).toContain('modelVariantsDisclosureAcceptance');
-        const dualGate = firefox.indexOf('if dual_comparison:');
-        const gpuCall = firefox.indexOf(
-            'assert_gpu_execution_disclosure(\n                    preflight');
-        const variantsCall = firefox.indexOf(
-            'model_variants_disclosure = assert_model_variants_disclosure(');
-        const popupCall = firefox.indexOf(
-            'accept_popup_test_tts_cta(driver, state["origin"])');
-        expect(dualGate).toBeGreaterThan(0);
-        expect(gpuCall).toBeGreaterThan(dualGate);
-        expect(variantsCall).toBeGreaterThan(gpuCall);
-        expect(popupCall).toBeGreaterThan(variantsCall);
-
-        expect(chromium).toContain('model-variants-disclosure-acceptance.mjs');
+        expect(chromium).toContain('listModelVariants');
+        expect(chromium).toContain('observeCatalogVariantKeys');
+        expect(chromium).toContain('observedCatalogVariantKeys');
         expect(chromium).toContain('assertModelVariantsDisclosure');
-        expect(chromium).toContain('buildModelVariantsDisclosureReport');
-        expect(chromium).toContain('modelVariantsDisclosureAcceptance');
-        const chromiumDualGate = chromium.indexOf(
-            "providerFilter === 'both' && !originDownload");
-        const chromiumGpu = chromium.indexOf(
-            'assertGpuExecutionDisclosure(preflight)');
-        const chromiumVariants = chromium.indexOf(
-            'assertModelVariantsDisclosure(');
-        const chromiumPopup = chromium.indexOf(
-            'liveHeartbeat(\'popup-test-tts-cta-start\')');
-        expect(chromiumDualGate).toBeGreaterThan(0);
-        expect(chromiumGpu).toBeGreaterThan(chromiumDualGate);
-        expect(chromiumVariants).toBeGreaterThan(chromiumGpu);
-        expect(chromiumPopup).toBeGreaterThan(chromiumVariants);
+        expect(chromium).toContain('assertedFromCatalog');
+        expect(chromium).toMatch(
+            /observeCatalogVariantKeys\(\s*listModelVariants\(\)\s*\)/);
+        expect(chromium).toContain('assertModelVariantsDisclosure(');
     });
 
-    test('assert fails closed when dual omits honesty flags or claims variants', () => {
+    test('real model-catalog.js listModelVariants includes onnx-q8f16', () => {
         const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+import { readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import * as variants from ${JSON.stringify(helperUrl)};
-const omit = (() => {
-    try {
-        variants.assertModelVariantsDisclosure({
-            wasmCompilation: true,
-            webgpu: { status: 'adapter-available' },
-        });
-        return { ok: true };
-    } catch (error) {
-        return { ok: false, message: String(error.message || error) };
-    }
-})();
-const gpuOnly = (() => {
-    try {
-        variants.assertModelVariantsDisclosure({
-            acceptedVariants: ['onnx-q8', 'mediapipe-cpu'],
-            otherModelVariantsOffered: false,
-            otherModelVariantsMeasured: false,
-            // verifiedGpuWhenOfferedMeasured omitted
-            disclosureNeedle: variants.MODEL_VARIANTS_DISCLOSURE_NEEDLE,
-        });
-        return { ok: true };
-    } catch (error) {
-        return { ok: false, message: String(error.message || error) };
-    }
-})();
-const mediapipeGpu = (() => {
-    try {
-        variants.assertModelVariantsDisclosure({
-            acceptedVariants: ['mediapipe-gpu', 'onnx-q8'],
-            otherModelVariantsOffered: false,
-            otherModelVariantsMeasured: false,
-            verifiedGpuWhenOfferedMeasured: false,
-            disclosureNeedle: variants.MODEL_VARIANTS_DISCLOSURE_NEEDLE,
-        });
-        return { ok: true };
-    } catch (error) {
-        return { ok: false, message: String(error.message || error) };
-    }
-})();
-console.log(JSON.stringify({ omit, gpuOnly, mediapipeGpu }));
+const catalogFile = path.join(tmpdir(), 'kokoro-jest-model-variants-catalog.mjs');
+writeFileSync(catalogFile, readFileSync(path.join(${JSON.stringify(root)}, 'model-catalog.js')));
+const catalog = await import(pathToFileURL(catalogFile).href);
+const keys = variants.observeCatalogVariantKeys(catalog.listModelVariants());
+const report = variants.buildModelVariantsDisclosureReport({
+    browser: 'jest',
+    observedCatalogVariantKeys: keys,
+});
+variants.assertModelVariantsDisclosure(report);
+console.log(JSON.stringify({ keys, assertedFromCatalog: report.assertedFromCatalog }));
 `], { encoding: 'utf8', cwd: root });
         expect(child.status).toBe(0);
+        expect(child.stderr || '').toBe('');
         const snap = JSON.parse(child.stdout.trim());
-        expect(snap.omit.ok).toBe(false);
-        expect(snap.omit.message).toMatch(/acceptedVariants|exactly onnx-q8/i);
-        expect(snap.gpuOnly.ok).toBe(false);
-        expect(snap.gpuOnly.message).toMatch(/Verified GPU when offered/i);
-        expect(snap.mediapipeGpu.ok).toBe(false);
-        expect(snap.mediapipeGpu.message).toMatch(/exactly onnx-q8/i);
+        expect(snap.keys).toEqual(expect.arrayContaining([
+            'onnx-q8', 'mediapipe-cpu', 'onnx-q8f16',
+        ]));
+        expect(snap.assertedFromCatalog).toBe(true);
     });
 });
+

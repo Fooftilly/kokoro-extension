@@ -44,7 +44,11 @@ import {
 // for the build tool. Copy pure modules into temporary .mjs files for Node.
 const catalogFile = path.join(os.tmpdir(), 'kokoro-runtime-model-catalog.mjs');
 await writeFile(catalogFile, await readFile(path.resolve('model-catalog.js')));
-const { manifestForVariant, dictionaryManifest } = await import(pathToFileURL(catalogFile).href);
+const {
+    manifestForVariant,
+    dictionaryManifest,
+    listModelVariants,
+} = await import(pathToFileURL(catalogFile).href);
 const longerSampleFile = path.join(os.tmpdir(),
     'kokoro-longer-shared-english-sample.mjs');
 await writeFile(longerSampleFile,
@@ -3463,15 +3467,19 @@ try {
         });
         await saveReport();
 
-        // #57 / #61 / KE-53: only onnx-q8 + MediaPipe CPU accepted; other
-        // variants and verified-GPU-when-offered remain not offered/measured.
+        // #57 / #61 / KE-53: observe catalog (incl. onnx-q8f16) then assert
+        // only onnx-q8 + MediaPipe CPU are accepted/measured.
         liveHeartbeat('model-variants-disclosure-start');
         const {
             assertModelVariantsDisclosure,
             buildModelVariantsDisclosureReport,
+            observeCatalogVariantKeys,
         } = await import('./model-variants-disclosure-acceptance.mjs');
+        const observedCatalogVariantKeys = observeCatalogVariantKeys(
+            listModelVariants());
         modelVariantsDisclosureAcceptance = buildModelVariantsDisclosureReport({
             browser: 'chromium',
+            observedCatalogVariantKeys,
             assertedFromDual: true,
         });
         assertModelVariantsDisclosure(modelVariantsDisclosureAcceptance);
@@ -3479,11 +3487,14 @@ try {
             success: modelVariantsDisclosureAcceptance?.success === true,
             acceptedVariants:
                 modelVariantsDisclosureAcceptance?.acceptedVariants,
-            otherModelVariantsOffered:
-                modelVariantsDisclosureAcceptance?.otherModelVariantsOffered,
-            verifiedGpuWhenOfferedMeasured:
-                modelVariantsDisclosureAcceptance
-                    ?.verifiedGpuWhenOfferedMeasured,
+            observedCatalogVariantKeys:
+                modelVariantsDisclosureAcceptance?.observedCatalogVariantKeys,
+            otherCatalogVariantsOffered:
+                modelVariantsDisclosureAcceptance?.otherCatalogVariantsOffered,
+            otherModelVariantsMeasured:
+                modelVariantsDisclosureAcceptance?.otherModelVariantsMeasured,
+            assertedFromCatalog:
+                modelVariantsDisclosureAcceptance?.assertedFromCatalog,
         });
         await saveReport();
 
