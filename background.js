@@ -396,6 +396,7 @@ browser.runtime.onMessage.addListener(async (request, sender) => {
                     selectedBackend !== TtsProviders.FASTAPI ? selectedBackend : requestedBackend
                 );
             }
+            const started = performance.now();
             const response = await fetch(request.endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -407,21 +408,11 @@ browser.runtime.onMessage.addListener(async (request, sender) => {
                 throw new Error(`API Error: ${response.status} ${errText}`);
             }
 
-            const blob = await response.blob();
-
-            // Convert blob to Data URL as it's the safest way to pass binary data 
-            // from background to content script in various manifest versions/browsers
-            const blobToDataURL = (blob) => {
-                return new Promise((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onloadend = () => resolve(reader.result);
-                    reader.onerror = reject;
-                    reader.readAsDataURL(blob);
-                });
-            };
-
-            const dataUrl = await blobToDataURL(blob);
-            return { success: true, dataUrl };
+            // Stream the body so FastAPI TTFA is first response byte, not
+            // full-buffer completion. Non-streaming bodies leave TTFA null.
+            const { dataUrl, firstAudioMs } =
+                await readTtsResponseAsDataUrl(response, started);
+            return { success: true, dataUrl, firstAudioMs };
 
         } catch (e) {
             console.error("Background fetch failed:", e);
@@ -438,6 +429,34 @@ function blobToDataUrl(blob) {
         reader.onerror = reject;
         reader.readAsDataURL(blob);
     });
+}
+
+/**
+ * Prefer a real body stream so firstAudioMs is time-to-first-byte from
+ * `started`. Fall back to blob() without inventing a TTFA value.
+ */
+async function readTtsResponseAsDataUrl(response, started) {
+    const type = response.headers?.get?.('Content-Type') || 'audio/mpeg';
+    const stream = response.body;
+    if (stream && typeof stream.getReader === 'function') {
+        const reader = stream.getReader();
+        const chunks = [];
+        let firstAudioMs = null;
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value && value.byteLength > 0) {
+                if (firstAudioMs === null) {
+                    firstAudioMs = performance.now() - started;
+                }
+                chunks.push(value);
+            }
+        }
+        const blob = new Blob(chunks, { type });
+        return { dataUrl: await blobToDataUrl(blob), firstAudioMs };
+    }
+    const blob = await response.blob();
+    return { dataUrl: await blobToDataUrl(blob), firstAudioMs: null };
 }
 
 function prefersBlobDownloadUrl() {

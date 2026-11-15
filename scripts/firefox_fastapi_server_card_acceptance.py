@@ -8,7 +8,9 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent
 
 def build_fastapi_server_card_report(
         api_url, browser="Firefox", backend_before_choose="mediapipe",
-        choose_changed_backend=True, audio_duration_sec=None):
+        choose_changed_backend=True, audio_duration_sec=None,
+        streaming_ttfa_measured=True, first_audio_p50_ms=None,
+        synthesis_p50_ms=None):
     """Build the same report shape Chromium uses after a successful card test."""
     options = {
         "browser": browser,
@@ -18,7 +20,12 @@ def build_fastapi_server_card_report(
         "chooseChangedBackend": choose_changed_backend,
         "decodeableMp3": True,
         "audioDurationSec": audio_duration_sec,
+        "streamingTtfaMeasured": streaming_ttfa_measured,
     }
+    if first_audio_p50_ms is not None:
+        options["firstAudioP50Ms"] = first_audio_p50_ms
+    if synthesis_p50_ms is not None:
+        options["synthesisP50Ms"] = synthesis_p50_ms
     probe = subprocess.run(
         [
             "node", "--input-type=module", "-e",

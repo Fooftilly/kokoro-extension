@@ -24,6 +24,9 @@ const report = card.buildFastApiServerCardReport({
     chooseChangedBackend: true,
     decodeableMp3: true,
     audioDurationSec: 0.13,
+    streamingTtfaMeasured: true,
+    firstAudioP50Ms: 15,
+    synthesisP50Ms: 42,
 });
 card.assertFastApiServerCardReport(report);
 const endpoint = card.speechEndpointFromApiUrl(apiUrl);
@@ -35,12 +38,23 @@ const fail = (() => {
         return { ok: false, message: String(error.message || error) };
     }
 })();
+const failTtfa = (() => {
+    try {
+        card.assertFastApiServerCardReport({
+            ...report, streamingTtfaMeasured: false,
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
 console.log(JSON.stringify({
     bytes: card.MINIMAL_MP3_BYTES.length,
     before: card.BACKEND_BEFORE_CHOOSE,
     needle: card.SERVER_PLAYABLE_MP3_NEEDLE,
+    ttfaNeedle: card.SERVER_STREAMING_TTFA_NEEDLE,
     selected: card.FASTAPI_SELECTED_NEEDLE,
-    endpoint, report, fail,
+    endpoint, report, fail, failTtfa,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
@@ -56,11 +70,15 @@ describe('FastAPI server-card acceptance', () => {
         expect(snap.needle).toMatch(/playable MP3/i);
         expect(snap.selected).toBe('FastAPI selected.');
         expect(snap.endpoint).toContain('/v1/audio/speech');
+        expect(snap.ttfaNeedle).toMatch(/Streaming TTFA p50/i);
         expect(snap.report).toEqual(expect.objectContaining({
             success: true,
             serverCardTested: true,
             playableMp3Returned: true,
             decodeableMp3: true,
+            streamingTtfaMeasured: true,
+            firstAudioP50Ms: 15,
+            synthesisP50Ms: 42,
             backendBeforeChoose: 'mediapipe',
             chooseChangedBackend: true,
             selectedBackend: 'fastapi',
@@ -69,6 +87,8 @@ describe('FastAPI server-card acceptance', () => {
         }));
         expect(snap.fail.ok).toBe(false);
         expect(snap.fail.message).toMatch(/not successful/i);
+        expect(snap.failTtfa.ok).toBe(false);
+        expect(snap.failTtfa.message).toMatch(/streamingTtfaMeasured/i);
     });
 
     test('Chromium dual path wires FastAPI card after local dual', () => {
@@ -78,6 +98,9 @@ describe('FastAPI server-card acceptance', () => {
         expect(source).toContain("locator('#testServer').click()");
         expect(source).toContain("locator('#chooseServer').click()");
         expect(source).toContain('SERVER_PLAYABLE_MP3_NEEDLE');
+        expect(source).toContain('SERVER_STREAMING_TTFA_NEEDLE');
+        expect(source).toContain('streamingTtfaMeasured');
+        expect(source).toContain('setTimeout(() => {');
         expect(source).toContain('FASTAPI_SELECTED_NEEDLE');
         expect(source).toContain('BACKEND_BEFORE_CHOOSE');
         expect(source).toContain('HAVE_CURRENT_DATA');
@@ -101,6 +124,9 @@ describe('FastAPI server-card acceptance', () => {
         expect(source).toContain('_start_fastapi_speech_stub');
         expect(source).toContain('_minimal_mp3_fixture_bytes');
         expect(source).toContain('HAVE_CURRENT_DATA');
+        expect(source).toContain('Streaming TTFA p50');
+        expect(source).toContain('streamingTtfaMeasured');
+        expect(source).toContain('time.sleep(0.1)');
         expect(source).toMatch(
             /find_element\(\s*By\.ID,\s*["']testServer["']\s*\)\.click\(\)/);
         expect(source).toMatch(

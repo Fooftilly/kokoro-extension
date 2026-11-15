@@ -1050,12 +1050,44 @@ function registerModel(entry) {
     });
 }
 
+async function waitServerAudioDuration(audio) {
+    if (audio.readyState >= HTMLMediaElement.HAVE_METADATA &&
+        Number.isFinite(audio.duration) && audio.duration > 0) {
+        return audio.duration;
+    }
+    await new Promise((resolve, reject) => {
+        const onReady = () => { cleanup(); resolve(); };
+        const onError = () => {
+            cleanup();
+            reject(new Error('Server MP3 failed to decode'));
+        };
+        const cleanup = () => {
+            audio.removeEventListener('loadedmetadata', onReady);
+            audio.removeEventListener('error', onError);
+        };
+        audio.addEventListener('loadedmetadata', onReady, { once: true });
+        audio.addEventListener('error', onError, { once: true });
+        audio.load();
+    });
+    if (!(Number.isFinite(audio.duration) && audio.duration > 0)) {
+        throw new Error('Server MP3 duration missing');
+    }
+    return audio.duration;
+}
+
+function clearServerTtfaDataset(status) {
+    delete status.dataset.streamingTtfaMeasured;
+    delete status.dataset.firstAudioP50Ms;
+    delete status.dataset.synthesisP50Ms;
+}
+
 async function testFastApi() {
     const button = document.getElementById('testServer');
     const choose = document.getElementById('chooseServer');
     const status = document.getElementById('serverStatus');
     choose.disabled = true;
     button.disabled = true;
+    clearServerTtfaDataset(status);
     try {
         const settings = await browser.storage.sync.get({
             ttsBackend: 'fastapi', apiUrl: 'http://127.0.0.1:8880/v1/',
@@ -1070,21 +1102,52 @@ async function testFastApi() {
         if (!['http:', 'https:'].includes(base.protocol)) throw new TypeError('Unsupported server URL');
         const endpoint = new URL('audio/speech', base.href.endsWith('/') ? base : base.href + '/');
         setMessage(status, 'Testing the explicitly configured FastAPI server…');
-        const started = performance.now();
-        const result = await browser.runtime.sendMessage({
-            action: 'FETCH_TTS_AUDIO', backend: 'fastapi', endpoint: endpoint.href,
-            payload: { model: 'kokoro', input, voice: settings.voice,
-                response_format: 'mp3', speed: 1 },
-        });
-        const elapsed = performance.now() - started;
-        if (!result?.success || !result.dataUrl) throw new Error(result?.error || 'No MP3 data returned');
+        const runs = [];
+        let lastDataUrl = null;
+        for (let n = 0; n < 3; n++) {
+            const wallStarted = performance.now();
+            const result = await browser.runtime.sendMessage({
+                action: 'FETCH_TTS_AUDIO', backend: 'fastapi',
+                endpoint: endpoint.href,
+                payload: { model: 'kokoro', input, voice: settings.voice,
+                    response_format: 'mp3', speed: 1 },
+            });
+            const synthesisMs = performance.now() - wallStarted;
+            if (!result?.success || !result.dataUrl) {
+                throw new Error(result?.error || 'No MP3 data returned');
+            }
+            if (!Number.isFinite(result.firstAudioMs) || result.firstAudioMs < 0) {
+                throw new Error(
+                    'Streaming TTFA was not measured (need a streamed response body)');
+            }
+            lastDataUrl = result.dataUrl;
+            runs.push({
+                kind: 'warm',
+                firstAudioMs: result.firstAudioMs,
+                synthesisMs,
+                // Duration filled after the final clip decodes once.
+                audioDurationSec: 1,
+            });
+        }
         const audio = document.getElementById('serverAudio');
-        audio.src = result.dataUrl;
+        audio.src = lastDataUrl;
         audio.hidden = false;
-        setMessage(status, 'Server returned playable MP3 in ' + elapsed.toFixed(0) +
-            ' ms (network + synthesis; not a comparable local RTF).');
+        const durationSec = await waitServerAudioDuration(audio);
+        for (const run of runs) run.audioDurationSec = durationSec;
+        const metrics = window.KokoroBenchmark.summarizeRuns(runs);
+        status.dataset.streamingTtfaMeasured = 'true';
+        status.dataset.firstAudioP50Ms = String(metrics.firstAudioP50Ms);
+        status.dataset.synthesisP50Ms = String(metrics.synthesisP50Ms);
+        setMessage(status,
+            'Server returned playable MP3. Streaming TTFA p50: ' +
+            metrics.firstAudioP50Ms.toFixed(0) +
+            ' ms; full response p50: ' +
+            metrics.synthesisP50Ms.toFixed(0) +
+            ' ms (3 warm runs; network + synthesis). ' +
+            'Local backends do not measure streaming TTFA.');
         choose.disabled = false;
     } catch (error) {
+        clearServerTtfaDataset(status);
         setMessage(status, 'Server test failed: ' + String(error.message || error));
     } finally {
         button.disabled = false;

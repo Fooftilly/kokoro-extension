@@ -16,6 +16,7 @@ export const MINIMAL_MP3_BYTES = Uint8Array.from(
     Buffer.from(MINIMAL_MP3_BASE64, 'base64'));
 
 export const SERVER_PLAYABLE_MP3_NEEDLE = 'Server returned playable MP3';
+export const SERVER_STREAMING_TTFA_NEEDLE = 'Streaming TTFA p50';
 export const FASTAPI_SELECTED_NEEDLE = 'FastAPI selected.';
 export const SERVER_STATUS_NOT_TESTED = 'Not tested';
 /** Backend used to prove chooseServer writes (testFastApi needs fastapi first). */
@@ -50,6 +51,23 @@ function assertFastApiCardAudio(report) {
     if (report.audioDataUrlPrefix !== 'data:audio') {
         throw new Error(
             'audioDataUrlPrefix mismatch: ' + report.audioDataUrlPrefix);
+    }
+}
+
+function assertFastApiStreamingTtfa(report) {
+    requireTrue(report, 'streamingTtfaMeasured',
+        'streamingTtfaMeasured must be true for FastAPI stream TTFA');
+    if (!(Number.isFinite(report.firstAudioP50Ms) &&
+        report.firstAudioP50Ms >= 0)) {
+        throw new Error(
+            'firstAudioP50Ms must be a finite nonnegative ms value: ' +
+            report.firstAudioP50Ms);
+    }
+    if (!(Number.isFinite(report.synthesisP50Ms) &&
+        report.synthesisP50Ms >= report.firstAudioP50Ms)) {
+        throw new Error(
+            'synthesisP50Ms must be >= firstAudioP50Ms: ' +
+            report.synthesisP50Ms + ' vs ' + report.firstAudioP50Ms);
     }
 }
 
@@ -92,6 +110,7 @@ export function assertFastApiServerCardReport(report) {
     requireTrue(report, 'success', 'FastAPI server-card report not successful');
     requireTrue(report, 'serverCardTested', 'serverCardTested must be true');
     assertFastApiCardAudio(report);
+    assertFastApiStreamingTtfa(report);
     assertFastApiCardChoose(report);
     assertFastApiCardEndpoints(report);
     return true;
@@ -100,6 +119,10 @@ export function assertFastApiServerCardReport(report) {
 export function buildFastApiServerCardReport(options = {}) {
     const apiUrl = normalizeFastApiBaseUrl(
         options.apiUrl || 'http://127.0.0.1:0/v1/');
+    const firstAudioP50Ms = Number.isFinite(options.firstAudioP50Ms)
+        ? options.firstAudioP50Ms : 12;
+    const synthesisP50Ms = Number.isFinite(options.synthesisP50Ms)
+        ? options.synthesisP50Ms : Math.max(firstAudioP50Ms, 40);
     const report = {
         success: true,
         browser: options.browser || 'unknown',
@@ -108,6 +131,9 @@ export function buildFastApiServerCardReport(options = {}) {
         decodeableMp3: options.decodeableMp3 !== false,
         mp3FixtureBytes: MINIMAL_MP3_BYTES.length,
         audioDataUrlPrefix: 'data:audio',
+        streamingTtfaMeasured: options.streamingTtfaMeasured !== false,
+        firstAudioP50Ms,
+        synthesisP50Ms,
         chooseServerEnabledAfterTest: true,
         backendBeforeChoose: options.backendBeforeChoose || BACKEND_BEFORE_CHOOSE,
         chooseChangedBackend: options.chooseChangedBackend !== false,

@@ -1722,12 +1722,24 @@ def _start_fastapi_speech_stub():
             path_only = self.path.split("?", 1)[0]
             if path_only.endswith("/audio/speech"):
                 hits["speech"] += 1
+                length = int(self.headers.get("Content-Length") or 0)
+                if length:
+                    self.rfile.read(length)
                 self.send_response(200)
                 self.send_header("Content-Type", "audio/mpeg")
                 self.send_header("Content-Length", str(len(mp3)))
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
-                self.wfile.write(mp3)
+                # Delay the first body byte so streaming TTFA is measurable.
+                first_len = max(1, min(64, len(mp3)))
+                first = mp3[:first_len]
+                rest = mp3[first_len:]
+                time.sleep(0.1)
+                self.wfile.write(first)
+                self.wfile.flush()
+                time.sleep(0.02)
+                if rest:
+                    self.wfile.write(rest)
                 return
             self.send_error(404)
 
@@ -1771,11 +1783,15 @@ def accept_fastapi_server_card(driver, origin, api_url):
         """)
 
     driver.find_element(By.ID, "testServer").click()
-    WebDriverWait(driver, 30).until(lambda d: d.execute_script("""
-        const status=document.getElementById('serverStatus')?.textContent||'';
+    WebDriverWait(driver, 60).until(lambda d: d.execute_script("""
+        const status=document.getElementById('serverStatus');
+        const text=status?.textContent||'';
         const audio=document.getElementById('serverAudio');
         const choose=document.getElementById('chooseServer');
-        return status.includes('Server returned playable MP3') &&
+        return text.includes('Server returned playable MP3') &&
+            text.includes('Streaming TTFA p50') &&
+            status?.dataset?.streamingTtfaMeasured==='true' &&
+            Number.isFinite(Number(status?.dataset?.firstAudioP50Ms)) &&
             audio && !audio.hidden &&
             String(audio.src||'').startsWith('data:audio') &&
             choose && choose.disabled===false;
@@ -1851,11 +1867,22 @@ def accept_fastapi_server_card(driver, origin, api_url):
         raise RuntimeError(
             "Firefox FastAPI Use this backend did not select fastapi: " +
             repr(selected.get("backend")))
+    ttfa = driver.execute_script("""
+        const status=document.getElementById('serverStatus');
+        return {
+            streamingTtfaMeasured:status?.dataset?.streamingTtfaMeasured==='true',
+            firstAudioP50Ms:Number(status?.dataset?.firstAudioP50Ms),
+            synthesisP50Ms:Number(status?.dataset?.synthesisP50Ms),
+        };
+    """)
     return build_fastapi_server_card_report(
         api_url,
         backend_before_choose=before["backend"],
         choose_changed_backend=before["backend"] != selected["backend"],
         audio_duration_sec=float(audio_duration),
+        streaming_ttfa_measured=bool(ttfa.get("streamingTtfaMeasured")),
+        first_audio_p50_ms=ttfa.get("firstAudioP50Ms"),
+        synthesis_p50_ms=ttfa.get("synthesisP50Ms"),
     )
 
 
