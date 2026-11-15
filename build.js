@@ -25,6 +25,7 @@ const SRC_FILES = [
     'local-voice-mixing.js',
     'backend-disclosure.js',
     'gpu-execution-disclosure.js',
+    'broader-g2p-disclosure.js',
     'store-signing-disclosure.js',
     'benchmark.html',
     'benchmark.css',
