@@ -73,18 +73,30 @@ function renderSharedEnglishResults() {
 // #61: optional local-only JSON export of measured English rows (no telemetry).
 function buildMeasuredEnglishExport() {
     const sampleText = document.getElementById('benchmarkText')?.value.trim() || '';
+    // Pinned CMUdict catalog size — required for ONNX English, not Cache Storage.
+    const englishDictionaryCatalogBytes = dictionary.assets.reduce(
+        (sum, asset) => sum + asset.bytes, 0);
     const measurements = [];
     for (const entry of variants) {
         const result = sharedEnglishResults.get(entry.key);
         if (!result) continue;
-        measurements.push({
+        const row = {
             key: entry.key,
             label: entry.label,
             coldPrepMs: result.coldPrepMs,
             synthesisP50Ms: result.synthesisP50Ms,
             synthesisP95Ms: result.synthesisP95Ms,
             realTimeFactorP50: result.realTimeFactorP50,
-        });
+            // Static pinned catalog asset sum — not measured disk/Cache usage.
+            catalogModelAssetBytes: entry.totalBytes,
+        };
+        if (entry.provider === 'onnx') {
+            row.requiredDictionaryCatalogBytes = englishDictionaryCatalogBytes;
+            // Explicit catalog total for the ONNX English path (model + CMUdict).
+            row.catalogEnglishPathBytes =
+                entry.totalBytes + englishDictionaryCatalogBytes;
+        }
+        measurements.push(row);
     }
     return {
         kind: 'kokoro-measured-local-english',
@@ -94,6 +106,13 @@ function buildMeasuredEnglishExport() {
         measurementKind: 'warm-full-clip-synthesis',
         coldPrepMeasured: true,
         firstAudioMeasured: false,
+        // Catalog sizes only — no Cache Storage / disk probe.
+        storageFootprintMeasured: false,
+        storageFootprintSource: 'catalog',
+        englishDictionaryCatalogBytes,
+        // Do not invent runtime heap; Chrome performance.memory is optional
+        // and not comparable across engines.
+        runtimeHeapMeasured: false,
         sampleText,
         browser: {
             userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
