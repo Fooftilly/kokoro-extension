@@ -64,7 +64,8 @@ export function discloseOnnxEnglishG2pLimits() {
 
 /**
  * List alphabetic tokens missing from the local CMUdict map (OOV).
- * Does not synthesize; digits/emoji remain fail-closed via phonemizeEnglish.
+ * Diagnostic only — continues past digits/emoji/punctuation so later OOV
+ * words are still reported. Synthesis rejection stays in phonemizeEnglish.
  */
 export function listUnsupportedEnglishWords(text, dictionary) {
     if (typeof text !== 'string' || !(dictionary instanceof Map)) {
@@ -77,7 +78,12 @@ export function listUnsupportedEnglishWords(text, dictionary) {
         if (/\s/u.test(input[offset])) { offset++; continue; }
         TOKEN.lastIndex = offset;
         const match = TOKEN.exec(input);
-        if (!match) break;
+        // Sticky TOKEN only matches at offset. Skip one code unit for digits,
+        // emoji, or other non-tokens so later alphabetic OOV words are listed.
+        if (!match || match.index !== offset) {
+            offset++;
+            continue;
+        }
         offset = TOKEN.lastIndex;
         const item = match[0];
         if (/^[a-z]/i.test(item) && !dictionary.get(item.toLowerCase())) {

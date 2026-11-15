@@ -86,6 +86,11 @@ describe('OOV / G2P disclosure acceptance (KE-41b)', () => {
         expect(listUnsupportedEnglishWords('Hello zzzzqwertyword.', lexicon))
             .toEqual(['zzzzqwertyword']);
         expect(listUnsupportedEnglishWords('Hello world.', lexicon)).toEqual([]);
+        // Digits/emoji must not truncate the diagnostic OOV scan (Devin P2).
+        expect(listUnsupportedEnglishWords('Hello 2 zzzzqwertyword.', lexicon))
+            .toEqual(['zzzzqwertyword']);
+        expect(listUnsupportedEnglishWords('Hello 😀 zzzzqwertyword.', lexicon))
+            .toEqual(['zzzzqwertyword']);
         expect(() => listUnsupportedEnglishWords('hi', null))
             .toThrow(/dictionary are required/);
     });
@@ -135,6 +140,8 @@ describe('OOV / G2P disclosure acceptance (KE-41b)', () => {
         expect(source).toContain('listUnsupportedEnglishWords');
         expect(source).toContain('discloseOnnxEnglishG2pLimits');
         expect(source).toContain('unknownWordsRejected: true');
+        expect(source).toContain('OOV_FAIL_CLOSED_NEEDLE');
+        expect(source).toContain('listedAfterDigit');
         // Fail-closed must remain — do not weaken the AudioManager reject.
         expect(source).toMatch(
             /Missing English pronunciation\|Unsupported English text/);

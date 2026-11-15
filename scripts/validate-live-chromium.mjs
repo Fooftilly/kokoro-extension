@@ -36,6 +36,7 @@ import {
     assertOnnxOovG2pDisclosure,
     assertOovG2pDisclosureReport,
     buildOovG2pDisclosureReport,
+    OOV_FAIL_CLOSED_NEEDLE,
     OOV_PROBE_WORD,
 } from './oov-g2p-disclosure-acceptance.mjs';
 // Extension .js modules are ESM in the browser while package.json is CommonJS
@@ -991,6 +992,16 @@ async function acceptOnnxOovG2pDisclosureOnBenchmark(page) {
     if (await page.locator('#sharedEnglishComparisonRows tr').count() !== 0) {
         throw Error('OOV ONNX path entered shared-English comparison');
     }
+    const statusText = await page.locator(
+        '[data-variant="onnx-q8"] .model-status').textContent() || '';
+    // Require an explicit fail-closed needle — IPA-only alone can also follow
+    // unrelated synthesis errors (Devin: unverified rejection claim).
+    if (!OOV_FAIL_CLOSED_NEEDLE.test(statusText) ||
+        !/Missing English pronunciation|Unsupported English text/i.test(statusText)) {
+        throw Error(
+            'OOV dual status must cite dictionary fail-closed rejection: ' +
+            statusText);
+    }
     const probe = await page.evaluate(async (oovWord) => {
         const {
             discloseOnnxEnglishG2pLimits,
@@ -1000,22 +1011,32 @@ async function acceptOnnxOovG2pDisclosureOnBenchmark(page) {
         const limits = discloseOnnxEnglishG2pLimits();
         const lexicon = await loadCachedEnglishLexicon(chrome, caches);
         const listed = listUnsupportedEnglishWords(oovWord + '.', lexicon);
-        return { limits, listed };
+        const listedAfterDigit = listUnsupportedEnglishWords(
+            'Hello 2 ' + oovWord + '.', lexicon);
+        return { limits, listed, listedAfterDigit };
     }, OOV_PROBE_WORD);
     if (!Array.isArray(probe.listed) || !probe.listed.includes(OOV_PROBE_WORD)) {
         throw Error('OOV word was not listed as unsupported: ' +
             JSON.stringify(probe.listed));
+    }
+    if (!Array.isArray(probe.listedAfterDigit) ||
+        !probe.listedAfterDigit.includes(OOV_PROBE_WORD)) {
+        throw Error(
+            'OOV list stopped after digit instead of continuing: ' +
+            JSON.stringify(probe.listedAfterDigit));
     }
     const report = buildOovG2pDisclosureReport({
         browser: 'chromium',
         ipaOnlyExcluded: true,
         unknownWordsRejected: true,
         oovProbe: OOV_PROBE_WORD,
+        rejectionStatus: statusText,
     });
     assertOnnxOovG2pDisclosure({
         ...probe.limits,
         ipaOnlyExcluded: true,
         unknownWordsRejected: true,
+        rejectionStatus: statusText,
     });
     assertOovG2pDisclosureReport(report);
     liveHeartbeat('oov-g2p-disclosure-done', { success: true });
