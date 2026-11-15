@@ -7,6 +7,10 @@ import { withModelDataLock } from './model-data-lock.js';
 import { MediaPipeKokoroProvider } from './mediapipe-provider.js';
 import { OnnxKokoroProvider } from './onnx-provider.js';
 import { pcmToWavBlob } from './pcm-wav.js';
+import {
+    LONGER_SHARED_ENGLISH_SAMPLE,
+    LONGER_SHARED_ENGLISH_BUTTON_ID,
+} from './longer-shared-english-sample.js';
 
 const page = document.getElementById('modelManager');
 const dictionary = dictionaryManifest();
@@ -1087,6 +1091,13 @@ async function testFastApi() {
     }
 }
 
+function applyLongerSharedEnglishSample() {
+    const input = document.getElementById('benchmarkText');
+    if (!input) return;
+    input.value = LONGER_SHARED_ENGLISH_SAMPLE;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 if (page) {
     document.getElementById('benchmarkText').addEventListener('input', () => {
         // Editing the common sample invalidates every prior comparison,
@@ -1095,6 +1106,8 @@ if (page) {
         sharedEnglishResults.clear();
         renderSharedEnglishResults();
     });
+    document.getElementById(LONGER_SHARED_ENGLISH_BUTTON_ID)
+        ?.addEventListener('click', applyLongerSharedEnglishSample);
     document.getElementById('exportMeasuredResults')?.addEventListener('click', () => {
         void exportMeasuredEnglishResults();
     });
