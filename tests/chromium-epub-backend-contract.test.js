@@ -67,8 +67,8 @@ describe('chromium EPUB acceptance backend wiring', () => {
         );
     });
 
-    // KE-50: MediaPipe origin must keep the shared three-spine path (not onnx-only).
-    test('mediapipe origin EPUB stage requires Third Chapter and three spines', () => {
+    // KE-50: MediaPipe origin must keep the shared expanded EPUB path (not onnx-only).
+    test('mediapipe origin EPUB stage requires Third Chapter and four spine documents', () => {
         expect(source).toMatch(
             /manifest\.provider === 'onnx' \|\| manifest\.provider === 'mediapipe'/,
         );
@@ -79,10 +79,10 @@ describe('chromium EPUB acceptance backend wiring', () => {
             /acceptRealEpubReader\(\s*page, extensionId, manifest\.provider\)/,
         );
         expect(source).toMatch(/waitForChapter\(\s*'Third Chapter'/);
-        expect(source).toMatch(/chapterCount: 3/);
+        expect(source).toMatch(/chapterCount: 4/);
         expect(source).toMatch(/third:\s*\{\s*title: third\.title/);
         expect(source).toMatch(
-            /differentAudioPerChapter = new Set\(\[\s*first\.audioSha256,\s*second\.audioSha256,\s*third\.audioSha256,\s*plainText\.audioSha256,?\s*\]\)/,
+            /differentAudioPerChapter = new Set\(\[\s*first\.audioSha256,\s*firstSection\.audioSha256,\s*second\.audioSha256,\s*third\.audioSha256,\s*plainText\.audioSha256,?\s*\]\)/,
         );
     });
 });

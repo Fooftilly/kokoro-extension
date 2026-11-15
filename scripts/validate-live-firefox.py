@@ -1446,6 +1446,74 @@ def assert_progressive_streaming_ttfa_unmeasured(report, browser="Firefox"):
     return json.loads(probe.stdout.strip())
 
 
+def assert_model_variants_disclosure(driver, origin, browser="Firefox"):
+    """#57 / #61 / KE-53: assert catalog and rendered rows from packaged Firefox."""
+    if not origin:
+        raise RuntimeError("Firefox extension origin required for model variants")
+    driver.get(str(origin).rstrip("/") + "/benchmark.html")
+    WebDriverWait(driver, 30).until(
+        lambda d: d.execute_script(
+            "return document.querySelectorAll("
+            "'#modelManager .model-variant[data-variant]').length > 0;"))
+    evidence = driver.execute_async_script("""
+        const done = arguments[arguments.length - 1];
+        (async () => {
+            const { listModelVariants } = await import('./model-catalog.js');
+            done({
+                catalog: listModelVariants().map(entry => entry.key),
+                rendered: [...document.querySelectorAll(
+                    '#modelManager .model-variant[data-variant]')]
+                    .map(row => row.dataset.variant)
+                    .filter(key => key !== 'dictionary-english'),
+            });
+        })().catch(error => done({error: String(error)}));
+    """)
+    if not isinstance(evidence, dict) or evidence.get("error"):
+        raise RuntimeError("Firefox packaged variant evidence failed: " +
+                           repr(evidence))
+    scripts_dir = Path(__file__).resolve().parent
+    env = os.environ.copy()
+    env["KOKORO_MODEL_VARIANTS_BROWSER"] = str(browser or "Firefox")
+    probe = subprocess.run(
+        [
+            "node", "--input-type=module", "-e",
+            "import { readFileSync } from 'node:fs';"
+            "import { assertModelVariantsDisclosure, "
+            "buildModelVariantsDisclosureReport, "
+            "observeCatalogVariantKeys } from "
+            "'./model-variants-disclosure-acceptance.mjs';"
+            "const evidence = JSON.parse(readFileSync(0, 'utf8'));"
+            "const observedCatalogVariantKeys = observeCatalogVariantKeys("
+            "evidence.catalog);"
+            "const renderedVariantKeys = observeCatalogVariantKeys("
+            "evidence.rendered);"
+            "if (observedCatalogVariantKeys.join('|') !== "
+            "renderedVariantKeys.join('|')) throw Error("
+            "'Packaged model-manager rows differ from catalog');"
+            "const report = buildModelVariantsDisclosureReport({"
+            "browser: process.env.KOKORO_MODEL_VARIANTS_BROWSER || 'Firefox',"
+            "observedCatalogVariantKeys, assertedFromDual: true,"
+            "});"
+            "report.renderedVariantKeys = renderedVariantKeys;"
+            "report.assertedFromPackagedExtension = true;"
+            "assertModelVariantsDisclosure(report);"
+            "console.log(JSON.stringify(report));",
+        ],
+        cwd=str(scripts_dir),
+        env=env,
+        input=json.dumps(evidence),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        raise RuntimeError(
+            "Model variants disclosure assert failed: " +
+            (probe.stderr or probe.stdout or "unknown error"))
+    return json.loads(probe.stdout.strip())
+
+
+
 def assert_broader_g2p_disclosure(driver, origin, browser="Firefox"):
     """#61 / KE-55: assert packaged extension broader-G2P disclosure + probe.
 
@@ -4281,6 +4349,12 @@ def main():
                     preflight, browser="Firefox")
                 result["gpuExecutionDisclosureAcceptance"] = (
                     gpu_execution_disclosure)
+                # #57 / #61 / KE-53: only onnx-q8 + MediaPipe CPU accepted.
+                result["stage"] = "model-variants-disclosure"
+                model_variants_disclosure = assert_model_variants_disclosure(
+                    driver, state["origin"], browser="Firefox")
+                result["modelVariantsDisclosureAcceptance"] = (
+                    model_variants_disclosure)
                 # #61 / KE-55: multi-lang / long-form G2P not measured.
                 result["stage"] = "broader-g2p-disclosure"
                 broader_g2p_disclosure = assert_broader_g2p_disclosure(
@@ -4349,6 +4423,7 @@ def main():
                     "dictionaryReloadAcceptance": dictionary_reload_acceptance,
                     "dictionaryUiDownloadAcceptance": dictionary_ui_acceptance,
                     "gpuExecutionDisclosureAcceptance": gpu_execution_disclosure,
+                    "modelVariantsDisclosureAcceptance": model_variants_disclosure,
                     "broaderG2pDisclosureAcceptance": broader_g2p_disclosure,
                     "storeSigningDisclosureAcceptance": store_signing_disclosure,
                     "progressiveStreamingTtfaAcceptance": (
