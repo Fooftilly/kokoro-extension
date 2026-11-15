@@ -57,6 +57,19 @@ const shortCountFail = capture(() => longForm.assertLongFormMemoryAcceptanceRepo
     longFormMosMeasured: false,
     longFormQualityDisclosure: longForm.LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
 }));
+// Devin P2: finalizer must reject claimed measured:true (not overwrite first).
+const finalizeQualityClaimFail = capture(() =>
+    longForm.finalizeLongFormMemoryAcceptanceReport({
+        success: true,
+        sentenceCount: longForm.LONG_FORM_SENTENCE_COUNT,
+        longFormQualityMeasured: true,
+    }));
+const finalizeMosClaimFail = capture(() =>
+    longForm.finalizeLongFormMemoryAcceptanceReport({
+        success: true,
+        sentenceCount: longForm.LONG_FORM_SENTENCE_COUNT,
+        longFormMosMeasured: true,
+    }));
 console.log(JSON.stringify({
     sentenceCount: longForm.LONG_FORM_SENTENCE_COUNT,
     numberWordLen: longForm.LONG_FORM_NUMBER_WORDS.length,
@@ -110,6 +123,8 @@ console.log(JSON.stringify({
     qualityClaimFail,
     mosClaimFail,
     shortCountFail,
+    finalizeQualityClaimFail,
+    finalizeMosClaimFail,
 }));
 `], { encoding: 'utf8', cwd: root });
     return child;
@@ -172,6 +187,10 @@ describe('long-form memory acceptance', () => {
         expect(snap.mosClaimFail.message).toMatch(/MOS must not/);
         expect(snap.shortCountFail.ok).toBe(false);
         expect(snap.shortCountFail.message).toMatch(/sentenceCount must be >=/);
+        expect(snap.finalizeQualityClaimFail.ok).toBe(false);
+        expect(snap.finalizeQualityClaimFail.message).toMatch(/quality must not/);
+        expect(snap.finalizeMosClaimFail.ok).toBe(false);
+        expect(snap.finalizeMosClaimFail.message).toMatch(/MOS must not/);
     });
 
     test('overlay probe and long-form stage are wired for Chromium origin', () => {

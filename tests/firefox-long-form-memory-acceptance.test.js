@@ -91,27 +91,19 @@ print(json.dumps({
         'pendingTtsBackend'),
     'needle': LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
     'finalized': finalized,
-    'qualityClaimFail': capture(lambda: assert_long_form_memory_acceptance_report({
-        'success': True,
-        'sentenceCount': LONG_FORM_SENTENCE_COUNT,
-        'longFormQualityMeasured': True,
-        'longFormMosMeasured': False,
-        'longFormQualityDisclosure': LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
-    })),
-    'mosClaimFail': capture(lambda: assert_long_form_memory_acceptance_report({
-        'success': True,
-        'sentenceCount': LONG_FORM_SENTENCE_COUNT,
-        'longFormQualityMeasured': False,
-        'longFormMosMeasured': True,
-        'longFormQualityDisclosure': LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
-    })),
-    'shortCountFail': capture(lambda: assert_long_form_memory_acceptance_report({
-        'success': True,
-        'sentenceCount': 24,
-        'longFormQualityMeasured': False,
-        'longFormMosMeasured': False,
-        'longFormQualityDisclosure': LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
-    })),
+    # Devin P2 via Python→ESM bridge: measured:true must fail closed.
+    'finalizeQualityClaimFail': capture(
+        lambda: finalize_long_form_memory_acceptance_report({
+            'success': True,
+            'sentenceCount': LONG_FORM_SENTENCE_COUNT,
+            'longFormQualityMeasured': True,
+        })),
+    'finalizeMosClaimFail': capture(
+        lambda: finalize_long_form_memory_acceptance_report({
+            'success': True,
+            'sentenceCount': LONG_FORM_SENTENCE_COUNT,
+            'longFormMosMeasured': True,
+        })),
 }))
 `], { encoding: 'utf8', cwd: root });
 }
@@ -156,12 +148,10 @@ describe('firefox long-form memory acceptance', () => {
         expect(snap.finalized.longFormMosMeasured).toBe(false);
         expect(snap.finalized.longFormQualityDisclosure).toBe(snap.needle);
         expect(snap.finalized.sentenceCount).toBe(36);
-        expect(snap.qualityClaimFail.ok).toBe(false);
-        expect(snap.qualityClaimFail.message).toMatch(/quality must not/);
-        expect(snap.mosClaimFail.ok).toBe(false);
-        expect(snap.mosClaimFail.message).toMatch(/MOS must not/);
-        expect(snap.shortCountFail.ok).toBe(false);
-        expect(snap.shortCountFail.message).toMatch(/sentenceCount must be >=/);
+        expect(snap.finalizeQualityClaimFail.ok).toBe(false);
+        expect(snap.finalizeQualityClaimFail.message).toMatch(/quality must not/);
+        expect(snap.finalizeMosClaimFail.ok).toBe(false);
+        expect(snap.finalizeMosClaimFail.message).toMatch(/MOS must not/);
     });
 
     test('firefox live harness wires long-form stage after article/selection', () => {
@@ -184,8 +174,8 @@ describe('firefox long-form memory acceptance', () => {
         expect(helper).toContain('longFormStorageConfig');
         expect(helper).toContain('pendingAcceptanceProbe');
         expect(helper).toContain('LONG_FORM_SENTENCE_COUNT = 36');
-        expect(helper).toContain('longFormQualityMeasured');
-        expect(helper).toContain('longFormMosMeasured');
+        expect(helper).toContain('_invoke_long_form_esm');
+        expect(helper).toContain('finalizeLongFormMemoryAcceptanceReport');
         expect(helper).toContain(
             'deeper long-form quality/performance not measured');
         const workflowSource = fs.readFileSync(workflow, 'utf8');

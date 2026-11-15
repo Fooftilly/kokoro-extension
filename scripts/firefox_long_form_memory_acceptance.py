@@ -37,12 +37,45 @@ def origin_long_form_memory_stage_enabled(origin_download, provider, success):
         success)
 
 
+def _invoke_long_form_esm(action, payload):
+    """Run one honesty action in the shared ESM module (stdin JSON → stdout).
+
+    Keeps assert/finalize logic canonical in long-form-memory-acceptance.mjs so
+    Sonar does not count a Python mirror as new-code duplication.
+    """
+    script = (
+        "import { readFileSync } from 'node:fs';"
+        "import {"
+        "  longFormQualityDisclosureFlags,"
+        "  assertLongFormMemoryAcceptanceReport,"
+        "  finalizeLongFormMemoryAcceptanceReport,"
+        "} from './long-form-memory-acceptance.mjs';"
+        "const action = process.argv[1];"
+        "const raw = readFileSync(0, 'utf8').trim();"
+        "const data = raw ? JSON.parse(raw) : null;"
+        "let out;"
+        "if (action === 'flags') out = longFormQualityDisclosureFlags();"
+        "else if (action === 'assert') out = assertLongFormMemoryAcceptanceReport(data);"
+        "else if (action === 'finalize') out = finalizeLongFormMemoryAcceptanceReport(data || {});"
+        "else throw new Error('Unknown long-form honesty action: ' + action);"
+        "process.stdout.write(JSON.stringify(out) + '\\n');"
+    )
+    probe = subprocess.run(
+        ["node", "--input-type=module", "-e", script, action],
+        cwd=str(_SCRIPTS_DIR),
+        input=json.dumps(payload) if payload is not None else "",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        message = (probe.stderr or probe.stdout or "unknown error").strip()
+        raise RuntimeError(message)
+    return json.loads(probe.stdout.strip())
+
+
 def long_form_quality_disclosure_flags():
-    return {
-        "longFormQualityMeasured": False,
-        "longFormMosMeasured": False,
-        "longFormQualityDisclosure": LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
-    }
+    return _invoke_long_form_esm("flags", None)
 
 
 def load_long_form_fixture(backend="onnx"):
@@ -151,45 +184,10 @@ def assert_long_form_heap_delta(before_bytes, after_bytes,
 
 
 def assert_long_form_memory_acceptance_report(report):
-    """Fail-closed: deeper quality/MOS unmeasured + sentence count >= 36."""
-    if not isinstance(report, dict):
-        raise RuntimeError(
-            "Long-form memory acceptance report missing: " + repr(report))
-    if report.get("success") is not True:
-        raise RuntimeError(
-            "Long-form memory acceptance not successful: " + json.dumps(report))
-    sentence_count = report.get("sentenceCount")
-    if (not isinstance(sentence_count, int) or
-            sentence_count < LONG_FORM_SENTENCE_COUNT):
-        raise RuntimeError(
-            "Long-form report sentenceCount must be >= " +
-            str(LONG_FORM_SENTENCE_COUNT) + ": " + json.dumps(sentence_count))
-    if report.get("longFormQualityMeasured") is not False:
-        raise RuntimeError(
-            "Deeper long-form quality must not be reported as measured: " +
-            json.dumps(report.get("longFormQualityMeasured")))
-    if report.get("longFormMosMeasured") is not False:
-        raise RuntimeError(
-            "Long-form MOS must not be reported as measured: " +
-            json.dumps(report.get("longFormMosMeasured")))
-    disclosure = str(report.get("longFormQualityDisclosure") or "").lower()
-    if LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE not in disclosure:
-        raise RuntimeError(
-            "Long-form quality disclosure needle missing: " +
-            json.dumps(report.get("longFormQualityDisclosure")))
-    return {
-        "success": True,
-        "sentenceCount": sentence_count,
-        "longFormQualityMeasured": False,
-        "longFormMosMeasured": False,
-        "longFormQualityDisclosure": LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
-    }
+    """Fail-closed via shared ESM assert (no Python mirror of the checks)."""
+    return _invoke_long_form_esm("assert", report)
 
 
 def finalize_long_form_memory_acceptance_report(partial=None):
-    """Attach honesty flags and assert — one-liner wrap for Firefox live."""
-    report = dict(partial or {})
-    report.setdefault("sentenceCount", LONG_FORM_SENTENCE_COUNT)
-    report.update(long_form_quality_disclosure_flags())
-    assert_long_form_memory_acceptance_report(report)
-    return report
+    """Finalize via shared ESM — preserves measured:true fail-closed claims."""
+    return _invoke_long_form_esm("finalize", dict(partial or {}))

@@ -198,13 +198,26 @@ export function assertLongFormMemoryAcceptanceReport(report) {
 /**
  * Finalize a live long-form report: attach honesty flags, assert fail-closed.
  * Keeps Chromium/Firefox validate-live diffs to a one-liner wrap.
+ *
+ * Honesty defaults fill only missing fields (setdefault). Callers that claim
+ * longFormQualityMeasured / longFormMosMeasured true must fail closed — do
+ * not overwrite those claims before assertLongFormMemoryAcceptanceReport.
  */
 export function finalizeLongFormMemoryAcceptanceReport(partial = {}) {
+    const defaults = longFormQualityDisclosureFlags();
     const report = {
         ...partial,
         sentenceCount: partial.sentenceCount ?? LONG_FORM_SENTENCE_COUNT,
-        ...longFormQualityDisclosureFlags(),
     };
+    if (report.longFormQualityMeasured === undefined) {
+        report.longFormQualityMeasured = defaults.longFormQualityMeasured;
+    }
+    if (report.longFormMosMeasured === undefined) {
+        report.longFormMosMeasured = defaults.longFormMosMeasured;
+    }
+    if (report.longFormQualityDisclosure === undefined) {
+        report.longFormQualityDisclosure = defaults.longFormQualityDisclosure;
+    }
     assertLongFormMemoryAcceptanceReport(report);
     return report;
 }
