@@ -71,15 +71,38 @@ function renderSharedEnglishResults() {
 }
 
 // #61: optional local-only JSON export of measured English rows (no telemetry).
-function buildMeasuredEnglishExport() {
+// Cache Storage probe is best-effort under a shared lock; catalog fields stay.
+async function buildMeasuredEnglishExport() {
     const sampleText = document.getElementById('benchmarkText')?.value.trim() || '';
-    // Pinned CMUdict catalog size — required for ONNX English, not Cache Storage.
+    // Pinned CMUdict catalog size — required for ONNX English.
     const englishDictionaryCatalogBytes = dictionary.assets.reduce(
         (sum, asset) => sum + asset.bytes, 0);
+    const measuredEntries = variants.filter(entry =>
+        sharedEnglishResults.has(entry.key));
+    let cacheByKey = new Map();
+    let dictionaryStoredBytes = null;
+    try {
+        await withModelDataLock(async () => {
+            const store = cacheStore();
+            const pairs = await Promise.all(measuredEntries.map(async entry => {
+                const state = await store.status(entryManifest(entry));
+                return [entry.key, state];
+            }));
+            cacheByKey = new Map(pairs);
+            if (measuredEntries.some(entry => entry.provider === 'onnx')) {
+                const dictState = await store.status(dictionaryManifest());
+                dictionaryStoredBytes = dictState.storedBytes;
+            }
+        }, { mode: 'shared' });
+    } catch (_) {
+        // Failed cache probe keeps catalog fields; measured flags stay false.
+        cacheByKey = new Map();
+        dictionaryStoredBytes = null;
+    }
     const measurements = [];
-    for (const entry of variants) {
+    let allCacheMeasured = measuredEntries.length > 0;
+    for (const entry of measuredEntries) {
         const result = sharedEnglishResults.get(entry.key);
-        if (!result) continue;
         const row = {
             key: entry.key,
             label: entry.label,
@@ -87,14 +110,29 @@ function buildMeasuredEnglishExport() {
             synthesisP50Ms: result.synthesisP50Ms,
             synthesisP95Ms: result.synthesisP95Ms,
             realTimeFactorP50: result.realTimeFactorP50,
-            // Static pinned catalog asset sum — not measured disk/Cache usage.
+            // Static pinned catalog asset sum (KE-38).
             catalogModelAssetBytes: entry.totalBytes,
         };
+        const cacheState = cacheByKey.get(entry.key);
+        const stored = cacheState?.storedBytes;
+        if (Number.isFinite(stored) && stored > 0) {
+            row.cacheStorageStoredBytes = stored;
+        } else {
+            allCacheMeasured = false;
+        }
         if (entry.provider === 'onnx') {
             row.requiredDictionaryCatalogBytes = englishDictionaryCatalogBytes;
-            // Explicit catalog total for the ONNX English path (model + CMUdict).
             row.catalogEnglishPathBytes =
                 entry.totalBytes + englishDictionaryCatalogBytes;
+            if (Number.isFinite(dictionaryStoredBytes) &&
+                dictionaryStoredBytes > 0 &&
+                Number.isFinite(stored) && stored > 0) {
+                row.cacheStorageDictionaryBytes = dictionaryStoredBytes;
+                row.cacheStorageEnglishPathBytes =
+                    stored + dictionaryStoredBytes;
+            } else {
+                allCacheMeasured = false;
+            }
         }
         measurements.push(row);
     }
@@ -106,9 +144,9 @@ function buildMeasuredEnglishExport() {
         measurementKind: 'warm-full-clip-synthesis',
         coldPrepMeasured: true,
         firstAudioMeasured: false,
-        // Catalog sizes only — no Cache Storage / disk probe.
-        storageFootprintMeasured: false,
-        storageFootprintSource: 'catalog',
+        // Cache Storage probe when every measured row has storedBytes.
+        storageFootprintMeasured: allCacheMeasured,
+        storageFootprintSource: allCacheMeasured ? 'cache-storage' : 'catalog',
         englishDictionaryCatalogBytes,
         // Do not invent runtime heap; Chrome performance.memory is optional
         // and not comparable across engines.
@@ -188,8 +226,8 @@ async function downloadPinnedMeasuredExport(url, filename) {
 }
 
 async function exportMeasuredEnglishResults() {
-    const payload = buildMeasuredEnglishExport();
     const status = document.getElementById('measuredExportStatus');
+    const payload = await buildMeasuredEnglishExport();
     if (!payload.measurements.length) {
         if (status) status.textContent = 'No measured local English results to export.';
         return;

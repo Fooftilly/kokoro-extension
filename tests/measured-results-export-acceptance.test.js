@@ -26,8 +26,8 @@ const payload = {
     measurementKind: 'warm-full-clip-synthesis',
     coldPrepMeasured: true,
     firstAudioMeasured: false,
-    storageFootprintMeasured: false,
-    storageFootprintSource: 'catalog',
+    storageFootprintMeasured: true,
+    storageFootprintSource: 'cache-storage',
     englishDictionaryCatalogBytes: 3618488,
     runtimeHeapMeasured: false,
     sampleText: 'Hello world.',
@@ -36,10 +36,14 @@ const payload = {
             synthesisP95Ms: 15, realTimeFactorP50: 0.2,
             catalogModelAssetBytes: 92885404,
             requiredDictionaryCatalogBytes: 3618488,
-            catalogEnglishPathBytes: 92885404 + 3618488 },
+            catalogEnglishPathBytes: 92885404 + 3618488,
+            cacheStorageStoredBytes: 92885404,
+            cacheStorageDictionaryBytes: 3618488,
+            cacheStorageEnglishPathBytes: 92885404 + 3618488 },
         { key: 'mediapipe-cpu', label: 'MediaPipe', coldPrepMs: 55,
             synthesisP50Ms: 18, synthesisP95Ms: 22, realTimeFactorP50: 0.3,
-            catalogModelAssetBytes: 294783298 },
+            catalogModelAssetBytes: 294783298,
+            cacheStorageStoredBytes: 294783298 },
     ],
 };
 exp.assertMeasuredResultsExportPayload(payload, {
@@ -84,7 +88,7 @@ const badHeap = (() => {
 const badFootprint = (() => {
     try {
         const rows = payload.measurements.map((row, i) =>
-            i === 0 ? { ...row, catalogModelAssetBytes: 0 } : row);
+            i === 0 ? { ...row, cacheStorageStoredBytes: 0 } : row);
         exp.assertMeasuredResultsExportPayload({
             ...payload, measurements: rows,
         });
@@ -93,10 +97,12 @@ const badFootprint = (() => {
         return { ok: false, message: String(error.message || error) };
     }
 })();
-const badMeasuredClaim = (() => {
+const badCatalogOnly = (() => {
     try {
         exp.assertMeasuredResultsExportPayload({
-            ...payload, storageFootprintMeasured: true,
+            ...payload,
+            storageFootprintMeasured: false,
+            storageFootprintSource: 'catalog',
         });
         return { ok: true };
     } catch (error) {
@@ -128,7 +134,7 @@ console.log(JSON.stringify({
         'kokoro-measured-local-english (1).json'),
     rejectOther: exp.isAcceptableMeasuredExportFilename('notes.txt'),
     report, fail, badPayload, badHeap, badFootprint,
-    badMeasuredClaim, badOnnxDict,
+    badCatalogOnly, badOnnxDict,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
@@ -164,8 +170,8 @@ describe('Measured results export acceptance', () => {
         expect(snap.badHeap.message).toMatch(/runtime heap/i);
         expect(snap.badFootprint.ok).toBe(false);
         expect(snap.badFootprint.message).toMatch(/Invalid measured export metric/i);
-        expect(snap.badMeasuredClaim.ok).toBe(false);
-        expect(snap.badMeasuredClaim.message).toMatch(/catalog sizes as measured storage/i);
+        expect(snap.badCatalogOnly.ok).toBe(false);
+        expect(snap.badCatalogOnly.message).toMatch(/Cache Storage storedBytes/i);
         expect(snap.badOnnxDict.ok).toBe(false);
         expect(snap.badOnnxDict.message).toMatch(/CMUdict catalog/i);
     });
@@ -176,8 +182,8 @@ describe('Measured results export acceptance', () => {
         expect(html).toContain('id="exportMeasuredResults"');
         expect(html).toContain('id="measuredExportStatus"');
         expect(html).toContain('pinned catalog model asset bytes');
-        expect(html).toContain('not measured Cache/disk usage');
-        expect(html).toContain('CMUdict catalog size required for ONNX English');
+        expect(html).toContain('measured extension Cache Storage storedBytes');
+        expect(html).toContain('CMUdict cache bytes for ONNX English');
         expect(html).toContain('runtime WASM/WebGPU heap is not measured');
         expect(source).toContain('buildMeasuredEnglishExport');
         expect(source).toContain('exportMeasuredEnglishResults');
@@ -193,14 +199,16 @@ describe('Measured results export acceptance', () => {
         expect(source).toContain('coldPrepMeasured: true');
         expect(source).toContain('coldPrepMs');
         expect(source).toContain('catalogModelAssetBytes');
-        expect(source).toContain('storageFootprintMeasured: false');
-        expect(source).toContain("storageFootprintSource: 'catalog'");
+        expect(source).toContain('cacheStorageStoredBytes');
+        expect(source).toContain('cacheStorageDictionaryBytes');
+        expect(source).toContain('cacheStorageEnglishPathBytes');
+        expect(source).toContain("storageFootprintSource: allCacheMeasured ? 'cache-storage' : 'catalog'");
         expect(source).toContain('englishDictionaryCatalogBytes');
         expect(source).toContain('requiredDictionaryCatalogBytes');
         expect(source).toContain('catalogEnglishPathBytes');
         expect(source).toContain('runtimeHeapMeasured: false');
+        expect(source).toContain('await buildMeasuredEnglishExport()');
         expect(source).not.toContain('storageFootprintBytes');
-        expect(source).not.toContain('storageFootprintMeasured: true');
         expect(html).toContain('Cold prep');
         expect(source).toContain('Nothing was uploaded');
         expect(source).not.toContain('navigator.sendBeacon');
