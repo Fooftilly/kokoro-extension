@@ -128,16 +128,22 @@ describe('Model variants disclosure acceptance (KE-53)', () => {
         const firefox = fs.readFileSync(firefoxLive, 'utf8');
         const chromium = fs.readFileSync(chromiumLive, 'utf8');
 
+        expect(firefox).toContain("import('./model-catalog.js')");
+        expect(firefox).toContain('evidence.rendered');
+        expect(firefox).toContain('assertedFromPackagedExtension = true');
         expect(firefox).toContain('observeCatalogVariantKeys');
         expect(firefox).toContain('observedCatalogVariantKeys');
         expect(firefox).toContain('assert_model_variants_disclosure');
+        expect(chromium).toContain("import('./model-catalog.js')");
+        expect(chromium).toContain('packaged.rendered');
+        expect(chromium).toContain('assertedFromPackagedExtension = true');
         expect(chromium).toContain('listModelVariants');
         expect(chromium).toContain('observeCatalogVariantKeys');
         expect(chromium).toContain('observedCatalogVariantKeys');
         expect(chromium).toContain('assertModelVariantsDisclosure');
         expect(chromium).toContain('assertedFromCatalog');
         expect(chromium).toMatch(
-            /observeCatalogVariantKeys\(\s*listModelVariants\(\)\s*\)/);
+            /observeCatalogVariantKeys\(\s*packaged\.catalog\s*\)/);
         expect(chromium).toContain('assertModelVariantsDisclosure(');
     });
 
