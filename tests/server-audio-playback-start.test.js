@@ -81,4 +81,20 @@ describe('waitServerAudioPlaybackStart', () => {
         expect(audio._listeners.get('playing') || []).toHaveLength(0);
         expect(audio._listeners.get('error') || []).toHaveLength(0);
     });
+
+    test('times out stalled play() with no events, cleans up, restores mute',
+        async () => {
+            const audio = fakeAudio({
+                initiallyMuted: false,
+                // Never settles and never emits playing/error.
+                playImpl: () => new Promise(() => {}),
+            });
+            await expect(waitServerAudioPlaybackStart(audio, { timeoutMs: 40 }))
+                .rejects.toThrow(/timed out/);
+            expect(audio.muted).toBe(false);
+            expect(audio.pause).toHaveBeenCalled();
+            expect(audio.currentTime).toBe(0);
+            expect(audio._listeners.get('playing') || []).toHaveLength(0);
+            expect(audio._listeners.get('error') || []).toHaveLength(0);
+        });
 });
