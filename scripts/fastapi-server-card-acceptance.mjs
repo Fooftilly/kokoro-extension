@@ -178,15 +178,23 @@ export function buildFastApiServerCardReport(options = {}) {
             options.streamingFirstBodyByteMeasured !== false,
         playbackStartMeasured: options.playbackStartMeasured !== false,
         playbackStartNotMeasured: false,
-        // Defaults keep dual live report builders honest without editing
-        // validate-live-* (KE-41c MediaSource progressive TTFA disclosure).
+        // Unit-test / stub defaults when keys are omitted. Live Chromium+Firefox
+        // must pass values observed from the page (dataset + status text).
         mediasourceProgressiveTtfaMeasured:
-            options.mediasourceProgressiveTtfaMeasured === true,
+            Object.prototype.hasOwnProperty.call(
+                options, 'mediasourceProgressiveTtfaMeasured')
+                ? options.mediasourceProgressiveTtfaMeasured
+                : false,
         mediasourceProgressiveTtfaNotMeasured:
-            options.mediasourceProgressiveTtfaNotMeasured !== false,
+            Object.prototype.hasOwnProperty.call(
+                options, 'mediasourceProgressiveTtfaNotMeasured')
+                ? options.mediasourceProgressiveTtfaNotMeasured === true
+                : true,
         mediasourceProgressiveTtfaDisclosure:
-            options.mediasourceProgressiveTtfaDisclosure ||
-            SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE,
+            Object.prototype.hasOwnProperty.call(
+                options, 'mediasourceProgressiveTtfaDisclosure')
+                ? String(options.mediasourceProgressiveTtfaDisclosure || '')
+                : SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE,
         firstBodyByteP50Ms,
         synthesisP50Ms,
         playbackStartP50Ms,

@@ -1792,8 +1792,11 @@ def accept_fastapi_server_card(driver, origin, api_url):
             text.includes('First body byte (TTFB) p50') &&
             text.includes('playback start p50') &&
             text.includes('not MediaSource streaming TTFA') &&
+            text.includes('MediaSource progressive TTFA not measured') &&
             status?.dataset?.streamingFirstBodyByteMeasured==='true' &&
             status?.dataset?.playbackStartMeasured==='true' &&
+            status?.dataset?.mediasourceProgressiveTtfaMeasured==='false' &&
+            status?.dataset?.mediasourceProgressiveTtfaNotMeasured==='true' &&
             Number.isFinite(Number(status?.dataset?.firstBodyByteP50Ms)) &&
             Number.isFinite(Number(status?.dataset?.playbackStartP50Ms)) &&
             audio && !audio.hidden &&
@@ -1834,11 +1837,17 @@ def accept_fastapi_server_card(driver, origin, api_url):
         raise RuntimeError(
             "Firefox stub MP3 duration missing: " + repr(audio_duration))
 
-    # Capture TTFB / playback-start BEFORE chooseServer — selection
-    # replaces status text with "FastAPI selected." (dataset still survives).
+    # Capture TTFB / playback-start / MediaSource disclosure BEFORE
+    # chooseServer — selection replaces status text with "FastAPI selected."
+    # (dataset still survives). Observed values only — never invent defaults.
     ttfb = driver.execute_script("""
         const status=document.getElementById('serverStatus');
         const text=status?.textContent||'';
+        const needle='MediaSource progressive TTFA not measured';
+        const measuredRaw=status?.dataset?.mediasourceProgressiveTtfaMeasured;
+        const notMeasuredRaw=
+            status?.dataset?.mediasourceProgressiveTtfaNotMeasured;
+        const textHasNeedle=text.includes(needle);
         return {
             streamingFirstBodyByteMeasured:
                 status?.dataset?.streamingFirstBodyByteMeasured==='true',
@@ -1849,6 +1858,13 @@ def accept_fastapi_server_card(driver, origin, api_url):
                 text.includes('playback start p50') &&
                 text.includes('not MediaSource streaming TTFA'),
             playbackStartP50Ms:Number(status?.dataset?.playbackStartP50Ms),
+            mediasourceProgressiveTtfaMeasured: measuredRaw==='true'
+                ? true
+                : measuredRaw==='false' ? false : null,
+            mediasourceProgressiveTtfaNotMeasured:
+                notMeasuredRaw==='true' && textHasNeedle,
+            mediasourceProgressiveTtfaDisclosure:
+                textHasNeedle ? needle : '',
         };
     """)
 
@@ -1900,6 +1916,12 @@ def accept_fastapi_server_card(driver, origin, api_url):
         first_body_byte_p50_ms=ttfb.get("firstBodyByteP50Ms"),
         synthesis_p50_ms=ttfb.get("synthesisP50Ms"),
         playback_start_p50_ms=ttfb.get("playbackStartP50Ms"),
+        mediasource_progressive_ttfa_measured=ttfb.get(
+            "mediasourceProgressiveTtfaMeasured"),
+        mediasource_progressive_ttfa_not_measured=bool(
+            ttfb.get("mediasourceProgressiveTtfaNotMeasured")),
+        mediasource_progressive_ttfa_disclosure=ttfb.get(
+            "mediasourceProgressiveTtfaDisclosure") or "",
     )
 
 
