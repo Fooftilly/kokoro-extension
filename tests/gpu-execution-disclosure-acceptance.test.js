@@ -13,6 +13,7 @@ const helperUrl = pathToFileURL(
 const disclosureModule = require('../gpu-execution-disclosure.js');
 const { inspectCapabilities } = require('../benchmark-capabilities.js');
 const firefoxLive = path.join(root, 'scripts', 'validate-live-firefox.py');
+const chromiumLive = path.join(root, 'scripts', 'validate-live-chromium.mjs');
 const capabilitiesSource = path.join(root, 'benchmark-capabilities.js');
 const disclosureSource = path.join(root, 'gpu-execution-disclosure.js');
 const buildSource = path.join(root, 'build.js');
@@ -139,10 +140,11 @@ describe('GPU execution disclosure acceptance (KE-41a)', () => {
         expect(snap.failMeasured.message).toMatch(/must not be reported as measured/i);
     });
 
-    test('source wiring: capabilities require disclosure + Firefox dual asserts', () => {
+    test('source wiring: capabilities require disclosure + dual live asserts', () => {
         const capabilities = fs.readFileSync(capabilitiesSource, 'utf8');
         const disclosure = fs.readFileSync(disclosureSource, 'utf8');
         const firefox = fs.readFileSync(firefoxLive, 'utf8');
+        const chromium = fs.readFileSync(chromiumLive, 'utf8');
         const build = fs.readFileSync(buildSource, 'utf8');
         const eslint = fs.readFileSync(eslintSource, 'utf8');
 
@@ -166,5 +168,60 @@ describe('GPU execution disclosure acceptance (KE-41a)', () => {
         expect(dualGate).toBeGreaterThan(0);
         expect(gpuCall).toBeGreaterThan(dualGate);
         expect(popupCall).toBeGreaterThan(gpuCall);
+
+        // Chromium dual must assert against real preflight (not invent).
+        expect(chromium).toContain('gpu-execution-disclosure-acceptance.mjs');
+        expect(chromium).toContain('assertGpuExecutionDisclosure(preflight)');
+        expect(chromium).toContain('gpuExecutionDisclosureAcceptance');
+        expect(chromium).toContain('buildGpuExecutionDisclosureReport');
+        const chromiumDualGate = chromium.indexOf(
+            "providerFilter === 'both' && !originDownload");
+        const chromiumGpuAssert = chromium.indexOf(
+            'assertGpuExecutionDisclosure(preflight)');
+        const chromiumPopup = chromium.indexOf(
+            'liveHeartbeat(\'popup-test-tts-cta-start\')');
+        expect(chromiumDualGate).toBeGreaterThan(0);
+        expect(chromiumGpuAssert).toBeGreaterThan(chromiumDualGate);
+        expect(chromiumPopup).toBeGreaterThan(chromiumGpuAssert);
+    });
+
+    test('assert fails closed when Chromium-style preflight omits gpuInference', () => {
+        const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+import * as gpu from ${JSON.stringify(helperUrl)};
+const omit = (() => {
+    try {
+        gpu.assertGpuExecutionDisclosure({
+            wasmCompilation: true,
+            webgpu: { status: 'adapter-available' },
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
+const falseOffer = (() => {
+    try {
+        gpu.assertGpuExecutionDisclosure({
+            wasmCompilation: true,
+            gpuInference: {
+                gpuInferenceOffered: true,
+                gpuInferenceMeasured: false,
+                webgpuAdapterStatus: 'adapter-available',
+                disclosureNeedle: gpu.GPU_INFERENCE_NOT_OFFERED_NEEDLE,
+            },
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
+console.log(JSON.stringify({ omit, falseOffer }));
+`], { encoding: 'utf8', cwd: root });
+        expect(child.status).toBe(0);
+        const snap = JSON.parse(child.stdout.trim());
+        expect(snap.omit.ok).toBe(false);
+        expect(snap.omit.message).toMatch(/must not be offered|needle missing/i);
+        expect(snap.falseOffer.ok).toBe(false);
+        expect(snap.falseOffer.message).toMatch(/must not be offered/i);
     });
 });

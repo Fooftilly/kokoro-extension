@@ -1,7 +1,7 @@
 /**
  * #61 / KE-41a — GPU execution-path disclosure for dual-scope acceptance.
  * MediaPipe/WebGPU GPU inference is not offered or measured until verified.
- * Shared by Firefox dual live harness (Node bridge) + Jest contracts.
+ * Shared by Chromium + Firefox dual live harnesses + Jest contracts.
  */
 
 export const GPU_INFERENCE_NOT_OFFERED_NEEDLE = 'gpu inference is not offered';
