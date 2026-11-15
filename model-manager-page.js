@@ -1079,6 +1079,7 @@ function clearServerFirstBodyByteDataset(status) {
     delete status.dataset.streamingFirstBodyByteMeasured;
     delete status.dataset.firstBodyByteP50Ms;
     delete status.dataset.synthesisP50Ms;
+    delete status.dataset.playbackStartNotMeasured;
 }
 
 async function testFastApi() {
@@ -1140,6 +1141,8 @@ async function testFastApi() {
         status.dataset.streamingFirstBodyByteMeasured = 'true';
         status.dataset.firstBodyByteP50Ms = String(metrics.firstAudioP50Ms);
         status.dataset.synthesisP50Ms = String(metrics.synthesisP50Ms);
+        // Survives chooseServer replacing status text with "FastAPI selected."
+        status.dataset.playbackStartNotMeasured = 'true';
         setMessage(status,
             'Server returned playable MP3. First body byte (TTFB) p50: ' +
             metrics.firstAudioP50Ms.toFixed(0) +

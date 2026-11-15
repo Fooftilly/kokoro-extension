@@ -25,6 +25,7 @@ describe('Streaming first-body-byte acceptance (KE-34)', () => {
         expect(source).toContain('First body byte (TTFB) p50');
         expect(source).toContain('Playback / start-of-audio was not measured');
         expect(source).toContain('streamingFirstBodyByteMeasured');
+        expect(source).toContain('playbackStartNotMeasured');
         expect(source).toContain('firstBodyByteP50Ms');
         expect(source).toContain('summarizeRuns(runs)');
         expect(source).not.toContain('Streaming TTFA p50');

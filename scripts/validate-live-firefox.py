@@ -1792,6 +1792,7 @@ def accept_fastapi_server_card(driver, origin, api_url):
             text.includes('First body byte (TTFB) p50') &&
             text.includes('Playback / start-of-audio was not measured') &&
             status?.dataset?.streamingFirstBodyByteMeasured==='true' &&
+            status?.dataset?.playbackStartNotMeasured==='true' &&
             Number.isFinite(Number(status?.dataset?.firstBodyByteP50Ms)) &&
             audio && !audio.hidden &&
             String(audio.src||'').startsWith('data:audio') &&
@@ -1831,6 +1832,22 @@ def accept_fastapi_server_card(driver, origin, api_url):
         raise RuntimeError(
             "Firefox stub MP3 duration missing: " + repr(audio_duration))
 
+    # Capture TTFB / playback-not-measured BEFORE chooseServer — selection
+    # replaces status text with "FastAPI selected." (dataset still survives).
+    ttfb = driver.execute_script("""
+        const status=document.getElementById('serverStatus');
+        const text=status?.textContent||'';
+        return {
+            streamingFirstBodyByteMeasured:
+                status?.dataset?.streamingFirstBodyByteMeasured==='true',
+            firstBodyByteP50Ms:Number(status?.dataset?.firstBodyByteP50Ms),
+            synthesisP50Ms:Number(status?.dataset?.synthesisP50Ms),
+            playbackStartNotMeasured:
+                status?.dataset?.playbackStartNotMeasured==='true' &&
+                text.includes('Playback / start-of-audio was not measured'),
+        };
+    """)
+
     # Switch away from fastapi so chooseServer must write the preference.
     before = driver.execute_async_script("""
         const backend=arguments[0];
@@ -1868,18 +1885,6 @@ def accept_fastapi_server_card(driver, origin, api_url):
         raise RuntimeError(
             "Firefox FastAPI Use this backend did not select fastapi: " +
             repr(selected.get("backend")))
-    ttfb = driver.execute_script("""
-        const status=document.getElementById('serverStatus');
-        const text=status?.textContent||'';
-        return {
-            streamingFirstBodyByteMeasured:
-                status?.dataset?.streamingFirstBodyByteMeasured==='true',
-            firstBodyByteP50Ms:Number(status?.dataset?.firstBodyByteP50Ms),
-            synthesisP50Ms:Number(status?.dataset?.synthesisP50Ms),
-            playbackStartNotMeasured:
-                text.includes('Playback / start-of-audio was not measured'),
-        };
-    """)
     return build_fastapi_server_card_report(
         api_url,
         backend_before_choose=before["backend"],

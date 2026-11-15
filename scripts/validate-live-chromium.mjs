@@ -1128,6 +1128,7 @@ async function acceptFastApiServerCard(page, apiUrl) {
             text.includes(needles.ttfb) &&
             text.includes(needles.noPlayback) &&
             status?.dataset?.streamingFirstBodyByteMeasured === 'true' &&
+            status?.dataset?.playbackStartNotMeasured === 'true' &&
             Number.isFinite(Number(status?.dataset?.firstBodyByteP50Ms)) &&
             audio && !audio.hidden &&
             String(audio.src || '').startsWith('data:audio') &&
@@ -1169,6 +1170,22 @@ async function acceptFastApiServerCard(page, apiUrl) {
         return audio.duration;
     });
 
+    // Capture TTFB / playback-not-measured BEFORE chooseServer — selection
+    // replaces status text with "FastAPI selected." (dataset still survives).
+    const ttfb = await page.evaluate((noPlaybackNeedle) => {
+        const status = document.getElementById('serverStatus');
+        const text = status?.textContent || '';
+        return {
+            streamingFirstBodyByteMeasured:
+                status?.dataset?.streamingFirstBodyByteMeasured === 'true',
+            firstBodyByteP50Ms: Number(status?.dataset?.firstBodyByteP50Ms),
+            synthesisP50Ms: Number(status?.dataset?.synthesisP50Ms),
+            playbackStartNotMeasured:
+                status?.dataset?.playbackStartNotMeasured === 'true' &&
+                text.includes(noPlaybackNeedle),
+        };
+    }, SERVER_PLAYBACK_NOT_MEASURED_NEEDLE);
+
     // Switch away from fastapi so chooseServer must write the preference.
     await page.evaluate(async (backend) => {
         await chrome.storage.sync.set({ ttsBackend: backend });
@@ -1193,18 +1210,6 @@ async function acceptFastApiServerCard(page, apiUrl) {
             'FastAPI Use this backend did not select fastapi: ' + selectedBackend);
     }
 
-    const ttfb = await page.evaluate(() => {
-        const status = document.getElementById('serverStatus');
-        const text = status?.textContent || '';
-        return {
-            streamingFirstBodyByteMeasured:
-                status?.dataset?.streamingFirstBodyByteMeasured === 'true',
-            firstBodyByteP50Ms: Number(status?.dataset?.firstBodyByteP50Ms),
-            synthesisP50Ms: Number(status?.dataset?.synthesisP50Ms),
-            playbackStartNotMeasured:
-                text.includes('Playback / start-of-audio was not measured'),
-        };
-    });
     return buildFastApiServerCardReport({
         browser: 'chromium',
         apiUrl,
