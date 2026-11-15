@@ -32,16 +32,20 @@ import {
     requireLongFormBackend,
 } from './long-form-memory-acceptance.mjs';
 import { buildCurrentProviderSnapshot } from './live-chromium-report.mjs';
-import {
-    LONGER_SHARED_ENGLISH_SAMPLE,
-    LONGER_SHARED_ENGLISH_BUTTON_ID,
-    assertLongerSharedEnglishSample,
-} from '../longer-shared-english-sample.js';
-// The extension's .js modules are ESM while package.json is CommonJS for the
-// build tool. Copy the pure catalog into a temporary .mjs file for the Node harness.
+// Extension .js modules are ESM in the browser while package.json is CommonJS
+// for the build tool. Copy pure modules into temporary .mjs files for Node.
 const catalogFile = path.join(os.tmpdir(), 'kokoro-runtime-model-catalog.mjs');
 await writeFile(catalogFile, await readFile(path.resolve('model-catalog.js')));
 const { manifestForVariant, dictionaryManifest } = await import(pathToFileURL(catalogFile).href);
+const longerSampleFile = path.join(os.tmpdir(),
+    'kokoro-longer-shared-english-sample.mjs');
+await writeFile(longerSampleFile,
+    await readFile(path.resolve('longer-shared-english-sample.js')));
+const {
+    LONGER_SHARED_ENGLISH_SAMPLE,
+    LONGER_SHARED_ENGLISH_BUTTON_ID,
+    assertLongerSharedEnglishSample,
+} = await import(pathToFileURL(longerSampleFile).href);
 
 if (process.env.KOKORO_LIVE_DOWNLOAD !== '1' || !process.env.PLAYWRIGHT_MODULE_PATH) {
     throw Error('Live model download opt-in and pinned Playwright module path required');

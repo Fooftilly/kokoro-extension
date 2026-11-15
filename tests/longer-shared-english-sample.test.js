@@ -44,6 +44,10 @@ describe('Longer shared English sample acceptance', () => {
 
     test('Chromium dual path loads longer sample before measure', () => {
         const source = fs.readFileSync(chromiumLive, 'utf8');
+        // Node harness must bridge via temp .mjs (package.json is CommonJS).
+        expect(source).not.toMatch(
+            /from ['"]\.\.\/longer-shared-english-sample\.js['"]/);
+        expect(source).toContain('kokoro-longer-shared-english-sample.mjs');
         expect(source).toContain('longer-shared-english-sample.js');
         expect(source).toContain('LONGER_SHARED_ENGLISH_BUTTON_ID');
         expect(source).toContain('assertLongerSharedEnglishSample');
