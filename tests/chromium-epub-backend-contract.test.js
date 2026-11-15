@@ -44,12 +44,17 @@ describe('chromium EPUB acceptance backend wiring', () => {
         expect(source).toMatch(/from '\.\/reader-acceptance-epub\.mjs'/);
         expect(fixture).toContain("Hello first chapter.");
         expect(fixture).toContain("Hello second chapter.");
+        expect(fixture).toContain("Hello third chapter.");
         expect(fixture).toContain("Hello plain text.");
         expect(source).toMatch(/blocks\[0\]\.content === expectedSpeech/);
         expect(source).toMatch(/crypto\.subtle\.digest\('SHA-256'/);
         expect(source).toMatch(/differentAudioPerChapter = new Set\(\[/);
+        expect(source).toMatch(/waitForChapter\(\s*'Third Chapter'/);
+        expect(source).toMatch(/chapterCount: 3/);
+        expect(source).toMatch(/READER_ACCEPTANCE_SPEECH\['Third Chapter'\]/);
         expect(source).not.toMatch(
             /pendingContent\?\.some\(b => b\.content\?\.includes\('Hello world\.'\)\)/,
         );
     });
 });
+

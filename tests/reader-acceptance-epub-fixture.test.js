@@ -23,9 +23,17 @@ function expectedNames() {
         'OEBPS/first.xhtml',
         'OEBPS/nav.xhtml',
         'OEBPS/second.xhtml',
+        'OEBPS/third.xhtml',
         'mimetype',
     ].sort();
 }
+
+const expectedSpeech = {
+    'First Chapter': 'Hello first chapter.',
+    'Second Chapter': 'Hello second chapter.',
+    'Third Chapter': 'Hello third chapter.',
+    'acceptance.txt': 'Hello plain text.',
+};
 
 describe('reader acceptance EPUB fixture contract', () => {
     test('Chromium shared builder has distinct chapter speech and nav labels', () => {
@@ -40,9 +48,11 @@ const names = Object.keys(zip.files).filter(name => !zip.files[name].dir).sort()
 console.log(JSON.stringify({
     names,
     mime: await zip.file('mimetype').async('string'),
+    opf: await zip.file('OEBPS/content.opf').async('string'),
     nav: await zip.file('OEBPS/nav.xhtml').async('string'),
     first: await zip.file('OEBPS/first.xhtml').async('string'),
     second: await zip.file('OEBPS/second.xhtml').async('string'),
+    third: await zip.file('OEBPS/third.xhtml').async('string'),
     speech: READER_ACCEPTANCE_SPEECH,
 }));
 `], { encoding: 'utf8', cwd: path.join(__dirname, '..') });
@@ -51,17 +61,19 @@ console.log(JSON.stringify({
         const report = JSON.parse(result.stdout.trim());
         expect(report.names).toEqual(expectedNames());
         expect(report.mime).toBe('application/epub+zip');
+        expect(report.opf).toContain('idref="third"');
+        expect(report.opf.match(/<itemref /g)).toHaveLength(3);
         expect(report.nav).toContain('>First Chapter</a>');
         expect(report.nav).toContain('>Second Chapter</a>');
+        expect(report.nav).toContain('>Third Chapter</a>');
         expect(report.first).toContain(report.speech['First Chapter']);
         expect(report.second).toContain(report.speech['Second Chapter']);
+        expect(report.third).toContain(report.speech['Third Chapter']);
         expect(report.speech['First Chapter']).not.toBe(report.speech['Second Chapter']);
+        expect(report.speech['Second Chapter']).not.toBe(report.speech['Third Chapter']);
+        expect(report.speech['First Chapter']).not.toBe(report.speech['Third Chapter']);
         expect(report.speech['acceptance.txt']).not.toBe(report.speech['First Chapter']);
-        expect(report.speech).toEqual({
-            'First Chapter': 'Hello first chapter.',
-            'Second Chapter': 'Hello second chapter.',
-            'acceptance.txt': 'Hello plain text.',
-        });
+        expect(report.speech).toEqual(expectedSpeech);
     });
 
     test('Firefox harness builder emits the same structural contract', () => {
@@ -78,9 +90,11 @@ with zipfile.ZipFile(${JSON.stringify(epubPath)}) as z:
         'names': sorted(z.namelist()),
         'mime': z.read('mimetype').decode(),
         'mimeStored': z.getinfo('mimetype').compress_type == zipfile.ZIP_STORED,
+        'opf': z.read('OEBPS/content.opf').decode(),
         'nav': z.read('OEBPS/nav.xhtml').decode(),
         'first': z.read('OEBPS/first.xhtml').decode(),
         'second': z.read('OEBPS/second.xhtml').decode(),
+        'third': z.read('OEBPS/third.xhtml').decode(),
         'speech': READER_ACCEPTANCE_SPEECH,
     }))
 `], { encoding: 'utf8' });
@@ -90,15 +104,15 @@ with zipfile.ZipFile(${JSON.stringify(epubPath)}) as z:
         const report = JSON.parse(result.stdout.trim());
         expect(report.mime).toBe('application/epub+zip');
         expect(report.mimeStored).toBe(true);
+        expect(report.opf).toContain('idref="third"');
+        expect(report.opf.match(/<itemref /g)).toHaveLength(3);
         expect(report.nav).toContain('>First Chapter</a>');
         expect(report.nav).toContain('>Second Chapter</a>');
-        expect(report.speech).toEqual({
-            'First Chapter': 'Hello first chapter.',
-            'Second Chapter': 'Hello second chapter.',
-            'acceptance.txt': 'Hello plain text.',
-        });
+        expect(report.nav).toContain('>Third Chapter</a>');
+        expect(report.speech).toEqual(expectedSpeech);
         expect(report.first).toContain(report.speech['First Chapter']);
         expect(report.second).toContain(report.speech['Second Chapter']);
+        expect(report.third).toContain(report.speech['Third Chapter']);
         expect(report.names).toEqual(expectedNames());
     });
 });

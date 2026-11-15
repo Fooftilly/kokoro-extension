@@ -42,19 +42,21 @@ def origin_epub_stage_enabled(origin_download, provider, success):
         origin_download and provider in ALLOWED_EPUB_BACKENDS and success)
 
 
-def assert_distinct_chapter_audio_hashes(first_sha, second_sha, txt_sha):
+def assert_distinct_chapter_audio_hashes(first_sha, second_sha, third_sha, txt_sha):
     """Fail closed when chapter/TXT WAV content hashes are missing or collide."""
-    hashes = (first_sha, second_sha, txt_sha)
+    hashes = (first_sha, second_sha, third_sha, txt_sha)
     if any(not isinstance(value, str) or not value for value in hashes):
         raise RuntimeError(
             "Reader WAV content hashes were missing across chapters/TXT: " +
             json.dumps({
-                "first": first_sha, "second": second_sha, "txt": txt_sha,
+                "first": first_sha, "second": second_sha, "third": third_sha,
+                "txt": txt_sha,
             }))
-    if len(set(hashes)) != 3:
+    if len(set(hashes)) != 4:
         raise RuntimeError(
             "Reader WAV content hashes were not distinct across chapters/TXT: " +
             json.dumps({
-                "first": first_sha, "second": second_sha, "txt": txt_sha,
+                "first": first_sha, "second": second_sha, "third": third_sha,
+                "txt": txt_sha,
             }))
     return True
