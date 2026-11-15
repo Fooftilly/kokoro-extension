@@ -1446,6 +1446,54 @@ def assert_progressive_streaming_ttfa_unmeasured(report, browser="Firefox"):
     return json.loads(probe.stdout.strip())
 
 
+def assert_model_variants_disclosure(browser="Firefox"):
+    """#57 / #61 / KE-53: observe catalog then admit only onnx-q8 + MediaPipe CPU."""
+    scripts_dir = Path(__file__).resolve().parent
+    env = os.environ.copy()
+    env["KOKORO_MODEL_VARIANTS_BROWSER"] = str(browser or "Firefox")
+    # Copy model-catalog.js → temp .mjs (same pattern as Chromium live harness).
+    probe = subprocess.run(
+        [
+            "node", "--input-type=module", "-e",
+            "import { readFileSync, writeFileSync } from 'node:fs';"
+            "import { tmpdir } from 'node:os';"
+            "import path from 'node:path';"
+            "import { pathToFileURL } from 'node:url';"
+            "import { assertModelVariantsDisclosure, "
+            "buildModelVariantsDisclosureReport, "
+            "observeCatalogVariantKeys } from "
+            "'./model-variants-disclosure-acceptance.mjs';"
+            "const catalogSrc = path.resolve('..', 'model-catalog.js');"
+            "const catalogFile = path.join(tmpdir(), "
+            "'kokoro-firefox-model-variants-catalog.mjs');"
+            "writeFileSync(catalogFile, readFileSync(catalogSrc));"
+            "const { listModelVariants } = await import("
+            "pathToFileURL(catalogFile).href);"
+            "const observedCatalogVariantKeys = observeCatalogVariantKeys("
+            "listModelVariants());"
+            "const report = buildModelVariantsDisclosureReport({"
+            "browser: process.env.KOKORO_MODEL_VARIANTS_BROWSER || 'Firefox',"
+            "observedCatalogVariantKeys,"
+            "assertedFromDual: true,"
+            "});"
+            "assertModelVariantsDisclosure(report);"
+            "console.log(JSON.stringify(report));",
+        ],
+        cwd=str(scripts_dir),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        raise RuntimeError(
+            "Model variants disclosure assert failed: " +
+            (probe.stderr or probe.stdout or "unknown error"))
+    return json.loads(probe.stdout.strip())
+
+
+
+
 def assert_store_signing_disclosure_from_payload(payload, browser="Firefox"):
     """#61 / KE-46: assert nested storeSigning from a real measured export payload.
 
@@ -4179,6 +4227,12 @@ def main():
                     preflight, browser="Firefox")
                 result["gpuExecutionDisclosureAcceptance"] = (
                     gpu_execution_disclosure)
+                # #57 / #61 / KE-53: only onnx-q8 + MediaPipe CPU accepted.
+                result["stage"] = "model-variants-disclosure"
+                model_variants_disclosure = assert_model_variants_disclosure(
+                    browser="Firefox")
+                result["modelVariantsDisclosureAcceptance"] = (
+                    model_variants_disclosure)
                 result["stage"] = "popup-test-tts-cta"
                 popup_cta = accept_popup_test_tts_cta(driver, state["origin"])
                 result["popupTestTtsCtaAcceptance"] = popup_cta
@@ -4241,6 +4295,7 @@ def main():
                     "dictionaryReloadAcceptance": dictionary_reload_acceptance,
                     "dictionaryUiDownloadAcceptance": dictionary_ui_acceptance,
                     "gpuExecutionDisclosureAcceptance": gpu_execution_disclosure,
+                    "modelVariantsDisclosureAcceptance": model_variants_disclosure,
                     "storeSigningDisclosureAcceptance": store_signing_disclosure,
                     "progressiveStreamingTtfaAcceptance": (
                         result.get("progressiveStreamingTtfaAcceptance")),

@@ -3040,6 +3040,7 @@ try {
     let dictionaryUiDownloadAcceptance = null;
     let popupTestTtsCtaAcceptance = null;
     let gpuExecutionDisclosureAcceptance = null;
+    let modelVariantsDisclosureAcceptance = null;
     let storeSigningDisclosureAcceptance = null;
     let progressiveStreamingTtfaAcceptance = null;
     let twoBackendComparisonAcceptance = null;
@@ -3053,7 +3054,8 @@ try {
             testedAt: new Date().toISOString(), browser: preflight.browser, preflight,
             dictionaryCacheAcceptance, browserRestartAcceptance,
             dictionaryUiDownloadAcceptance, popupTestTtsCtaAcceptance,
-            gpuExecutionDisclosureAcceptance, storeSigningDisclosureAcceptance,
+            gpuExecutionDisclosureAcceptance, modelVariantsDisclosureAcceptance,
+            storeSigningDisclosureAcceptance,
             progressiveStreamingTtfaAcceptance,
             twoBackendComparisonAcceptance, fastapiServerCardAcceptance,
             fastapiPreferenceHonorAcceptance, oovG2pDisclosureAcceptance,
@@ -3458,6 +3460,30 @@ try {
             success: gpuExecutionDisclosureAcceptance?.success === true,
             webgpuAdapterStatus:
                 gpuExecutionDisclosureAcceptance?.webgpuAdapterStatus,
+        });
+        await saveReport();
+
+        // #57 / #61 / KE-53: only onnx-q8 + MediaPipe CPU accepted; other
+        // variants and verified-GPU-when-offered remain not offered/measured.
+        liveHeartbeat('model-variants-disclosure-start');
+        const {
+            assertModelVariantsDisclosure,
+            buildModelVariantsDisclosureReport,
+        } = await import('./model-variants-disclosure-acceptance.mjs');
+        modelVariantsDisclosureAcceptance = buildModelVariantsDisclosureReport({
+            browser: 'chromium',
+            assertedFromDual: true,
+        });
+        assertModelVariantsDisclosure(modelVariantsDisclosureAcceptance);
+        liveHeartbeat('model-variants-disclosure-done', {
+            success: modelVariantsDisclosureAcceptance?.success === true,
+            acceptedVariants:
+                modelVariantsDisclosureAcceptance?.acceptedVariants,
+            otherModelVariantsOffered:
+                modelVariantsDisclosureAcceptance?.otherModelVariantsOffered,
+            verifiedGpuWhenOfferedMeasured:
+                modelVariantsDisclosureAcceptance
+                    ?.verifiedGpuWhenOfferedMeasured,
         });
         await saveReport();
 
