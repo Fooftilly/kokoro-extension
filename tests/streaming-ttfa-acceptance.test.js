@@ -33,11 +33,30 @@ describe('Streaming first-body-byte acceptance (KE-34)', () => {
         const ttfbIdx = source.indexOf(
             'First body byte (TTFB) was not measured');
         expect(ttfbIdx).toBeGreaterThan(0);
-        const loopBody = source.slice(
-            source.indexOf('need a streamed response body'),
-            source.indexOf('need a streamed response body') + 900);
-        expect(loopBody).toContain('waitServerAudioDuration(audio)');
-        expect(loopBody).toContain('audioDurationSec: durationSec');
+        expect(source).toContain('waitServerAudioDuration(audio)');
+        expect(source).toContain('audioDurationSec: durationSec');
+    });
+
+    test('testFastApi discards an untimed warm-up before three warm runs', () => {
+        const source = fs.readFileSync(
+            path.join(root, 'model-manager-page.js'), 'utf8');
+        expect(source).toContain('fetchFastApiPlayableClip');
+        expect(source).toContain('after untimed warm-up; 3 warm runs');
+        expect(source).toContain(
+            'Untimed warm-up absorbs cold FastAPI/model init');
+        const fnStart = source.indexOf('async function testFastApi()');
+        expect(fnStart).toBeGreaterThan(0);
+        const fnBody = source.slice(fnStart, fnStart + 2800);
+        const warmUpIdx = fnBody.indexOf(
+            'await fetchFastApiPlayableClip(\n' +
+            '            endpoint.href, input, settings.voice, audio);');
+        const loopIdx = fnBody.indexOf('for (let n = 0; n < 3; n++)');
+        const pushIdx = fnBody.indexOf("kind: 'warm'");
+        expect(warmUpIdx).toBeGreaterThan(0);
+        expect(loopIdx).toBeGreaterThan(warmUpIdx);
+        expect(pushIdx).toBeGreaterThan(loopIdx);
+        // Warm-up call must not push into runs (only the measured loop does).
+        expect(fnBody.slice(warmUpIdx, loopIdx)).not.toContain('runs.push');
     });
 
     test('server-card assert rejects equal first-byte and full-response p50', () => {

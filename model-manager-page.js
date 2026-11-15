@@ -1082,6 +1082,40 @@ function clearServerFirstBodyByteDataset(status) {
     delete status.dataset.playbackStartNotMeasured;
 }
 
+/**
+ * One streamed FastAPI fetch + decode. Callers decide whether the sample is
+ * an untimed warm-up or a measured warm run (matches local cold/warm honesty).
+ */
+async function fetchFastApiPlayableClip(endpoint, input, voice, audio) {
+    const wallStarted = performance.now();
+    const result = await browser.runtime.sendMessage({
+        action: 'FETCH_TTS_AUDIO', backend: 'fastapi',
+        endpoint,
+        payload: { model: 'kokoro', input, voice,
+            response_format: 'mp3', speed: 1 },
+    });
+    const synthesisMs = performance.now() - wallStarted;
+    if (!result?.success || !result.dataUrl) {
+        throw new Error(result?.error || 'No MP3 data returned');
+    }
+    if (!Number.isFinite(result.firstBodyByteMs) ||
+        result.firstBodyByteMs < 0) {
+        throw new Error(
+            'First body byte (TTFB) was not measured ' +
+            '(need a streamed response body)');
+    }
+    // Decode before accepting — a late valid MP3 must not launder earlier
+    // non-audio bodies into warm-up success or measured p50.
+    audio.src = result.dataUrl;
+    audio.hidden = false;
+    const durationSec = await waitServerAudioDuration(audio);
+    return {
+        firstBodyByteMs: result.firstBodyByteMs,
+        synthesisMs,
+        audioDurationSec: durationSec,
+    };
+}
+
 async function testFastApi() {
     const button = document.getElementById('testServer');
     const choose = document.getElementById('chooseServer');
@@ -1104,37 +1138,21 @@ async function testFastApi() {
         const endpoint = new URL('audio/speech', base.href.endsWith('/') ? base : base.href + '/');
         setMessage(status, 'Testing the explicitly configured FastAPI server…');
         const audio = document.getElementById('serverAudio');
+        // Untimed warm-up absorbs cold FastAPI/model init — same honesty as
+        // local ONNX (exclude cold prep from runs labeled warm).
+        await fetchFastApiPlayableClip(
+            endpoint.href, input, settings.voice, audio);
         const runs = [];
         for (let n = 0; n < 3; n++) {
-            const wallStarted = performance.now();
-            const result = await browser.runtime.sendMessage({
-                action: 'FETCH_TTS_AUDIO', backend: 'fastapi',
-                endpoint: endpoint.href,
-                payload: { model: 'kokoro', input, voice: settings.voice,
-                    response_format: 'mp3', speed: 1 },
-            });
-            const synthesisMs = performance.now() - wallStarted;
-            if (!result?.success || !result.dataUrl) {
-                throw new Error(result?.error || 'No MP3 data returned');
-            }
-            if (!Number.isFinite(result.firstBodyByteMs) ||
-                result.firstBodyByteMs < 0) {
-                throw new Error(
-                    'First body byte (TTFB) was not measured ' +
-                    '(need a streamed response body)');
-            }
-            // Decode each warm clip before counting it — a late valid MP3
-            // must not launder earlier non-audio bodies into the p50.
-            audio.src = result.dataUrl;
-            audio.hidden = false;
-            const durationSec = await waitServerAudioDuration(audio);
+            const clip = await fetchFastApiPlayableClip(
+                endpoint.href, input, settings.voice, audio);
             // summarizeRuns' firstAudioMs slot holds first-body-byte samples;
             // UI/export must label them TTFB, never decoded/playable TTFA.
             runs.push({
                 kind: 'warm',
-                firstAudioMs: result.firstBodyByteMs,
-                synthesisMs,
-                audioDurationSec: durationSec,
+                firstAudioMs: clip.firstBodyByteMs,
+                synthesisMs: clip.synthesisMs,
+                audioDurationSec: clip.audioDurationSec,
             });
         }
         const metrics = window.KokoroBenchmark.summarizeRuns(runs);
@@ -1148,7 +1166,7 @@ async function testFastApi() {
             metrics.firstAudioP50Ms.toFixed(0) +
             ' ms; full response p50: ' +
             metrics.synthesisP50Ms.toFixed(0) +
-            ' ms (3 warm runs; network + synthesis). ' +
+            ' ms (after untimed warm-up; 3 warm runs; network + synthesis). ' +
             'Playback / start-of-audio was not measured. ' +
             'Local backends do not measure streaming first-byte latency.');
         choose.disabled = false;
