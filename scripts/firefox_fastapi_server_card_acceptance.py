@@ -11,6 +11,8 @@ def build_fastapi_server_card_report(
         choose_changed_backend=True, audio_duration_sec=None,
         streaming_first_body_byte_measured=True,
         playback_start_measured=True,
+        mediasource_progressive_ttfa_measured=False,
+        mediasource_progressive_ttfa_not_measured=True,
         first_body_byte_p50_ms=None, synthesis_p50_ms=None,
         playback_start_p50_ms=None):
     """Build the same report shape Chromium uses after a successful card test."""
@@ -24,6 +26,11 @@ def build_fastapi_server_card_report(
         "audioDurationSec": audio_duration_sec,
         "streamingFirstBodyByteMeasured": streaming_first_body_byte_measured,
         "playbackStartMeasured": playback_start_measured,
+        # KE-41c honesty defaults — MediaSource progressive TTFA not measured.
+        "mediasourceProgressiveTtfaMeasured":
+            mediasource_progressive_ttfa_measured,
+        "mediasourceProgressiveTtfaNotMeasured":
+            mediasource_progressive_ttfa_not_measured,
     }
     if first_body_byte_p50_ms is not None:
         options["firstBodyByteP50Ms"] = first_body_byte_p50_ms
