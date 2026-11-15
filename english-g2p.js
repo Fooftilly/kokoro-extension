@@ -45,6 +45,54 @@ function toIpa(phones, word) {
     return result;
 }
 
+/** Stable disclosure: ONNX English is CMUdict-gated; broader G2P is not claimed. */
+export const ONNX_ENGLISH_G2P_DISCLOSURE_NEEDLE =
+    'dictionary-gated English; OOV fails closed; broader G2P not measured';
+
+/**
+ * Honest capability disclosure for ONNX English text synthesis.
+ * Broader long-form G2P is explicitly not measured.
+ */
+export function discloseOnnxEnglishG2pLimits() {
+    return {
+        dictionaryGatedEnglish: true,
+        broaderG2pMeasured: false,
+        oovFailsClosed: true,
+        disclosureNeedle: ONNX_ENGLISH_G2P_DISCLOSURE_NEEDLE,
+    };
+}
+
+/**
+ * List alphabetic tokens missing from the local CMUdict map (OOV).
+ * Diagnostic only — continues past digits/emoji/punctuation so later OOV
+ * words are still reported. Synthesis rejection stays in phonemizeEnglish.
+ */
+export function listUnsupportedEnglishWords(text, dictionary) {
+    if (typeof text !== 'string' || !(dictionary instanceof Map)) {
+        throw new TypeError('English text and a dictionary are required');
+    }
+    const input = text.normalize('NFC').replace(/’/g, "'");
+    const unsupported = [];
+    let offset = 0;
+    while (offset < input.length) {
+        if (/\s/u.test(input[offset])) { offset++; continue; }
+        TOKEN.lastIndex = offset;
+        const match = TOKEN.exec(input);
+        // Sticky TOKEN only matches at offset. Skip one code unit for digits,
+        // emoji, or other non-tokens so later alphabetic OOV words are listed.
+        if (!match || match.index !== offset) {
+            offset++;
+            continue;
+        }
+        offset = TOKEN.lastIndex;
+        const item = match[0];
+        if (/^[a-z]/i.test(item) && !dictionary.get(item.toLowerCase())) {
+            unsupported.push(item);
+        }
+    }
+    return unsupported;
+}
+
 export function phonemizeEnglish(text, dictionary) {
     if (typeof text !== 'string' || !text.trim() || text.length > 20000 ||
         !(dictionary instanceof Map)) {
