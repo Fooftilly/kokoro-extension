@@ -1,0 +1,1 @@
+Strengthen live long-text verification after review: compare combined WAV body byte-for-byte against each native chunk in order, in addition to token counts and total length.
