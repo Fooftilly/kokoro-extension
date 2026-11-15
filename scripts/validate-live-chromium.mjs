@@ -32,6 +32,12 @@ import {
     requireLongFormBackend,
 } from './long-form-memory-acceptance.mjs';
 import { buildCurrentProviderSnapshot } from './live-chromium-report.mjs';
+import {
+    assertOnnxOovG2pDisclosure,
+    assertOovG2pDisclosureReport,
+    buildOovG2pDisclosureReport,
+    OOV_PROBE_WORD,
+} from './oov-g2p-disclosure-acceptance.mjs';
 // Extension .js modules are ESM in the browser while package.json is CommonJS
 // for the build tool. Copy pure modules into temporary .mjs files for Node.
 const catalogFile = path.join(os.tmpdir(), 'kokoro-runtime-model-catalog.mjs');
@@ -948,6 +954,12 @@ async function acceptTwoBackendComparison(page, extensionId) {
         throw Error('Use this backend did not select MediaPipe: ' + afterMediaPipeChoose);
     }
 
+    // #61 / KE-41b: after choose, dual must disclose dictionary-gated OOV
+    // (IPA exclusion) — not broader long-form G2P. Fail-closed.
+    const oovG2pDisclosureAcceptance =
+        await acceptOnnxOovG2pDisclosureOnBenchmark(page);
+    assertOovG2pDisclosureReport(oovG2pDisclosureAcceptance);
+
     return { success: true, providers: keys, sharedSample: LONGER_SHARED_ENGLISH_SAMPLE,
         measurements: measured, rowsBeforeEdit: 2, rowsAfterEdit: 0,
         bothRetainedOnOnePage: true,
@@ -962,7 +974,52 @@ async function acceptTwoBackendComparison(page, extensionId) {
         },
         selectedBackend: afterMediaPipeChoose, offline: true,
         serverTestNotTriggered: true, noAutomaticRanking: true, summary,
-        measuredResultsExport };
+        measuredResultsExport, oovG2pDisclosureAcceptance };
+}
+
+/** KE-41b: OOV probe → IPA-only exclusion + shared dictionary-gated disclosure. */
+async function acceptOnnxOovG2pDisclosureOnBenchmark(page) {
+    liveHeartbeat('oov-g2p-disclosure-start');
+    await page.locator('#benchmarkText').fill(OOV_PROBE_WORD + '.');
+    await page.locator('[data-variant="onnx-q8"] .model-test').click();
+    await withProgressBeats('oov-g2p-disclosure-ipa-wait', page.waitForFunction(() => {
+        const model = document.querySelector('[data-variant="onnx-q8"]');
+        return model?.querySelector('.model-status')?.textContent
+            .includes('IPA-only diagnostic') &&
+            model.querySelector('.model-choose')?.disabled === true;
+    }, null, { timeout: 180000 }));
+    if (await page.locator('#sharedEnglishComparisonRows tr').count() !== 0) {
+        throw Error('OOV ONNX path entered shared-English comparison');
+    }
+    const probe = await page.evaluate(async (oovWord) => {
+        const {
+            discloseOnnxEnglishG2pLimits,
+            listUnsupportedEnglishWords,
+            loadCachedEnglishLexicon,
+        } = await import('./english-g2p.js');
+        const limits = discloseOnnxEnglishG2pLimits();
+        const lexicon = await loadCachedEnglishLexicon(chrome, caches);
+        const listed = listUnsupportedEnglishWords(oovWord + '.', lexicon);
+        return { limits, listed };
+    }, OOV_PROBE_WORD);
+    if (!Array.isArray(probe.listed) || !probe.listed.includes(OOV_PROBE_WORD)) {
+        throw Error('OOV word was not listed as unsupported: ' +
+            JSON.stringify(probe.listed));
+    }
+    const report = buildOovG2pDisclosureReport({
+        browser: 'chromium',
+        ipaOnlyExcluded: true,
+        unknownWordsRejected: true,
+        oovProbe: OOV_PROBE_WORD,
+    });
+    assertOnnxOovG2pDisclosure({
+        ...probe.limits,
+        ipaOnlyExcluded: true,
+        unknownWordsRejected: true,
+    });
+    assertOovG2pDisclosureReport(report);
+    liveHeartbeat('oov-g2p-disclosure-done', { success: true });
+    return report;
 }
 
 async function acceptMeasuredResultsExport(page, expected = {}) {
@@ -2790,6 +2847,7 @@ try {
     let twoBackendComparisonAcceptance = null;
     let fastapiServerCardAcceptance = null;
     let fastapiPreferenceHonorAcceptance = null;
+    let oovG2pDisclosureAcceptance = null;
     // Optional currentProvider snapshots mid-loop checks that are not yet in
     // `results` (pushed only after all stages for that provider finish).
     const saveReport = (currentProvider = null) => writeFile(
@@ -2798,7 +2856,7 @@ try {
             dictionaryCacheAcceptance, browserRestartAcceptance,
             dictionaryUiDownloadAcceptance, popupTestTtsCtaAcceptance,
             twoBackendComparisonAcceptance, fastapiServerCardAcceptance,
-            fastapiPreferenceHonorAcceptance,
+            fastapiPreferenceHonorAcceptance, oovG2pDisclosureAcceptance,
             results, currentProvider, originDownload, providerFilter,
             networkRequirement: providerFilter === 'dictionary'
                 ? 'offline during dictionary persistence/verification; no inference attempted'
@@ -3012,8 +3070,13 @@ try {
         }
             if (originDownload && manifest.provider === 'onnx' && result.success) {
                 stage = 'offline-audio-manager-onnx-english-wav-playback';
-                onnxPlaybackAcceptance = await page.evaluate(async () => {
+                onnxPlaybackAcceptance = await page.evaluate(async (oovWord) => {
                     const { AudioManager } = await import('./audio-manager.js');
+                    const {
+                        discloseOnnxEnglishG2pLimits,
+                        listUnsupportedEnglishWords,
+                        loadCachedEnglishLexicon,
+                    } = await import('./english-g2p.js');
                     const manager = new AudioManager();
                     try {
                         // This is a disposable extension profile; verify the
@@ -3021,7 +3084,7 @@ try {
                         await chrome.storage.local.set({ pendingTtsBackend: 'onnx', pendingApiUrl: '' });
                         manager.setSentences([
                             { text: 'Hello world.' },
-                            { text: 'zzzzqwertyword.' },
+                            { text: oovWord + '.' },
                         ]);
                         const url = await manager.getAudio(0);
                         if (!url.startsWith('blob:')) throw Error('ONNX did not return local WAV URL');
@@ -3045,9 +3108,17 @@ try {
                         if (!unsupported || !/Missing English pronunciation|Unsupported English text/.test(unsupported)) {
                             throw Error('Unknown English word did not fail closed: ' + unsupported);
                         }
+                        const disclosure = discloseOnnxEnglishG2pLimits();
+                        const lexicon = await loadCachedEnglishLexicon(chrome, caches);
+                        const listed = listUnsupportedEnglishWords(oovWord + '.', lexicon);
+                        if (!listed.includes(oovWord)) {
+                            throw Error('OOV word was not listed as unsupported: ' +
+                                JSON.stringify(listed));
+                        }
                         if (navigator.onLine !== false) throw Error('ONNX playback was not offline');
                         return { success: true, backend: 'onnx', sampleRateHz, audioBytes,
-                            unknownWordsRejected: true, networkOffline: true };
+                            unknownWordsRejected: true, networkOffline: true,
+                            oovDisclosure: disclosure, unsupportedListed: listed };
                     } catch (error) {
                         return { success: false, error: String(error),
                             stack: String(error.stack || '') };
@@ -3055,11 +3126,22 @@ try {
                         manager.clear();
                         if (manager.localProvider) await manager.localProvider.close();
                     }
-                });
+                }, OOV_PROBE_WORD);
                 if (!onnxPlaybackAcceptance.success) {
                     throw Error('Chromium ONNX real reading-path acceptance failed: ' +
                         JSON.stringify(onnxPlaybackAcceptance));
                 }
+                // KE-41b: strengthen fail-closed with shared dictionary-gated disclosure.
+                assertOnnxOovG2pDisclosure({
+                    ...onnxPlaybackAcceptance.oovDisclosure,
+                    unknownWordsRejected: true,
+                });
+                oovG2pDisclosureAcceptance = buildOovG2pDisclosureReport({
+                    browser: 'chromium',
+                    unknownWordsRejected: true,
+                    oovProbe: OOV_PROBE_WORD,
+                });
+                assertOovG2pDisclosureReport(oovG2pDisclosureAcceptance);
 
                 stage = 'offline-onnx-overlay-controls';
                 liveHeartbeat(stage, { provider: 'onnx' });
@@ -3186,6 +3268,10 @@ try {
         try {
             twoBackendComparisonAcceptance = await acceptTwoBackendComparison(
                 comparisonPage, extensionId);
+            if (twoBackendComparisonAcceptance?.oovG2pDisclosureAcceptance) {
+                oovG2pDisclosureAcceptance =
+                    twoBackendComparisonAcceptance.oovG2pDisclosureAcceptance;
+            }
             if (errors.length) throw Error('Extension errors during two-backend comparison: ' +
                 errors.join('; '));
             await saveReport();
