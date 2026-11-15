@@ -2674,9 +2674,58 @@ async function acceptRealEpubReader(page, extensionId, backend) {
         if (title === 'acceptance.txt') return { prevDisabled: true, nextDisabled: true };
         return null;
     };
+    const assertFirstSectionNestedUnderFirstChapter = async () => {
+        // Devin P2: label click alone would pass a flattened TOC. Require the
+        // First Section playable button to sit inside First Chapter's expanded
+        // .chapter-group > .sub-items tree.
+        const hierarchy = await page.evaluate(() => {
+            const labels = [...document.querySelectorAll('.playable-chapter .chapter-label')];
+            const sectionLabel = labels.find((el) => el.textContent.trim() === 'First Section');
+            if (!sectionLabel) {
+                return { ok: false, reason: 'First Section playable label missing' };
+            }
+            const sectionButton = sectionLabel.closest('.playable-chapter');
+            const sectionGroup = sectionButton && sectionButton.closest('.chapter-group');
+            const subItems = sectionGroup && sectionGroup.parentElement;
+            if (!subItems || !subItems.classList.contains('sub-items')) {
+                return { ok: false, reason: 'First Section not inside .sub-items' };
+            }
+            const parentGroup = subItems.parentElement;
+            if (!parentGroup || !parentGroup.classList.contains('chapter-group')) {
+                return { ok: false, reason: 'parent .chapter-group missing' };
+            }
+            if (!parentGroup.classList.contains('expanded')) {
+                return { ok: false, reason: 'First Chapter group not expanded' };
+            }
+            const parentLabel = parentGroup
+                .querySelector(':scope > .chapter-item .chapter-label');
+            const parentText = parentLabel ? parentLabel.textContent.trim() : '';
+            if (parentText !== 'First Chapter') {
+                return {
+                    ok: false,
+                    reason: 'parent label is not First Chapter: ' + parentText,
+                };
+            }
+            return {
+                ok: true,
+                parentExpanded: true,
+                parentLabel: parentText,
+                sectionInSubItems: true,
+            };
+        });
+        if (!hierarchy || hierarchy.ok !== true) {
+            throw Error(
+                'EPUB nested TOC hierarchy assert failed: ' +
+                JSON.stringify(hierarchy));
+        }
+        return hierarchy;
+    };
     const clickTocChapter = async (label) => {
         // Nested TOC entries are the same .playable-chapter buttons Prev/Next
         // use; click the nested First Section label through the TOC list.
+        if (label === 'First Section') {
+            await assertFirstSectionNestedUnderFirstChapter();
+        }
         const chapter = page.locator('.playable-chapter').filter({
             has: page.locator('.chapter-label', { hasText: new RegExp('^' + label + '$') }),
         });

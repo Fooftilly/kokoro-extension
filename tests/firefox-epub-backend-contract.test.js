@@ -121,6 +121,8 @@ print(json.dumps({
         expect(source).toContain('Hello first section.');
         expect(source).toContain('Hello third chapter.');
         expect(source).toContain('_click_toc_chapter(driver, "First Section")');
+        expect(source).toContain('_assert_first_section_nested_under_first_chapter');
+        expect(source).toContain('First Section not inside .sub-items');
         expect(source).toContain('chapterCount": 4');
         expect(source).toMatch(
             /assert_distinct_chapter_audio_hashes\(\s*first\["audioSha256"\],\s*first_section\["audioSha256"\],\s*second\["audioSha256"\],\s*third\["audioSha256"\],\s*plain_text\["audioSha256"\]\)/,

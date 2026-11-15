@@ -55,6 +55,8 @@ describe('chromium EPUB acceptance backend wiring', () => {
         expect(source).toMatch(/crypto\.subtle\.digest\('SHA-256'/);
         expect(source).toMatch(/differentAudioPerChapter = new Set\(\[/);
         expect(source).toMatch(/clickTocChapter\(\s*'First Section'\s*\)/);
+        expect(source).toMatch(/assertFirstSectionNestedUnderFirstChapter/);
+        expect(source).toMatch(/First Section not inside \.sub-items/);
         expect(source).toMatch(/waitForChapter\(\s*'First Section'/);
         expect(source).toMatch(/waitForChapter\(\s*'Third Chapter'/);
         expect(source).toMatch(/chapterCount: 4/);

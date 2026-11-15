@@ -2597,8 +2597,57 @@ def _expected_nav_for_title(title):
     return None
 
 
+def _assert_first_section_nested_under_first_chapter(driver):
+    """Devin P2: First Section must sit in First Chapter's expanded group."""
+    hierarchy = driver.execute_script("""
+        const labels = [...document.querySelectorAll(
+            '.playable-chapter .chapter-label')];
+        const sectionLabel = labels.find(
+            (el) => el.textContent.trim() === 'First Section');
+        if (!sectionLabel) {
+            return {ok: false, reason: 'First Section playable label missing'};
+        }
+        const sectionButton = sectionLabel.closest('.playable-chapter');
+        const sectionGroup = sectionButton &&
+            sectionButton.closest('.chapter-group');
+        const subItems = sectionGroup && sectionGroup.parentElement;
+        if (!subItems || !subItems.classList.contains('sub-items')) {
+            return {ok: false, reason: 'First Section not inside .sub-items'};
+        }
+        const parentGroup = subItems.parentElement;
+        if (!parentGroup || !parentGroup.classList.contains('chapter-group')) {
+            return {ok: false, reason: 'parent .chapter-group missing'};
+        }
+        if (!parentGroup.classList.contains('expanded')) {
+            return {ok: false, reason: 'First Chapter group not expanded'};
+        }
+        const parentLabel = parentGroup.querySelector(
+            ':scope > .chapter-item .chapter-label');
+        const parentText = parentLabel ? parentLabel.textContent.trim() : '';
+        if (parentText !== 'First Chapter') {
+            return {
+                ok: false,
+                reason: 'parent label is not First Chapter: ' + parentText,
+            };
+        }
+        return {
+            ok: true,
+            parentExpanded: true,
+            parentLabel: parentText,
+            sectionInSubItems: true,
+        };
+    """)
+    if not isinstance(hierarchy, dict) or hierarchy.get("ok") is not True:
+        raise RuntimeError(
+            "EPUB nested TOC hierarchy assert failed: " +
+            json.dumps(hierarchy))
+    return hierarchy
+
+
 def _click_toc_chapter(driver, label):
     """Click a publisher TOC playable chapter by exact label text."""
+    if label == "First Section":
+        _assert_first_section_nested_under_first_chapter(driver)
     buttons = driver.find_elements(By.CSS_SELECTOR, ".playable-chapter")
     for button in buttons:
         chapter_label = button.find_element(
