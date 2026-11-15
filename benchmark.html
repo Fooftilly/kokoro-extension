@@ -61,7 +61,7 @@
                         <tbody id="sharedEnglishComparisonRows"></tbody>
                     </table>
                 </div>
-                <p>Only successful tests of the current shared English sample appear here. IPA-only ONNX and server/network tests are excluded. Cold prep is initialize plus the first untimed synthesis; warm columns are three later full-clip runs. Streaming time to first audio is not measured. Exported JSON includes pinned catalog model asset bytes plus measured extension Cache Storage storedBytes per backend (and CMUdict cache bytes for ONNX English); runtime WASM/WebGPU heap is not measured. Voices and phonemization may differ; no automatic ranking or backend selection.</p>
+                <p>Only successful tests of the current shared English sample appear here. IPA-only ONNX and server/network tests are excluded. Cold prep is initialize plus the first untimed synthesis; warm columns are three later full-clip runs. Streaming time to first audio is not measured. Exported JSON includes pinned catalog model asset bytes plus a Cache Storage presence estimate (catalog bytes for header-matching cached assets — not measured body/disk usage) and CMUdict presence for ONNX English; runtime WASM/WebGPU heap is not measured. Voices and phonemization may differ; no automatic ranking or backend selection.</p>
                 <div class="measured-export-controls">
                     <button type="button" id="exportMeasuredResults" disabled>Export measured results</button>
                     <p id="measuredExportStatus" role="status" aria-live="polite"></p>

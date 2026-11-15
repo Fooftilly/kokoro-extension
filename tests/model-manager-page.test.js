@@ -1146,8 +1146,9 @@ describe('ONNX model manager English synthesis diagnostics', () => {
                 measurementKind: 'warm-full-clip-synthesis',
                 coldPrepMeasured: true,
                 firstAudioMeasured: false,
-                storageFootprintMeasured: true,
-                storageFootprintSource: 'cache-storage',
+                storageFootprintMeasured: false,
+                storageFootprintSource: 'cache-presence-catalog',
+                cachePresenceProbed: true,
                 runtimeHeapMeasured: false,
                 sampleText: 'Hello world.',
             }));
@@ -1159,23 +1160,24 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         for (const row of globalThis.__kokoroLastMeasuredExport.measurements) {
             expect(row.coldPrepMs).toBeGreaterThan(0);
             expect(row.catalogModelAssetBytes).toBeGreaterThan(0);
-            expect(row.cacheStorageStoredBytes).toBe(row.catalogModelAssetBytes);
+            // Presence estimate uses catalog bytes for header-matching entries.
+            expect(row.cachedCatalogAssetBytes).toBe(row.catalogModelAssetBytes);
             if (row.key === 'onnx-q8') {
                 expect(row.requiredDictionaryCatalogBytes).toBe(dictCatalog);
                 expect(row.catalogEnglishPathBytes).toBe(
                     row.catalogModelAssetBytes + dictCatalog);
-                expect(row.cacheStorageDictionaryBytes).toBe(dictCatalog);
-                expect(row.cacheStorageEnglishPathBytes).toBe(
-                    row.cacheStorageStoredBytes + dictCatalog);
+                expect(row.cachedCatalogDictionaryBytes).toBe(dictCatalog);
+                expect(row.cachedCatalogEnglishPathBytes).toBe(
+                    row.cachedCatalogAssetBytes + dictCatalog);
             } else {
-                expect(row.cacheStorageDictionaryBytes).toBeUndefined();
-                expect(row.cacheStorageEnglishPathBytes).toBeUndefined();
+                expect(row.cachedCatalogDictionaryBytes).toBeUndefined();
+                expect(row.cachedCatalogEnglishPathBytes).toBeUndefined();
             }
         }
         expect(global.fetch).not.toHaveBeenCalled();
     });
 
-    test('cache probe failure falls back to catalog-only footprint disclosure', async () => {
+    test('cache presence probe failure falls back to catalog-only disclosure', async () => {
         await runProbe();
         installedModels.add('cpu');
         require('../mediapipe-provider.js').MediaPipeKokoroProvider
@@ -1197,13 +1199,14 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         const payload = globalThis.__kokoroLastMeasuredExport;
         expect(payload.storageFootprintMeasured).toBe(false);
         expect(payload.storageFootprintSource).toBe('catalog');
+        expect(payload.cachePresenceProbed).toBe(false);
         expect(payload.runtimeHeapMeasured).toBe(false);
         expect(payload.measurements).toHaveLength(2);
         for (const row of payload.measurements) {
             expect(row.catalogModelAssetBytes).toBeGreaterThan(0);
-            expect(row.cacheStorageStoredBytes).toBeUndefined();
-            expect(row.cacheStorageDictionaryBytes).toBeUndefined();
-            expect(row.cacheStorageEnglishPathBytes).toBeUndefined();
+            expect(row.cachedCatalogAssetBytes).toBeUndefined();
+            expect(row.cachedCatalogDictionaryBytes).toBeUndefined();
+            expect(row.cachedCatalogEnglishPathBytes).toBeUndefined();
         }
         const onnx = payload.measurements.find(row => row.key === 'onnx-q8');
         expect(onnx.requiredDictionaryCatalogBytes).toBe(

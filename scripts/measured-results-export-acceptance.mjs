@@ -47,10 +47,12 @@ function assertMeasuredExportDisclosure(payload) {
         'Measured export must disclose cold prep separately from warm runs');
     requireMeasuredFlag(payload, 'firstAudioMeasured', false,
         'Measured export must disclose warm full-clip (not first-audio)');
-    requireMeasuredFlag(payload, 'storageFootprintMeasured', true,
-        'Measured export must include Cache Storage storedBytes probe');
-    requireMeasuredFlag(payload, 'storageFootprintSource', 'cache-storage',
-        'Measured export must disclose cache-storage as the footprint source');
+    requireMeasuredFlag(payload, 'storageFootprintMeasured', false,
+        'Measured export must not claim catalog presence as measured storage');
+    requireMeasuredFlag(payload, 'storageFootprintSource', 'cache-presence-catalog',
+        'Measured export must disclose cache-presence-catalog footprint source');
+    requireMeasuredFlag(payload, 'cachePresenceProbed', true,
+        'Measured export must disclose that cache presence was probed');
     requireMeasuredFlag(payload, 'runtimeHeapMeasured', false,
         'Measured export must not invent runtime heap (WASM/WebGPU)');
     if (!Number.isFinite(payload.englishDictionaryCatalogBytes) ||
@@ -78,14 +80,14 @@ function assertOnnxStorageDisclosure(row, dictionaryBytes) {
         throw Error('ONNX catalogEnglishPathBytes must equal model + CMUdict: ' +
             JSON.stringify(row));
     }
-    if (!Number.isFinite(row.cacheStorageDictionaryBytes) ||
-        row.cacheStorageDictionaryBytes <= 0) {
-        throw Error('ONNX row must disclose measured CMUdict Cache Storage bytes: ' +
+    if (!Number.isFinite(row.cachedCatalogDictionaryBytes) ||
+        row.cachedCatalogDictionaryBytes <= 0) {
+        throw Error('ONNX row must disclose cached catalog CMUdict bytes: ' +
             JSON.stringify(row));
     }
-    if (row.cacheStorageEnglishPathBytes !==
-        row.cacheStorageStoredBytes + row.cacheStorageDictionaryBytes) {
-        throw Error('ONNX cacheStorageEnglishPathBytes must equal model + CMUdict cache: ' +
+    if (row.cachedCatalogEnglishPathBytes !==
+        row.cachedCatalogAssetBytes + row.cachedCatalogDictionaryBytes) {
+        throw Error('ONNX cachedCatalogEnglishPathBytes must equal model + CMUdict: ' +
             JSON.stringify(row));
     }
 }
@@ -106,7 +108,7 @@ function assertMeasuredExportRows(payload, expected = {}) {
     for (const row of payload.measurements) {
         requirePositiveMetricFields(row, [
             'coldPrepMs', 'synthesisP50Ms', 'synthesisP95Ms', 'realTimeFactorP50',
-            'catalogModelAssetBytes', 'cacheStorageStoredBytes',
+            'catalogModelAssetBytes', 'cachedCatalogAssetBytes',
         ]);
         assertOnnxStorageDisclosure(row, dictionaryBytes);
     }

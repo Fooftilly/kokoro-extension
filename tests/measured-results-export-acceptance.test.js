@@ -26,8 +26,9 @@ const payload = {
     measurementKind: 'warm-full-clip-synthesis',
     coldPrepMeasured: true,
     firstAudioMeasured: false,
-    storageFootprintMeasured: true,
-    storageFootprintSource: 'cache-storage',
+    storageFootprintMeasured: false,
+    storageFootprintSource: 'cache-presence-catalog',
+    cachePresenceProbed: true,
     englishDictionaryCatalogBytes: 3618488,
     runtimeHeapMeasured: false,
     sampleText: 'Hello world.',
@@ -37,13 +38,13 @@ const payload = {
             catalogModelAssetBytes: 92885404,
             requiredDictionaryCatalogBytes: 3618488,
             catalogEnglishPathBytes: 92885404 + 3618488,
-            cacheStorageStoredBytes: 92885404,
-            cacheStorageDictionaryBytes: 3618488,
-            cacheStorageEnglishPathBytes: 92885404 + 3618488 },
+            cachedCatalogAssetBytes: 92885404,
+            cachedCatalogDictionaryBytes: 3618488,
+            cachedCatalogEnglishPathBytes: 92885404 + 3618488 },
         { key: 'mediapipe-cpu', label: 'MediaPipe', coldPrepMs: 55,
             synthesisP50Ms: 18, synthesisP95Ms: 22, realTimeFactorP50: 0.3,
             catalogModelAssetBytes: 294783298,
-            cacheStorageStoredBytes: 294783298 },
+            cachedCatalogAssetBytes: 294783298 },
     ],
 };
 exp.assertMeasuredResultsExportPayload(payload, {
@@ -88,7 +89,7 @@ const badHeap = (() => {
 const badFootprint = (() => {
     try {
         const rows = payload.measurements.map((row, i) =>
-            i === 0 ? { ...row, cacheStorageStoredBytes: 0 } : row);
+            i === 0 ? { ...row, cachedCatalogAssetBytes: 0 } : row);
         exp.assertMeasuredResultsExportPayload({
             ...payload, measurements: rows,
         });
@@ -97,12 +98,12 @@ const badFootprint = (() => {
         return { ok: false, message: String(error.message || error) };
     }
 })();
-const badCatalogOnly = (() => {
+const badMeasuredClaim = (() => {
     try {
         exp.assertMeasuredResultsExportPayload({
             ...payload,
-            storageFootprintMeasured: false,
-            storageFootprintSource: 'catalog',
+            storageFootprintMeasured: true,
+            storageFootprintSource: 'cache-storage',
         });
         return { ok: true };
     } catch (error) {
@@ -134,7 +135,7 @@ console.log(JSON.stringify({
         'kokoro-measured-local-english (1).json'),
     rejectOther: exp.isAcceptableMeasuredExportFilename('notes.txt'),
     report, fail, badPayload, badHeap, badFootprint,
-    badCatalogOnly, badOnnxDict,
+    badMeasuredClaim, badOnnxDict,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
@@ -170,8 +171,9 @@ describe('Measured results export acceptance', () => {
         expect(snap.badHeap.message).toMatch(/runtime heap/i);
         expect(snap.badFootprint.ok).toBe(false);
         expect(snap.badFootprint.message).toMatch(/Invalid measured export metric/i);
-        expect(snap.badCatalogOnly.ok).toBe(false);
-        expect(snap.badCatalogOnly.message).toMatch(/Cache Storage storedBytes/i);
+        expect(snap.badMeasuredClaim.ok).toBe(false);
+        expect(snap.badMeasuredClaim.message).toMatch(
+            /catalog presence as measured storage/i);
         expect(snap.badOnnxDict.ok).toBe(false);
         expect(snap.badOnnxDict.message).toMatch(/CMUdict catalog/i);
     });
@@ -182,8 +184,8 @@ describe('Measured results export acceptance', () => {
         expect(html).toContain('id="exportMeasuredResults"');
         expect(html).toContain('id="measuredExportStatus"');
         expect(html).toContain('pinned catalog model asset bytes');
-        expect(html).toContain('measured extension Cache Storage storedBytes');
-        expect(html).toContain('CMUdict cache bytes for ONNX English');
+        expect(html).toContain('Cache Storage presence estimate');
+        expect(html).toContain('not measured body/disk usage');
         expect(html).toContain('runtime WASM/WebGPU heap is not measured');
         expect(source).toContain('buildMeasuredEnglishExport');
         expect(source).toContain('exportMeasuredEnglishResults');
@@ -199,23 +201,29 @@ describe('Measured results export acceptance', () => {
         expect(source).toContain('coldPrepMeasured: true');
         expect(source).toContain('coldPrepMs');
         expect(source).toContain('catalogModelAssetBytes');
-        expect(source).toContain('cacheStorageStoredBytes');
-        expect(source).toContain('cacheStorageDictionaryBytes');
-        expect(source).toContain('cacheStorageEnglishPathBytes');
+        expect(source).toContain('cachedCatalogAssetBytes');
+        expect(source).toContain('cachedCatalogDictionaryBytes');
+        expect(source).toContain('cachedCatalogEnglishPathBytes');
         expect(source).toContain('snapshotMeasuredEnglishRows');
-        expect(source).toContain('probeMeasuredCacheStorage');
-        expect(source).toContain('attachCacheStorageFields');
-        expect(source).toContain("storageFootprintSource: allCacheMeasured ? 'cache-storage' : 'catalog'");
+        expect(source).toContain('probeCachedCatalogPresence');
+        expect(source).toContain('attachCachedCatalogPresenceFields');
+        expect(source).toContain('storageFootprintMeasured: false');
+        expect(source).toContain("? 'cache-presence-catalog' : 'catalog'");
+        expect(source).toContain('cachePresenceProbed');
         expect(source).toContain('englishDictionaryCatalogBytes');
         expect(source).toContain('requiredDictionaryCatalogBytes');
         expect(source).toContain('catalogEnglishPathBytes');
         expect(source).toContain('runtimeHeapMeasured: false');
         expect(source).toContain('await buildMeasuredEnglishExport()');
         expect(source).not.toContain('storageFootprintBytes');
+        expect(source).not.toContain('cacheStorageStoredBytes');
+        expect(source).not.toContain("storageFootprintSource: 'cache-storage'");
         const helper = fs.readFileSync(path.join(
             root, 'scripts', 'measured-results-export-acceptance.mjs'), 'utf8');
         expect(helper).toContain('requirePositiveMetricFields');
         expect(helper).toContain('assertOnnxStorageDisclosure');
+        expect(helper).toContain('storageFootprintMeasured\', false');
+        expect(helper).toContain('cache-presence-catalog');
         expect(html).toContain('Cold prep');
         expect(source).toContain('Nothing was uploaded');
         expect(source).not.toContain('navigator.sendBeacon');

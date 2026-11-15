@@ -88,7 +88,9 @@ function snapshotMeasuredEnglishRows() {
     return rows;
 }
 
-async function probeMeasuredCacheStorage(snappedRows) {
+// status().storedBytes sums pinned catalog asset.bytes for header-matching
+// cache entries — a presence estimate, not measured body/disk usage.
+async function probeCachedCatalogPresence(snappedRows) {
     let cacheByKey = new Map();
     let dictionaryStoredBytes = null;
     try {
@@ -105,45 +107,46 @@ async function probeMeasuredCacheStorage(snappedRows) {
             }
         }, { mode: 'shared' });
     } catch (_) {
-        // Failed cache probe keeps catalog fields; measured flags stay false.
+        // Failed presence probe keeps catalog fields only.
         return { cacheByKey: new Map(), dictionaryStoredBytes: null };
     }
     return { cacheByKey, dictionaryStoredBytes };
 }
 
-function attachCacheStorageFields(row, entry, cacheByKey, dictionaryStoredBytes,
-    englishDictionaryCatalogBytes) {
-    let cacheOk = true;
-    const stored = cacheByKey.get(entry.key)?.storedBytes;
-    if (Number.isFinite(stored) && stored > 0) {
-        row.cacheStorageStoredBytes = stored;
+function attachCachedCatalogPresenceFields(row, entry, cacheByKey,
+    dictionaryStoredBytes, englishDictionaryCatalogBytes) {
+    let presenceOk = true;
+    // Catalog bytes for header-matching cache entries — not measured disk use.
+    const present = cacheByKey.get(entry.key)?.storedBytes;
+    if (Number.isFinite(present) && present > 0) {
+        row.cachedCatalogAssetBytes = present;
     } else {
-        cacheOk = false;
+        presenceOk = false;
     }
-    if (entry.provider !== 'onnx') return cacheOk;
+    if (entry.provider !== 'onnx') return presenceOk;
     row.requiredDictionaryCatalogBytes = englishDictionaryCatalogBytes;
     row.catalogEnglishPathBytes = entry.totalBytes + englishDictionaryCatalogBytes;
     if (Number.isFinite(dictionaryStoredBytes) && dictionaryStoredBytes > 0 &&
-        Number.isFinite(stored) && stored > 0) {
-        row.cacheStorageDictionaryBytes = dictionaryStoredBytes;
-        row.cacheStorageEnglishPathBytes = stored + dictionaryStoredBytes;
+        Number.isFinite(present) && present > 0) {
+        row.cachedCatalogDictionaryBytes = dictionaryStoredBytes;
+        row.cachedCatalogEnglishPathBytes = present + dictionaryStoredBytes;
     } else {
-        cacheOk = false;
+        presenceOk = false;
     }
-    return cacheOk;
+    return presenceOk;
 }
 
 // #61: optional local-only JSON export of measured English rows (no telemetry).
-// Cache Storage probe is best-effort under a shared lock; catalog fields stay.
+// Cache presence probe is best-effort under a shared lock; catalog fields stay.
 async function buildMeasuredEnglishExport() {
     const sampleText = document.getElementById('benchmarkText')?.value.trim() || '';
     const englishDictionaryCatalogBytes = dictionary.assets.reduce(
         (sum, asset) => sum + asset.bytes, 0);
     const snappedRows = snapshotMeasuredEnglishRows();
     const { cacheByKey, dictionaryStoredBytes } =
-        await probeMeasuredCacheStorage(snappedRows);
+        await probeCachedCatalogPresence(snappedRows);
     const measurements = [];
-    let allCacheMeasured = snappedRows.length > 0;
+    let allCachePresent = snappedRows.length > 0;
     for (const snapped of snappedRows) {
         const { entry } = snapped;
         const row = {
@@ -156,9 +159,9 @@ async function buildMeasuredEnglishExport() {
             // Static pinned catalog asset sum (KE-38).
             catalogModelAssetBytes: entry.totalBytes,
         };
-        if (!attachCacheStorageFields(row, entry, cacheByKey, dictionaryStoredBytes,
-            englishDictionaryCatalogBytes)) {
-            allCacheMeasured = false;
+        if (!attachCachedCatalogPresenceFields(row, entry, cacheByKey,
+            dictionaryStoredBytes, englishDictionaryCatalogBytes)) {
+            allCachePresent = false;
         }
         measurements.push(row);
     }
@@ -170,9 +173,11 @@ async function buildMeasuredEnglishExport() {
         measurementKind: 'warm-full-clip-synthesis',
         coldPrepMeasured: true,
         firstAudioMeasured: false,
-        // Cache Storage probe when every measured row has storedBytes.
-        storageFootprintMeasured: allCacheMeasured,
-        storageFootprintSource: allCacheMeasured ? 'cache-storage' : 'catalog',
+        // Presence estimate only — status() never reads cached body lengths.
+        storageFootprintMeasured: false,
+        storageFootprintSource: allCachePresent
+            ? 'cache-presence-catalog' : 'catalog',
+        cachePresenceProbed: allCachePresent,
         englishDictionaryCatalogBytes,
         // Do not invent runtime heap; Chrome performance.memory is optional
         // and not comparable across engines.
