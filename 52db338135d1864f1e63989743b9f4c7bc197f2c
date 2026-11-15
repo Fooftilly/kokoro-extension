@@ -1,1 +1,6 @@
-Strengthen live long-text verification after review: compare combined WAV body byte-for-byte against each native chunk in order, in addition to token counts and total length.
+Revision history for #182:
+
+rev 2 (content) 2026-11-15 22:01 UTC — Strengthen live long-text verification after review: compare combined WAV body byte-for-byte against each native chunk in order, in addition to token counts and total length.
+rev 1 (initial) 2026-11-15 22:01 UTC
+
+<!-- mergify-revision-data: {"schema_version":1,"pull_number":182,"entries":[{"number":1,"change_type":"initial","old_sha":null,"new_sha":"8f80bc5ddc44ba56715cfdb7cdfcf45d5515f885","timestamp_iso":"2026-11-15T22:01:05Z","reason":"","replay_sha":null,"compare_url":null},{"number":2,"change_type":"content","old_sha":"8f80bc5ddc44ba56715cfdb7cdfcf45d5515f885","new_sha":"52db338135d1864f1e63989743b9f4c7bc197f2c","timestamp_iso":"2026-11-15T22:01:05Z","reason":"Strengthen live long-text verification after review: compare combined WAV body byte-for-byte against each native chunk in order, in addition to token counts and total length.","replay_sha":null,"compare_url":"https://github.com/Fooftilly/kokoro-extension/compare/8f80bc5ddc44ba56715cfdb7cdfcf45d5515f885...52db338135d1864f1e63989743b9f4c7bc197f2c"}]} -->
