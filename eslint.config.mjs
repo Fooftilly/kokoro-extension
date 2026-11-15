@@ -106,6 +106,7 @@ export default [
     languageOptions: {
       globals: {
         module: 'readonly',
+        require: 'readonly',
         window: 'readonly',
       },
     },
