@@ -70,31 +70,98 @@ function renderSharedEnglishResults() {
     updateMeasuredExportButton();
 }
 
-// #61: optional local-only JSON export of measured English rows (no telemetry).
-function buildMeasuredEnglishExport() {
-    const sampleText = document.getElementById('benchmarkText')?.value.trim() || '';
-    // Pinned CMUdict catalog size — required for ONNX English, not Cache Storage.
-    const englishDictionaryCatalogBytes = dictionary.assets.reduce(
-        (sum, asset) => sum + asset.bytes, 0);
-    const measurements = [];
+// Snapshot shared-English metrics before any await so mid-probe sample edits
+// or model removals cannot leave undefined result rows.
+function snapshotMeasuredEnglishRows() {
+    const rows = [];
     for (const entry of variants) {
         const result = sharedEnglishResults.get(entry.key);
         if (!result) continue;
-        const row = {
-            key: entry.key,
-            label: entry.label,
+        rows.push({
+            entry,
             coldPrepMs: result.coldPrepMs,
             synthesisP50Ms: result.synthesisP50Ms,
             synthesisP95Ms: result.synthesisP95Ms,
             realTimeFactorP50: result.realTimeFactorP50,
-            // Static pinned catalog asset sum — not measured disk/Cache usage.
+        });
+    }
+    return rows;
+}
+
+// status().storedBytes sums pinned catalog asset.bytes for header-matching
+// cache entries — a presence estimate, not measured body/disk usage.
+async function probeCachedCatalogPresence(snappedRows) {
+    let cacheByKey = new Map();
+    let dictionaryStoredBytes = null;
+    try {
+        await withModelDataLock(async () => {
+            const store = cacheStore();
+            const pairs = await Promise.all(snappedRows.map(async ({ entry }) => {
+                const state = await store.status(entryManifest(entry));
+                return [entry.key, state];
+            }));
+            cacheByKey = new Map(pairs);
+            if (snappedRows.some(({ entry }) => entry.provider === 'onnx')) {
+                const dictState = await store.status(dictionaryManifest());
+                dictionaryStoredBytes = dictState.storedBytes;
+            }
+        }, { mode: 'shared' });
+    } catch (_) {
+        // Failed presence probe keeps catalog fields only.
+        return { cacheByKey: new Map(), dictionaryStoredBytes: null };
+    }
+    return { cacheByKey, dictionaryStoredBytes };
+}
+
+function attachCachedCatalogPresenceFields(row, entry, cacheByKey,
+    dictionaryStoredBytes, englishDictionaryCatalogBytes) {
+    let presenceOk = true;
+    // Catalog bytes for header-matching cache entries — not measured disk use.
+    const present = cacheByKey.get(entry.key)?.storedBytes;
+    if (Number.isFinite(present) && present > 0) {
+        row.cachedCatalogAssetBytes = present;
+    } else {
+        presenceOk = false;
+    }
+    if (entry.provider !== 'onnx') return presenceOk;
+    row.requiredDictionaryCatalogBytes = englishDictionaryCatalogBytes;
+    row.catalogEnglishPathBytes = entry.totalBytes + englishDictionaryCatalogBytes;
+    if (Number.isFinite(dictionaryStoredBytes) && dictionaryStoredBytes > 0 &&
+        Number.isFinite(present) && present > 0) {
+        row.cachedCatalogDictionaryBytes = dictionaryStoredBytes;
+        row.cachedCatalogEnglishPathBytes = present + dictionaryStoredBytes;
+    } else {
+        presenceOk = false;
+    }
+    return presenceOk;
+}
+
+// #61: optional local-only JSON export of measured English rows (no telemetry).
+// Cache presence probe is best-effort under a shared lock; catalog fields stay.
+async function buildMeasuredEnglishExport() {
+    const sampleText = document.getElementById('benchmarkText')?.value.trim() || '';
+    const englishDictionaryCatalogBytes = dictionary.assets.reduce(
+        (sum, asset) => sum + asset.bytes, 0);
+    const snappedRows = snapshotMeasuredEnglishRows();
+    const { cacheByKey, dictionaryStoredBytes } =
+        await probeCachedCatalogPresence(snappedRows);
+    const measurements = [];
+    let allCachePresent = snappedRows.length > 0;
+    for (const snapped of snappedRows) {
+        const { entry } = snapped;
+        const row = {
+            key: entry.key,
+            label: entry.label,
+            coldPrepMs: snapped.coldPrepMs,
+            synthesisP50Ms: snapped.synthesisP50Ms,
+            synthesisP95Ms: snapped.synthesisP95Ms,
+            realTimeFactorP50: snapped.realTimeFactorP50,
+            // Static pinned catalog asset sum (KE-38).
             catalogModelAssetBytes: entry.totalBytes,
         };
-        if (entry.provider === 'onnx') {
-            row.requiredDictionaryCatalogBytes = englishDictionaryCatalogBytes;
-            // Explicit catalog total for the ONNX English path (model + CMUdict).
-            row.catalogEnglishPathBytes =
-                entry.totalBytes + englishDictionaryCatalogBytes;
+        if (!attachCachedCatalogPresenceFields(row, entry, cacheByKey,
+            dictionaryStoredBytes, englishDictionaryCatalogBytes)) {
+            allCachePresent = false;
         }
         measurements.push(row);
     }
@@ -106,9 +173,11 @@ function buildMeasuredEnglishExport() {
         measurementKind: 'warm-full-clip-synthesis',
         coldPrepMeasured: true,
         firstAudioMeasured: false,
-        // Catalog sizes only — no Cache Storage / disk probe.
+        // Presence estimate only — status() never reads cached body lengths.
         storageFootprintMeasured: false,
-        storageFootprintSource: 'catalog',
+        storageFootprintSource: allCachePresent
+            ? 'cache-presence-catalog' : 'catalog',
+        cachePresenceProbed: allCachePresent,
         englishDictionaryCatalogBytes,
         // Do not invent runtime heap; Chrome performance.memory is optional
         // and not comparable across engines.
@@ -188,8 +257,8 @@ async function downloadPinnedMeasuredExport(url, filename) {
 }
 
 async function exportMeasuredEnglishResults() {
-    const payload = buildMeasuredEnglishExport();
     const status = document.getElementById('measuredExportStatus');
+    const payload = await buildMeasuredEnglishExport();
     if (!payload.measurements.length) {
         if (status) status.textContent = 'No measured local English results to export.';
         return;
