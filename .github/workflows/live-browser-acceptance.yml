@@ -117,7 +117,7 @@ jobs:
           # GitHub withholds container step logs until the step ends — mid-flight
           # stdout is invisible. Fail fast so the artifact + flushed log appear:
           # (1) stall watchdog on stage-only progress.log (not keepalive lines)
-          # (2) hard 20m timeout on the whole harness process group.
+          # (2) hard 20m timeout (30m for MediaPipe CPU) on the harness group.
           set -eu
           mkdir -p dist/runtime-acceptance
           : > dist/runtime-acceptance/progress.log
@@ -161,6 +161,12 @@ jobs:
           # Hard ceiling so a wedged wait cannot burn the full 60m job timeout.
           # (timeout(1) cannot wrap the shell builtin `wait`, so poll with a deadline.)
           HARD_LIMIT_SECS=1200
+          # MediaPipe origin run 43745292578 was still walking the 36-sentence
+          # fixture at 17m. Its measured CPU synthesis and remaining positions
+          # exceed the 20m budget; retain the independent 180s stall watchdog.
+          if [ "$KOKORO_LIVE_PROVIDER" = 'mediapipe' ]; then
+            HARD_LIMIT_SECS=1800
+          fi
           START_EPOCH=$(date +%s)
           while kill -0 "$NODE_PID" 2>/dev/null; do
             NOW_EPOCH=$(date +%s)

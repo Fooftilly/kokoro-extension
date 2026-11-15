@@ -5,7 +5,11 @@ import { withModelDataLock } from './model-data-lock.js';
 import { pcmToWavBlob } from './pcm-wav.js';
 
 export class AudioManager {
-    constructor() {
+    constructor({ localProviderIdleMs = 5 * 60 * 1000 } = {}) {
+        if (!Number.isInteger(localProviderIdleMs) || localProviderIdleMs < 1 ||
+            localProviderIdleMs > 2147483647) {
+            throw new RangeError('Local provider idle timeout must be a positive timer interval');
+        }
         this.audioCache = new Map(); // index -> { promise, evicted }
         this.cacheWindow = null; // bounded recent sentences after playback advances
         this.audioPins = new Set(); // independent leases retained until downloads finish
@@ -18,11 +22,15 @@ export class AudioManager {
         this.localProvider = null;
         this.localBackend = null;
         this.localVariant = null;
+        this.localProviderIdleMs = localProviderIdleMs;
+        this.localIdleTimer = null;
+        this.localActivityRevision = 0;
         this.objectUrls = new Set();
         this.generation = 0;
     }
 
     clear() {
+        const activity = this.beginLocalActivity();
         this.generation++;
         for (const entry of this.audioCache.values()) entry.evicted = true;
         this.cacheWindow = null;
@@ -51,6 +59,37 @@ export class AudioManager {
         if (this.abortController) this.abortController.abort();
         this.abortController = new AbortController();
         this.requestQueue = Promise.resolve();
+        // A cleared session can leave a warm model behind, including when
+        // cancellation takes longer than the last synthesis. Start its idle
+        // countdown only after that whole native-operation lane settles.
+        void this.localInferenceQueue.then(() => this.scheduleLocalIdleRelease(activity));
+    }
+
+    beginLocalActivity() {
+        if (this.localIdleTimer !== null) clearTimeout(this.localIdleTimer);
+        this.localIdleTimer = null;
+        return ++this.localActivityRevision;
+    }
+
+    scheduleLocalIdleRelease(activity) {
+        if (activity !== this.localActivityRevision || !this.localProvider) return;
+        const provider = this.localProvider;
+        this.localIdleTimer = setTimeout(() => {
+            this.localIdleTimer = null;
+            // Use the same lane as inference and cancellation. A new request
+            // either invalidates this pending release, or waits for the native
+            // close already in progress before it constructs a fresh provider.
+            const closing = this.localInferenceQueue.then(async () => {
+                if (activity !== this.localActivityRevision || this.localProvider !== provider) return;
+                this.localProvider = null;
+                this.localBackend = null;
+                this.localVariant = null;
+                await provider.close();
+            });
+            this.localInferenceQueue = closing.catch(error => {
+                console.warn('Local TTS idle release failed', error);
+            });
+        }, this.localProviderIdleMs);
     }
 
     setSentences(sentences) {
@@ -200,6 +239,7 @@ export class AudioManager {
     }
 
     async localAudio(text, data, backend, isStale = () => false, onSynthesisStart = () => {}) {
+        const activity = this.beginLocalActivity();
         // Local PCM synthesis runs only in the extension-owned playback page.
         // A clear() starts a new session, but the previous WASM synthesis may
         // still be running even after cancel() returns. Serialize local jobs
@@ -247,7 +287,7 @@ export class AudioManager {
                 return url;
 
             }, { mode: 'shared', signal: abortSignal });
-        });
+        }).finally(() => this.scheduleLocalIdleRelease(activity));
         // A rejected or cancelled previous generation cannot poison the lane.
         this.localInferenceQueue = work.catch(() => {});
         return work;
