@@ -1,1 +1,6 @@
-Rebase onto merged #178 and verify the combined ONNX changes before merging #179.
+Revision history for #179:
+
+rev 2 (rebase) 2026-11-15 17:42 UTC — Rebase onto merged #178 and verify the combined ONNX changes before merging #179.
+rev 1 (initial) 2026-11-15 17:42 UTC
+
+<!-- mergify-revision-data: {"schema_version":1,"pull_number":179,"entries":[{"number":1,"change_type":"initial","old_sha":null,"new_sha":"2546004cf12487885f316f9e7078ce7fd9ac22e1","timestamp_iso":"2026-11-15T17:42:01Z","reason":"","replay_sha":null,"compare_url":null},{"number":2,"change_type":"rebase","old_sha":"2546004cf12487885f316f9e7078ce7fd9ac22e1","new_sha":"08c42aad610b569b8b4df1e496000b1d1079aa2a","timestamp_iso":"2026-11-15T17:42:01Z","reason":"Rebase onto merged #178 and verify the combined ONNX changes before merging #179.","replay_sha":null,"compare_url":"https://github.com/Fooftilly/kokoro-extension/compare/2546004cf12487885f316f9e7078ce7fd9ac22e1...08c42aad610b569b8b4df1e496000b1d1079aa2a"}]} -->
