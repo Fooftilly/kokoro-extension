@@ -1416,6 +1416,35 @@ def assert_gpu_execution_disclosure(preflight, browser="Firefox"):
     return json.loads(probe.stdout.strip())
 
 
+def assert_progressive_streaming_ttfa_unmeasured(report, browser="Firefox"):
+    """#61 / KE-54: progressive / true MediaSource TTFA remains unmeasured."""
+    scripts_dir = Path(__file__).resolve().parent
+    probe = subprocess.run(
+        [
+            "node", "--input-type=module", "-e",
+            "import { assertProgressiveStreamingTtfaUnmeasured, "
+            "buildProgressiveStreamingTtfaReport } from "
+            "'./mediasource-progressive-ttfa-acceptance.mjs';"
+            "const report = " + json.dumps(report) + ";"
+            "assertProgressiveStreamingTtfaUnmeasured(report);"
+            "const acceptance = buildProgressiveStreamingTtfaReport({"
+            "browser: " + json.dumps(browser) + ","
+            "assertedFromServerCard: true,"
+            "});"
+            "console.log(JSON.stringify(acceptance));",
+        ],
+        cwd=str(scripts_dir),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        raise RuntimeError(
+            "Progressive MediaSource TTFA unmeasured assert failed: " +
+            (probe.stderr or probe.stdout or "unknown error"))
+    return json.loads(probe.stdout.strip())
+
+
 def assert_store_signing_disclosure_from_payload(payload, browser="Firefox"):
     """#61 / KE-46: assert nested storeSigning from a real measured export payload.
 
@@ -1979,7 +2008,7 @@ def accept_fastapi_server_card(driver, origin, api_url):
         raise RuntimeError(
             "Firefox FastAPI Use this backend did not select fastapi: " +
             repr(selected.get("backend")))
-    return build_fastapi_server_card_report(
+    card = build_fastapi_server_card_report(
         api_url,
         backend_before_choose=before["backend"],
         choose_changed_backend=before["backend"] != selected["backend"],
@@ -1997,6 +2026,11 @@ def accept_fastapi_server_card(driver, origin, api_url):
         mediasource_progressive_ttfa_disclosure=ttfb.get(
             "mediasourceProgressiveTtfaDisclosure") or "",
     )
+    # #61 / KE-54: first-class progressive MediaSource TTFA remains unmeasured.
+    card["progressiveStreamingTtfaAcceptance"] = (
+        assert_progressive_streaming_ttfa_unmeasured(
+            card, browser="Firefox"))
+    return card
 
 
 # In-frame MPEG probe — switch_to.frame like WAV acceptance (cross-origin
@@ -4085,6 +4119,25 @@ def main():
                 try:
                     fastapi_card = accept_fastapi_server_card(
                         driver, state["origin"], api_url)
+                    progressive_ttfa = (
+                        fastapi_card or {}).get(
+                        "progressiveStreamingTtfaAcceptance")
+                    if (not progressive_ttfa or
+                            progressive_ttfa.get("assertedFromServerCard")
+                            is not True or
+                            progressive_ttfa.get("success") is not True or
+                            progressive_ttfa.get(
+                                "progressiveStreamingTtfaMeasured")
+                            is not False or
+                            progressive_ttfa.get(
+                                "trueMediaSourceTtfaMeasured")
+                            is not False):
+                        raise RuntimeError(
+                            "Progressive MediaSource TTFA unmeasured "
+                            "acceptance missing verified server-card "
+                            "evidence: " + repr(progressive_ttfa))
+                    result["progressiveStreamingTtfaAcceptance"] = (
+                        progressive_ttfa)
                     result["stage"] = "fastapi-preference-honor"
                     fastapi_honor = accept_fastapi_preference_honor(
                         driver, state["origin"], api_url, speech_hits)
@@ -4100,6 +4153,8 @@ def main():
                     "dictionaryUiDownloadAcceptance": dictionary_ui_acceptance,
                     "gpuExecutionDisclosureAcceptance": gpu_execution_disclosure,
                     "storeSigningDisclosureAcceptance": store_signing_disclosure,
+                    "progressiveStreamingTtfaAcceptance": (
+                        result.get("progressiveStreamingTtfaAcceptance")),
                     "popupTestTtsCtaAcceptance": popup_cta,
                     "dualComparisonAcceptance": comparison,
                     "fastapiServerCardAcceptance": fastapi_card,

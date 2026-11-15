@@ -1332,7 +1332,7 @@ async function acceptFastApiServerCard(page, apiUrl) {
             'FastAPI Use this backend did not select fastapi: ' + selectedBackend);
     }
 
-    return buildFastApiServerCardReport({
+    const report = buildFastApiServerCardReport({
         browser: 'chromium',
         apiUrl,
         afterLocalDualComparison: true,
@@ -1352,6 +1352,18 @@ async function acceptFastApiServerCard(page, apiUrl) {
         mediasourceProgressiveTtfaDisclosure:
             ttfb.mediasourceProgressiveTtfaDisclosure,
     });
+    // #61 / KE-54: first-class progressive MediaSource TTFA remains unmeasured.
+    const {
+        assertProgressiveStreamingTtfaUnmeasured,
+        buildProgressiveStreamingTtfaReport,
+    } = await import('./mediasource-progressive-ttfa-acceptance.mjs');
+    assertProgressiveStreamingTtfaUnmeasured(report);
+    report.progressiveStreamingTtfaAcceptance =
+        buildProgressiveStreamingTtfaReport({
+            browser: 'chromium',
+            assertedFromServerCard: true,
+        });
+    return report;
 }
 
 async function readOverlayMpegSnapshot(overlayFrame, stored) {
@@ -2935,6 +2947,7 @@ try {
     let popupTestTtsCtaAcceptance = null;
     let gpuExecutionDisclosureAcceptance = null;
     let storeSigningDisclosureAcceptance = null;
+    let progressiveStreamingTtfaAcceptance = null;
     let twoBackendComparisonAcceptance = null;
     let fastapiServerCardAcceptance = null;
     let fastapiPreferenceHonorAcceptance = null;
@@ -2947,6 +2960,7 @@ try {
             dictionaryCacheAcceptance, browserRestartAcceptance,
             dictionaryUiDownloadAcceptance, popupTestTtsCtaAcceptance,
             gpuExecutionDisclosureAcceptance, storeSigningDisclosureAcceptance,
+            progressiveStreamingTtfaAcceptance,
             twoBackendComparisonAcceptance, fastapiServerCardAcceptance,
             fastapiPreferenceHonorAcceptance, oovG2pDisclosureAcceptance,
             results, currentProvider, originDownload, providerFilter,
@@ -3417,8 +3431,29 @@ try {
             try {
                 fastapiServerCardAcceptance = await acceptFastApiServerCard(
                     comparisonPage, speechStub.apiUrl);
+                progressiveStreamingTtfaAcceptance =
+                    fastapiServerCardAcceptance
+                        ?.progressiveStreamingTtfaAcceptance || null;
+                if (progressiveStreamingTtfaAcceptance?.assertedFromServerCard !==
+                        true ||
+                    progressiveStreamingTtfaAcceptance?.success !== true ||
+                    progressiveStreamingTtfaAcceptance
+                        ?.progressiveStreamingTtfaMeasured !== false ||
+                    progressiveStreamingTtfaAcceptance
+                        ?.trueMediaSourceTtfaMeasured !== false) {
+                    throw Error(
+                        'Progressive MediaSource TTFA unmeasured acceptance ' +
+                        'missing verified server-card evidence: ' +
+                        JSON.stringify(progressiveStreamingTtfaAcceptance));
+                }
                 liveHeartbeat('fastapi-server-card-done', {
                     success: fastapiServerCardAcceptance?.success === true,
+                    progressiveStreamingTtfaMeasured:
+                        progressiveStreamingTtfaAcceptance
+                            ?.progressiveStreamingTtfaMeasured,
+                    trueMediaSourceTtfaMeasured:
+                        progressiveStreamingTtfaAcceptance
+                            ?.trueMediaSourceTtfaMeasured,
                 });
                 await saveReport();
                 liveHeartbeat('fastapi-preference-honor-start');
