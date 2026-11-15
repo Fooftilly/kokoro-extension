@@ -1730,7 +1730,7 @@ def _start_fastapi_speech_stub():
                 self.send_header("Content-Length", str(len(mp3)))
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
-                # Delay the first body byte so streaming TTFA is measurable.
+                # Delay the first body byte so streamed TTFB is measurable.
                 first_len = max(1, min(64, len(mp3)))
                 first = mp3[:first_len]
                 rest = mp3[first_len:]
@@ -1789,9 +1789,10 @@ def accept_fastapi_server_card(driver, origin, api_url):
         const audio=document.getElementById('serverAudio');
         const choose=document.getElementById('chooseServer');
         return text.includes('Server returned playable MP3') &&
-            text.includes('Streaming TTFA p50') &&
-            status?.dataset?.streamingTtfaMeasured==='true' &&
-            Number.isFinite(Number(status?.dataset?.firstAudioP50Ms)) &&
+            text.includes('First body byte (TTFB) p50') &&
+            text.includes('Playback / start-of-audio was not measured') &&
+            status?.dataset?.streamingFirstBodyByteMeasured==='true' &&
+            Number.isFinite(Number(status?.dataset?.firstBodyByteP50Ms)) &&
             audio && !audio.hidden &&
             String(audio.src||'').startsWith('data:audio') &&
             choose && choose.disabled===false;
@@ -1867,12 +1868,16 @@ def accept_fastapi_server_card(driver, origin, api_url):
         raise RuntimeError(
             "Firefox FastAPI Use this backend did not select fastapi: " +
             repr(selected.get("backend")))
-    ttfa = driver.execute_script("""
+    ttfb = driver.execute_script("""
         const status=document.getElementById('serverStatus');
+        const text=status?.textContent||'';
         return {
-            streamingTtfaMeasured:status?.dataset?.streamingTtfaMeasured==='true',
-            firstAudioP50Ms:Number(status?.dataset?.firstAudioP50Ms),
+            streamingFirstBodyByteMeasured:
+                status?.dataset?.streamingFirstBodyByteMeasured==='true',
+            firstBodyByteP50Ms:Number(status?.dataset?.firstBodyByteP50Ms),
             synthesisP50Ms:Number(status?.dataset?.synthesisP50Ms),
+            playbackStartNotMeasured:
+                text.includes('Playback / start-of-audio was not measured'),
         };
     """)
     return build_fastapi_server_card_report(
@@ -1880,9 +1885,12 @@ def accept_fastapi_server_card(driver, origin, api_url):
         backend_before_choose=before["backend"],
         choose_changed_backend=before["backend"] != selected["backend"],
         audio_duration_sec=float(audio_duration),
-        streaming_ttfa_measured=bool(ttfa.get("streamingTtfaMeasured")),
-        first_audio_p50_ms=ttfa.get("firstAudioP50Ms"),
-        synthesis_p50_ms=ttfa.get("synthesisP50Ms"),
+        streaming_first_body_byte_measured=bool(
+            ttfb.get("streamingFirstBodyByteMeasured")),
+        playback_start_not_measured=bool(
+            ttfb.get("playbackStartNotMeasured")),
+        first_body_byte_p50_ms=ttfb.get("firstBodyByteP50Ms"),
+        synthesis_p50_ms=ttfb.get("synthesisP50Ms"),
     )
 
 

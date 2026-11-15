@@ -1064,7 +1064,7 @@ async function startFastApiSpeechStub() {
             const chunks = [];
             req.on('data', (part) => chunks.push(part));
             req.on('end', () => {
-                // Delay the first body byte so streaming TTFA is measurable.
+                // Delay the first body byte so streamed TTFB is measurable.
                 res.writeHead(200, {
                     'Content-Type': 'audio/mpeg',
                     'Content-Length': body.length,
@@ -1098,7 +1098,8 @@ async function startFastApiSpeechStub() {
 async function acceptFastApiServerCard(page, apiUrl) {
     const {
         SERVER_PLAYABLE_MP3_NEEDLE,
-        SERVER_STREAMING_TTFA_NEEDLE,
+        SERVER_FIRST_BODY_BYTE_NEEDLE,
+        SERVER_PLAYBACK_NOT_MEASURED_NEEDLE,
         FASTAPI_SELECTED_NEEDLE,
         BACKEND_BEFORE_CHOOSE,
         buildFastApiServerCardReport,
@@ -1124,15 +1125,17 @@ async function acceptFastApiServerCard(page, apiUrl) {
         const audio = document.getElementById('serverAudio');
         const choose = document.getElementById('chooseServer');
         return text.includes(needles.playable) &&
-            text.includes(needles.ttfa) &&
-            status?.dataset?.streamingTtfaMeasured === 'true' &&
-            Number.isFinite(Number(status?.dataset?.firstAudioP50Ms)) &&
+            text.includes(needles.ttfb) &&
+            text.includes(needles.noPlayback) &&
+            status?.dataset?.streamingFirstBodyByteMeasured === 'true' &&
+            Number.isFinite(Number(status?.dataset?.firstBodyByteP50Ms)) &&
             audio && !audio.hidden &&
             String(audio.src || '').startsWith('data:audio') &&
             choose && choose.disabled === false;
     }, {
         playable: SERVER_PLAYABLE_MP3_NEEDLE,
-        ttfa: SERVER_STREAMING_TTFA_NEEDLE,
+        ttfb: SERVER_FIRST_BODY_BYTE_NEEDLE,
+        noPlayback: SERVER_PLAYBACK_NOT_MEASURED_NEEDLE,
     }, { timeout: 60000 });
 
     // Prove the stub MP3 actually decodes (not just a data: URL prefix).
@@ -1190,13 +1193,16 @@ async function acceptFastApiServerCard(page, apiUrl) {
             'FastAPI Use this backend did not select fastapi: ' + selectedBackend);
     }
 
-    const ttfa = await page.evaluate(() => {
+    const ttfb = await page.evaluate(() => {
         const status = document.getElementById('serverStatus');
+        const text = status?.textContent || '';
         return {
-            streamingTtfaMeasured:
-                status?.dataset?.streamingTtfaMeasured === 'true',
-            firstAudioP50Ms: Number(status?.dataset?.firstAudioP50Ms),
+            streamingFirstBodyByteMeasured:
+                status?.dataset?.streamingFirstBodyByteMeasured === 'true',
+            firstBodyByteP50Ms: Number(status?.dataset?.firstBodyByteP50Ms),
             synthesisP50Ms: Number(status?.dataset?.synthesisP50Ms),
+            playbackStartNotMeasured:
+                text.includes('Playback / start-of-audio was not measured'),
         };
     });
     return buildFastApiServerCardReport({
@@ -1207,9 +1213,10 @@ async function acceptFastApiServerCard(page, apiUrl) {
         chooseChangedBackend: beforeChoose !== selectedBackend,
         decodeableMp3: true,
         audioDurationSec,
-        streamingTtfaMeasured: ttfa.streamingTtfaMeasured,
-        firstAudioP50Ms: ttfa.firstAudioP50Ms,
-        synthesisP50Ms: ttfa.synthesisP50Ms,
+        streamingFirstBodyByteMeasured: ttfb.streamingFirstBodyByteMeasured,
+        playbackStartNotMeasured: ttfb.playbackStartNotMeasured,
+        firstBodyByteP50Ms: ttfb.firstBodyByteP50Ms,
+        synthesisP50Ms: ttfb.synthesisP50Ms,
     });
 }
 

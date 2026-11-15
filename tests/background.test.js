@@ -433,8 +433,8 @@ describe('background.js logic', () => {
 
         expect(result.success).toBe(true);
         expect(result.dataUrl).toBe('data:audio/mpeg;base64,...');
-        expect(Number.isFinite(result.firstAudioMs)).toBe(true);
-        expect(result.firstAudioMs).toBeGreaterThanOrEqual(0);
+        expect(Number.isFinite(result.firstBodyByteMs)).toBe(true);
+        expect(result.firstBodyByteMs).toBeGreaterThanOrEqual(0);
         expect(global.fetch).toHaveBeenCalledWith(
             'http://localhost:8880/v1/audio/speech',
             expect.objectContaining({
@@ -444,7 +444,7 @@ describe('background.js logic', () => {
         );
     });
 
-    test('FETCH_TTS_AUDIO leaves firstAudioMs null without a body stream', async () => {
+    test('FETCH_TTS_AUDIO leaves firstBodyByteMs null without a body stream', async () => {
         fetch.mockResolvedValue({
             ok: true,
             status: 200,
@@ -460,10 +460,10 @@ describe('background.js logic', () => {
         }, {});
         expect(result.success).toBe(true);
         expect(result.dataUrl).toBe('data:audio/mpeg;base64,...');
-        expect(result.firstAudioMs).toBeNull();
+        expect(result.firstBodyByteMs).toBeNull();
     });
 
-    test('FETCH_TTS_AUDIO firstAudioMs stops at first chunk, not full buffer', async () => {
+    test('FETCH_TTS_AUDIO firstBodyByteMs stops at first chunk, not full buffer', async () => {
         jest.useFakeTimers();
         const first = Uint8Array.from([1, 2, 3, 4]);
         const rest = Uint8Array.from([5, 6, 7, 8]);
@@ -507,10 +507,10 @@ describe('background.js logic', () => {
         await jest.advanceTimersByTimeAsync(400);
         const result = await pending;
         expect(result.success).toBe(true);
-        expect(Number.isFinite(result.firstAudioMs)).toBe(true);
+        expect(Number.isFinite(result.firstBodyByteMs)).toBe(true);
         // Must reflect first-chunk time (~100ms), not full-buffer (~500ms).
-        expect(result.firstAudioMs).toBeGreaterThanOrEqual(90);
-        expect(result.firstAudioMs).toBeLessThan(300);
+        expect(result.firstBodyByteMs).toBeGreaterThanOrEqual(90);
+        expect(result.firstBodyByteMs).toBeLessThan(300);
         jest.useRealTimers();
     });
 });

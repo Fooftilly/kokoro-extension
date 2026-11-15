@@ -408,11 +408,11 @@ browser.runtime.onMessage.addListener(async (request, sender) => {
                 throw new Error(`API Error: ${response.status} ${errText}`);
             }
 
-            // Stream the body so FastAPI TTFA is first response byte, not
-            // full-buffer completion. Non-streaming bodies leave TTFA null.
-            const { dataUrl, firstAudioMs } =
+            // Stream the body so firstBodyByteMs is time-to-first-byte, not
+            // full-buffer completion. This is TTFB, not decoded/playable TTFA.
+            const { dataUrl, firstBodyByteMs } =
                 await readTtsResponseAsDataUrl(response, started);
-            return { success: true, dataUrl, firstAudioMs };
+            return { success: true, dataUrl, firstBodyByteMs };
 
         } catch (e) {
             console.error("Background fetch failed:", e);
@@ -432,8 +432,9 @@ function blobToDataUrl(blob) {
 }
 
 /**
- * Prefer a real body stream so firstAudioMs is time-to-first-byte from
- * `started`. Fall back to blob() without inventing a TTFA value.
+ * Prefer a real body stream so firstBodyByteMs is time-to-first-byte from
+ * `started`. Fall back to blob() without inventing a first-byte value.
+ * Callers must not label this as decoded/playable TTFA.
  */
 async function readTtsResponseAsDataUrl(response, started) {
     const type = response.headers?.get?.('Content-Type') || 'audio/mpeg';
@@ -441,22 +442,22 @@ async function readTtsResponseAsDataUrl(response, started) {
     if (stream && typeof stream.getReader === 'function') {
         const reader = stream.getReader();
         const chunks = [];
-        let firstAudioMs = null;
+        let firstBodyByteMs = null;
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
             if (value && value.byteLength > 0) {
-                if (firstAudioMs === null) {
-                    firstAudioMs = performance.now() - started;
+                if (firstBodyByteMs === null) {
+                    firstBodyByteMs = performance.now() - started;
                 }
                 chunks.push(value);
             }
         }
         const blob = new Blob(chunks, { type });
-        return { dataUrl: await blobToDataUrl(blob), firstAudioMs };
+        return { dataUrl: await blobToDataUrl(blob), firstBodyByteMs };
     }
     const blob = await response.blob();
-    return { dataUrl: await blobToDataUrl(blob), firstAudioMs: null };
+    return { dataUrl: await blobToDataUrl(blob), firstBodyByteMs: null };
 }
 
 function prefersBlobDownloadUrl() {

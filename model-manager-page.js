@@ -1075,9 +1075,9 @@ async function waitServerAudioDuration(audio) {
     return audio.duration;
 }
 
-function clearServerTtfaDataset(status) {
-    delete status.dataset.streamingTtfaMeasured;
-    delete status.dataset.firstAudioP50Ms;
+function clearServerFirstBodyByteDataset(status) {
+    delete status.dataset.streamingFirstBodyByteMeasured;
+    delete status.dataset.firstBodyByteP50Ms;
     delete status.dataset.synthesisP50Ms;
 }
 
@@ -1087,7 +1087,7 @@ async function testFastApi() {
     const status = document.getElementById('serverStatus');
     choose.disabled = true;
     button.disabled = true;
-    clearServerTtfaDataset(status);
+    clearServerFirstBodyByteDataset(status);
     try {
         const settings = await browser.storage.sync.get({
             ttsBackend: 'fastapi', apiUrl: 'http://127.0.0.1:8880/v1/',
@@ -1116,36 +1116,41 @@ async function testFastApi() {
             if (!result?.success || !result.dataUrl) {
                 throw new Error(result?.error || 'No MP3 data returned');
             }
-            if (!Number.isFinite(result.firstAudioMs) || result.firstAudioMs < 0) {
+            if (!Number.isFinite(result.firstBodyByteMs) ||
+                result.firstBodyByteMs < 0) {
                 throw new Error(
-                    'Streaming TTFA was not measured (need a streamed response body)');
+                    'First body byte (TTFB) was not measured ' +
+                    '(need a streamed response body)');
             }
             // Decode each warm clip before counting it — a late valid MP3
             // must not launder earlier non-audio bodies into the p50.
             audio.src = result.dataUrl;
             audio.hidden = false;
             const durationSec = await waitServerAudioDuration(audio);
+            // summarizeRuns' firstAudioMs slot holds first-body-byte samples;
+            // UI/export must label them TTFB, never decoded/playable TTFA.
             runs.push({
                 kind: 'warm',
-                firstAudioMs: result.firstAudioMs,
+                firstAudioMs: result.firstBodyByteMs,
                 synthesisMs,
                 audioDurationSec: durationSec,
             });
         }
         const metrics = window.KokoroBenchmark.summarizeRuns(runs);
-        status.dataset.streamingTtfaMeasured = 'true';
-        status.dataset.firstAudioP50Ms = String(metrics.firstAudioP50Ms);
+        status.dataset.streamingFirstBodyByteMeasured = 'true';
+        status.dataset.firstBodyByteP50Ms = String(metrics.firstAudioP50Ms);
         status.dataset.synthesisP50Ms = String(metrics.synthesisP50Ms);
         setMessage(status,
-            'Server returned playable MP3. Streaming TTFA p50: ' +
+            'Server returned playable MP3. First body byte (TTFB) p50: ' +
             metrics.firstAudioP50Ms.toFixed(0) +
             ' ms; full response p50: ' +
             metrics.synthesisP50Ms.toFixed(0) +
             ' ms (3 warm runs; network + synthesis). ' +
-            'Local backends do not measure streaming TTFA.');
+            'Playback / start-of-audio was not measured. ' +
+            'Local backends do not measure streaming first-byte latency.');
         choose.disabled = false;
     } catch (error) {
-        clearServerTtfaDataset(status);
+        clearServerFirstBodyByteDataset(status);
         setMessage(status, 'Server test failed: ' + String(error.message || error));
     } finally {
         button.disabled = false;
