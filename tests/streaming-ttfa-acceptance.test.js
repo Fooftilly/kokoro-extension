@@ -26,6 +26,8 @@ describe('Streaming first-body-byte acceptance (KE-34 / KE-40)', () => {
         expect(source).toContain('First body byte (TTFB) p50');
         expect(source).toContain('playback start p50');
         expect(source).toContain('not MediaSource streaming TTFA');
+        expect(source).toContain(
+            "from './server-audio-playback-start.js'");
         expect(source).toContain('waitServerAudioPlaybackStart');
         expect(source).toContain('streamingFirstBodyByteMeasured');
         expect(source).toContain('playbackStartMeasured');
@@ -40,6 +42,13 @@ describe('Streaming first-body-byte acceptance (KE-34 / KE-40)', () => {
         expect(source).toContain('waitServerAudioDuration(audio)');
         expect(source).toContain('audioDurationSec: durationSec');
         expect(source).toContain('playbackStartMs');
+        const helper = fs.readFileSync(
+            path.join(root, 'server-audio-playback-start.js'), 'utf8');
+        expect(helper).toContain('wasMuted');
+        expect(helper).toContain('audio.muted = wasMuted');
+        expect(helper).toContain('finally');
+        const build = fs.readFileSync(path.join(root, 'build.js'), 'utf8');
+        expect(build).toContain("'server-audio-playback-start.js'");
     });
 
     test('testFastApi discards an untimed warm-up before three warm runs', () => {

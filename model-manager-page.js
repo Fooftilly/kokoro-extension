@@ -11,6 +11,7 @@ import {
     LONGER_SHARED_ENGLISH_SAMPLE,
     LONGER_SHARED_ENGLISH_BUTTON_ID,
 } from './longer-shared-english-sample.js';
+import { waitServerAudioPlaybackStart } from './server-audio-playback-start.js';
 
 const page = document.getElementById('modelManager');
 const dictionary = dictionaryManifest();
@@ -1170,37 +1171,6 @@ function clearServerFirstBodyByteDataset(status) {
     delete status.dataset.playbackStartP50Ms;
     delete status.dataset.playbackStartMeasured;
     delete status.dataset.playbackStartNotMeasured;
-}
-
-/** Post-download HTMLAudioElement start (muted — CI autoplay). Not MediaSource. */
-async function waitServerAudioPlaybackStart(audio) {
-    audio.pause();
-    audio.currentTime = 0;
-    // Muted play satisfies autoplay policies in packaged dual live.
-    audio.muted = true;
-    await new Promise((resolve, reject) => {
-        const onPlaying = () => { cleanup(); resolve(); };
-        const onError = () => {
-            cleanup();
-            reject(new Error('Server MP3 failed to start playback'));
-        };
-        const cleanup = () => {
-            audio.removeEventListener('playing', onPlaying);
-            audio.removeEventListener('error', onError);
-        };
-        audio.addEventListener('playing', onPlaying, { once: true });
-        audio.addEventListener('error', onError, { once: true });
-        const playResult = audio.play();
-        if (playResult && typeof playResult.then === 'function') {
-            playResult.catch(error => {
-                cleanup();
-                reject(error instanceof Error ? error
-                    : new Error(String(error?.message || error)));
-            });
-        }
-    });
-    audio.pause();
-    audio.currentTime = 0;
 }
 
 /**
