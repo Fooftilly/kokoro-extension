@@ -3,6 +3,10 @@
 Used by validate-live-firefox.py and executable unit tests so backend
 routing and distinct-WAV checks cannot silently drift into source-only
 string contracts.
+
+KE-50: firefox-mediapipe-origin EPUB uses the same shared three-spine
+fixture path as ONNX (Third Chapter + four distinct WAV content hashes via
+``assert_distinct_chapter_audio_hashes``). Nested TOC belongs to KE-49.
 """
 import json
 

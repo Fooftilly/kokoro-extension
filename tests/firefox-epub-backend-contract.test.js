@@ -120,6 +120,32 @@ print(json.dumps({
         );
     });
 
+    // KE-50: MediaPipe origin must stay on the shared three-spine EPUB stage.
+    test('mediapipe origin EPUB stage requires Third Chapter and three-spine hashes', () => {
+        const result = runHelperProbe(`
+print(json.dumps({
+    'mediapipeOn': origin_epub_stage_enabled(True, 'mediapipe', True),
+    'mediapipeAllowed': 'mediapipe' in ALLOWED_EPUB_BACKENDS,
+}))
+`);
+        expect(result.status).toBe(0);
+        expect(result.stderr || '').toBe('');
+        const gate = JSON.parse(result.stdout.trim());
+        expect(gate.mediapipeAllowed).toBe(true);
+        expect(gate.mediapipeOn).toBe(true);
+
+        const source = fs.readFileSync(
+            path.join(scriptsDir, 'validate-live-firefox.py'), 'utf8');
+        expect(source).toMatch(/origin_epub_stage_enabled\(/);
+        expect(source).toContain('"Third Chapter"');
+        expect(source).toContain('chapterCount": 3');
+        expect(source).toMatch(/"third":\s*\{\s*"title":\s*third\["title"\]/);
+        expect(source).toMatch(
+            /assert_distinct_chapter_audio_hashes\(\s*first\["audioSha256"\],\s*second\["audioSha256"\],\s*third\["audioSha256"\],\s*plain_text\["audioSha256"\]\)/,
+        );
+    });
+
+
     test('rejects missing or colliding chapter WAV content hashes', () => {
         const result = runHelperProbe(`
 ok = assert_distinct_chapter_audio_hashes('aaa', 'bbb', 'ccc', 'ddd')
