@@ -2893,6 +2893,7 @@ try {
     let browserRestartAcceptance = null;
     let dictionaryUiDownloadAcceptance = null;
     let popupTestTtsCtaAcceptance = null;
+    let gpuExecutionDisclosureAcceptance = null;
     let twoBackendComparisonAcceptance = null;
     let fastapiServerCardAcceptance = null;
     let fastapiPreferenceHonorAcceptance = null;
@@ -2904,6 +2905,7 @@ try {
             testedAt: new Date().toISOString(), browser: preflight.browser, preflight,
             dictionaryCacheAcceptance, browserRestartAcceptance,
             dictionaryUiDownloadAcceptance, popupTestTtsCtaAcceptance,
+            gpuExecutionDisclosureAcceptance,
             twoBackendComparisonAcceptance, fastapiServerCardAcceptance,
             fastapiPreferenceHonorAcceptance, oovG2pDisclosureAcceptance,
             results, currentProvider, originDownload, providerFilter,
@@ -3290,6 +3292,26 @@ try {
     }
 
     if (providerFilter === 'both' && !originDownload) {
+        // #61 / KE-41a: adapter presence ≠ offered/measured GPU inference.
+        // Assert against the real preflight JSON before dual stages proceed.
+        liveHeartbeat('gpu-execution-disclosure-start');
+        const {
+            assertGpuExecutionDisclosure,
+            buildGpuExecutionDisclosureReport,
+        } = await import('./gpu-execution-disclosure-acceptance.mjs');
+        const assertedGpu = assertGpuExecutionDisclosure(preflight);
+        gpuExecutionDisclosureAcceptance = buildGpuExecutionDisclosureReport({
+            browser: 'chromium',
+            webgpuAdapterStatus: assertedGpu.webgpuAdapterStatus,
+            assertedFromPreflight: true,
+        });
+        liveHeartbeat('gpu-execution-disclosure-done', {
+            success: gpuExecutionDisclosureAcceptance?.success === true,
+            webgpuAdapterStatus:
+                gpuExecutionDisclosureAcceptance?.webgpuAdapterStatus,
+        });
+        await saveReport();
+
         // #61 popup CTA before dual comparison (extension pages; network optional).
         try {
             liveHeartbeat('popup-test-tts-cta-start');

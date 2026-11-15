@@ -24,6 +24,7 @@ const SRC_FILES = [
     'tts-providers.js',
     'local-voice-mixing.js',
     'backend-disclosure.js',
+    'gpu-execution-disclosure.js',
     'benchmark.html',
     'benchmark.css',
     'benchmark-capabilities.js',
