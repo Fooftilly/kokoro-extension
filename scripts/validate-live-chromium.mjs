@@ -3464,22 +3464,87 @@ try {
         await saveReport();
 
         // #61 / KE-55: multi-lang / long-form G2P not measured; short English
-        // dictionary-gated only (additive to KE-41b / #169).
+        // dictionary-gated only (additive to KE-41b / #169). Read disclosure
+        // from the packaged extension — do not invent honesty flags.
         liveHeartbeat('broader-g2p-disclosure-start');
         const {
             assertBroaderG2pDisclosure,
             assertBroaderG2pDisclosureReport,
             buildBroaderG2pDisclosureReport,
             MULTI_LANG_PROBE_WORD,
+            MULTI_LANG_PROBE_FAIL_CLOSED_NEEDLE,
         } = await import('./broader-g2p-disclosure-acceptance.mjs');
-        broaderG2pDisclosureAcceptance = buildBroaderG2pDisclosureReport({
-            browser: 'chromium',
-            multiLangProbeWord: MULTI_LANG_PROBE_WORD,
-        });
-        assertBroaderG2pDisclosure(broaderG2pDisclosureAcceptance);
-        assertBroaderG2pDisclosureReport(broaderG2pDisclosureAcceptance);
+        const broaderPage = await context.newPage();
+        try {
+            await broaderPage.goto(
+                'chrome-extension://' + extensionId + '/benchmark.html',
+                { waitUntil: 'domcontentloaded', timeout: 60000 });
+            const liveDisclosure = await broaderPage.evaluate(
+                async (probeWord) => {
+                    const {
+                        discloseBroaderG2pLimits,
+                        isExcludedFromMeasuredG2pClaims,
+                        MULTI_LANG_PROBE_WORD: packagedProbe,
+                    } = await import('./broader-g2p-disclosure.js');
+                    const limits = discloseBroaderG2pLimits();
+                    const word = probeWord || packagedProbe;
+                    const multiLangProbeExcluded =
+                        isExcludedFromMeasuredG2pClaims(word) === true;
+                    let multiLangProbeFailClosed = false;
+                    let rejection = '';
+                    try {
+                        const {
+                            phonemizeEnglish,
+                            parseEnglishLexicon,
+                        } = await import('./english-g2p.js');
+                        phonemizeEnglish(
+                            word + '.',
+                            parseEnglishLexicon('hello HH AH0 L OW1\n'));
+                    } catch (error) {
+                        rejection = String(error && error.message || error);
+                        multiLangProbeFailClosed =
+                            /Missing English pronunciation|Unsupported English text/i
+                                .test(rejection);
+                    }
+                    return {
+                        ...limits,
+                        multiLangProbeWord: word,
+                        multiLangProbeExcluded,
+                        multiLangProbeFailClosed,
+                        rejection,
+                        assertedFromExtension: true,
+                    };
+                }, MULTI_LANG_PROBE_WORD);
+            if (!MULTI_LANG_PROBE_FAIL_CLOSED_NEEDLE.test(
+                String(liveDisclosure.rejection || '')) &&
+                liveDisclosure.multiLangProbeFailClosed !== true) {
+                throw Error(
+                    'Multi-lang probe did not fail closed in extension: ' +
+                    JSON.stringify(liveDisclosure));
+            }
+            assertBroaderG2pDisclosure(liveDisclosure);
+            broaderG2pDisclosureAcceptance = buildBroaderG2pDisclosureReport({
+                browser: 'chromium',
+                assertedFromExtension: true,
+                multiLangG2pMeasured: liveDisclosure.multiLangG2pMeasured,
+                longFormPronunciationQualityMeasured:
+                    liveDisclosure.longFormPronunciationQualityMeasured,
+                dictionaryGatedShortEnglishOnly:
+                    liveDisclosure.dictionaryGatedShortEnglishOnly,
+                disclosureNeedle: liveDisclosure.disclosureNeedle,
+                multiLangProbeWord: liveDisclosure.multiLangProbeWord,
+                multiLangProbeExcluded: liveDisclosure.multiLangProbeExcluded,
+                multiLangProbeFailClosed:
+                    liveDisclosure.multiLangProbeFailClosed,
+            });
+            assertBroaderG2pDisclosureReport(broaderG2pDisclosureAcceptance);
+        } finally {
+            await broaderPage.close().catch(() => {});
+        }
         liveHeartbeat('broader-g2p-disclosure-done', {
             success: broaderG2pDisclosureAcceptance?.success === true,
+            assertedFromExtension:
+                broaderG2pDisclosureAcceptance?.assertedFromExtension,
             multiLangG2pMeasured:
                 broaderG2pDisclosureAcceptance?.multiLangG2pMeasured,
             longFormPronunciationQualityMeasured:
@@ -3490,6 +3555,8 @@ try {
                     ?.dictionaryGatedShortEnglishOnly,
             multiLangProbeExcluded:
                 broaderG2pDisclosureAcceptance?.multiLangProbeExcluded,
+            multiLangProbeFailClosed:
+                broaderG2pDisclosureAcceptance?.multiLangProbeFailClosed,
         });
         await saveReport();
 

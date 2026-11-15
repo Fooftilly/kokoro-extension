@@ -1,7 +1,7 @@
 /** @jest-environment node */
 /**
  * Contract for multi-lang / long-form G2P not-measured disclosure (#61 / KE-55).
- * Additive to KE-41b dictionary-gated short English; dual Chromium+Firefox wire.
+ * Additive to KE-41b dictionary-gated short English; dual must assert extension evidence.
  */
 const { spawnSync } = require('child_process');
 const fs = require('fs');
@@ -25,18 +25,69 @@ const acceptanceSource = path.join(
 const buildSource = path.join(root, 'build.js');
 const eslintSource = path.join(root, 'eslint.config.mjs');
 
+function extensionEvidence(overrides = {}) {
+    const limits = disclosureModule.discloseBroaderG2pLimits();
+    const probe = disclosureModule.MULTI_LANG_PROBE_WORD;
+    return {
+        ...limits,
+        multiLangProbeWord: probe,
+        multiLangProbeExcluded:
+            disclosureModule.isExcludedFromMeasuredG2pClaims(probe) === true,
+        multiLangProbeFailClosed: true,
+        assertedFromExtension: true,
+        ...overrides,
+    };
+}
+
 function loadHelperSnapshot() {
     return spawnSync(process.execPath, ['--input-type=module', '-e', `
 import * as broader from ${JSON.stringify(helperUrl)};
+const probe = broader.MULTI_LANG_PROBE_WORD;
+const evidence = {
+    multiLangG2pMeasured: false,
+    longFormPronunciationQualityMeasured: false,
+    dictionaryGatedShortEnglishOnly: true,
+    disclosureNeedle: broader.BROADER_G2P_DISCLOSURE_NEEDLE,
+    multiLangProbeWord: probe,
+    multiLangProbeExcluded:
+        broader.isExcludedFromMeasuredG2pClaims(probe) === true,
+    multiLangProbeFailClosed: true,
+    assertedFromExtension: true,
+};
+const ok = broader.assertBroaderG2pDisclosure(evidence);
 const report = broader.buildBroaderG2pDisclosureReport({
     browser: 'chromium',
+    assertedFromExtension: true,
+    multiLangG2pMeasured: evidence.multiLangG2pMeasured,
+    longFormPronunciationQualityMeasured:
+        evidence.longFormPronunciationQualityMeasured,
+    dictionaryGatedShortEnglishOnly: evidence.dictionaryGatedShortEnglishOnly,
+    disclosureNeedle: evidence.disclosureNeedle,
+    multiLangProbeWord: evidence.multiLangProbeWord,
+    multiLangProbeExcluded: evidence.multiLangProbeExcluded,
+    multiLangProbeFailClosed: evidence.multiLangProbeFailClosed,
 });
-const ok = broader.assertBroaderG2pDisclosure(report);
 broader.assertBroaderG2pDisclosureReport(report);
+const failNoExtension = (() => {
+    try {
+        broader.buildBroaderG2pDisclosureReport({
+            browser: 'chromium',
+            multiLangG2pMeasured: false,
+            longFormPronunciationQualityMeasured: false,
+            dictionaryGatedShortEnglishOnly: true,
+            disclosureNeedle: broader.BROADER_G2P_DISCLOSURE_NEEDLE,
+            multiLangProbeExcluded: true,
+            multiLangProbeFailClosed: true,
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
 const failMultiLang = (() => {
     try {
         broader.assertBroaderG2pDisclosure({
-            ...report,
+            ...evidence,
             multiLangG2pMeasured: true,
         });
         return { ok: true };
@@ -47,7 +98,7 @@ const failMultiLang = (() => {
 const failLongForm = (() => {
     try {
         broader.assertBroaderG2pDisclosure({
-            ...report,
+            ...evidence,
             longFormPronunciationQualityMeasured: true,
         });
         return { ok: true };
@@ -58,7 +109,7 @@ const failLongForm = (() => {
 const failNotDictOnly = (() => {
     try {
         broader.assertBroaderG2pDisclosure({
-            ...report,
+            ...evidence,
             dictionaryGatedShortEnglishOnly: false,
         });
         return { ok: true };
@@ -69,8 +120,19 @@ const failNotDictOnly = (() => {
 const failProbeIncluded = (() => {
     try {
         broader.assertBroaderG2pDisclosure({
-            ...report,
+            ...evidence,
             multiLangProbeExcluded: false,
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
+const failNoProbeReject = (() => {
+    try {
+        broader.assertBroaderG2pDisclosure({
+            ...evidence,
+            multiLangProbeFailClosed: false,
         });
         return { ok: true };
     } catch (error) {
@@ -80,7 +142,8 @@ const failProbeIncluded = (() => {
 console.log(JSON.stringify({
     needle: broader.BROADER_G2P_DISCLOSURE_NEEDLE,
     probe: broader.MULTI_LANG_PROBE_WORD,
-    ok, report, failMultiLang, failLongForm, failNotDictOnly, failProbeIncluded,
+    ok, report, failNoExtension, failMultiLang, failLongForm,
+    failNotDictOnly, failProbeIncluded, failNoProbeReject,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
@@ -103,7 +166,7 @@ describe('Broader G2P disclosure acceptance (KE-55)', () => {
         expect(disclosureModule.isExcludedFromMeasuredG2pClaims('hello')).toBe(false);
     });
 
-    test('KE-41b short-English dictionary path stays fail-closed for OOV', () => {
+    test('KE-41b short-English dictionary path stays fail-closed for OOV and multi-lang', () => {
         const short = discloseOnnxEnglishG2pLimits();
         expect(short.dictionaryGatedEnglish).toBe(true);
         expect(short.broaderG2pMeasured).toBe(false);
@@ -111,13 +174,12 @@ describe('Broader G2P disclosure acceptance (KE-55)', () => {
         const lexicon = parseEnglishLexicon('hello HH AH0 L OW1\n');
         expect(() => phonemizeEnglish('zzzzqwertyword.', lexicon))
             .toThrow(/Missing English pronunciation/);
-        // Non-English probe is outside measured claims and fail-closes.
         expect(() => phonemizeEnglish(
             disclosureModule.MULTI_LANG_PROBE_WORD + '.', lexicon))
             .toThrow(/Unsupported English text|Missing English pronunciation/);
     });
 
-    test('shared acceptance helper asserts and rejects measured broader claims', () => {
+    test('shared helper requires extension evidence and rejects measured broader claims', () => {
         const child = loadHelperSnapshot();
         expect(child.status).toBe(0);
         expect(child.stderr || '').toBe('');
@@ -131,6 +193,8 @@ describe('Broader G2P disclosure acceptance (KE-55)', () => {
             longFormPronunciationQualityMeasured: false,
             dictionaryGatedShortEnglishOnly: true,
             multiLangProbeExcluded: true,
+            multiLangProbeFailClosed: true,
+            assertedFromExtension: true,
         }));
         expect(snap.report).toEqual(expect.objectContaining({
             success: true,
@@ -138,8 +202,12 @@ describe('Broader G2P disclosure acceptance (KE-55)', () => {
             longFormPronunciationQualityMeasured: false,
             dictionaryGatedShortEnglishOnly: true,
             multiLangProbeExcluded: true,
+            multiLangProbeFailClosed: true,
             multiLangProbeWord: 'привет',
+            assertedFromExtension: true,
         }));
+        expect(snap.failNoExtension.ok).toBe(false);
+        expect(snap.failNoExtension.message).toMatch(/assertedFromExtension/i);
         expect(snap.failMultiLang.ok).toBe(false);
         expect(snap.failMultiLang.message).toMatch(/Multi-lang G2P/i);
         expect(snap.failLongForm.ok).toBe(false);
@@ -148,6 +216,46 @@ describe('Broader G2P disclosure acceptance (KE-55)', () => {
         expect(snap.failNotDictOnly.message).toMatch(/dictionary-gated short English/i);
         expect(snap.failProbeIncluded.ok).toBe(false);
         expect(snap.failProbeIncluded.message).toMatch(/excluded from measured/i);
+        expect(snap.failNoProbeReject.ok).toBe(false);
+        expect(snap.failNoProbeReject.message).toMatch(/fail closed/i);
+    });
+
+    test('assert fails closed when extension evidence is omitted', () => {
+        const evidence = extensionEvidence({ assertedFromExtension: false });
+        const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+import * as broader from ${JSON.stringify(helperUrl)};
+const omit = (() => {
+    try {
+        broader.assertBroaderG2pDisclosure(${JSON.stringify(evidence)});
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
+const invent = (() => {
+    try {
+        broader.buildBroaderG2pDisclosureReport({
+            browser: 'chromium',
+            multiLangG2pMeasured: false,
+            longFormPronunciationQualityMeasured: false,
+            dictionaryGatedShortEnglishOnly: true,
+            disclosureNeedle: broader.BROADER_G2P_DISCLOSURE_NEEDLE,
+            multiLangProbeExcluded: true,
+            multiLangProbeFailClosed: true,
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
+console.log(JSON.stringify({ omit, invent }));
+`], { encoding: 'utf8', cwd: root });
+        expect(child.status).toBe(0);
+        const snap = JSON.parse(child.stdout.trim());
+        expect(snap.omit.ok).toBe(false);
+        expect(snap.omit.message).toMatch(/packaged extension/i);
+        expect(snap.invent.ok).toBe(false);
+        expect(snap.invent.message).toMatch(/assertedFromExtension/i);
     });
 
     test('needles stay aligned between disclosure source and acceptance module', () => {
@@ -163,9 +271,10 @@ describe('Broader G2P disclosure acceptance (KE-55)', () => {
         expect(disclosure).toContain('dictionaryGatedShortEnglishOnly: true');
         expect(acceptance).toContain('assertBroaderG2pDisclosure');
         expect(acceptance).toContain('buildBroaderG2pDisclosureReport');
+        expect(acceptance).toContain('assertedFromExtension');
     });
 
-    test('source wiring: build/eslint + dual live Chromium and Firefox asserts', () => {
+    test('source wiring: dual live reads packaged broader-g2p-disclosure.js', () => {
         const firefox = fs.readFileSync(firefoxLive, 'utf8');
         const chromium = fs.readFileSync(chromiumLive, 'utf8');
         const build = fs.readFileSync(buildSource, 'utf8');
@@ -177,8 +286,12 @@ describe('Broader G2P disclosure acceptance (KE-55)', () => {
         expect(firefox).toContain('broader-g2p-disclosure-acceptance.mjs');
         expect(firefox).toContain('assert_broader_g2p_disclosure');
         expect(firefox).toContain('broaderG2pDisclosureAcceptance');
+        expect(firefox).toContain("import('./broader-g2p-disclosure.js')");
+        expect(firefox).toContain('discloseBroaderG2pLimits');
+        expect(firefox).toContain('assertedFromExtension: true');
+        expect(firefox).toContain('phonemizeEnglish');
         const firefoxCall = firefox.indexOf(
-            'assert_broader_g2p_disclosure(\n                    browser="Firefox")');
+            'assert_broader_g2p_disclosure(\n                    driver, state["origin"]');
         const firefoxGpu = firefox.indexOf('assert_gpu_execution_disclosure(');
         const firefoxPopup = firefox.indexOf(
             'accept_popup_test_tts_cta(driver, state["origin"])');
@@ -187,8 +300,11 @@ describe('Broader G2P disclosure acceptance (KE-55)', () => {
         expect(firefoxPopup).toBeGreaterThan(firefoxCall);
 
         expect(chromium).toContain('broader-g2p-disclosure-acceptance.mjs');
-        expect(chromium).toContain('assertBroaderG2pDisclosure');
-        expect(chromium).toContain('assertBroaderG2pDisclosureReport');
+        expect(chromium).toContain("import('./broader-g2p-disclosure.js')");
+        expect(chromium).toContain('discloseBroaderG2pLimits');
+        expect(chromium).toContain('assertedFromExtension: true');
+        expect(chromium).toContain('phonemizeEnglish');
+        expect(chromium).toContain('assertBroaderG2pDisclosure(liveDisclosure)');
         expect(chromium).toContain('buildBroaderG2pDisclosureReport');
         expect(chromium).toContain('broaderG2pDisclosureAcceptance');
         expect(chromium).toContain('MULTI_LANG_PROBE_WORD');
@@ -197,7 +313,7 @@ describe('Broader G2P disclosure acceptance (KE-55)', () => {
         const chromiumGpu = chromium.indexOf(
             'assertGpuExecutionDisclosure(preflight)');
         const chromiumBroader = chromium.indexOf(
-            'assertBroaderG2pDisclosureReport(broaderG2pDisclosureAcceptance)');
+            'assertBroaderG2pDisclosure(liveDisclosure)');
         const chromiumPopup = chromium.indexOf(
             'liveHeartbeat(\'popup-test-tts-cta-start\')');
         expect(chromiumDualGate).toBeGreaterThan(0);

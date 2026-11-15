@@ -1446,26 +1446,97 @@ def assert_progressive_streaming_ttfa_unmeasured(report, browser="Firefox"):
     return json.loads(probe.stdout.strip())
 
 
-def assert_broader_g2p_disclosure(browser="Firefox"):
-    """#61 / KE-55: multi-lang / long-form G2P not measured; short English only."""
+def assert_broader_g2p_disclosure(driver, origin, browser="Firefox"):
+    """#61 / KE-55: assert packaged extension broader-G2P disclosure + probe.
+
+    Reads ``broader-g2p-disclosure.js`` from the loaded extension and exercises
+    phonemize fail-closed for the multi-lang probe — does not invent honesty.
+    """
+    if not origin:
+        raise RuntimeError("Firefox extension origin required for broader G2P")
+    driver.get(str(origin).rstrip("/") + "/benchmark.html")
+    live = driver.execute_async_script(
+        """
+        const probeWord = arguments[0];
+        const done = arguments[arguments.length - 1];
+        (async () => {
+            try {
+                const {
+                    discloseBroaderG2pLimits,
+                    isExcludedFromMeasuredG2pClaims,
+                    MULTI_LANG_PROBE_WORD: packagedProbe,
+                } = await import('./broader-g2p-disclosure.js');
+                const limits = discloseBroaderG2pLimits();
+                const word = probeWord || packagedProbe;
+                const multiLangProbeExcluded =
+                    isExcludedFromMeasuredG2pClaims(word) === true;
+                let multiLangProbeFailClosed = false;
+                let rejection = '';
+                try {
+                    const {
+                        phonemizeEnglish,
+                        parseEnglishLexicon,
+                    } = await import('./english-g2p.js');
+                    phonemizeEnglish(
+                        word + '.',
+                        parseEnglishLexicon('hello HH AH0 L OW1\\n'));
+                } catch (error) {
+                    rejection = String(error && error.message || error);
+                    multiLangProbeFailClosed =
+                        /Missing English pronunciation|Unsupported English text/i
+                            .test(rejection);
+                }
+                done({
+                    ...limits,
+                    multiLangProbeWord: word,
+                    multiLangProbeExcluded,
+                    multiLangProbeFailClosed,
+                    rejection,
+                    assertedFromExtension: true,
+                });
+            } catch (error) {
+                done({ success: false, error: String(error) });
+            }
+        })();
+        """,
+        "привет",
+    )
+    if not live or live.get("assertedFromExtension") is not True:
+        raise RuntimeError(
+            "Firefox broader G2P disclosure missing extension evidence: " +
+            repr(live))
     scripts_dir = Path(__file__).resolve().parent
+    env = os.environ.copy()
+    env["KOKORO_BROADER_G2P_BROWSER"] = str(browser or "Firefox")
     probe = subprocess.run(
         [
             "node", "--input-type=module", "-e",
+            "import { readFileSync } from 'node:fs';"
             "import { assertBroaderG2pDisclosure, "
             "assertBroaderG2pDisclosureReport, "
-            "buildBroaderG2pDisclosureReport, "
-            "MULTI_LANG_PROBE_WORD } from "
+            "buildBroaderG2pDisclosureReport } from "
             "'./broader-g2p-disclosure-acceptance.mjs';"
+            "const live = JSON.parse(readFileSync(0, 'utf8'));"
+            "assertBroaderG2pDisclosure(live);"
             "const report = buildBroaderG2pDisclosureReport({"
-            "browser: " + json.dumps(browser) + ","
-            "multiLangProbeWord: MULTI_LANG_PROBE_WORD,"
+            "browser: process.env.KOKORO_BROADER_G2P_BROWSER || 'Firefox',"
+            "assertedFromExtension: true,"
+            "multiLangG2pMeasured: live.multiLangG2pMeasured,"
+            "longFormPronunciationQualityMeasured:"
+            " live.longFormPronunciationQualityMeasured,"
+            "dictionaryGatedShortEnglishOnly:"
+            " live.dictionaryGatedShortEnglishOnly,"
+            "disclosureNeedle: live.disclosureNeedle,"
+            "multiLangProbeWord: live.multiLangProbeWord,"
+            "multiLangProbeExcluded: live.multiLangProbeExcluded,"
+            "multiLangProbeFailClosed: live.multiLangProbeFailClosed,"
             "});"
-            "assertBroaderG2pDisclosure(report);"
             "assertBroaderG2pDisclosureReport(report);"
             "console.log(JSON.stringify(report));",
         ],
         cwd=str(scripts_dir),
+        input=json.dumps(live),
+        env=env,
         capture_output=True,
         text=True,
         check=False,
@@ -4213,7 +4284,7 @@ def main():
                 # #61 / KE-55: multi-lang / long-form G2P not measured.
                 result["stage"] = "broader-g2p-disclosure"
                 broader_g2p_disclosure = assert_broader_g2p_disclosure(
-                    browser="Firefox")
+                    driver, state["origin"], browser="Firefox")
                 result["broaderG2pDisclosureAcceptance"] = (
                     broader_g2p_disclosure)
                 result["stage"] = "popup-test-tts-cta"
