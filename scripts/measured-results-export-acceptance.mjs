@@ -59,6 +59,37 @@ function assertMeasuredExportDisclosure(payload) {
     }
 }
 
+function requirePositiveMetricFields(row, fields) {
+    for (const field of fields) {
+        if (!Number.isFinite(row[field]) || row[field] <= 0) {
+            throw Error('Invalid measured export metric: ' + JSON.stringify(row));
+        }
+    }
+}
+
+function assertOnnxStorageDisclosure(row, dictionaryBytes) {
+    if (!String(row.key || '').startsWith('onnx-')) return;
+    if (row.requiredDictionaryCatalogBytes !== dictionaryBytes) {
+        throw Error('ONNX row must disclose required CMUdict catalog bytes: ' +
+            JSON.stringify(row));
+    }
+    if (row.catalogEnglishPathBytes !==
+        row.catalogModelAssetBytes + dictionaryBytes) {
+        throw Error('ONNX catalogEnglishPathBytes must equal model + CMUdict: ' +
+            JSON.stringify(row));
+    }
+    if (!Number.isFinite(row.cacheStorageDictionaryBytes) ||
+        row.cacheStorageDictionaryBytes <= 0) {
+        throw Error('ONNX row must disclose measured CMUdict Cache Storage bytes: ' +
+            JSON.stringify(row));
+    }
+    if (row.cacheStorageEnglishPathBytes !==
+        row.cacheStorageStoredBytes + row.cacheStorageDictionaryBytes) {
+        throw Error('ONNX cacheStorageEnglishPathBytes must equal model + CMUdict cache: ' +
+            JSON.stringify(row));
+    }
+}
+
 function assertMeasuredExportRows(payload, expected = {}) {
     if (!Array.isArray(payload.measurements) || !payload.measurements.length) {
         throw Error('Measured export has no measurements');
@@ -73,36 +104,11 @@ function assertMeasuredExportRows(payload, expected = {}) {
     }
     const dictionaryBytes = payload.englishDictionaryCatalogBytes;
     for (const row of payload.measurements) {
-        for (const field of [
+        requirePositiveMetricFields(row, [
             'coldPrepMs', 'synthesisP50Ms', 'synthesisP95Ms', 'realTimeFactorP50',
             'catalogModelAssetBytes', 'cacheStorageStoredBytes',
-        ]) {
-            if (!Number.isFinite(row[field]) || row[field] <= 0) {
-                throw Error('Invalid measured export metric: ' +
-                    JSON.stringify(row));
-            }
-        }
-        if (String(row.key || '').startsWith('onnx-')) {
-            if (row.requiredDictionaryCatalogBytes !== dictionaryBytes) {
-                throw Error('ONNX row must disclose required CMUdict catalog bytes: ' +
-                    JSON.stringify(row));
-            }
-            if (row.catalogEnglishPathBytes !==
-                row.catalogModelAssetBytes + dictionaryBytes) {
-                throw Error('ONNX catalogEnglishPathBytes must equal model + CMUdict: ' +
-                    JSON.stringify(row));
-            }
-            if (!Number.isFinite(row.cacheStorageDictionaryBytes) ||
-                row.cacheStorageDictionaryBytes <= 0) {
-                throw Error('ONNX row must disclose measured CMUdict Cache Storage bytes: ' +
-                    JSON.stringify(row));
-            }
-            if (row.cacheStorageEnglishPathBytes !==
-                row.cacheStorageStoredBytes + row.cacheStorageDictionaryBytes) {
-                throw Error('ONNX cacheStorageEnglishPathBytes must equal model + CMUdict cache: ' +
-                    JSON.stringify(row));
-            }
-        }
+        ]);
+        assertOnnxStorageDisclosure(row, dictionaryBytes);
     }
     if (expected.sampleText != null &&
         payload.sampleText !== expected.sampleText) {

@@ -202,6 +202,9 @@ describe('Measured results export acceptance', () => {
         expect(source).toContain('cacheStorageStoredBytes');
         expect(source).toContain('cacheStorageDictionaryBytes');
         expect(source).toContain('cacheStorageEnglishPathBytes');
+        expect(source).toContain('snapshotMeasuredEnglishRows');
+        expect(source).toContain('probeMeasuredCacheStorage');
+        expect(source).toContain('attachCacheStorageFields');
         expect(source).toContain("storageFootprintSource: allCacheMeasured ? 'cache-storage' : 'catalog'");
         expect(source).toContain('englishDictionaryCatalogBytes');
         expect(source).toContain('requiredDictionaryCatalogBytes');
@@ -209,6 +212,10 @@ describe('Measured results export acceptance', () => {
         expect(source).toContain('runtimeHeapMeasured: false');
         expect(source).toContain('await buildMeasuredEnglishExport()');
         expect(source).not.toContain('storageFootprintBytes');
+        const helper = fs.readFileSync(path.join(
+            root, 'scripts', 'measured-results-export-acceptance.mjs'), 'utf8');
+        expect(helper).toContain('requirePositiveMetricFields');
+        expect(helper).toContain('assertOnnxStorageDisclosure');
         expect(html).toContain('Cold prep');
         expect(source).toContain('Nothing was uploaded');
         expect(source).not.toContain('navigator.sendBeacon');

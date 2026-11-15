@@ -70,69 +70,95 @@ function renderSharedEnglishResults() {
     updateMeasuredExportButton();
 }
 
-// #61: optional local-only JSON export of measured English rows (no telemetry).
-// Cache Storage probe is best-effort under a shared lock; catalog fields stay.
-async function buildMeasuredEnglishExport() {
-    const sampleText = document.getElementById('benchmarkText')?.value.trim() || '';
-    // Pinned CMUdict catalog size — required for ONNX English.
-    const englishDictionaryCatalogBytes = dictionary.assets.reduce(
-        (sum, asset) => sum + asset.bytes, 0);
-    const measuredEntries = variants.filter(entry =>
-        sharedEnglishResults.has(entry.key));
+// Snapshot shared-English metrics before any await so mid-probe sample edits
+// or model removals cannot leave undefined result rows.
+function snapshotMeasuredEnglishRows() {
+    const rows = [];
+    for (const entry of variants) {
+        const result = sharedEnglishResults.get(entry.key);
+        if (!result) continue;
+        rows.push({
+            entry,
+            coldPrepMs: result.coldPrepMs,
+            synthesisP50Ms: result.synthesisP50Ms,
+            synthesisP95Ms: result.synthesisP95Ms,
+            realTimeFactorP50: result.realTimeFactorP50,
+        });
+    }
+    return rows;
+}
+
+async function probeMeasuredCacheStorage(snappedRows) {
     let cacheByKey = new Map();
     let dictionaryStoredBytes = null;
     try {
         await withModelDataLock(async () => {
             const store = cacheStore();
-            const pairs = await Promise.all(measuredEntries.map(async entry => {
+            const pairs = await Promise.all(snappedRows.map(async ({ entry }) => {
                 const state = await store.status(entryManifest(entry));
                 return [entry.key, state];
             }));
             cacheByKey = new Map(pairs);
-            if (measuredEntries.some(entry => entry.provider === 'onnx')) {
+            if (snappedRows.some(({ entry }) => entry.provider === 'onnx')) {
                 const dictState = await store.status(dictionaryManifest());
                 dictionaryStoredBytes = dictState.storedBytes;
             }
         }, { mode: 'shared' });
     } catch (_) {
         // Failed cache probe keeps catalog fields; measured flags stay false.
-        cacheByKey = new Map();
-        dictionaryStoredBytes = null;
+        return { cacheByKey: new Map(), dictionaryStoredBytes: null };
     }
+    return { cacheByKey, dictionaryStoredBytes };
+}
+
+function attachCacheStorageFields(row, entry, cacheByKey, dictionaryStoredBytes,
+    englishDictionaryCatalogBytes) {
+    let cacheOk = true;
+    const stored = cacheByKey.get(entry.key)?.storedBytes;
+    if (Number.isFinite(stored) && stored > 0) {
+        row.cacheStorageStoredBytes = stored;
+    } else {
+        cacheOk = false;
+    }
+    if (entry.provider !== 'onnx') return cacheOk;
+    row.requiredDictionaryCatalogBytes = englishDictionaryCatalogBytes;
+    row.catalogEnglishPathBytes = entry.totalBytes + englishDictionaryCatalogBytes;
+    if (Number.isFinite(dictionaryStoredBytes) && dictionaryStoredBytes > 0 &&
+        Number.isFinite(stored) && stored > 0) {
+        row.cacheStorageDictionaryBytes = dictionaryStoredBytes;
+        row.cacheStorageEnglishPathBytes = stored + dictionaryStoredBytes;
+    } else {
+        cacheOk = false;
+    }
+    return cacheOk;
+}
+
+// #61: optional local-only JSON export of measured English rows (no telemetry).
+// Cache Storage probe is best-effort under a shared lock; catalog fields stay.
+async function buildMeasuredEnglishExport() {
+    const sampleText = document.getElementById('benchmarkText')?.value.trim() || '';
+    const englishDictionaryCatalogBytes = dictionary.assets.reduce(
+        (sum, asset) => sum + asset.bytes, 0);
+    const snappedRows = snapshotMeasuredEnglishRows();
+    const { cacheByKey, dictionaryStoredBytes } =
+        await probeMeasuredCacheStorage(snappedRows);
     const measurements = [];
-    let allCacheMeasured = measuredEntries.length > 0;
-    for (const entry of measuredEntries) {
-        const result = sharedEnglishResults.get(entry.key);
+    let allCacheMeasured = snappedRows.length > 0;
+    for (const snapped of snappedRows) {
+        const { entry } = snapped;
         const row = {
             key: entry.key,
             label: entry.label,
-            coldPrepMs: result.coldPrepMs,
-            synthesisP50Ms: result.synthesisP50Ms,
-            synthesisP95Ms: result.synthesisP95Ms,
-            realTimeFactorP50: result.realTimeFactorP50,
+            coldPrepMs: snapped.coldPrepMs,
+            synthesisP50Ms: snapped.synthesisP50Ms,
+            synthesisP95Ms: snapped.synthesisP95Ms,
+            realTimeFactorP50: snapped.realTimeFactorP50,
             // Static pinned catalog asset sum (KE-38).
             catalogModelAssetBytes: entry.totalBytes,
         };
-        const cacheState = cacheByKey.get(entry.key);
-        const stored = cacheState?.storedBytes;
-        if (Number.isFinite(stored) && stored > 0) {
-            row.cacheStorageStoredBytes = stored;
-        } else {
+        if (!attachCacheStorageFields(row, entry, cacheByKey, dictionaryStoredBytes,
+            englishDictionaryCatalogBytes)) {
             allCacheMeasured = false;
-        }
-        if (entry.provider === 'onnx') {
-            row.requiredDictionaryCatalogBytes = englishDictionaryCatalogBytes;
-            row.catalogEnglishPathBytes =
-                entry.totalBytes + englishDictionaryCatalogBytes;
-            if (Number.isFinite(dictionaryStoredBytes) &&
-                dictionaryStoredBytes > 0 &&
-                Number.isFinite(stored) && stored > 0) {
-                row.cacheStorageDictionaryBytes = dictionaryStoredBytes;
-                row.cacheStorageEnglishPathBytes =
-                    stored + dictionaryStoredBytes;
-            } else {
-                allCacheMeasured = false;
-            }
         }
         measurements.push(row);
     }

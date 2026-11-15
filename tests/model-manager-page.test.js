@@ -1146,14 +1146,70 @@ describe('ONNX model manager English synthesis diagnostics', () => {
                 measurementKind: 'warm-full-clip-synthesis',
                 coldPrepMeasured: true,
                 firstAudioMeasured: false,
+                storageFootprintMeasured: true,
+                storageFootprintSource: 'cache-storage',
+                runtimeHeapMeasured: false,
                 sampleText: 'Hello world.',
             }));
         expect(globalThis.__kokoroLastMeasuredExport.measurements.map(r => r.key)
             .sort()).toEqual(['mediapipe-cpu', 'onnx-q8']);
+        const dictCatalog =
+            globalThis.__kokoroLastMeasuredExport.englishDictionaryCatalogBytes;
+        expect(dictCatalog).toBeGreaterThan(0);
         for (const row of globalThis.__kokoroLastMeasuredExport.measurements) {
             expect(row.coldPrepMs).toBeGreaterThan(0);
+            expect(row.catalogModelAssetBytes).toBeGreaterThan(0);
+            expect(row.cacheStorageStoredBytes).toBe(row.catalogModelAssetBytes);
+            if (row.key === 'onnx-q8') {
+                expect(row.requiredDictionaryCatalogBytes).toBe(dictCatalog);
+                expect(row.catalogEnglishPathBytes).toBe(
+                    row.catalogModelAssetBytes + dictCatalog);
+                expect(row.cacheStorageDictionaryBytes).toBe(dictCatalog);
+                expect(row.cacheStorageEnglishPathBytes).toBe(
+                    row.cacheStorageStoredBytes + dictCatalog);
+            } else {
+                expect(row.cacheStorageDictionaryBytes).toBeUndefined();
+                expect(row.cacheStorageEnglishPathBytes).toBeUndefined();
+            }
         }
         expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('cache probe failure falls back to catalog-only footprint disclosure', async () => {
+        await runProbe();
+        installedModels.add('cpu');
+        require('../mediapipe-provider.js').MediaPipeKokoroProvider
+            .mockImplementation(() => engine);
+        document.getElementById('refreshModelCache').click();
+        await waitFor(() => document.querySelector(
+            '[data-variant="mediapipe-cpu"] .model-test').disabled === false);
+        document.querySelector('[data-variant="mediapipe-cpu"] .model-test').click();
+        await waitFor(() => document.getElementById('sharedEnglishComparisonRows')
+            .children.length === 2);
+        failStatusFor.add('onnx-q8');
+        failStatusFor.add('mediapipe-cpu');
+        failStatusFor.add('dictionary-english');
+        document.getElementById('exportMeasuredResults').click();
+        await waitFor(() => browser.downloads.download.mock.calls.length === 1);
+        globalThis.__kokoroExportOnChanged({ id: 42, state: { current: 'complete' } });
+        await waitFor(() => document.getElementById('measuredExportStatus')
+            .textContent.includes('Nothing was uploaded'));
+        const payload = globalThis.__kokoroLastMeasuredExport;
+        expect(payload.storageFootprintMeasured).toBe(false);
+        expect(payload.storageFootprintSource).toBe('catalog');
+        expect(payload.runtimeHeapMeasured).toBe(false);
+        expect(payload.measurements).toHaveLength(2);
+        for (const row of payload.measurements) {
+            expect(row.catalogModelAssetBytes).toBeGreaterThan(0);
+            expect(row.cacheStorageStoredBytes).toBeUndefined();
+            expect(row.cacheStorageDictionaryBytes).toBeUndefined();
+            expect(row.cacheStorageEnglishPathBytes).toBeUndefined();
+        }
+        const onnx = payload.measurements.find(row => row.key === 'onnx-q8');
+        expect(onnx.requiredDictionaryCatalogBytes).toBe(
+            payload.englishDictionaryCatalogBytes);
+        expect(onnx.catalogEnglishPathBytes).toBe(
+            onnx.catalogModelAssetBytes + payload.englishDictionaryCatalogBytes);
     });
 
     test('interrupted measured export rejects after download starts', async () => {
