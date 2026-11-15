@@ -29,6 +29,7 @@ const SRC_FILES = [
     'benchmark-capabilities.js',
     'benchmark-page.js',
     'model-manager-page.js',
+    'server-audio-playback-start.js',
     'longer-shared-english-sample.js',
     'text-processor.js',
     'audio-manager.js',

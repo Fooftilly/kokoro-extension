@@ -68,7 +68,7 @@
                 </div>
                 <p>Export writes a local JSON file for bug reports. It stays on this device; nothing is uploaded.</p>
             </div>
-            <p>Measurements are taken from actual synthesized audio, not GPU adapter detection. Local warm figures exclude cold prep (initialize + first synthesis); server timings exclude audio playback. ONNX q8 measures the same English input only after the optional dictionary has been installed and the entire sample is supported; otherwise it reports non-comparable IPA-only timings. ONNX q8f16 remains IPA-only. A passed IPA probe cannot enable ordinary English playback.</p>
+            <p>Measurements are taken from actual synthesized audio, not GPU adapter detection. Local warm figures exclude cold prep (initialize + first synthesis). Server first-body-byte (TTFB) and full-response timings exclude audio playback; a separate muted HTMLAudioElement start-after-download p50 is also reported (not MediaSource / progressive streaming TTFA). ONNX q8 measures the same English input only after the optional dictionary has been installed and the entire sample is supported; otherwise it reports non-comparable IPA-only timings. ONNX q8f16 remains IPA-only. A passed IPA probe cannot enable ordinary English playback.</p>
         </section>
         <section>
             <h2>Browser prerequisites</h2>

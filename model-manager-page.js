@@ -11,6 +11,7 @@ import {
     LONGER_SHARED_ENGLISH_SAMPLE,
     LONGER_SHARED_ENGLISH_BUTTON_ID,
 } from './longer-shared-english-sample.js';
+import { waitServerAudioPlaybackStart } from './server-audio-playback-start.js';
 
 const page = document.getElementById('modelManager');
 const dictionary = dictionaryManifest();
@@ -1167,12 +1168,14 @@ function clearServerFirstBodyByteDataset(status) {
     delete status.dataset.streamingFirstBodyByteMeasured;
     delete status.dataset.firstBodyByteP50Ms;
     delete status.dataset.synthesisP50Ms;
+    delete status.dataset.playbackStartP50Ms;
+    delete status.dataset.playbackStartMeasured;
     delete status.dataset.playbackStartNotMeasured;
 }
 
 /**
- * One streamed FastAPI fetch + decode. Callers decide whether the sample is
- * an untimed warm-up or a measured warm run (matches local cold/warm honesty).
+ * One streamed FastAPI fetch + decode + muted playback start. Callers decide
+ * whether the sample is an untimed warm-up or a measured warm run.
  */
 async function fetchFastApiPlayableClip(endpoint, input, voice, audio) {
     const wallStarted = performance.now();
@@ -1197,9 +1200,13 @@ async function fetchFastApiPlayableClip(endpoint, input, voice, audio) {
     audio.src = result.dataUrl;
     audio.hidden = false;
     const durationSec = await waitServerAudioDuration(audio);
+    await waitServerAudioPlaybackStart(audio);
+    // Fetch-start → HTMLAudioElement 'playing' (full download, not MSE TTFA).
+    const playbackStartMs = performance.now() - wallStarted;
     return {
         firstBodyByteMs: result.firstBodyByteMs,
         synthesisMs,
+        playbackStartMs,
         audioDurationSec: durationSec,
     };
 }
@@ -1235,28 +1242,40 @@ async function testFastApi() {
             const clip = await fetchFastApiPlayableClip(
                 endpoint.href, input, settings.voice, audio);
             // summarizeRuns' firstAudioMs slot holds first-body-byte samples;
-            // UI/export must label them TTFB, never decoded/playable TTFA.
+            // UI/export must label them TTFB, never MediaSource streaming TTFA.
             runs.push({
                 kind: 'warm',
                 firstAudioMs: clip.firstBodyByteMs,
                 synthesisMs: clip.synthesisMs,
+                playbackStartMs: clip.playbackStartMs,
                 audioDurationSec: clip.audioDurationSec,
             });
         }
         const metrics = window.KokoroBenchmark.summarizeRuns(runs);
+        const playbackStartP50Ms = window.KokoroBenchmark.nearestRank(
+            runs.map(r => r.playbackStartMs), 50);
+        if (!(Number.isFinite(playbackStartP50Ms) &&
+            playbackStartP50Ms >= metrics.synthesisP50Ms)) {
+            throw new Error(
+                'Playback start p50 must be at/after full-response p50 ' +
+                '(post-download HTMLAudioElement start, not MediaSource)');
+        }
         status.dataset.streamingFirstBodyByteMeasured = 'true';
         status.dataset.firstBodyByteP50Ms = String(metrics.firstAudioP50Ms);
         status.dataset.synthesisP50Ms = String(metrics.synthesisP50Ms);
         // Survives chooseServer replacing status text with "FastAPI selected."
-        status.dataset.playbackStartNotMeasured = 'true';
+        status.dataset.playbackStartMeasured = 'true';
+        status.dataset.playbackStartP50Ms = String(playbackStartP50Ms);
         setMessage(status,
             'Server returned playable MP3. First body byte (TTFB) p50: ' +
             metrics.firstAudioP50Ms.toFixed(0) +
             ' ms; full response p50: ' +
             metrics.synthesisP50Ms.toFixed(0) +
-            ' ms (after untimed warm-up; 3 warm runs; network + synthesis). ' +
-            'Playback / start-of-audio was not measured. ' +
-            'Local backends do not measure streaming first-byte latency.');
+            ' ms; playback start p50: ' +
+            playbackStartP50Ms.toFixed(0) +
+            ' ms (HTMLAudioElement after full download; muted; ' +
+            'not MediaSource streaming TTFA; after untimed warm-up; ' +
+            '3 warm runs). Local backends do not measure first-audio.');
         choose.disabled = false;
     } catch (error) {
         clearServerFirstBodyByteDataset(status);

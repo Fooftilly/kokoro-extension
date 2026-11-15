@@ -17,8 +17,8 @@ export const MINIMAL_MP3_BYTES = Uint8Array.from(
 
 export const SERVER_PLAYABLE_MP3_NEEDLE = 'Server returned playable MP3';
 export const SERVER_FIRST_BODY_BYTE_NEEDLE = 'First body byte (TTFB) p50';
-export const SERVER_PLAYBACK_NOT_MEASURED_NEEDLE =
-    'Playback / start-of-audio was not measured';
+export const SERVER_PLAYBACK_START_NEEDLE = 'playback start p50';
+export const SERVER_NOT_MEDIASOURCE_NEEDLE = 'not MediaSource streaming TTFA';
 export const FASTAPI_SELECTED_NEEDLE = 'FastAPI selected.';
 export const SERVER_STATUS_NOT_TESTED = 'Not tested';
 /** Backend used to prove chooseServer writes (testFastApi needs fastapi first). */
@@ -59,8 +59,12 @@ function assertFastApiCardAudio(report) {
 function assertFastApiFirstBodyByte(report) {
     requireTrue(report, 'streamingFirstBodyByteMeasured',
         'streamingFirstBodyByteMeasured must be true for FastAPI TTFB');
-    requireTrue(report, 'playbackStartNotMeasured',
-        'playbackStartNotMeasured must be true (TTFB ≠ playable TTFA)');
+    requireTrue(report, 'playbackStartMeasured',
+        'playbackStartMeasured must be true (HTMLAudioElement after download)');
+    if (report.playbackStartNotMeasured === true) {
+        throw new Error(
+            'playbackStartNotMeasured must not claim unmeasured when measured');
+    }
     if (!(Number.isFinite(report.firstBodyByteP50Ms) &&
         report.firstBodyByteP50Ms >= 0)) {
         throw new Error(
@@ -80,6 +84,13 @@ function assertFastApiFirstBodyByte(report) {
         throw new Error(
             'firstBodyByteP50Ms must reflect the delayed first chunk (>=50ms): ' +
             report.firstBodyByteP50Ms);
+    }
+    if (!(Number.isFinite(report.playbackStartP50Ms) &&
+        report.playbackStartP50Ms >= report.synthesisP50Ms)) {
+        throw new Error(
+            'playbackStartP50Ms must be at/after synthesisP50Ms ' +
+            '(post-download start, not MediaSource): ' +
+            report.playbackStartP50Ms + ' vs ' + report.synthesisP50Ms);
     }
 }
 
@@ -135,6 +146,8 @@ export function buildFastApiServerCardReport(options = {}) {
         ? options.firstBodyByteP50Ms : 110;
     const synthesisP50Ms = Number.isFinite(options.synthesisP50Ms)
         ? options.synthesisP50Ms : Math.max(firstBodyByteP50Ms + 40, 160);
+    const playbackStartP50Ms = Number.isFinite(options.playbackStartP50Ms)
+        ? options.playbackStartP50Ms : Math.max(synthesisP50Ms + 20, 200);
     const report = {
         success: true,
         browser: options.browser || 'unknown',
@@ -145,9 +158,11 @@ export function buildFastApiServerCardReport(options = {}) {
         audioDataUrlPrefix: 'data:audio',
         streamingFirstBodyByteMeasured:
             options.streamingFirstBodyByteMeasured !== false,
-        playbackStartNotMeasured: options.playbackStartNotMeasured !== false,
+        playbackStartMeasured: options.playbackStartMeasured !== false,
+        playbackStartNotMeasured: false,
         firstBodyByteP50Ms,
         synthesisP50Ms,
+        playbackStartP50Ms,
         chooseServerEnabledAfterTest: true,
         backendBeforeChoose: options.backendBeforeChoose || BACKEND_BEFORE_CHOOSE,
         chooseChangedBackend: options.chooseChangedBackend !== false,

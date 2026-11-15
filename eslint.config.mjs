@@ -88,6 +88,7 @@ export default [
       'pcm-wav.js',
       'phoneme-tokenizer.js',
       'model-manager-page.js',
+      'server-audio-playback-start.js',
       'dom-utils.js',
       'text-processor.js',
     ],
