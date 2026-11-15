@@ -47,10 +47,16 @@ function assertMeasuredExportDisclosure(payload) {
         'Measured export must disclose cold prep separately from warm runs');
     requireMeasuredFlag(payload, 'firstAudioMeasured', false,
         'Measured export must disclose warm full-clip (not first-audio)');
-    requireMeasuredFlag(payload, 'storageFootprintMeasured', true,
-        'Measured export must include catalog storage footprint bytes');
+    requireMeasuredFlag(payload, 'storageFootprintMeasured', false,
+        'Measured export must not claim catalog sizes as measured storage');
+    requireMeasuredFlag(payload, 'storageFootprintSource', 'catalog',
+        'Measured export must disclose catalog as the storage footprint source');
     requireMeasuredFlag(payload, 'runtimeHeapMeasured', false,
         'Measured export must not invent runtime heap (WASM/WebGPU)');
+    if (!Number.isFinite(payload.englishDictionaryCatalogBytes) ||
+        payload.englishDictionaryCatalogBytes <= 0) {
+        throw Error('Measured export must disclose pinned CMUdict catalog bytes');
+    }
 }
 
 function assertMeasuredExportRows(payload, expected = {}) {
@@ -65,13 +71,25 @@ function assertMeasuredExportRows(payload, expected = {}) {
                 JSON.stringify(keys));
         }
     }
+    const dictionaryBytes = payload.englishDictionaryCatalogBytes;
     for (const row of payload.measurements) {
         for (const field of [
             'coldPrepMs', 'synthesisP50Ms', 'synthesisP95Ms', 'realTimeFactorP50',
-            'storageFootprintBytes',
+            'catalogModelAssetBytes',
         ]) {
             if (!Number.isFinite(row[field]) || row[field] <= 0) {
                 throw Error('Invalid measured export metric: ' +
+                    JSON.stringify(row));
+            }
+        }
+        if (String(row.key || '').startsWith('onnx-')) {
+            if (row.requiredDictionaryCatalogBytes !== dictionaryBytes) {
+                throw Error('ONNX row must disclose required CMUdict catalog bytes: ' +
+                    JSON.stringify(row));
+            }
+            if (row.catalogEnglishPathBytes !==
+                row.catalogModelAssetBytes + dictionaryBytes) {
+                throw Error('ONNX catalogEnglishPathBytes must equal model + CMUdict: ' +
                     JSON.stringify(row));
             }
         }
