@@ -1,0 +1,252 @@
+{
+  "schemaVersion": 1,
+  "testedCommit": "b1d27eec947c3ecc26409dc609c848a20fe3ef39",
+  "provider": "onnx",
+  "variant": "q8",
+  "runtime": "onnxruntime-web@1.31.1",
+  "modelRevision": "1939ad2a8e416c0acfeecc08a694d14ef25f2231",
+  "modelAndVoiceBytes": 92885404,
+  "dictionaryBytes": 3618488,
+  "sampleRateHz": 24000,
+  "reports": [
+    {
+      "browser": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36",
+      "platform": "Linux GitHub-hosted runner",
+      "scope": "chromium-onnx-origin",
+      "runUrl": "https://github.com/Fooftilly/kokoro-extension/actions/runs/43742716947",
+      "artifactId": 14172828730,
+      "artifactUrl": "https://github.com/Fooftilly/kokoro-extension/actions/runs/43742716947/artifacts/14172828730",
+      "workflowConclusion": "success",
+      "offlineInference": true,
+      "originDownload": {
+        "fullSha256Verified": true,
+        "displayedSizeMatchesManifest": true,
+        "receivedBytes": 92885404,
+        "cachedBytes": 92885404,
+        "dictionaryIntegrityVerified": true,
+        "progressPercent": 100,
+        "unexpectedUrls": []
+      },
+      "overlay": {
+        "success": true,
+        "backend": "onnx",
+        "sentences": 3,
+        "initiallyPaused": true,
+        "playPauseToggled": true,
+        "playbackConfirmed": true,
+        "unsupportedSentenceRejected": true,
+        "retryRestoredAudio": true,
+        "retryNotApplicable": false,
+        "sampleRateHz": 24000,
+        "audioBytes": 90000,
+        "controls": [
+          "next",
+          "previous",
+          "speed",
+          "volume",
+          "play-pause",
+          "retry-after-error"
+        ],
+        "rate": 1.25,
+        "volume": 0.4,
+        "networkOffline": true
+      },
+      "epub": {
+        "success": true,
+        "chapterCount": 4,
+        "epubFileSelectedThroughUi": true,
+        "differentAudioPerChapter": true,
+        "offline": true,
+        "noServerFallback": true,
+        "userBackendUnchanged": true,
+        "visitedLabels": [
+          "First Chapter",
+          "First Section",
+          "Second Chapter",
+          "Third Chapter",
+          "acceptance.txt"
+        ]
+      },
+      "articleSelection": {
+        "success": true,
+        "differentAudioPerPath": true,
+        "offline": true,
+        "noServerFallback": true,
+        "userBackendUnchanged": true,
+        "selectionPath": "floating-mic",
+        "articlePath": "read-article-command-native-x11",
+        "extractedTextIncludesBothParagraphs": true
+      },
+      "memory": {
+        "success": true,
+        "sentenceCount": 36,
+        "visitedCount": 17,
+        "maxCacheSize": 5,
+        "maxObjectUrlCount": 5,
+        "distantJumpChangedWindow": true,
+        "heap": {
+          "growth": -103112645,
+          "maxGrowthBytes": 268435456
+        },
+        "longFormQualityMeasured": false,
+        "longFormMosMeasured": false
+      },
+      "englishBenchmark": {
+        "success": true,
+        "provider": "onnx",
+        "variant": "q8",
+        "sharedSample": "Hello world.",
+        "first": {
+          "cells": [
+            "ONNX 8-bit CPU (WASM)",
+            "3785 ms",
+            "2270 ms",
+            "2275 ms",
+            "1.21"
+          ],
+          "coldPrepMs": 3785,
+          "p50Ms": 2270,
+          "p95Ms": 2275,
+          "rtfP50": 1.21
+        },
+        "restored": {
+          "cells": [
+            "ONNX 8-bit CPU (WASM)",
+            "3442 ms",
+            "2251 ms",
+            "2255 ms",
+            "1.20"
+          ],
+          "coldPrepMs": 3442,
+          "p50Ms": 2251,
+          "p95Ms": 2255,
+          "rtfP50": 1.2
+        },
+        "clearedOnEdit": true,
+        "ipaOnlyExcluded": true,
+        "backendSelectionTested": true,
+        "networkOffline": true,
+        "noImplicitFastApi": true,
+        "rows": 1
+      }
+    },
+    {
+      "browser": "160.0",
+      "platform": "Linux GitHub-hosted runner",
+      "scope": "firefox-onnx-origin",
+      "runUrl": "https://github.com/Fooftilly/kokoro-extension/actions/runs/43742720163",
+      "artifactId": 14173655259,
+      "artifactUrl": "https://github.com/Fooftilly/kokoro-extension/actions/runs/43742720163/artifacts/14173655259",
+      "workflowConclusion": "success",
+      "offlineInference": true,
+      "originDownload": {
+        "fullSha256Verified": true,
+        "displayedSizeMatchesManifest": true,
+        "receivedBytes": 92885404,
+        "cachedBytes": 92885404,
+        "dictionaryIntegrityVerified": true,
+        "progressPercent": 100,
+        "unexpectedUrls": []
+      },
+      "overlay": {
+        "success": true,
+        "backend": "onnx",
+        "sentences": 3,
+        "initiallyPaused": true,
+        "playPauseToggled": true,
+        "playbackConfirmed": true,
+        "unsupportedSentenceRejected": true,
+        "retryRestoredAudio": true,
+        "retryNotApplicable": false,
+        "sampleRateHz": 24000,
+        "audioBytes": 90000,
+        "controls": [
+          "next",
+          "previous",
+          "speed",
+          "volume",
+          "play-pause",
+          "retry-after-error"
+        ],
+        "rate": 1.25,
+        "volume": 0.4,
+        "networkOffline": true
+      },
+      "epub": {
+        "success": true,
+        "chapterCount": 4,
+        "epubFileSelectedThroughUi": true,
+        "differentAudioPerChapter": true,
+        "offline": true,
+        "noServerFallback": true,
+        "userBackendUnchanged": true,
+        "visitedLabels": [
+          "First Chapter",
+          "First Section",
+          "Second Chapter",
+          "Third Chapter",
+          "acceptance.txt"
+        ]
+      },
+      "articleSelection": {
+        "success": true,
+        "differentAudioPerPath": true,
+        "offline": true,
+        "noServerFallback": true,
+        "userBackendUnchanged": true,
+        "selectionPath": "floating-mic",
+        "articlePath": "read-article-command-native-x11",
+        "extractedTextIncludesBothParagraphs": true
+      },
+      "memory": {
+        "success": true,
+        "sentenceCount": 36,
+        "visitedCount": 17,
+        "maxCacheSize": 5,
+        "maxObjectUrlCount": 5,
+        "distantJumpChangedWindow": true,
+        "heap": null,
+        "longFormQualityMeasured": false,
+        "longFormMosMeasured": false
+      },
+      "englishBenchmark": {
+        "success": true,
+        "provider": "onnx",
+        "variant": "q8",
+        "sharedSample": "Hello world.",
+        "first": {
+          "cells": [
+            "ONNX 8-bit CPU (WASM)",
+            "2682 ms",
+            "1418 ms",
+            "1473 ms",
+            "0.76"
+          ],
+          "coldPrepMs": 2682,
+          "p50Ms": 1418,
+          "p95Ms": 1473,
+          "rtfP50": 0.76
+        },
+        "restored": {
+          "cells": [
+            "ONNX 8-bit CPU (WASM)",
+            "2384 ms",
+            "1472 ms",
+            "1482 ms",
+            "0.79"
+          ],
+          "coldPrepMs": 2384,
+          "p50Ms": 1472,
+          "p95Ms": 1482,
+          "rtfP50": 0.79
+        },
+        "clearedOnEdit": true,
+        "ipaOnlyExcluded": true,
+        "backendSelectionTested": true,
+        "networkOffline": true,
+        "noImplicitFastApi": true,
+        "rows": 1
+      }
+    }
+  ]
+}

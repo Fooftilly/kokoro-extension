@@ -2,6 +2,15 @@
 
 Status: **CPU browser inference verified in Chrome and Firefox; full product acceptance still incomplete.** This document records the chronology of #53/#52 validation, including superseded failures with the stable MediaPipe SDK. Real model-backed inference is distinct from static API availability, mocked tests, passing builds, audible quality, and working article/EPUB playback.
 
+**15 November 2026 ONNX update:** Fresh Chrome and Firefox official-origin
+runs passed on merged #178/#179, including offline overlay controls,
+article/selection entry paths, the EPUB/TXT fixture and a bounded 36-sentence
+cache walk. See the [current ONNX acceptance report](onnx-browser-acceptance-2026-11-15.md)
+for run/artifact links, measured timings and remaining limits. Earlier dated
+statements below about unverified UI paths describe the state at that time;
+they are not the current ONNX fixture acceptance status. Full pronunciation,
+long-form quality, device coverage and release acceptance remain incomplete.
+
 **Current verified baseline (7 November 2026, maintainer machine):** `@mediapipe/tasks-audio@1.2.2-rc.20261106` is pinned in the extension. **Chrome MV3 ONNX q8 and MediaPipe CPU both passed** sequentially in separate pages of one Chromium extension session. **Firefox 159.0.1 MediaPipe CPU also passed** after accepting *genuine* cross-realm Float32 arrays without weakening the PCM constraints; Firefox ONNX q8 passed in earlier live acceptance. MediaPipe Chrome warm p50 **13,121.2 ms** for 3.05 seconds of output; Firefox warm p50 **12,909 ms** for the same 3.05 seconds. Both are slower than real-time. **GPU execution, full text/EPUB workflow, and long-form playback remain unverified.** The maintainer subsequently listened to Firefox test-page samples and reported satisfactory audio, with MediaPipe subjectively more natural than ONNX; that is a limited listening assessment, not independent perceptual quality validation. Earlier `tf_lite_prefill_decode` and Firefox PCM errors below are *historical failures*, not current runtime status.
 
 ## Initial reproducible setup (historical, prior stable SDK)
