@@ -4,10 +4,12 @@
  * Exercises scripts/firefox_epub_acceptance.py — not source substrings —
  * so backend mis-wiring or duplicate-hash acceptance fails closed in Jest.
  */
+const fs = require('fs');
 const { spawnSync } = require('child_process');
 const path = require('path');
 
 const scriptsDir = path.join(__dirname, '..', 'scripts');
+
 
 function runHelperProbe(pythonSnippet) {
     const result = spawnSync('python3', ['-c', `
@@ -103,16 +105,31 @@ print(json.dumps({
         expect(report.dictionaryOff).toBe(false);
     });
 
+    test('live harness wires three-spine navigation and distinct hashes', () => {
+        const source = fs.readFileSync(
+            path.join(scriptsDir, 'validate-live-firefox.py'), 'utf8');
+        const fixture = fs.readFileSync(
+            path.join(scriptsDir, 'reader_acceptance_epub.py'), 'utf8');
+        expect(fixture).toContain('Hello third chapter.');
+        expect(fixture).toContain('idref="third"');
+        expect(source).toContain('"Third Chapter"');
+        expect(source).toContain('Hello third chapter.');
+        expect(source).toContain('chapterCount": 3');
+        expect(source).toMatch(
+            /assert_distinct_chapter_audio_hashes\(\s*first\["audioSha256"\],\s*second\["audioSha256"\],\s*third\["audioSha256"\],\s*plain_text\["audioSha256"\]\)/,
+        );
+    });
+
     test('rejects missing or colliding chapter WAV content hashes', () => {
         const result = runHelperProbe(`
-ok = assert_distinct_chapter_audio_hashes('aaa', 'bbb', 'ccc')
+ok = assert_distinct_chapter_audio_hashes('aaa', 'bbb', 'ccc', 'ddd')
 dup_errors = []
 for args in (
-    ('same', 'same', 'other'),
-    ('a', 'b', 'a'),
-    ('x', 'x', 'x'),
-    ('only', 'two', None),
-    ('', 'bbb', 'ccc'),
+    ('same', 'same', 'other', 'fourth'),
+    ('a', 'b', 'c', 'a'),
+    ('x', 'x', 'x', 'x'),
+    ('only', 'two', 'three', None),
+    ('', 'bbb', 'ccc', 'ddd'),
 ):
     try:
         assert_distinct_chapter_audio_hashes(*args)
@@ -131,3 +148,4 @@ print(json.dumps({'ok': ok, 'dupErrors': dup_errors}))
         expect(report.dupErrors.some(message => message.startsWith('accepted:'))).toBe(false);
     });
 });
+

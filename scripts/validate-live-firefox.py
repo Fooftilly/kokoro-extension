@@ -2363,12 +2363,15 @@ const [title, previousRevision, previousAudioUrl, previousAudioSha256, backend, 
     const expectedSpeech = {
         'First Chapter': 'Hello first chapter.',
         'Second Chapter': 'Hello second chapter.',
+        'Third Chapter': 'Hello third chapter.',
         'acceptance.txt': 'Hello plain text.',
     }[title];
     const expectedNav = (chapterTitle) => ({
-        entries: chapterTitle === 'acceptance.txt' ? 1 : 2,
-        prevDisabled: chapterTitle !== 'Second Chapter',
-        nextDisabled: chapterTitle !== 'First Chapter',
+        entries: chapterTitle === 'acceptance.txt' ? 1 : 3,
+        prevDisabled: chapterTitle === 'First Chapter' ||
+            chapterTitle === 'acceptance.txt',
+        nextDisabled: chapterTitle === 'Third Chapter' ||
+            chapterTitle === 'acceptance.txt',
     });
     const collectNav = () => {
         const active = document.querySelector('.playable-chapter.active');
@@ -2539,6 +2542,8 @@ def _expected_nav_for_title(title):
     if title == "First Chapter":
         return {"prevDisabled": True, "nextDisabled": False}
     if title == "Second Chapter":
+        return {"prevDisabled": False, "nextDisabled": False}
+    if title == "Third Chapter":
         return {"prevDisabled": False, "nextDisabled": True}
     if title == "acceptance.txt":
         return {"prevDisabled": True, "nextDisabled": True}
@@ -2630,6 +2635,9 @@ def _epub_nav_failure_message(expected_label):
     if expected_label == "Second Chapter":
         return ("EPUB navigation failed to replace audio or update "
                 "chapter controls: ")
+    if expected_label == "Third Chapter":
+        return ("EPUB third-chapter navigation failed to replace audio "
+                "or update controls: ")
     return "TXT document replacement retained stale EPUB audio or navigation: "
 
 
@@ -2719,23 +2727,43 @@ def accept_real_epub_reader(driver, origin, backend):
             previous_audio_url=first["audioUrl"],
             previous_audio_sha256=first["audioSha256"])
 
+        driver.find_element(By.ID, "nextChapter").click()
+        third = _wait_for_epub_chapter(
+            driver, "Third Chapter", second["revision"], second["audioUrl"],
+            second["audioSha256"], backend=backend)
+        _assert_epub_chapter_nav(
+            driver, third, "Third Chapter",
+            previous_audio_url=second["audioUrl"],
+            previous_audio_sha256=second["audioSha256"])
+        if (third.get("audioUrl") == first.get("audioUrl") or
+                third.get("audioSha256") == first.get("audioSha256")):
+            raise RuntimeError(
+                "EPUB third-chapter audio collided with first chapter: " +
+                json.dumps({
+                    "firstAudioUrl": first.get("audioUrl"),
+                    "thirdAudioUrl": third.get("audioUrl"),
+                    "firstAudioSha256": first.get("audioSha256"),
+                    "thirdAudioSha256": third.get("audioSha256"),
+                }))
+
         driver.find_element(By.ID, "openAnotherDocument").click()
         driver.find_element(By.ID, "fileInput").send_keys(str(txt_path))
         plain_text = _wait_for_epub_chapter(
-            driver, "acceptance.txt", second["revision"], second["audioUrl"],
-            second["audioSha256"], backend=backend)
+            driver, "acceptance.txt", third["revision"], third["audioUrl"],
+            third["audioSha256"], backend=backend)
         _assert_epub_chapter_nav(
             driver, plain_text, "acceptance.txt",
-            previous_audio_url=second["audioUrl"],
-            previous_audio_sha256=second["audioSha256"],
+            previous_audio_url=third["audioUrl"],
+            previous_audio_sha256=third["audioSha256"],
             require_single_entry=True)
 
     _assert_reader_backend_unchanged(driver, backend)
     assert_distinct_chapter_audio_hashes(
-        first["audioSha256"], second["audioSha256"], plain_text["audioSha256"])
+        first["audioSha256"], second["audioSha256"], third["audioSha256"],
+        plain_text["audioSha256"])
     return {
         "success": True, "browser": "Firefox", "backend": backend,
-        "epubFileSelectedThroughUi": True, "chapterCount": 2,
+        "epubFileSelectedThroughUi": True, "chapterCount": 3,
         "first": {"title": first["title"], "revision": first["revision"],
                   "audioBytes": first["bytes"],
                   "audioSha256": first["audioSha256"],
@@ -2744,6 +2772,10 @@ def accept_real_epub_reader(driver, origin, backend):
                    "audioBytes": second["bytes"],
                    "audioSha256": second["audioSha256"],
                    "speech": second["expectedSpeech"]},
+        "third": {"title": third["title"], "revision": third["revision"],
+                  "audioBytes": third["bytes"],
+                  "audioSha256": third["audioSha256"],
+                  "speech": third["expectedSpeech"]},
         "txtReplacement": {"title": plain_text["title"],
                            "revision": plain_text["revision"],
                            "audioBytes": plain_text["bytes"],

@@ -7,6 +7,7 @@ import JSZip from 'jszip';
 export const READER_ACCEPTANCE_SPEECH = {
     'First Chapter': 'Hello first chapter.',
     'Second Chapter': 'Hello second chapter.',
+    'Third Chapter': 'Hello third chapter.',
     'acceptance.txt': 'Hello plain text.',
 };
 
@@ -30,7 +31,10 @@ export async function buildReaderAcceptanceEpub() {
         '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>' +
         '<item id="first" href="first.xhtml" media-type="application/xhtml+xml"/>' +
         '<item id="second" href="second.xhtml" media-type="application/xhtml+xml"/>' +
-        '</manifest><spine><itemref idref="first"/><itemref idref="second"/></spine></package>');
+        '<item id="third" href="third.xhtml" media-type="application/xhtml+xml"/>' +
+        '</manifest><spine>' +
+        '<itemref idref="first"/><itemref idref="second"/><itemref idref="third"/>' +
+        '</spine></package>');
     zip.file('OEBPS/nav.xhtml',
         '<?xml version="1.0" encoding="UTF-8"?>' +
         '<html xmlns="http://www.w3.org/1999/xhtml" ' +
@@ -38,9 +42,12 @@ export async function buildReaderAcceptanceEpub() {
         '<title>Contents</title></head><body><nav epub:type="toc">' +
         '<ol><li><a href="first.xhtml">First Chapter</a></li>' +
         '<li><a href="second.xhtml">Second Chapter</a></li>' +
+        '<li><a href="third.xhtml">Third Chapter</a></li>' +
         '</ol></nav></body></html>');
     for (const [name, title] of [
-        ['first', 'First Chapter'], ['second', 'Second Chapter'],
+        ['first', 'First Chapter'],
+        ['second', 'Second Chapter'],
+        ['third', 'Third Chapter'],
     ]) {
         const speech = READER_ACCEPTANCE_SPEECH[title];
         zip.file('OEBPS/' + name + '.xhtml',

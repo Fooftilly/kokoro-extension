@@ -1787,12 +1787,15 @@ async function pollRealEpubChapterReady(
     const expectedSpeech = {
         'First Chapter': 'Hello first chapter.',
         'Second Chapter': 'Hello second chapter.',
+        'Third Chapter': 'Hello third chapter.',
         'acceptance.txt': 'Hello plain text.',
     }[title];
     const expectedNav = (chapterTitle) => ({
-        entries: chapterTitle === 'acceptance.txt' ? 1 : 2,
-        prevDisabled: chapterTitle !== 'Second Chapter',
-        nextDisabled: chapterTitle !== 'First Chapter',
+        entries: chapterTitle === 'acceptance.txt' ? 1 : 3,
+        prevDisabled: chapterTitle === 'First Chapter' ||
+            chapterTitle === 'acceptance.txt',
+        nextDisabled: chapterTitle === 'Third Chapter' ||
+            chapterTitle === 'acceptance.txt',
     });
     const collectNav = () => {
         const active = document.querySelector('.playable-chapter.active');
@@ -2600,7 +2603,7 @@ async function acceptLongFormMemoryPerformance(page, context, extensionId, backe
 }
 
 // Verify that the real EPUB.js reader and embedded overlay—not a seeded
-// pendingContent shortcut—create a local offline WAV for both chapters.
+// pendingContent shortcut—create a local offline WAV for all three chapters.
 // Also cover replacing the book with a TXT file through the same UI.
 // backend is 'onnx' or 'mediapipe' (chromium-*-origin scopes).
 async function acceptRealEpubReader(page, extensionId, backend) {
@@ -2651,7 +2654,8 @@ async function acceptRealEpubReader(page, extensionId, backend) {
     });
     const expectedNavForTitle = (title) => {
         if (title === 'First Chapter') return { prevDisabled: true, nextDisabled: false };
-        if (title === 'Second Chapter') return { prevDisabled: false, nextDisabled: true };
+        if (title === 'Second Chapter') return { prevDisabled: false, nextDisabled: false };
+        if (title === 'Third Chapter') return { prevDisabled: false, nextDisabled: true };
         if (title === 'acceptance.txt') return { prevDisabled: true, nextDisabled: true };
         return null;
     };
@@ -2720,18 +2724,39 @@ async function acceptRealEpubReader(page, extensionId, backend) {
                 firstAudioSha256: first.audioSha256, secondAudioSha256: second.audioSha256,
                 live: await readReaderNavDiagnostics() }));
     }
+    await page.locator('#nextChapter').click();
+    const third = await waitForChapter(
+        'Third Chapter', second.revision, second.audioUrl, second.audioSha256);
+    const thirdExpected = expectedNavForTitle(third.title);
+    if (!thirdExpected || !third.nav ||
+        third.nav.prevDisabled !== thirdExpected.prevDisabled ||
+        third.nav.nextDisabled !== thirdExpected.nextDisabled ||
+        third.nav.activeLabel !== 'Third Chapter' ||
+        first.audioUrl === third.audioUrl ||
+        second.audioUrl === third.audioUrl ||
+        first.audioSha256 === third.audioSha256 ||
+        second.audioSha256 === third.audioSha256 ||
+        third.expectedSpeech !== READER_ACCEPTANCE_SPEECH['Third Chapter']) {
+        throw Error('EPUB third-chapter navigation failed to replace audio or update controls: ' +
+            JSON.stringify({ expected: thirdExpected, snapshot: third, nav: third.nav,
+                firstAudioUrl: first.audioUrl, secondAudioUrl: second.audioUrl,
+                thirdAudioUrl: third.audioUrl,
+                firstAudioSha256: first.audioSha256, secondAudioSha256: second.audioSha256,
+                thirdAudioSha256: third.audioSha256,
+                live: await readReaderNavDiagnostics() }));
+    }
     await page.locator('#openAnotherDocument').click();
     await page.locator('#fileInput').setInputFiles({
         name: 'acceptance.txt', mimeType: 'text/plain',
         buffer: Buffer.from(READER_ACCEPTANCE_SPEECH['acceptance.txt'], 'utf8'),
     });
     const plainText = await waitForChapter(
-        'acceptance.txt', second.revision, second.audioUrl, second.audioSha256);
+        'acceptance.txt', third.revision, third.audioUrl, third.audioSha256);
     const txtExpected = expectedNavForTitle(plainText.title);
     const differentAudioPerChapter = new Set([
-        first.audioSha256, second.audioSha256, plainText.audioSha256,
-    ]).size === 3;
-    if (plainText.audioUrl === second.audioUrl ||
+        first.audioSha256, second.audioSha256, third.audioSha256, plainText.audioSha256,
+    ]).size === 4;
+    if (plainText.audioUrl === third.audioUrl ||
         !differentAudioPerChapter ||
         !txtExpected || !plainText.nav ||
         plainText.nav.prevDisabled !== txtExpected.prevDisabled ||
@@ -2741,9 +2766,9 @@ async function acceptRealEpubReader(page, extensionId, backend) {
         plainText.expectedSpeech !== READER_ACCEPTANCE_SPEECH['acceptance.txt']) {
         throw Error('TXT document replacement retained stale EPUB audio or navigation: ' +
             JSON.stringify({ expected: txtExpected, snapshot: plainText, nav: plainText.nav,
-                secondAudioUrl: second.audioUrl, txtAudioUrl: plainText.audioUrl,
+                thirdAudioUrl: third.audioUrl, txtAudioUrl: plainText.audioUrl,
                 firstAudioSha256: first.audioSha256, secondAudioSha256: second.audioSha256,
-                txtAudioSha256: plainText.audioSha256,
+                thirdAudioSha256: third.audioSha256, txtAudioSha256: plainText.audioSha256,
                 live: await readReaderNavDiagnostics() }));
     }
     const selected = await page.evaluate(async () =>
@@ -2751,11 +2776,13 @@ async function acceptRealEpubReader(page, extensionId, backend) {
     if (selected !== backend) throw Error('Reader silently switched local TTS backend');
     return {
         success: true, browser: 'Chromium', backend,
-        epubFileSelectedThroughUi: true, chapterCount: 2,
+        epubFileSelectedThroughUi: true, chapterCount: 3,
         first: { title: first.title, revision: first.revision, audioBytes: first.bytes,
             audioSha256: first.audioSha256, speech: first.expectedSpeech },
         second: { title: second.title, revision: second.revision, audioBytes: second.bytes,
             audioSha256: second.audioSha256, speech: second.expectedSpeech },
+        third: { title: third.title, revision: third.revision, audioBytes: third.bytes,
+            audioSha256: third.audioSha256, speech: third.expectedSpeech },
         txtReplacement: { title: plainText.title, revision: plainText.revision,
             audioBytes: plainText.bytes, audioSha256: plainText.audioSha256,
             speech: plainText.expectedSpeech },

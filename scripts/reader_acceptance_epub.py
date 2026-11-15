@@ -1,4 +1,4 @@
-"""Shared two-chapter EPUB 3 fixture for offline reader acceptance.
+"""Shared three-chapter EPUB 3 fixture for offline reader acceptance.
 
 Keep labels, spine, and per-document speech bodies aligned with
 scripts/validate-live-chromium.mjs so Chromium and Firefox exercise one
@@ -11,14 +11,16 @@ import zipfile
 READER_ACCEPTANCE_SPEECH = {
     "First Chapter": "Hello first chapter.",
     "Second Chapter": "Hello second chapter.",
+    "Third Chapter": "Hello third chapter.",
     "acceptance.txt": "Hello plain text.",
 }
 
 
 def build_reader_acceptance_epub(path):
-    """Write a standards-structured two-chapter EPUB 3 archive to ``path``."""
+    """Write a standards-structured three-chapter EPUB 3 archive to ``path``."""
     first_speech = READER_ACCEPTANCE_SPEECH["First Chapter"]
     second_speech = READER_ACCEPTANCE_SPEECH["Second Chapter"]
+    third_speech = READER_ACCEPTANCE_SPEECH["Third Chapter"]
     with zipfile.ZipFile(path, "w") as archive:
         mimetype = zipfile.ZipInfo("mimetype")
         mimetype.compress_type = zipfile.ZIP_STORED
@@ -43,7 +45,10 @@ def build_reader_acceptance_epub(path):
             '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
             '<item id="first" href="first.xhtml" media-type="application/xhtml+xml"/>'
             '<item id="second" href="second.xhtml" media-type="application/xhtml+xml"/>'
-            '</manifest><spine><itemref idref="first"/><itemref idref="second"/></spine></package>',
+            '<item id="third" href="third.xhtml" media-type="application/xhtml+xml"/>'
+            '</manifest><spine>'
+            '<itemref idref="first"/><itemref idref="second"/><itemref idref="third"/>'
+            '</spine></package>',
         )
         archive.writestr(
             "OEBPS/nav.xhtml",
@@ -53,9 +58,14 @@ def build_reader_acceptance_epub(path):
             '<title>Contents</title></head><body><nav epub:type="toc">'
             '<ol><li><a href="first.xhtml">First Chapter</a></li>'
             '<li><a href="second.xhtml">Second Chapter</a></li>'
+            '<li><a href="third.xhtml">Third Chapter</a></li>'
             '</ol></nav></body></html>',
         )
-        for name, speech in (("first", first_speech), ("second", second_speech)):
+        for name, speech in (
+            ("first", first_speech),
+            ("second", second_speech),
+            ("third", third_speech),
+        ):
             archive.writestr(
                 "OEBPS/" + name + ".xhtml",
                 '<?xml version="1.0" encoding="UTF-8"?>'
