@@ -1050,12 +1050,79 @@ function registerModel(entry) {
     });
 }
 
+async function waitServerAudioDuration(audio) {
+    if (audio.readyState >= HTMLMediaElement.HAVE_METADATA &&
+        Number.isFinite(audio.duration) && audio.duration > 0) {
+        return audio.duration;
+    }
+    await new Promise((resolve, reject) => {
+        const onReady = () => { cleanup(); resolve(); };
+        const onError = () => {
+            cleanup();
+            reject(new Error('Server MP3 failed to decode'));
+        };
+        const cleanup = () => {
+            audio.removeEventListener('loadedmetadata', onReady);
+            audio.removeEventListener('error', onError);
+        };
+        audio.addEventListener('loadedmetadata', onReady, { once: true });
+        audio.addEventListener('error', onError, { once: true });
+        audio.load();
+    });
+    if (!(Number.isFinite(audio.duration) && audio.duration > 0)) {
+        throw new Error('Server MP3 duration missing');
+    }
+    return audio.duration;
+}
+
+function clearServerFirstBodyByteDataset(status) {
+    delete status.dataset.streamingFirstBodyByteMeasured;
+    delete status.dataset.firstBodyByteP50Ms;
+    delete status.dataset.synthesisP50Ms;
+    delete status.dataset.playbackStartNotMeasured;
+}
+
+/**
+ * One streamed FastAPI fetch + decode. Callers decide whether the sample is
+ * an untimed warm-up or a measured warm run (matches local cold/warm honesty).
+ */
+async function fetchFastApiPlayableClip(endpoint, input, voice, audio) {
+    const wallStarted = performance.now();
+    const result = await browser.runtime.sendMessage({
+        action: 'FETCH_TTS_AUDIO', backend: 'fastapi',
+        endpoint,
+        payload: { model: 'kokoro', input, voice,
+            response_format: 'mp3', speed: 1 },
+    });
+    const synthesisMs = performance.now() - wallStarted;
+    if (!result?.success || !result.dataUrl) {
+        throw new Error(result?.error || 'No MP3 data returned');
+    }
+    if (!Number.isFinite(result.firstBodyByteMs) ||
+        result.firstBodyByteMs < 0) {
+        throw new Error(
+            'First body byte (TTFB) was not measured ' +
+            '(need a streamed response body)');
+    }
+    // Decode before accepting — a late valid MP3 must not launder earlier
+    // non-audio bodies into warm-up success or measured p50.
+    audio.src = result.dataUrl;
+    audio.hidden = false;
+    const durationSec = await waitServerAudioDuration(audio);
+    return {
+        firstBodyByteMs: result.firstBodyByteMs,
+        synthesisMs,
+        audioDurationSec: durationSec,
+    };
+}
+
 async function testFastApi() {
     const button = document.getElementById('testServer');
     const choose = document.getElementById('chooseServer');
     const status = document.getElementById('serverStatus');
     choose.disabled = true;
     button.disabled = true;
+    clearServerFirstBodyByteDataset(status);
     try {
         const settings = await browser.storage.sync.get({
             ttsBackend: 'fastapi', apiUrl: 'http://127.0.0.1:8880/v1/',
@@ -1070,21 +1137,41 @@ async function testFastApi() {
         if (!['http:', 'https:'].includes(base.protocol)) throw new TypeError('Unsupported server URL');
         const endpoint = new URL('audio/speech', base.href.endsWith('/') ? base : base.href + '/');
         setMessage(status, 'Testing the explicitly configured FastAPI server…');
-        const started = performance.now();
-        const result = await browser.runtime.sendMessage({
-            action: 'FETCH_TTS_AUDIO', backend: 'fastapi', endpoint: endpoint.href,
-            payload: { model: 'kokoro', input, voice: settings.voice,
-                response_format: 'mp3', speed: 1 },
-        });
-        const elapsed = performance.now() - started;
-        if (!result?.success || !result.dataUrl) throw new Error(result?.error || 'No MP3 data returned');
         const audio = document.getElementById('serverAudio');
-        audio.src = result.dataUrl;
-        audio.hidden = false;
-        setMessage(status, 'Server returned playable MP3 in ' + elapsed.toFixed(0) +
-            ' ms (network + synthesis; not a comparable local RTF).');
+        // Untimed warm-up absorbs cold FastAPI/model init — same honesty as
+        // local ONNX (exclude cold prep from runs labeled warm).
+        await fetchFastApiPlayableClip(
+            endpoint.href, input, settings.voice, audio);
+        const runs = [];
+        for (let n = 0; n < 3; n++) {
+            const clip = await fetchFastApiPlayableClip(
+                endpoint.href, input, settings.voice, audio);
+            // summarizeRuns' firstAudioMs slot holds first-body-byte samples;
+            // UI/export must label them TTFB, never decoded/playable TTFA.
+            runs.push({
+                kind: 'warm',
+                firstAudioMs: clip.firstBodyByteMs,
+                synthesisMs: clip.synthesisMs,
+                audioDurationSec: clip.audioDurationSec,
+            });
+        }
+        const metrics = window.KokoroBenchmark.summarizeRuns(runs);
+        status.dataset.streamingFirstBodyByteMeasured = 'true';
+        status.dataset.firstBodyByteP50Ms = String(metrics.firstAudioP50Ms);
+        status.dataset.synthesisP50Ms = String(metrics.synthesisP50Ms);
+        // Survives chooseServer replacing status text with "FastAPI selected."
+        status.dataset.playbackStartNotMeasured = 'true';
+        setMessage(status,
+            'Server returned playable MP3. First body byte (TTFB) p50: ' +
+            metrics.firstAudioP50Ms.toFixed(0) +
+            ' ms; full response p50: ' +
+            metrics.synthesisP50Ms.toFixed(0) +
+            ' ms (after untimed warm-up; 3 warm runs; network + synthesis). ' +
+            'Playback / start-of-audio was not measured. ' +
+            'Local backends do not measure streaming first-byte latency.');
         choose.disabled = false;
     } catch (error) {
+        clearServerFirstBodyByteDataset(status);
         setMessage(status, 'Server test failed: ' + String(error.message || error));
     } finally {
         button.disabled = false;

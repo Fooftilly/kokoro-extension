@@ -1722,12 +1722,24 @@ def _start_fastapi_speech_stub():
             path_only = self.path.split("?", 1)[0]
             if path_only.endswith("/audio/speech"):
                 hits["speech"] += 1
+                length = int(self.headers.get("Content-Length") or 0)
+                if length:
+                    self.rfile.read(length)
                 self.send_response(200)
                 self.send_header("Content-Type", "audio/mpeg")
                 self.send_header("Content-Length", str(len(mp3)))
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
-                self.wfile.write(mp3)
+                # Delay the first body byte so streamed TTFB is measurable.
+                first_len = max(1, min(64, len(mp3)))
+                first = mp3[:first_len]
+                rest = mp3[first_len:]
+                time.sleep(0.1)
+                self.wfile.write(first)
+                self.wfile.flush()
+                time.sleep(0.02)
+                if rest:
+                    self.wfile.write(rest)
                 return
             self.send_error(404)
 
@@ -1771,11 +1783,17 @@ def accept_fastapi_server_card(driver, origin, api_url):
         """)
 
     driver.find_element(By.ID, "testServer").click()
-    WebDriverWait(driver, 30).until(lambda d: d.execute_script("""
-        const status=document.getElementById('serverStatus')?.textContent||'';
+    WebDriverWait(driver, 60).until(lambda d: d.execute_script("""
+        const status=document.getElementById('serverStatus');
+        const text=status?.textContent||'';
         const audio=document.getElementById('serverAudio');
         const choose=document.getElementById('chooseServer');
-        return status.includes('Server returned playable MP3') &&
+        return text.includes('Server returned playable MP3') &&
+            text.includes('First body byte (TTFB) p50') &&
+            text.includes('Playback / start-of-audio was not measured') &&
+            status?.dataset?.streamingFirstBodyByteMeasured==='true' &&
+            status?.dataset?.playbackStartNotMeasured==='true' &&
+            Number.isFinite(Number(status?.dataset?.firstBodyByteP50Ms)) &&
             audio && !audio.hidden &&
             String(audio.src||'').startsWith('data:audio') &&
             choose && choose.disabled===false;
@@ -1813,6 +1831,22 @@ def accept_fastapi_server_card(driver, origin, api_url):
     if not (isinstance(audio_duration, (int, float)) and audio_duration > 0):
         raise RuntimeError(
             "Firefox stub MP3 duration missing: " + repr(audio_duration))
+
+    # Capture TTFB / playback-not-measured BEFORE chooseServer — selection
+    # replaces status text with "FastAPI selected." (dataset still survives).
+    ttfb = driver.execute_script("""
+        const status=document.getElementById('serverStatus');
+        const text=status?.textContent||'';
+        return {
+            streamingFirstBodyByteMeasured:
+                status?.dataset?.streamingFirstBodyByteMeasured==='true',
+            firstBodyByteP50Ms:Number(status?.dataset?.firstBodyByteP50Ms),
+            synthesisP50Ms:Number(status?.dataset?.synthesisP50Ms),
+            playbackStartNotMeasured:
+                status?.dataset?.playbackStartNotMeasured==='true' &&
+                text.includes('Playback / start-of-audio was not measured'),
+        };
+    """)
 
     # Switch away from fastapi so chooseServer must write the preference.
     before = driver.execute_async_script("""
@@ -1856,6 +1890,12 @@ def accept_fastapi_server_card(driver, origin, api_url):
         backend_before_choose=before["backend"],
         choose_changed_backend=before["backend"] != selected["backend"],
         audio_duration_sec=float(audio_duration),
+        streaming_first_body_byte_measured=bool(
+            ttfb.get("streamingFirstBodyByteMeasured")),
+        playback_start_not_measured=bool(
+            ttfb.get("playbackStartNotMeasured")),
+        first_body_byte_p50_ms=ttfb.get("firstBodyByteP50Ms"),
+        synthesis_p50_ms=ttfb.get("synthesisP50Ms"),
     )
 
 

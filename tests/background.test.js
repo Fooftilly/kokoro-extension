@@ -47,13 +47,32 @@ global.browser = {
 
 global.browser.storage.onChanged = { addListener: jest.fn() };
 
-global.fetch = jest.fn(() => Promise.resolve({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve({ models: [] }),
-    text: () => Promise.resolve('ok'),
-    blob: () => Promise.resolve(new Blob(['audio'], { type: 'audio/mpeg' }))
-}));
+function mockSpeechStreamResponse(payload = 'audio') {
+    const bytes = Uint8Array.from(
+        Array.from(String(payload), (ch) => ch.charCodeAt(0) & 0xff));
+    let read = false;
+    return {
+        ok: true,
+        status: 200,
+        headers: { get: () => 'audio/mpeg' },
+        json: async () => ({ models: [] }),
+        text: async () => 'ok',
+        blob: async () => new Blob([payload], { type: 'audio/mpeg' }),
+        body: {
+            getReader() {
+                return {
+                    async read() {
+                        if (read) return { done: true, value: undefined };
+                        read = true;
+                        return { done: false, value: bytes };
+                    },
+                };
+            },
+        },
+    };
+}
+
+global.fetch = jest.fn(() => Promise.resolve(mockSpeechStreamResponse()));
 
 global.FileReader = class {
     readAsDataURL() { this.onloadend(); }
@@ -71,13 +90,7 @@ describe('background.js logic', () => {
             mode: 'stream',
             normalizationOptions: {}
         });
-        fetch.mockResolvedValue({
-            ok: true,
-            status: 200,
-            json: async () => ({ status: 'ok', models: [] }),
-            text: async () => 'ok',
-            blob: async () => new Blob(['audio'], { type: 'audio/mpeg' })
-        });
+        fetch.mockResolvedValue(mockSpeechStreamResponse());
         // Load the script fresh for each test
         require('../background.js');
     });
@@ -420,6 +433,8 @@ describe('background.js logic', () => {
 
         expect(result.success).toBe(true);
         expect(result.dataUrl).toBe('data:audio/mpeg;base64,...');
+        expect(Number.isFinite(result.firstBodyByteMs)).toBe(true);
+        expect(result.firstBodyByteMs).toBeGreaterThanOrEqual(0);
         expect(global.fetch).toHaveBeenCalledWith(
             'http://localhost:8880/v1/audio/speech',
             expect.objectContaining({
@@ -427,5 +442,75 @@ describe('background.js logic', () => {
                 body: JSON.stringify({ input: 'Test' })
             })
         );
+    });
+
+    test('FETCH_TTS_AUDIO leaves firstBodyByteMs null without a body stream', async () => {
+        fetch.mockResolvedValue({
+            ok: true,
+            status: 200,
+            headers: { get: () => 'audio/mpeg' },
+            blob: async () => new Blob(['audio'], { type: 'audio/mpeg' }),
+            body: null,
+        });
+        const onMessageListener = browser.runtime.onMessage.addListener.mock.calls[0][0];
+        const result = await onMessageListener({
+            action: 'FETCH_TTS_AUDIO',
+            endpoint: 'http://localhost:8880/v1/audio/speech',
+            payload: { input: 'Test' },
+        }, {});
+        expect(result.success).toBe(true);
+        expect(result.dataUrl).toBe('data:audio/mpeg;base64,...');
+        expect(result.firstBodyByteMs).toBeNull();
+    });
+
+    test('FETCH_TTS_AUDIO firstBodyByteMs stops at first chunk, not full buffer', async () => {
+        jest.useFakeTimers();
+        const first = Uint8Array.from([1, 2, 3, 4]);
+        const rest = Uint8Array.from([5, 6, 7, 8]);
+        let step = 0;
+        fetch.mockResolvedValue({
+            ok: true,
+            status: 200,
+            headers: { get: () => 'audio/mpeg' },
+            body: {
+                getReader() {
+                    return {
+                        async read() {
+                            step += 1;
+                            if (step === 1) {
+                                // First nonempty chunk after 100ms wall delay.
+                                await new Promise((resolve) => {
+                                    setTimeout(resolve, 100);
+                                });
+                                return { done: false, value: first };
+                            }
+                            if (step === 2) {
+                                // Remaining body arrives much later.
+                                await new Promise((resolve) => {
+                                    setTimeout(resolve, 400);
+                                });
+                                return { done: false, value: rest };
+                            }
+                            return { done: true, value: undefined };
+                        },
+                    };
+                },
+            },
+        });
+        const onMessageListener = browser.runtime.onMessage.addListener.mock.calls[0][0];
+        const pending = onMessageListener({
+            action: 'FETCH_TTS_AUDIO',
+            endpoint: 'http://localhost:8880/v1/audio/speech',
+            payload: { input: 'Chunked' },
+        }, {});
+        await jest.advanceTimersByTimeAsync(100);
+        await jest.advanceTimersByTimeAsync(400);
+        const result = await pending;
+        expect(result.success).toBe(true);
+        expect(Number.isFinite(result.firstBodyByteMs)).toBe(true);
+        // Must reflect first-chunk time (~100ms), not full-buffer (~500ms).
+        expect(result.firstBodyByteMs).toBeGreaterThanOrEqual(90);
+        expect(result.firstBodyByteMs).toBeLessThan(300);
+        jest.useRealTimers();
     });
 });

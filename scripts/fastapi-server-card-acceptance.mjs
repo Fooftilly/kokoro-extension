@@ -16,6 +16,9 @@ export const MINIMAL_MP3_BYTES = Uint8Array.from(
     Buffer.from(MINIMAL_MP3_BASE64, 'base64'));
 
 export const SERVER_PLAYABLE_MP3_NEEDLE = 'Server returned playable MP3';
+export const SERVER_FIRST_BODY_BYTE_NEEDLE = 'First body byte (TTFB) p50';
+export const SERVER_PLAYBACK_NOT_MEASURED_NEEDLE =
+    'Playback / start-of-audio was not measured';
 export const FASTAPI_SELECTED_NEEDLE = 'FastAPI selected.';
 export const SERVER_STATUS_NOT_TESTED = 'Not tested';
 /** Backend used to prove chooseServer writes (testFastApi needs fastapi first). */
@@ -50,6 +53,33 @@ function assertFastApiCardAudio(report) {
     if (report.audioDataUrlPrefix !== 'data:audio') {
         throw new Error(
             'audioDataUrlPrefix mismatch: ' + report.audioDataUrlPrefix);
+    }
+}
+
+function assertFastApiFirstBodyByte(report) {
+    requireTrue(report, 'streamingFirstBodyByteMeasured',
+        'streamingFirstBodyByteMeasured must be true for FastAPI TTFB');
+    requireTrue(report, 'playbackStartNotMeasured',
+        'playbackStartNotMeasured must be true (TTFB ≠ playable TTFA)');
+    if (!(Number.isFinite(report.firstBodyByteP50Ms) &&
+        report.firstBodyByteP50Ms >= 0)) {
+        throw new Error(
+            'firstBodyByteP50Ms must be a finite nonnegative ms value: ' +
+            report.firstBodyByteP50Ms);
+    }
+    // Dual stubs delay the first body chunk (~100ms). Full-buffer timing
+    // (firstBodyByteMs === synthesisMs) must not pass as streamed TTFB.
+    if (!(Number.isFinite(report.synthesisP50Ms) &&
+        report.synthesisP50Ms > report.firstBodyByteP50Ms)) {
+        throw new Error(
+            'synthesisP50Ms must be strictly greater than firstBodyByteP50Ms ' +
+            '(streamed first byte vs full response): ' +
+            report.synthesisP50Ms + ' vs ' + report.firstBodyByteP50Ms);
+    }
+    if (!(report.firstBodyByteP50Ms >= 50)) {
+        throw new Error(
+            'firstBodyByteP50Ms must reflect the delayed first chunk (>=50ms): ' +
+            report.firstBodyByteP50Ms);
     }
 }
 
@@ -92,6 +122,7 @@ export function assertFastApiServerCardReport(report) {
     requireTrue(report, 'success', 'FastAPI server-card report not successful');
     requireTrue(report, 'serverCardTested', 'serverCardTested must be true');
     assertFastApiCardAudio(report);
+    assertFastApiFirstBodyByte(report);
     assertFastApiCardChoose(report);
     assertFastApiCardEndpoints(report);
     return true;
@@ -100,6 +131,10 @@ export function assertFastApiServerCardReport(report) {
 export function buildFastApiServerCardReport(options = {}) {
     const apiUrl = normalizeFastApiBaseUrl(
         options.apiUrl || 'http://127.0.0.1:0/v1/');
+    const firstBodyByteP50Ms = Number.isFinite(options.firstBodyByteP50Ms)
+        ? options.firstBodyByteP50Ms : 110;
+    const synthesisP50Ms = Number.isFinite(options.synthesisP50Ms)
+        ? options.synthesisP50Ms : Math.max(firstBodyByteP50Ms + 40, 160);
     const report = {
         success: true,
         browser: options.browser || 'unknown',
@@ -108,6 +143,11 @@ export function buildFastApiServerCardReport(options = {}) {
         decodeableMp3: options.decodeableMp3 !== false,
         mp3FixtureBytes: MINIMAL_MP3_BYTES.length,
         audioDataUrlPrefix: 'data:audio',
+        streamingFirstBodyByteMeasured:
+            options.streamingFirstBodyByteMeasured !== false,
+        playbackStartNotMeasured: options.playbackStartNotMeasured !== false,
+        firstBodyByteP50Ms,
+        synthesisP50Ms,
         chooseServerEnabledAfterTest: true,
         backendBeforeChoose: options.backendBeforeChoose || BACKEND_BEFORE_CHOOSE,
         chooseChangedBackend: options.chooseChangedBackend !== false,
