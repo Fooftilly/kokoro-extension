@@ -3,6 +3,9 @@
  * Shared by Chromium dual live harness + Jest contracts.
  */
 
+import { assertStoreSigningDisclosure } from
+    './store-signing-disclosure-acceptance.mjs';
+
 export const MEASURED_EXPORT_KIND = 'kokoro-measured-local-english';
 export const MEASURED_EXPORT_FILENAME = 'kokoro-measured-local-english.json';
 export const MEASURED_EXPORT_BUTTON_ID = 'exportMeasuredResults';
@@ -55,6 +58,8 @@ function assertMeasuredExportDisclosure(payload) {
         'Measured export must disclose that cache presence was probed');
     requireMeasuredFlag(payload, 'runtimeHeapMeasured', false,
         'Measured export must not invent runtime heap (WASM/WebGPU)');
+    // #61 / KE-46: store / distribution signing honesty (nested block).
+    assertStoreSigningDisclosure(payload);
     if (!Number.isFinite(payload.englishDictionaryCatalogBytes) ||
         payload.englishDictionaryCatalogBytes <= 0) {
         throw Error('Measured export must disclose pinned CMUdict catalog bytes');

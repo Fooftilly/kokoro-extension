@@ -1416,6 +1416,42 @@ def assert_gpu_execution_disclosure(preflight, browser="Firefox"):
     return json.loads(probe.stdout.strip())
 
 
+def assert_store_signing_disclosure(browser="Firefox"):
+    """#61 / KE-46: dual scopes disclose store signing not measured / not claimed."""
+    scripts_dir = Path(__file__).resolve().parent
+    probe = subprocess.run(
+        [
+            "node", "--input-type=module", "-e",
+            "import { assertStoreSigningDisclosure, "
+            "buildStoreSigningDisclosureReport, "
+            "STORE_SIGNING_NOT_MEASURED_NEEDLE } from "
+            "'./store-signing-disclosure-acceptance.mjs';"
+            "const asserted = assertStoreSigningDisclosure({"
+            "storeSigning: {"
+            "storePackagesSigned: false,"
+            "storeSigningMeasured: false,"
+            "disclosureNeedle: STORE_SIGNING_NOT_MEASURED_NEEDLE,"
+            "},"
+            "});"
+            "const report = buildStoreSigningDisclosureReport({"
+            "browser: " + json.dumps(browser) + ","
+            "assertedFromExport: true,"
+            "success: asserted.success === true,"
+            "});"
+            "console.log(JSON.stringify(report));",
+        ],
+        cwd=str(scripts_dir),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        raise RuntimeError(
+            "Store signing disclosure assert failed: " +
+            (probe.stderr or probe.stdout or "unknown error"))
+    return json.loads(probe.stdout.strip())
+
+
 def accept_popup_test_tts_cta(driver, origin):
     """#61: popup Test TTS backends CTA opens benchmark.html with three cards."""
     from firefox_popup_test_tts_cta_acceptance import (
@@ -3980,6 +4016,12 @@ def main():
                     preflight, browser="Firefox")
                 result["gpuExecutionDisclosureAcceptance"] = (
                     gpu_execution_disclosure)
+                # #61 / KE-46: packages not claimed CWS/AMO signed; signing unmeasured.
+                result["stage"] = "store-signing-disclosure"
+                store_signing_disclosure = assert_store_signing_disclosure(
+                    browser="Firefox")
+                result["storeSigningDisclosureAcceptance"] = (
+                    store_signing_disclosure)
                 result["stage"] = "popup-test-tts-cta"
                 popup_cta = accept_popup_test_tts_cta(driver, state["origin"])
                 result["popupTestTtsCtaAcceptance"] = popup_cta
@@ -4010,6 +4052,7 @@ def main():
                     "dictionaryReloadAcceptance": dictionary_reload_acceptance,
                     "dictionaryUiDownloadAcceptance": dictionary_ui_acceptance,
                     "gpuExecutionDisclosureAcceptance": gpu_execution_disclosure,
+                    "storeSigningDisclosureAcceptance": store_signing_disclosure,
                     "popupTestTtsCtaAcceptance": popup_cta,
                     "dualComparisonAcceptance": comparison,
                     "fastapiServerCardAcceptance": fastapi_card,

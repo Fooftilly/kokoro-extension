@@ -2894,6 +2894,7 @@ try {
     let dictionaryUiDownloadAcceptance = null;
     let popupTestTtsCtaAcceptance = null;
     let gpuExecutionDisclosureAcceptance = null;
+    let storeSigningDisclosureAcceptance = null;
     let twoBackendComparisonAcceptance = null;
     let fastapiServerCardAcceptance = null;
     let fastapiPreferenceHonorAcceptance = null;
@@ -2905,7 +2906,7 @@ try {
             testedAt: new Date().toISOString(), browser: preflight.browser, preflight,
             dictionaryCacheAcceptance, browserRestartAcceptance,
             dictionaryUiDownloadAcceptance, popupTestTtsCtaAcceptance,
-            gpuExecutionDisclosureAcceptance,
+            gpuExecutionDisclosureAcceptance, storeSigningDisclosureAcceptance,
             twoBackendComparisonAcceptance, fastapiServerCardAcceptance,
             fastapiPreferenceHonorAcceptance, oovG2pDisclosureAcceptance,
             results, currentProvider, originDownload, providerFilter,
@@ -3309,6 +3310,35 @@ try {
             success: gpuExecutionDisclosureAcceptance?.success === true,
             webgpuAdapterStatus:
                 gpuExecutionDisclosureAcceptance?.webgpuAdapterStatus,
+        });
+        await saveReport();
+
+        // #61 / KE-46: packages not claimed CWS/AMO signed; signing unmeasured.
+        // Assert against the honesty block (export payload nests the same shape).
+        liveHeartbeat('store-signing-disclosure-start');
+        const {
+            assertStoreSigningDisclosure,
+            buildStoreSigningDisclosureReport,
+            STORE_SIGNING_NOT_MEASURED_NEEDLE,
+        } = await import('./store-signing-disclosure-acceptance.mjs');
+        const assertedStoreSigning = assertStoreSigningDisclosure({
+            storeSigning: {
+                storePackagesSigned: false,
+                storeSigningMeasured: false,
+                disclosureNeedle: STORE_SIGNING_NOT_MEASURED_NEEDLE,
+            },
+        });
+        storeSigningDisclosureAcceptance = buildStoreSigningDisclosureReport({
+            browser: 'chromium',
+            assertedFromExport: true,
+            success: assertedStoreSigning.success === true,
+        });
+        liveHeartbeat('store-signing-disclosure-done', {
+            success: storeSigningDisclosureAcceptance?.success === true,
+            storePackagesSigned:
+                storeSigningDisclosureAcceptance?.storePackagesSigned,
+            storeSigningMeasured:
+                storeSigningDisclosureAcceptance?.storeSigningMeasured,
         });
         await saveReport();
 
