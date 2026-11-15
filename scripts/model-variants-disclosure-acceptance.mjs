@@ -12,7 +12,8 @@ export const MODEL_VARIANTS_DISCLOSURE_NEEDLE =
 
 function normalizeAcceptedVariants(raw) {
     if (!Array.isArray(raw)) return null;
-    return [...new Set(raw.map(item => String(item)))].sort();
+    return [...new Set(raw.map(item => String(item)))]
+        .sort((a, b) => a.localeCompare(b));
 }
 
 /**
@@ -44,7 +45,8 @@ export function assertModelVariantsDisclosure(report) {
             'acceptedVariants must be an array of documented keys: ' +
             JSON.stringify(block.acceptedVariants));
     }
-    const expected = [...ACCEPTED_MODEL_VARIANTS].sort();
+    const expected = [...ACCEPTED_MODEL_VARIANTS]
+        .sort((a, b) => a.localeCompare(b));
     if (accepted.length !== expected.length ||
         accepted.some((key, index) => key !== expected[index])) {
         throw Error(
