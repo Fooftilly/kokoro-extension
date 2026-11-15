@@ -1,1 +1,6 @@
-Fix false MediaPipe long-form stall: report every validated position, allow 30m CPU scope based on measured workload, retain 180s watchdog and all assertions. Application code is unchanged from the four completed idle probes.
+Revision history for #181:
+
+rev 2 (content) 2026-11-15 21:14 UTC — Fix false MediaPipe long-form stall: report every validated position, allow 30m CPU scope based on measured workload, retain 180s watchdog and all assertions. Application code is unchanged from the four completed idle probes.
+rev 1 (initial) 2026-11-15 21:14 UTC
+
+<!-- mergify-revision-data: {"schema_version":1,"pull_number":181,"entries":[{"number":1,"change_type":"initial","old_sha":null,"new_sha":"222103538e9d830b762258cf81a4e6838b071111","timestamp_iso":"2026-11-15T21:14:45Z","reason":"","replay_sha":null,"compare_url":null},{"number":2,"change_type":"content","old_sha":"222103538e9d830b762258cf81a4e6838b071111","new_sha":"cdd4eeaef10080092656b23af9a639e7a33eb120","timestamp_iso":"2026-11-15T21:14:45Z","reason":"Fix false MediaPipe long-form stall: report every validated position, allow 30m CPU scope based on measured workload, retain 180s watchdog and all assertions. Application code is unchanged from the four completed idle probes.","replay_sha":null,"compare_url":"https://github.com/Fooftilly/kokoro-extension/compare/222103538e9d830b762258cf81a4e6838b071111...cdd4eeaef10080092656b23af9a639e7a33eb120"}]} -->
