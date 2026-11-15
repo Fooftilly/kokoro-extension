@@ -8,11 +8,11 @@ export const STORE_SIGNING_NOT_MEASURED_NEEDLE =
     'store distribution signing not measured';
 
 /**
- * Assert a measured-export / dual report discloses store signing as not
- * measured and packages as not store-signed. Accepts either a full export
- * payload (with nested `storeSigning`) or a standalone disclosure block.
+ * Assert a measured-export payload discloses store signing as not measured
+ * and packages as not store-signed. Requires nested `storeSigning` — top-level
+ * flag fallthrough is rejected so omission cannot pass via flat defaults.
  *
- * @param {object} report
+ * @param {object} report measured export payload (must nest `storeSigning`)
  * @returns {{
  *   success: true,
  *   storePackagesSigned: false,
@@ -24,9 +24,12 @@ export function assertStoreSigningDisclosure(report) {
     if (!report || typeof report !== 'object') {
         throw Error('Store signing disclosure report missing');
     }
-    const block = report.storeSigning && typeof report.storeSigning === 'object'
-        ? report.storeSigning
-        : report;
+    if (!report.storeSigning || typeof report.storeSigning !== 'object') {
+        throw Error(
+            'Measured export must nest storeSigning disclosure block: ' +
+            JSON.stringify(report.storeSigning));
+    }
+    const block = report.storeSigning;
     if (block.storePackagesSigned !== false) {
         throw Error(
             'Store packages must not be claimed signed (CWS/AMO): ' +

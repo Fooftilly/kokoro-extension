@@ -1090,6 +1090,18 @@ async function acceptMeasuredResultsExport(page, expected = {}) {
     assertMeasuredResultsExportPayload(payload, {
         keys: expectKeys, sampleText: expectSample,
     });
+    // #61 / KE-46: assert store signing against the real export payload only.
+    const {
+        assertStoreSigningDisclosure,
+        buildStoreSigningDisclosureReport,
+    } = await import('./store-signing-disclosure-acceptance.mjs');
+    assertStoreSigningDisclosure(fromFile);
+    const assertedStoreSigning = assertStoreSigningDisclosure(payload);
+    const storeSigningDisclosureAcceptance = buildStoreSigningDisclosureReport({
+        browser: 'chromium',
+        assertedFromExport: true,
+        success: assertedStoreSigning.success === true,
+    });
     await page.waitForFunction(needle => {
         const status = document.getElementById('measuredExportStatus')
             ?.textContent || '';
@@ -1111,6 +1123,7 @@ async function acceptMeasuredResultsExport(page, expected = {}) {
         playwrightSuggestedFilename: suggested,
     });
     assertMeasuredResultsExportReport(report);
+    report.storeSigningDisclosureAcceptance = storeSigningDisclosureAcceptance;
     return report;
 }
 
@@ -3313,35 +3326,6 @@ try {
         });
         await saveReport();
 
-        // #61 / KE-46: packages not claimed CWS/AMO signed; signing unmeasured.
-        // Assert against the honesty block (export payload nests the same shape).
-        liveHeartbeat('store-signing-disclosure-start');
-        const {
-            assertStoreSigningDisclosure,
-            buildStoreSigningDisclosureReport,
-            STORE_SIGNING_NOT_MEASURED_NEEDLE,
-        } = await import('./store-signing-disclosure-acceptance.mjs');
-        const assertedStoreSigning = assertStoreSigningDisclosure({
-            storeSigning: {
-                storePackagesSigned: false,
-                storeSigningMeasured: false,
-                disclosureNeedle: STORE_SIGNING_NOT_MEASURED_NEEDLE,
-            },
-        });
-        storeSigningDisclosureAcceptance = buildStoreSigningDisclosureReport({
-            browser: 'chromium',
-            assertedFromExport: true,
-            success: assertedStoreSigning.success === true,
-        });
-        liveHeartbeat('store-signing-disclosure-done', {
-            success: storeSigningDisclosureAcceptance?.success === true,
-            storePackagesSigned:
-                storeSigningDisclosureAcceptance?.storePackagesSigned,
-            storeSigningMeasured:
-                storeSigningDisclosureAcceptance?.storeSigningMeasured,
-        });
-        await saveReport();
-
         // #61 popup CTA before dual comparison (extension pages; network optional).
         try {
             liveHeartbeat('popup-test-tts-cta-start');
@@ -3373,6 +3357,27 @@ try {
                 oovG2pDisclosureAcceptance =
                     twoBackendComparisonAcceptance.oovG2pDisclosureAcceptance;
             }
+            // #61 / KE-46: store signing must come from the verified measured
+            // export payload (not a hard-coded honesty stub).
+            liveHeartbeat('store-signing-disclosure-start');
+            storeSigningDisclosureAcceptance =
+                twoBackendComparisonAcceptance?.measuredResultsExport
+                    ?.storeSigningDisclosureAcceptance || null;
+            if (storeSigningDisclosureAcceptance?.assertedFromExport !== true ||
+                storeSigningDisclosureAcceptance?.success !== true) {
+                throw Error(
+                    'Store signing disclosure missing verified export evidence: ' +
+                    JSON.stringify(storeSigningDisclosureAcceptance));
+            }
+            liveHeartbeat('store-signing-disclosure-done', {
+                success: storeSigningDisclosureAcceptance?.success === true,
+                storePackagesSigned:
+                    storeSigningDisclosureAcceptance?.storePackagesSigned,
+                storeSigningMeasured:
+                    storeSigningDisclosureAcceptance?.storeSigningMeasured,
+                assertedFromExport:
+                    storeSigningDisclosureAcceptance?.assertedFromExport,
+            });
             if (errors.length) throw Error('Extension errors during two-backend comparison: ' +
                 errors.join('; '));
             await saveReport();

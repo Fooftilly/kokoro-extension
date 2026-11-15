@@ -36,9 +36,11 @@ const report = store.buildStoreSigningDisclosureReport({
 const failSigned = (() => {
     try {
         store.assertStoreSigningDisclosure({
-            storePackagesSigned: true,
-            storeSigningMeasured: false,
-            disclosureNeedle: store.STORE_SIGNING_NOT_MEASURED_NEEDLE,
+            storeSigning: {
+                storePackagesSigned: true,
+                storeSigningMeasured: false,
+                disclosureNeedle: store.STORE_SIGNING_NOT_MEASURED_NEEDLE,
+            },
         });
         return { ok: true };
     } catch (error) {
@@ -48,8 +50,22 @@ const failSigned = (() => {
 const failMeasured = (() => {
     try {
         store.assertStoreSigningDisclosure({
+            storeSigning: {
+                storePackagesSigned: false,
+                storeSigningMeasured: true,
+                disclosureNeedle: store.STORE_SIGNING_NOT_MEASURED_NEEDLE,
+            },
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
+const failFlatFallback = (() => {
+    try {
+        store.assertStoreSigningDisclosure({
             storePackagesSigned: false,
-            storeSigningMeasured: true,
+            storeSigningMeasured: false,
             disclosureNeedle: store.STORE_SIGNING_NOT_MEASURED_NEEDLE,
         });
         return { ok: true };
@@ -59,7 +75,7 @@ const failMeasured = (() => {
 })();
 console.log(JSON.stringify({
     needle: store.STORE_SIGNING_NOT_MEASURED_NEEDLE,
-    ok, report, failSigned, failMeasured,
+    ok, report, failSigned, failMeasured, failFlatFallback,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
@@ -98,6 +114,9 @@ describe('Store signing disclosure acceptance (KE-46)', () => {
         expect(snap.failMeasured.ok).toBe(false);
         expect(snap.failMeasured.message).toMatch(
             /must not be reported as measured/i);
+        expect(snap.failFlatFallback.ok).toBe(false);
+        expect(snap.failFlatFallback.message).toMatch(
+            /must nest storeSigning/i);
     });
 
     test('source wiring: model-manager + measured export + dual live asserts', () => {
@@ -122,16 +141,20 @@ describe('Store signing disclosure acceptance (KE-46)', () => {
         expect(eslint).toContain("'store-signing-disclosure.js'");
 
         expect(firefox).toContain('store-signing-disclosure-acceptance.mjs');
-        expect(firefox).toContain('assert_store_signing_disclosure');
+        expect(firefox).toContain('assert_store_signing_disclosure_from_payload');
         expect(firefox).toContain('storeSigningDisclosureAcceptance');
-        const storeCall = firefox.indexOf(
-            'assert_store_signing_disclosure(\n                    browser=');
         const dualGate = firefox.indexOf('if dual_comparison:');
-        const popupCall = firefox.indexOf(
-            'accept_popup_test_tts_cta(driver, state["origin"])');
+        const dualCompare = firefox.indexOf(
+            'accept_two_backend_comparison(driver, state["origin"])');
+        const storeFromExport = firefox.indexOf(
+            'Store signing disclosure missing verified export evidence');
+        // Dual must lift storeSigning from verified measured export evidence.
         expect(dualGate).toBeGreaterThan(0);
-        expect(storeCall).toBeGreaterThan(dualGate);
-        expect(popupCall).toBeGreaterThan(storeCall);
+        expect(dualCompare).toBeGreaterThan(dualGate);
+        expect(storeFromExport).toBeGreaterThan(dualCompare);
+        expect(firefox).toContain('assertedFromExport');
+        expect(firefox).toContain(
+            'assert_store_signing_disclosure_from_payload');
 
         expect(chromium).toContain('store-signing-disclosure-acceptance.mjs');
         expect(chromium).toContain('assertStoreSigningDisclosure');
@@ -139,13 +162,19 @@ describe('Store signing disclosure acceptance (KE-46)', () => {
         expect(chromium).toContain('buildStoreSigningDisclosureReport');
         const chromiumDualGate = chromium.indexOf(
             "providerFilter === 'both' && !originDownload");
-        const chromiumStoreAssert = chromium.indexOf(
-            'assertStoreSigningDisclosure({');
+        const chromiumExportAssert = chromium.indexOf(
+            'assertStoreSigningDisclosure(fromFile)');
+        const chromiumLift = chromium.indexOf(
+            'measuredResultsExport\n                    ?.storeSigningDisclosureAcceptance');
         const chromiumPopup = chromium.indexOf(
             'liveHeartbeat(\'popup-test-tts-cta-start\')');
         expect(chromiumDualGate).toBeGreaterThan(0);
-        expect(chromiumStoreAssert).toBeGreaterThan(chromiumDualGate);
-        expect(chromiumPopup).toBeGreaterThan(chromiumStoreAssert);
+        expect(chromiumExportAssert).toBeGreaterThan(0);
+        expect(chromiumPopup).toBeGreaterThan(chromiumDualGate);
+        expect(chromiumLift).toBeGreaterThan(chromiumPopup);
+        expect(chromium).toContain('missing verified export evidence');
+        expect(chromium).not.toContain(
+            'assertStoreSigningDisclosure({\n            storeSigning: {');
     });
 
     test('assert fails closed when export omits storeSigning or claims signed', () => {
@@ -220,12 +249,10 @@ console.log(JSON.stringify({ omit, falseSigned, exportOmit }));
         expect(child.status).toBe(0);
         const snap = JSON.parse(child.stdout.trim());
         expect(snap.omit.ok).toBe(false);
-        expect(snap.omit.message).toMatch(
-            /must not be claimed signed|needle missing/i);
+        expect(snap.omit.message).toMatch(/must nest storeSigning/i);
         expect(snap.falseSigned.ok).toBe(false);
         expect(snap.falseSigned.message).toMatch(/must not be claimed signed/i);
         expect(snap.exportOmit.ok).toBe(false);
-        expect(snap.exportOmit.message).toMatch(
-            /must not be claimed signed|needle missing|storeSigning/i);
+        expect(snap.exportOmit.message).toMatch(/must nest storeSigning/i);
     });
 });

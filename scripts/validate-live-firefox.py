@@ -1416,23 +1416,17 @@ def assert_gpu_execution_disclosure(preflight, browser="Firefox"):
     return json.loads(probe.stdout.strip())
 
 
-def assert_store_signing_disclosure(browser="Firefox"):
-    """#61 / KE-46: dual scopes disclose store signing not measured / not claimed."""
+def assert_store_signing_disclosure_from_payload(payload, browser="Firefox"):
+    """#61 / KE-46: assert nested storeSigning from a real measured export payload."""
     scripts_dir = Path(__file__).resolve().parent
     probe = subprocess.run(
         [
             "node", "--input-type=module", "-e",
             "import { assertStoreSigningDisclosure, "
-            "buildStoreSigningDisclosureReport, "
-            "STORE_SIGNING_NOT_MEASURED_NEEDLE } from "
+            "buildStoreSigningDisclosureReport } from "
             "'./store-signing-disclosure-acceptance.mjs';"
-            "const asserted = assertStoreSigningDisclosure({"
-            "storeSigning: {"
-            "storePackagesSigned: false,"
-            "storeSigningMeasured: false,"
-            "disclosureNeedle: STORE_SIGNING_NOT_MEASURED_NEEDLE,"
-            "},"
-            "});"
+            "const payload = " + json.dumps(payload) + ";"
+            "const asserted = assertStoreSigningDisclosure(payload);"
             "const report = buildStoreSigningDisclosureReport({"
             "browser: " + json.dumps(browser) + ","
             "assertedFromExport: true,"
@@ -1724,6 +1718,10 @@ def accept_measured_results_export(driver, sample_text="Hello world.", keys=None
         "keys": keys,
         "sampleText": sample_text,
     })
+    # #61 / KE-46: assert store signing against the real export payload only.
+    store_signing = assert_store_signing_disclosure_from_payload(
+        payload, browser="Firefox")
+    assert_store_signing_disclosure_from_payload(from_file, browser="Firefox")
     # Prove the click path stayed offline (no FastAPI / model fetch).
     if driver.execute_script("return navigator.onLine!==false;"):
         raise RuntimeError("Firefox measured export left the page online")
@@ -1736,6 +1734,7 @@ def accept_measured_results_export(driver, sample_text="Hello world.", keys=None
         fileContentsVerified=True,
     )
     assert_measured_results_export_report(report)
+    report["storeSigningDisclosureAcceptance"] = store_signing
     return report
 
 
@@ -4016,18 +4015,25 @@ def main():
                     preflight, browser="Firefox")
                 result["gpuExecutionDisclosureAcceptance"] = (
                     gpu_execution_disclosure)
-                # #61 / KE-46: packages not claimed CWS/AMO signed; signing unmeasured.
-                result["stage"] = "store-signing-disclosure"
-                store_signing_disclosure = assert_store_signing_disclosure(
-                    browser="Firefox")
-                result["storeSigningDisclosureAcceptance"] = (
-                    store_signing_disclosure)
                 result["stage"] = "popup-test-tts-cta"
                 popup_cta = accept_popup_test_tts_cta(driver, state["origin"])
                 result["popupTestTtsCtaAcceptance"] = popup_cta
                 result["stage"] = "offline-two-provider-same-page-benchmark"
                 comparison = accept_two_backend_comparison(driver, state["origin"])
                 result["dualComparisonAcceptance"] = comparison
+                # #61 / KE-46: store signing must come from verified measured export.
+                result["stage"] = "store-signing-disclosure"
+                store_signing_disclosure = (
+                    (comparison or {}).get("measuredResultsExport") or {}
+                ).get("storeSigningDisclosureAcceptance")
+                if (not store_signing_disclosure or
+                        store_signing_disclosure.get("assertedFromExport") is not True or
+                        store_signing_disclosure.get("success") is not True):
+                    raise RuntimeError(
+                        "Store signing disclosure missing verified export evidence: " +
+                        repr(store_signing_disclosure))
+                result["storeSigningDisclosureAcceptance"] = (
+                    store_signing_disclosure)
                 # Local dual leaves server untested; FastAPI card needs online.
                 result["stage"] = "fastapi-server-card"
                 _set_firefox_network_offline(driver, False)
