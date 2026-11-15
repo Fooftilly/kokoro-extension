@@ -1417,24 +1417,33 @@ def assert_gpu_execution_disclosure(preflight, browser="Firefox"):
 
 
 def assert_store_signing_disclosure_from_payload(payload, browser="Firefox"):
-    """#61 / KE-46: assert nested storeSigning from a real measured export payload."""
+    """#61 / KE-46: assert nested storeSigning from a real measured export payload.
+
+    Payload is passed on stdin (not interpolated into ``node -e``) so file-sourced
+    export JSON cannot become a command-argument injection sink (Sonar S6350).
+    """
     scripts_dir = Path(__file__).resolve().parent
+    env = os.environ.copy()
+    env["KOKORO_STORE_SIGNING_BROWSER"] = str(browser or "Firefox")
     probe = subprocess.run(
         [
             "node", "--input-type=module", "-e",
+            "import { readFileSync } from 'node:fs';"
             "import { assertStoreSigningDisclosure, "
             "buildStoreSigningDisclosureReport } from "
             "'./store-signing-disclosure-acceptance.mjs';"
-            "const payload = " + json.dumps(payload) + ";"
+            "const payload = JSON.parse(readFileSync(0, 'utf8'));"
             "const asserted = assertStoreSigningDisclosure(payload);"
             "const report = buildStoreSigningDisclosureReport({"
-            "browser: " + json.dumps(browser) + ","
+            "browser: process.env.KOKORO_STORE_SIGNING_BROWSER || 'Firefox',"
             "assertedFromExport: true,"
             "success: asserted.success === true,"
             "});"
             "console.log(JSON.stringify(report));",
         ],
         cwd=str(scripts_dir),
+        input=json.dumps(payload),
+        env=env,
         capture_output=True,
         text=True,
         check=False,
