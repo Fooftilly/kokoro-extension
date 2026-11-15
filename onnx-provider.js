@@ -132,7 +132,9 @@ export class OnnxKokoroProvider {
         if (typeof text !== 'string' || !text.trim() || text.length > 20000) {
             throw new TypeError('Bounded English text required');
         }
-        await this.initialize();
+        // Validate the dictionary-backed text before allocating model weights
+        // and the WASM session. Missing words or an overlong phoneme sequence
+        // must fail locally even when the large model has not been loaded.
         const dictionary = await this.englishLexicon();
         return this.synthesizePhonemes(phonemizeEnglish(text, dictionary), { speed });
     }
