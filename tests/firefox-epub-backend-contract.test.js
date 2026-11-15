@@ -129,8 +129,8 @@ print(json.dumps({
         );
     });
 
-    // KE-50: MediaPipe origin must stay on the shared three-spine EPUB stage.
-    test('mediapipe origin EPUB stage requires Third Chapter and three-spine hashes', () => {
+    // KE-50: MediaPipe origin stays on the shared nested-TOC EPUB stage.
+    test('mediapipe origin EPUB stage requires Third Chapter and four-spine hashes', () => {
         const result = runHelperProbe(`
 print(json.dumps({
     'mediapipeOn': origin_epub_stage_enabled(True, 'mediapipe', True),
@@ -147,10 +147,10 @@ print(json.dumps({
             path.join(scriptsDir, 'validate-live-firefox.py'), 'utf8');
         expect(source).toMatch(/origin_epub_stage_enabled\(/);
         expect(source).toContain('"Third Chapter"');
-        expect(source).toContain('chapterCount": 3');
+        expect(source).toContain('chapterCount": 4');
         expect(source).toMatch(/"third":\s*\{\s*"title":\s*third\["title"\]/);
         expect(source).toMatch(
-            /assert_distinct_chapter_audio_hashes\(\s*first\["audioSha256"\],\s*second\["audioSha256"\],\s*third\["audioSha256"\],\s*plain_text\["audioSha256"\]\)/,
+            /assert_distinct_chapter_audio_hashes\(\s*first\["audioSha256"\],\s*first_section\["audioSha256"\],\s*second\["audioSha256"\],\s*third\["audioSha256"\],\s*plain_text\["audioSha256"\]\)/,
         );
     });
 

@@ -44,7 +44,8 @@ import {
 // for the build tool. Copy pure modules into temporary .mjs files for Node.
 const catalogFile = path.join(os.tmpdir(), 'kokoro-runtime-model-catalog.mjs');
 await writeFile(catalogFile, await readFile(path.resolve('model-catalog.js')));
-const { manifestForVariant, dictionaryManifest } = await import(pathToFileURL(catalogFile).href);
+const { manifestForVariant, dictionaryManifest } =
+    await import(pathToFileURL(catalogFile).href);
 const longerSampleFile = path.join(os.tmpdir(),
     'kokoro-longer-shared-english-sample.mjs');
 await writeFile(longerSampleFile,
@@ -3040,6 +3041,7 @@ try {
     let dictionaryUiDownloadAcceptance = null;
     let popupTestTtsCtaAcceptance = null;
     let gpuExecutionDisclosureAcceptance = null;
+    let modelVariantsDisclosureAcceptance = null;
     let storeSigningDisclosureAcceptance = null;
     let progressiveStreamingTtfaAcceptance = null;
     let twoBackendComparisonAcceptance = null;
@@ -3053,7 +3055,8 @@ try {
             testedAt: new Date().toISOString(), browser: preflight.browser, preflight,
             dictionaryCacheAcceptance, browserRestartAcceptance,
             dictionaryUiDownloadAcceptance, popupTestTtsCtaAcceptance,
-            gpuExecutionDisclosureAcceptance, storeSigningDisclosureAcceptance,
+            gpuExecutionDisclosureAcceptance, modelVariantsDisclosureAcceptance,
+            storeSigningDisclosureAcceptance,
             progressiveStreamingTtfaAcceptance,
             twoBackendComparisonAcceptance, fastapiServerCardAcceptance,
             fastapiPreferenceHonorAcceptance, oovG2pDisclosureAcceptance,
@@ -3458,6 +3461,72 @@ try {
             success: gpuExecutionDisclosureAcceptance?.success === true,
             webgpuAdapterStatus:
                 gpuExecutionDisclosureAcceptance?.webgpuAdapterStatus,
+        });
+        await saveReport();
+
+        // #57 / #61 / KE-53: observe catalog (incl. onnx-q8f16) then assert
+        // only onnx-q8 + MediaPipe CPU are accepted/measured.
+        liveHeartbeat('model-variants-disclosure-start');
+        const {
+            assertModelVariantsDisclosure,
+            buildModelVariantsDisclosureReport,
+            observeCatalogVariantKeys,
+        } = await import('./model-variants-disclosure-acceptance.mjs');
+        // Verify the catalog exposed by the installed extension against its
+        // actual model-manager rows; checking out source alone is insufficient.
+        const catalogPage = await context.newPage();
+        let packaged;
+        try {
+            await catalogPage.goto(
+                'chrome-extension://' + extensionId + '/benchmark.html',
+                { waitUntil: 'domcontentloaded', timeout: 60000 });
+            await catalogPage.waitForFunction(() =>
+                document.querySelectorAll(
+                    '#modelManager .model-variant[data-variant]').length > 0,
+            null, { timeout: 30000 });
+            packaged = await catalogPage.evaluate(async () => {
+                const { listModelVariants } = await import('./model-catalog.js');
+                return {
+                    catalog: listModelVariants().map(entry => entry.key),
+                    rendered: [...document.querySelectorAll(
+                        '#modelManager .model-variant[data-variant]')]
+                        .map(row => row.dataset.variant)
+                        .filter(key => key !== 'dictionary-english'),
+                };
+            });
+        } finally {
+            await catalogPage.close().catch(() => {});
+        }
+        const observedCatalogVariantKeys = observeCatalogVariantKeys(
+            packaged.catalog);
+        const renderedVariantKeys = observeCatalogVariantKeys(
+            packaged.rendered);
+        if (observedCatalogVariantKeys.join('|') !==
+                renderedVariantKeys.join('|')) {
+            throw Error('Packaged model-manager rows differ from catalog: ' +
+                JSON.stringify(packaged));
+        }
+        modelVariantsDisclosureAcceptance = buildModelVariantsDisclosureReport({
+            browser: 'chromium',
+            observedCatalogVariantKeys,
+            assertedFromDual: true,
+        });
+        modelVariantsDisclosureAcceptance.renderedVariantKeys =
+            renderedVariantKeys;
+        modelVariantsDisclosureAcceptance.assertedFromPackagedExtension = true;
+        assertModelVariantsDisclosure(modelVariantsDisclosureAcceptance);
+        liveHeartbeat('model-variants-disclosure-done', {
+            success: modelVariantsDisclosureAcceptance?.success === true,
+            acceptedVariants:
+                modelVariantsDisclosureAcceptance?.acceptedVariants,
+            observedCatalogVariantKeys:
+                modelVariantsDisclosureAcceptance?.observedCatalogVariantKeys,
+            otherCatalogVariantsOffered:
+                modelVariantsDisclosureAcceptance?.otherCatalogVariantsOffered,
+            otherModelVariantsMeasured:
+                modelVariantsDisclosureAcceptance?.otherModelVariantsMeasured,
+            assertedFromCatalog:
+                modelVariantsDisclosureAcceptance?.assertedFromCatalog,
         });
         await saveReport();
 

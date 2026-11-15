@@ -1,7 +1,7 @@
 /** @jest-environment node */
 /**
- * KE-50: MediaPipe origin EPUB must exercise the shared three-spine fixture
- * (Third Chapter + three distinct chapter WAV hashes) that KE-47 / #170 landed
+ * KE-50: MediaPipe origin EPUB must exercise the shared four-spine fixture
+ * (Third Chapter + nested First Section + four distinct chapter WAV hashes) that KE-47 / #170 landed
  * for ONNX. Live path is shared acceptRealEpubReader / accept_real_epub_reader —
  * this contract fails closed if MediaPipe origin drops Third Chapter wiring.
  */
@@ -49,14 +49,14 @@ print(json.dumps({
         expect(report.stageOffSuccess).toBe(false);
     });
 
-    test('three-spine hash helper rejects MediaPipe collisions and missing third', () => {
+    test('four-spine hash helper rejects MediaPipe collisions and missing chapter', () => {
         const result = runHelperProbe(`
-ok = assert_distinct_chapter_audio_hashes('mp1', 'mp2', 'mp3', 'mptxt')
+ok = assert_distinct_chapter_audio_hashes('mp1', 'mp-section', 'mp2', 'mp3', 'mptxt')
 errors = []
 for args in (
-    ('mp1', 'mp2', 'mp1', 'mptxt'),
-    ('mp1', 'mp2', None, 'mptxt'),
-    ('a', 'b', 'c', 'a'),
+    ('mp1', 'mp-section', 'mp2', 'mp1', 'mptxt'),
+    ('mp1', 'mp-section', 'mp2', None, 'mptxt'),
+    ('a', 'b', 'c', 'd', 'a'),
 ):
     try:
         assert_distinct_chapter_audio_hashes(*args)
@@ -85,12 +85,12 @@ print(json.dumps({'ok': ok, 'errors': errors}))
         expect(source).toMatch(
             /acceptRealEpubReader\(\s*page, extensionId, manifest\.provider\)/,
         );
-        // Shared reader path navigates Third Chapter and reports three spines.
+        // Shared reader navigates First Section and Third Chapter (four spines).
         expect(source).toMatch(/waitForChapter\(\s*'Third Chapter'/);
         expect(source).toMatch(/READER_ACCEPTANCE_SPEECH\['Third Chapter'\]/);
-        expect(source).toMatch(/chapterCount: 3/);
+        expect(source).toMatch(/chapterCount: 4/);
         expect(source).toMatch(
-            /differentAudioPerChapter = new Set\(\[\s*first\.audioSha256,\s*second\.audioSha256,\s*third\.audioSha256,\s*plainText\.audioSha256,?\s*\]\)/,
+            /differentAudioPerChapter = new Set\(\[\s*first\.audioSha256,\s*firstSection\.audioSha256,\s*second\.audioSha256,\s*third\.audioSha256,\s*plainText\.audioSha256,?\s*\]\)/,
         );
         expect(source).toMatch(/third:\s*\{\s*title: third\.title/);
         // Backend arg accepts mediapipe explicitly.
@@ -112,9 +112,9 @@ print(json.dumps({'ok': ok, 'errors': errors}))
         );
         expect(source).toContain('"Third Chapter"');
         expect(source).toContain('Hello third chapter.');
-        expect(source).toContain('"chapterCount": 3');
+        expect(source).toContain('"chapterCount": 4');
         expect(source).toMatch(
-            /assert_distinct_chapter_audio_hashes\(\s*first\["audioSha256"\],\s*second\["audioSha256"\],\s*third\["audioSha256"\],\s*plain_text\["audioSha256"\]\)/,
+            /assert_distinct_chapter_audio_hashes\(\s*first\["audioSha256"\],\s*first_section\["audioSha256"\],\s*second\["audioSha256"\],\s*third\["audioSha256"\],\s*plain_text\["audioSha256"\]\)/,
         );
         expect(source).toMatch(/"third":\s*\{\s*"title":\s*third\["title"\]/);
     });
