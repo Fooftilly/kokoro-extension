@@ -1799,12 +1799,13 @@ async function pollRealEpubChapterReady(
     // Must match READER_ACCEPTANCE_SPEECH in the harness module scope copy.
     const expectedSpeech = {
         'First Chapter': 'Hello first chapter.',
+        'First Section': 'Hello first section.',
         'Second Chapter': 'Hello second chapter.',
         'Third Chapter': 'Hello third chapter.',
         'acceptance.txt': 'Hello plain text.',
     }[title];
     const expectedNav = (chapterTitle) => ({
-        entries: chapterTitle === 'acceptance.txt' ? 1 : 3,
+        entries: chapterTitle === 'acceptance.txt' ? 1 : 4,
         prevDisabled: chapterTitle === 'First Chapter' ||
             chapterTitle === 'acceptance.txt',
         nextDisabled: chapterTitle === 'Third Chapter' ||
@@ -2667,10 +2668,68 @@ async function acceptRealEpubReader(page, extensionId, backend) {
     });
     const expectedNavForTitle = (title) => {
         if (title === 'First Chapter') return { prevDisabled: true, nextDisabled: false };
+        if (title === 'First Section') return { prevDisabled: false, nextDisabled: false };
         if (title === 'Second Chapter') return { prevDisabled: false, nextDisabled: false };
         if (title === 'Third Chapter') return { prevDisabled: false, nextDisabled: true };
         if (title === 'acceptance.txt') return { prevDisabled: true, nextDisabled: true };
         return null;
+    };
+    const assertFirstSectionNestedUnderFirstChapter = async () => {
+        // Devin P2: label click alone would pass a flattened TOC. Require the
+        // First Section playable button to sit inside First Chapter's expanded
+        // .chapter-group > .sub-items tree.
+        const hierarchy = await page.evaluate(() => {
+            const labels = [...document.querySelectorAll('.playable-chapter .chapter-label')];
+            const sectionLabel = labels.find((el) => el.textContent.trim() === 'First Section');
+            if (!sectionLabel) {
+                return { ok: false, reason: 'First Section playable label missing' };
+            }
+            const sectionButton = sectionLabel.closest('.playable-chapter');
+            const sectionGroup = sectionButton && sectionButton.closest('.chapter-group');
+            const subItems = sectionGroup && sectionGroup.parentElement;
+            if (!subItems || !subItems.classList.contains('sub-items')) {
+                return { ok: false, reason: 'First Section not inside .sub-items' };
+            }
+            const parentGroup = subItems.parentElement;
+            if (!parentGroup || !parentGroup.classList.contains('chapter-group')) {
+                return { ok: false, reason: 'parent .chapter-group missing' };
+            }
+            if (!parentGroup.classList.contains('expanded')) {
+                return { ok: false, reason: 'First Chapter group not expanded' };
+            }
+            const parentLabel = parentGroup
+                .querySelector(':scope > .chapter-item .chapter-label');
+            const parentText = parentLabel ? parentLabel.textContent.trim() : '';
+            if (parentText !== 'First Chapter') {
+                return {
+                    ok: false,
+                    reason: 'parent label is not First Chapter: ' + parentText,
+                };
+            }
+            return {
+                ok: true,
+                parentExpanded: true,
+                parentLabel: parentText,
+                sectionInSubItems: true,
+            };
+        });
+        if (!hierarchy || hierarchy.ok !== true) {
+            throw Error(
+                'EPUB nested TOC hierarchy assert failed: ' +
+                JSON.stringify(hierarchy));
+        }
+        return hierarchy;
+    };
+    const clickTocChapter = async (label) => {
+        // Nested TOC entries are the same .playable-chapter buttons Prev/Next
+        // use; click the nested First Section label through the TOC list.
+        if (label === 'First Section') {
+            await assertFirstSectionNestedUnderFirstChapter();
+        }
+        const chapter = page.locator('.playable-chapter').filter({
+            has: page.locator('.chapter-label', { hasText: new RegExp('^' + label + '$') }),
+        });
+        await chapter.click();
     };
     const waitForChapter = async (title, previousRevision = 0, previousAudioUrl = null,
         previousAudioSha256 = null) => {
@@ -2720,21 +2779,46 @@ async function acceptRealEpubReader(page, extensionId, backend) {
             JSON.stringify({ expected: firstExpected, snapshot: first, nav: first.nav,
                 live: await readReaderNavDiagnostics() }));
     }
+    await clickTocChapter('First Section');
+    const firstSection = await waitForChapter(
+        'First Section', first.revision, first.audioUrl, first.audioSha256);
+    const firstSectionExpected = expectedNavForTitle(firstSection.title);
+    if (!firstSectionExpected || !firstSection.nav ||
+        firstSection.nav.prevDisabled !== firstSectionExpected.prevDisabled ||
+        firstSection.nav.nextDisabled !== firstSectionExpected.nextDisabled ||
+        firstSection.nav.activeLabel !== 'First Section' ||
+        first.audioUrl === firstSection.audioUrl ||
+        first.audioSha256 === firstSection.audioSha256 ||
+        firstSection.expectedSpeech !== READER_ACCEPTANCE_SPEECH['First Section']) {
+        throw Error('EPUB nested First Section TOC navigation failed: ' +
+            JSON.stringify({ expected: firstSectionExpected, snapshot: firstSection,
+                nav: firstSection.nav,
+                firstAudioUrl: first.audioUrl, firstSectionAudioUrl: firstSection.audioUrl,
+                firstAudioSha256: first.audioSha256,
+                firstSectionAudioSha256: firstSection.audioSha256,
+                live: await readReaderNavDiagnostics() }));
+    }
     await page.locator('#nextChapter').click();
     const second = await waitForChapter(
-        'Second Chapter', first.revision, first.audioUrl, first.audioSha256);
+        'Second Chapter', firstSection.revision, firstSection.audioUrl,
+        firstSection.audioSha256);
     const secondExpected = expectedNavForTitle(second.title);
     if (!secondExpected || !second.nav ||
         second.nav.prevDisabled !== secondExpected.prevDisabled ||
         second.nav.nextDisabled !== secondExpected.nextDisabled ||
         second.nav.activeLabel !== 'Second Chapter' ||
         first.audioUrl === second.audioUrl ||
+        firstSection.audioUrl === second.audioUrl ||
         first.audioSha256 === second.audioSha256 ||
+        firstSection.audioSha256 === second.audioSha256 ||
         second.expectedSpeech !== READER_ACCEPTANCE_SPEECH['Second Chapter']) {
         throw Error('EPUB navigation failed to replace audio or update chapter controls: ' +
             JSON.stringify({ expected: secondExpected, snapshot: second, nav: second.nav,
-                firstAudioUrl: first.audioUrl, secondAudioUrl: second.audioUrl,
-                firstAudioSha256: first.audioSha256, secondAudioSha256: second.audioSha256,
+                firstAudioUrl: first.audioUrl, firstSectionAudioUrl: firstSection.audioUrl,
+                secondAudioUrl: second.audioUrl,
+                firstAudioSha256: first.audioSha256,
+                firstSectionAudioSha256: firstSection.audioSha256,
+                secondAudioSha256: second.audioSha256,
                 live: await readReaderNavDiagnostics() }));
     }
     await page.locator('#nextChapter').click();
@@ -2746,16 +2830,19 @@ async function acceptRealEpubReader(page, extensionId, backend) {
         third.nav.nextDisabled !== thirdExpected.nextDisabled ||
         third.nav.activeLabel !== 'Third Chapter' ||
         first.audioUrl === third.audioUrl ||
+        firstSection.audioUrl === third.audioUrl ||
         second.audioUrl === third.audioUrl ||
         first.audioSha256 === third.audioSha256 ||
+        firstSection.audioSha256 === third.audioSha256 ||
         second.audioSha256 === third.audioSha256 ||
         third.expectedSpeech !== READER_ACCEPTANCE_SPEECH['Third Chapter']) {
         throw Error('EPUB third-chapter navigation failed to replace audio or update controls: ' +
             JSON.stringify({ expected: thirdExpected, snapshot: third, nav: third.nav,
-                firstAudioUrl: first.audioUrl, secondAudioUrl: second.audioUrl,
-                thirdAudioUrl: third.audioUrl,
-                firstAudioSha256: first.audioSha256, secondAudioSha256: second.audioSha256,
-                thirdAudioSha256: third.audioSha256,
+                firstAudioUrl: first.audioUrl, firstSectionAudioUrl: firstSection.audioUrl,
+                secondAudioUrl: second.audioUrl, thirdAudioUrl: third.audioUrl,
+                firstAudioSha256: first.audioSha256,
+                firstSectionAudioSha256: firstSection.audioSha256,
+                secondAudioSha256: second.audioSha256, thirdAudioSha256: third.audioSha256,
                 live: await readReaderNavDiagnostics() }));
     }
     await page.locator('#openAnotherDocument').click();
@@ -2767,8 +2854,9 @@ async function acceptRealEpubReader(page, extensionId, backend) {
         'acceptance.txt', third.revision, third.audioUrl, third.audioSha256);
     const txtExpected = expectedNavForTitle(plainText.title);
     const differentAudioPerChapter = new Set([
-        first.audioSha256, second.audioSha256, third.audioSha256, plainText.audioSha256,
-    ]).size === 4;
+        first.audioSha256, firstSection.audioSha256, second.audioSha256,
+        third.audioSha256, plainText.audioSha256,
+    ]).size === 5;
     if (plainText.audioUrl === third.audioUrl ||
         !differentAudioPerChapter ||
         !txtExpected || !plainText.nav ||
@@ -2780,8 +2868,10 @@ async function acceptRealEpubReader(page, extensionId, backend) {
         throw Error('TXT document replacement retained stale EPUB audio or navigation: ' +
             JSON.stringify({ expected: txtExpected, snapshot: plainText, nav: plainText.nav,
                 thirdAudioUrl: third.audioUrl, txtAudioUrl: plainText.audioUrl,
-                firstAudioSha256: first.audioSha256, secondAudioSha256: second.audioSha256,
-                thirdAudioSha256: third.audioSha256, txtAudioSha256: plainText.audioSha256,
+                firstAudioSha256: first.audioSha256,
+                firstSectionAudioSha256: firstSection.audioSha256,
+                secondAudioSha256: second.audioSha256, thirdAudioSha256: third.audioSha256,
+                txtAudioSha256: plainText.audioSha256,
                 live: await readReaderNavDiagnostics() }));
     }
     const selected = await page.evaluate(async () =>
@@ -2789,9 +2879,12 @@ async function acceptRealEpubReader(page, extensionId, backend) {
     if (selected !== backend) throw Error('Reader silently switched local TTS backend');
     return {
         success: true, browser: 'Chromium', backend,
-        epubFileSelectedThroughUi: true, chapterCount: 3,
+        epubFileSelectedThroughUi: true, chapterCount: 4,
         first: { title: first.title, revision: first.revision, audioBytes: first.bytes,
             audioSha256: first.audioSha256, speech: first.expectedSpeech },
+        firstSection: { title: firstSection.title, revision: firstSection.revision,
+            audioBytes: firstSection.bytes, audioSha256: firstSection.audioSha256,
+            speech: firstSection.expectedSpeech },
         second: { title: second.title, revision: second.revision, audioBytes: second.bytes,
             audioSha256: second.audioSha256, speech: second.expectedSpeech },
         third: { title: third.title, revision: third.revision, audioBytes: third.bytes,

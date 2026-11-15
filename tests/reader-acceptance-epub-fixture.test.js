@@ -20,6 +20,7 @@ function expectedNames() {
     return [
         'META-INF/container.xml',
         'OEBPS/content.opf',
+        'OEBPS/first-section.xhtml',
         'OEBPS/first.xhtml',
         'OEBPS/nav.xhtml',
         'OEBPS/second.xhtml',
@@ -30,13 +31,14 @@ function expectedNames() {
 
 const expectedSpeech = {
     'First Chapter': 'Hello first chapter.',
+    'First Section': 'Hello first section.',
     'Second Chapter': 'Hello second chapter.',
     'Third Chapter': 'Hello third chapter.',
     'acceptance.txt': 'Hello plain text.',
 };
 
 describe('reader acceptance EPUB fixture contract', () => {
-    test('Chromium shared builder has distinct chapter speech and nav labels', () => {
+    test('Chromium shared builder has nested TOC and distinct chapter speech', () => {
         const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
 import JSZip from 'jszip';
 import { pathToFileURL } from 'node:url';
@@ -51,6 +53,7 @@ console.log(JSON.stringify({
     opf: await zip.file('OEBPS/content.opf').async('string'),
     nav: await zip.file('OEBPS/nav.xhtml').async('string'),
     first: await zip.file('OEBPS/first.xhtml').async('string'),
+    firstSection: await zip.file('OEBPS/first-section.xhtml').async('string'),
     second: await zip.file('OEBPS/second.xhtml').async('string'),
     third: await zip.file('OEBPS/third.xhtml').async('string'),
     speech: READER_ACCEPTANCE_SPEECH,
@@ -61,22 +64,26 @@ console.log(JSON.stringify({
         const report = JSON.parse(result.stdout.trim());
         expect(report.names).toEqual(expectedNames());
         expect(report.mime).toBe('application/epub+zip');
+        expect(report.opf).toContain('idref="first-section"');
         expect(report.opf).toContain('idref="third"');
-        expect(report.opf.match(/<itemref /g)).toHaveLength(3);
+        expect(report.opf.match(/<itemref /g)).toHaveLength(4);
         expect(report.nav).toContain('>First Chapter</a>');
+        expect(report.nav).toContain('<ol><li><a href="first-section.xhtml">First Section</a></li></ol>');
         expect(report.nav).toContain('>Second Chapter</a>');
         expect(report.nav).toContain('>Third Chapter</a>');
         expect(report.first).toContain(report.speech['First Chapter']);
+        expect(report.firstSection).toContain(report.speech['First Section']);
         expect(report.second).toContain(report.speech['Second Chapter']);
         expect(report.third).toContain(report.speech['Third Chapter']);
-        expect(report.speech['First Chapter']).not.toBe(report.speech['Second Chapter']);
+        expect(report.speech['First Chapter']).not.toBe(report.speech['First Section']);
+        expect(report.speech['First Section']).not.toBe(report.speech['Second Chapter']);
         expect(report.speech['Second Chapter']).not.toBe(report.speech['Third Chapter']);
         expect(report.speech['First Chapter']).not.toBe(report.speech['Third Chapter']);
         expect(report.speech['acceptance.txt']).not.toBe(report.speech['First Chapter']);
         expect(report.speech).toEqual(expectedSpeech);
     });
 
-    test('Firefox harness builder emits the same structural contract', () => {
+    test('Firefox harness builder emits the same nested TOC contract', () => {
         const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kokoro-epub-fixture-'));
         const epubPath = path.join(tmp, 'offline-reader-acceptance.epub');
         const result = spawnSync('python3', ['-c', `
@@ -93,6 +100,7 @@ with zipfile.ZipFile(${JSON.stringify(epubPath)}) as z:
         'opf': z.read('OEBPS/content.opf').decode(),
         'nav': z.read('OEBPS/nav.xhtml').decode(),
         'first': z.read('OEBPS/first.xhtml').decode(),
+        'firstSection': z.read('OEBPS/first-section.xhtml').decode(),
         'second': z.read('OEBPS/second.xhtml').decode(),
         'third': z.read('OEBPS/third.xhtml').decode(),
         'speech': READER_ACCEPTANCE_SPEECH,
@@ -104,13 +112,16 @@ with zipfile.ZipFile(${JSON.stringify(epubPath)}) as z:
         const report = JSON.parse(result.stdout.trim());
         expect(report.mime).toBe('application/epub+zip');
         expect(report.mimeStored).toBe(true);
+        expect(report.opf).toContain('idref="first-section"');
         expect(report.opf).toContain('idref="third"');
-        expect(report.opf.match(/<itemref /g)).toHaveLength(3);
+        expect(report.opf.match(/<itemref /g)).toHaveLength(4);
         expect(report.nav).toContain('>First Chapter</a>');
+        expect(report.nav).toContain('<ol><li><a href="first-section.xhtml">First Section</a></li></ol>');
         expect(report.nav).toContain('>Second Chapter</a>');
         expect(report.nav).toContain('>Third Chapter</a>');
         expect(report.speech).toEqual(expectedSpeech);
         expect(report.first).toContain(report.speech['First Chapter']);
+        expect(report.firstSection).toContain(report.speech['First Section']);
         expect(report.second).toContain(report.speech['Second Chapter']);
         expect(report.third).toContain(report.speech['Third Chapter']);
         expect(report.names).toEqual(expectedNames());

@@ -105,31 +105,40 @@ print(json.dumps({
         expect(report.dictionaryOff).toBe(false);
     });
 
-    test('live harness wires three-spine navigation and distinct hashes', () => {
+    test('live harness wires nested TOC navigation and distinct hashes', () => {
         const source = fs.readFileSync(
             path.join(scriptsDir, 'validate-live-firefox.py'), 'utf8');
         const fixture = fs.readFileSync(
             path.join(scriptsDir, 'reader_acceptance_epub.py'), 'utf8');
+        expect(fixture).toContain('Hello first section.');
         expect(fixture).toContain('Hello third chapter.');
+        expect(fixture).toContain('idref="first-section"');
         expect(fixture).toContain('idref="third"');
+        expect(fixture).toContain(
+            '<ol><li><a href="first-section.xhtml">First Section</a></li></ol>');
+        expect(source).toContain('"First Section"');
         expect(source).toContain('"Third Chapter"');
+        expect(source).toContain('Hello first section.');
         expect(source).toContain('Hello third chapter.');
-        expect(source).toContain('chapterCount": 3');
+        expect(source).toContain('_click_toc_chapter(driver, "First Section")');
+        expect(source).toContain('_assert_first_section_nested_under_first_chapter');
+        expect(source).toContain('First Section not inside .sub-items');
+        expect(source).toContain('chapterCount": 4');
         expect(source).toMatch(
-            /assert_distinct_chapter_audio_hashes\(\s*first\["audioSha256"\],\s*second\["audioSha256"\],\s*third\["audioSha256"\],\s*plain_text\["audioSha256"\]\)/,
+            /assert_distinct_chapter_audio_hashes\(\s*first\["audioSha256"\],\s*first_section\["audioSha256"\],\s*second\["audioSha256"\],\s*third\["audioSha256"\],\s*plain_text\["audioSha256"\]\)/,
         );
     });
 
     test('rejects missing or colliding chapter WAV content hashes', () => {
         const result = runHelperProbe(`
-ok = assert_distinct_chapter_audio_hashes('aaa', 'bbb', 'ccc', 'ddd')
+ok = assert_distinct_chapter_audio_hashes('aaa', 'bbb', 'ccc', 'ddd', 'eee')
 dup_errors = []
 for args in (
-    ('same', 'same', 'other', 'fourth'),
-    ('a', 'b', 'c', 'a'),
-    ('x', 'x', 'x', 'x'),
-    ('only', 'two', 'three', None),
-    ('', 'bbb', 'ccc', 'ddd'),
+    ('same', 'same', 'other', 'fourth', 'fifth'),
+    ('a', 'b', 'c', 'd', 'a'),
+    ('x', 'x', 'x', 'x', 'x'),
+    ('only', 'two', 'three', 'four', None),
+    ('', 'bbb', 'ccc', 'ddd', 'eee'),
 ):
     try:
         assert_distinct_chapter_audio_hashes(*args)

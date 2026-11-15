@@ -1,7 +1,7 @@
-"""Shared three-chapter EPUB 3 fixture for offline reader acceptance.
+"""Shared nested-TOC EPUB 3 fixture for offline reader acceptance.
 
 Keep labels, spine, and per-document speech bodies aligned with
-scripts/validate-live-chromium.mjs so Chromium and Firefox exercise one
+scripts/reader-acceptance-epub.mjs so Chromium and Firefox exercise one
 contract. No browser or Selenium imports.
 """
 import zipfile
@@ -10,6 +10,7 @@ import zipfile
 # use the same map (see scripts/reader-acceptance-epub.mjs).
 READER_ACCEPTANCE_SPEECH = {
     "First Chapter": "Hello first chapter.",
+    "First Section": "Hello first section.",
     "Second Chapter": "Hello second chapter.",
     "Third Chapter": "Hello third chapter.",
     "acceptance.txt": "Hello plain text.",
@@ -17,8 +18,9 @@ READER_ACCEPTANCE_SPEECH = {
 
 
 def build_reader_acceptance_epub(path):
-    """Write a standards-structured three-chapter EPUB 3 archive to ``path``."""
+    """Write a standards-structured nested-TOC EPUB 3 archive to ``path``."""
     first_speech = READER_ACCEPTANCE_SPEECH["First Chapter"]
+    first_section_speech = READER_ACCEPTANCE_SPEECH["First Section"]
     second_speech = READER_ACCEPTANCE_SPEECH["Second Chapter"]
     third_speech = READER_ACCEPTANCE_SPEECH["Third Chapter"]
     with zipfile.ZipFile(path, "w") as archive:
@@ -44,10 +46,12 @@ def build_reader_acceptance_epub(path):
             '<manifest>'
             '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
             '<item id="first" href="first.xhtml" media-type="application/xhtml+xml"/>'
+            '<item id="first-section" href="first-section.xhtml" media-type="application/xhtml+xml"/>'
             '<item id="second" href="second.xhtml" media-type="application/xhtml+xml"/>'
             '<item id="third" href="third.xhtml" media-type="application/xhtml+xml"/>'
             '</manifest><spine>'
-            '<itemref idref="first"/><itemref idref="second"/><itemref idref="third"/>'
+            '<itemref idref="first"/><itemref idref="first-section"/>'
+            '<itemref idref="second"/><itemref idref="third"/>'
             '</spine></package>',
         )
         archive.writestr(
@@ -56,13 +60,15 @@ def build_reader_acceptance_epub(path):
             '<html xmlns="http://www.w3.org/1999/xhtml" '
             'xmlns:epub="http://www.idpf.org/2007/ops"><head>'
             '<title>Contents</title></head><body><nav epub:type="toc">'
-            '<ol><li><a href="first.xhtml">First Chapter</a></li>'
+            '<ol><li><a href="first.xhtml">First Chapter</a>'
+            '<ol><li><a href="first-section.xhtml">First Section</a></li></ol></li>'
             '<li><a href="second.xhtml">Second Chapter</a></li>'
             '<li><a href="third.xhtml">Third Chapter</a></li>'
             '</ol></nav></body></html>',
         )
         for name, speech in (
             ("first", first_speech),
+            ("first-section", first_section_speech),
             ("second", second_speech),
             ("third", third_speech),
         ):

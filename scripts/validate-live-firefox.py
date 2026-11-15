@@ -2406,12 +2406,13 @@ const [title, previousRevision, previousAudioUrl, previousAudioSha256, backend, 
     // Keep in sync with reader_acceptance_epub.READER_ACCEPTANCE_SPEECH.
     const expectedSpeech = {
         'First Chapter': 'Hello first chapter.',
+        'First Section': 'Hello first section.',
         'Second Chapter': 'Hello second chapter.',
         'Third Chapter': 'Hello third chapter.',
         'acceptance.txt': 'Hello plain text.',
     }[title];
     const expectedNav = (chapterTitle) => ({
-        entries: chapterTitle === 'acceptance.txt' ? 1 : 3,
+        entries: chapterTitle === 'acceptance.txt' ? 1 : 4,
         prevDisabled: chapterTitle === 'First Chapter' ||
             chapterTitle === 'acceptance.txt',
         nextDisabled: chapterTitle === 'Third Chapter' ||
@@ -2585,6 +2586,8 @@ def _read_reader_nav_diagnostics(driver):
 def _expected_nav_for_title(title):
     if title == "First Chapter":
         return {"prevDisabled": True, "nextDisabled": False}
+    if title == "First Section":
+        return {"prevDisabled": False, "nextDisabled": False}
     if title == "Second Chapter":
         return {"prevDisabled": False, "nextDisabled": False}
     if title == "Third Chapter":
@@ -2592,6 +2595,69 @@ def _expected_nav_for_title(title):
     if title == "acceptance.txt":
         return {"prevDisabled": True, "nextDisabled": True}
     return None
+
+
+def _assert_first_section_nested_under_first_chapter(driver):
+    """Devin P2: First Section must sit in First Chapter's expanded group."""
+    hierarchy = driver.execute_script("""
+        const labels = [...document.querySelectorAll(
+            '.playable-chapter .chapter-label')];
+        const sectionLabel = labels.find(
+            (el) => el.textContent.trim() === 'First Section');
+        if (!sectionLabel) {
+            return {ok: false, reason: 'First Section playable label missing'};
+        }
+        const sectionButton = sectionLabel.closest('.playable-chapter');
+        const sectionGroup = sectionButton &&
+            sectionButton.closest('.chapter-group');
+        const subItems = sectionGroup && sectionGroup.parentElement;
+        if (!subItems || !subItems.classList.contains('sub-items')) {
+            return {ok: false, reason: 'First Section not inside .sub-items'};
+        }
+        const parentGroup = subItems.parentElement;
+        if (!parentGroup || !parentGroup.classList.contains('chapter-group')) {
+            return {ok: false, reason: 'parent .chapter-group missing'};
+        }
+        if (!parentGroup.classList.contains('expanded')) {
+            return {ok: false, reason: 'First Chapter group not expanded'};
+        }
+        const parentLabel = parentGroup.querySelector(
+            ':scope > .chapter-item .chapter-label');
+        const parentText = parentLabel ? parentLabel.textContent.trim() : '';
+        if (parentText !== 'First Chapter') {
+            return {
+                ok: false,
+                reason: 'parent label is not First Chapter: ' + parentText,
+            };
+        }
+        return {
+            ok: true,
+            parentExpanded: true,
+            parentLabel: parentText,
+            sectionInSubItems: true,
+        };
+    """)
+    if not isinstance(hierarchy, dict) or hierarchy.get("ok") is not True:
+        raise RuntimeError(
+            "EPUB nested TOC hierarchy assert failed: " +
+            json.dumps(hierarchy))
+    return hierarchy
+
+
+def _click_toc_chapter(driver, label):
+    """Click a publisher TOC playable chapter by exact label text."""
+    if label == "First Section":
+        _assert_first_section_nested_under_first_chapter(driver)
+    buttons = driver.find_elements(By.CSS_SELECTOR, ".playable-chapter")
+    for button in buttons:
+        chapter_label = button.find_element(
+            By.CSS_SELECTOR, ".chapter-label").text
+        if chapter_label == label:
+            button.click()
+            return
+    raise RuntimeError(
+        "EPUB TOC chapter not found for label: " + label + "; nav=" +
+        json.dumps(_safe_reader_nav_diagnostics(driver)))
 
 
 def _safe_reader_nav_diagnostics(driver):
@@ -2676,6 +2742,8 @@ def _epub_nav_matches(snapshot, expected_label, previous_audio_url=None,
 def _epub_nav_failure_message(expected_label):
     if expected_label == "First Chapter":
         return "EPUB first chapter navigation controls incorrect: "
+    if expected_label == "First Section":
+        return "EPUB nested First Section TOC navigation failed: "
     if expected_label == "Second Chapter":
         return ("EPUB navigation failed to replace audio or update "
                 "chapter controls: ")
@@ -2762,14 +2830,24 @@ def accept_real_epub_reader(driver, origin, backend):
             driver, "First Chapter", backend=backend)
         _assert_epub_chapter_nav(driver, first, "First Chapter")
 
-        driver.find_element(By.ID, "nextChapter").click()
-        second = _wait_for_epub_chapter(
-            driver, "Second Chapter", first["revision"], first["audioUrl"],
+        _click_toc_chapter(driver, "First Section")
+        first_section = _wait_for_epub_chapter(
+            driver, "First Section", first["revision"], first["audioUrl"],
             first["audioSha256"], backend=backend)
         _assert_epub_chapter_nav(
-            driver, second, "Second Chapter",
+            driver, first_section, "First Section",
             previous_audio_url=first["audioUrl"],
             previous_audio_sha256=first["audioSha256"])
+
+        driver.find_element(By.ID, "nextChapter").click()
+        second = _wait_for_epub_chapter(
+            driver, "Second Chapter", first_section["revision"],
+            first_section["audioUrl"], first_section["audioSha256"],
+            backend=backend)
+        _assert_epub_chapter_nav(
+            driver, second, "Second Chapter",
+            previous_audio_url=first_section["audioUrl"],
+            previous_audio_sha256=first_section["audioSha256"])
 
         driver.find_element(By.ID, "nextChapter").click()
         third = _wait_for_epub_chapter(
@@ -2780,13 +2858,17 @@ def accept_real_epub_reader(driver, origin, backend):
             previous_audio_url=second["audioUrl"],
             previous_audio_sha256=second["audioSha256"])
         if (third.get("audioUrl") == first.get("audioUrl") or
-                third.get("audioSha256") == first.get("audioSha256")):
+                third.get("audioSha256") == first.get("audioSha256") or
+                third.get("audioUrl") == first_section.get("audioUrl") or
+                third.get("audioSha256") == first_section.get("audioSha256")):
             raise RuntimeError(
-                "EPUB third-chapter audio collided with first chapter: " +
+                "EPUB third-chapter audio collided with earlier chapter: " +
                 json.dumps({
                     "firstAudioUrl": first.get("audioUrl"),
+                    "firstSectionAudioUrl": first_section.get("audioUrl"),
                     "thirdAudioUrl": third.get("audioUrl"),
                     "firstAudioSha256": first.get("audioSha256"),
+                    "firstSectionAudioSha256": first_section.get("audioSha256"),
                     "thirdAudioSha256": third.get("audioSha256"),
                 }))
 
@@ -2803,15 +2885,21 @@ def accept_real_epub_reader(driver, origin, backend):
 
     _assert_reader_backend_unchanged(driver, backend)
     assert_distinct_chapter_audio_hashes(
-        first["audioSha256"], second["audioSha256"], third["audioSha256"],
+        first["audioSha256"], first_section["audioSha256"],
+        second["audioSha256"], third["audioSha256"],
         plain_text["audioSha256"])
     return {
         "success": True, "browser": "Firefox", "backend": backend,
-        "epubFileSelectedThroughUi": True, "chapterCount": 3,
+        "epubFileSelectedThroughUi": True, "chapterCount": 4,
         "first": {"title": first["title"], "revision": first["revision"],
                   "audioBytes": first["bytes"],
                   "audioSha256": first["audioSha256"],
                   "speech": first["expectedSpeech"]},
+        "firstSection": {"title": first_section["title"],
+                         "revision": first_section["revision"],
+                         "audioBytes": first_section["bytes"],
+                         "audioSha256": first_section["audioSha256"],
+                         "speech": first_section["expectedSpeech"]},
         "second": {"title": second["title"], "revision": second["revision"],
                    "audioBytes": second["bytes"],
                    "audioSha256": second["audioSha256"],
