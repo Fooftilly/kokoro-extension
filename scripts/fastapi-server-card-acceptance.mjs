@@ -19,6 +19,9 @@ export const SERVER_PLAYABLE_MP3_NEEDLE = 'Server returned playable MP3';
 export const SERVER_FIRST_BODY_BYTE_NEEDLE = 'First body byte (TTFB) p50';
 export const SERVER_PLAYBACK_START_NEEDLE = 'playback start p50';
 export const SERVER_NOT_MEDIASOURCE_NEEDLE = 'not MediaSource streaming TTFA';
+/** Honesty needle: progressive MSE TTFA remains unmeasured (KE-41c). */
+export const SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE =
+    'MediaSource progressive TTFA not measured';
 export const FASTAPI_SELECTED_NEEDLE = 'FastAPI selected.';
 export const SERVER_STATUS_NOT_TESTED = 'Not tested';
 /** Backend used to prove chooseServer writes (testFastApi needs fastapi first). */
@@ -64,6 +67,21 @@ function assertFastApiFirstBodyByte(report) {
     if (report.playbackStartNotMeasured === true) {
         throw new Error(
             'playbackStartNotMeasured must not claim unmeasured when measured');
+    }
+    // KE-41c: HTMLAudioElement start is measured; MediaSource progressive TTFA
+    // must remain explicitly not measured (do not invent MSE streaming TTFA).
+    if (report.mediasourceProgressiveTtfaMeasured !== false) {
+        throw new Error(
+            'mediasourceProgressiveTtfaMeasured must be false ' +
+            '(MediaSource progressive TTFA not measured)');
+    }
+    requireTrue(report, 'mediasourceProgressiveTtfaNotMeasured',
+        'mediasourceProgressiveTtfaNotMeasured must be true');
+    if (report.mediasourceProgressiveTtfaDisclosure !==
+        SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE) {
+        throw new Error(
+            'mediasourceProgressiveTtfaDisclosure must be the honesty needle: ' +
+            report.mediasourceProgressiveTtfaDisclosure);
     }
     if (!(Number.isFinite(report.firstBodyByteP50Ms) &&
         report.firstBodyByteP50Ms >= 0)) {
@@ -160,6 +178,23 @@ export function buildFastApiServerCardReport(options = {}) {
             options.streamingFirstBodyByteMeasured !== false,
         playbackStartMeasured: options.playbackStartMeasured !== false,
         playbackStartNotMeasured: false,
+        // Unit-test / stub defaults when keys are omitted. Live Chromium+Firefox
+        // must pass values observed from the page (dataset + status text).
+        mediasourceProgressiveTtfaMeasured:
+            Object.prototype.hasOwnProperty.call(
+                options, 'mediasourceProgressiveTtfaMeasured')
+                ? options.mediasourceProgressiveTtfaMeasured
+                : false,
+        mediasourceProgressiveTtfaNotMeasured:
+            Object.prototype.hasOwnProperty.call(
+                options, 'mediasourceProgressiveTtfaNotMeasured')
+                ? options.mediasourceProgressiveTtfaNotMeasured === true
+                : true,
+        mediasourceProgressiveTtfaDisclosure:
+            Object.prototype.hasOwnProperty.call(
+                options, 'mediasourceProgressiveTtfaDisclosure')
+                ? String(options.mediasourceProgressiveTtfaDisclosure || '')
+                : SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE,
         firstBodyByteP50Ms,
         synthesisP50Ms,
         playbackStartP50Ms,

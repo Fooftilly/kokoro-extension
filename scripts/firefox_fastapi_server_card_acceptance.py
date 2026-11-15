@@ -11,9 +11,17 @@ def build_fastapi_server_card_report(
         choose_changed_backend=True, audio_duration_sec=None,
         streaming_first_body_byte_measured=True,
         playback_start_measured=True,
+        mediasource_progressive_ttfa_measured=None,
+        mediasource_progressive_ttfa_not_measured=None,
+        mediasource_progressive_ttfa_disclosure=None,
         first_body_byte_p50_ms=None, synthesis_p50_ms=None,
         playback_start_p50_ms=None):
-    """Build the same report shape Chromium uses after a successful card test."""
+    """Build the same report shape Chromium uses after a successful card test.
+
+    MediaSource progressive TTFA fields must be observed from the page by
+    live acceptance — pass them explicitly. Omitting them leaves None/empty
+    so shared assert fails closed (no invented honesty defaults).
+    """
     options = {
         "browser": browser,
         "apiUrl": api_url,
@@ -24,6 +32,15 @@ def build_fastapi_server_card_report(
         "audioDurationSec": audio_duration_sec,
         "streamingFirstBodyByteMeasured": streaming_first_body_byte_measured,
         "playbackStartMeasured": playback_start_measured,
+        # Always forward observed keys (None/'' → assert fails).
+        "mediasourceProgressiveTtfaMeasured":
+            mediasource_progressive_ttfa_measured,
+        "mediasourceProgressiveTtfaNotMeasured":
+            mediasource_progressive_ttfa_not_measured is True,
+        "mediasourceProgressiveTtfaDisclosure":
+            mediasource_progressive_ttfa_disclosure
+            if mediasource_progressive_ttfa_disclosure is not None
+            else "",
     }
     if first_body_byte_p50_ms is not None:
         options["firstBodyByteP50Ms"] = first_body_byte_p50_ms

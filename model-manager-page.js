@@ -1171,6 +1171,8 @@ function clearServerFirstBodyByteDataset(status) {
     delete status.dataset.playbackStartP50Ms;
     delete status.dataset.playbackStartMeasured;
     delete status.dataset.playbackStartNotMeasured;
+    delete status.dataset.mediasourceProgressiveTtfaMeasured;
+    delete status.dataset.mediasourceProgressiveTtfaNotMeasured;
 }
 
 /**
@@ -1266,6 +1268,10 @@ async function testFastApi() {
         // Survives chooseServer replacing status text with "FastAPI selected."
         status.dataset.playbackStartMeasured = 'true';
         status.dataset.playbackStartP50Ms = String(playbackStartP50Ms);
+        // Honesty: post-download HTMLAudioElement start is measured; MediaSource
+        // / progressive streaming TTFA is still not implemented or timed.
+        status.dataset.mediasourceProgressiveTtfaMeasured = 'false';
+        status.dataset.mediasourceProgressiveTtfaNotMeasured = 'true';
         setMessage(status,
             'Server returned playable MP3. First body byte (TTFB) p50: ' +
             metrics.firstAudioP50Ms.toFixed(0) +
@@ -1274,7 +1280,9 @@ async function testFastApi() {
             ' ms; playback start p50: ' +
             playbackStartP50Ms.toFixed(0) +
             ' ms (HTMLAudioElement after full download; muted; ' +
-            'not MediaSource streaming TTFA; after untimed warm-up; ' +
+            'not MediaSource streaming TTFA; ' +
+            'MediaSource progressive TTFA not measured; ' +
+            'after untimed warm-up; ' +
             '3 warm runs). Local backends do not measure first-audio.');
         choose.disabled = false;
     } catch (error) {

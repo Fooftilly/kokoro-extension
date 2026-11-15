@@ -1101,6 +1101,7 @@ async function acceptFastApiServerCard(page, apiUrl) {
         SERVER_FIRST_BODY_BYTE_NEEDLE,
         SERVER_PLAYBACK_START_NEEDLE,
         SERVER_NOT_MEDIASOURCE_NEEDLE,
+        SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE,
         FASTAPI_SELECTED_NEEDLE,
         BACKEND_BEFORE_CHOOSE,
         buildFastApiServerCardReport,
@@ -1129,8 +1130,11 @@ async function acceptFastApiServerCard(page, apiUrl) {
             text.includes(needles.ttfb) &&
             text.includes(needles.playbackStart) &&
             text.includes(needles.notMediaSource) &&
+            text.includes(needles.mediasourceNotMeasured) &&
             status?.dataset?.streamingFirstBodyByteMeasured === 'true' &&
             status?.dataset?.playbackStartMeasured === 'true' &&
+            status?.dataset?.mediasourceProgressiveTtfaMeasured === 'false' &&
+            status?.dataset?.mediasourceProgressiveTtfaNotMeasured === 'true' &&
             Number.isFinite(Number(status?.dataset?.firstBodyByteP50Ms)) &&
             Number.isFinite(Number(status?.dataset?.playbackStartP50Ms)) &&
             audio && !audio.hidden &&
@@ -1141,6 +1145,8 @@ async function acceptFastApiServerCard(page, apiUrl) {
         ttfb: SERVER_FIRST_BODY_BYTE_NEEDLE,
         playbackStart: SERVER_PLAYBACK_START_NEEDLE,
         notMediaSource: SERVER_NOT_MEDIASOURCE_NEEDLE,
+        mediasourceNotMeasured:
+            SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE,
     }, { timeout: 60000 });
 
     // Prove the stub MP3 actually decodes (not just a data: URL prefix).
@@ -1174,11 +1180,16 @@ async function acceptFastApiServerCard(page, apiUrl) {
         return audio.duration;
     });
 
-    // Capture TTFB / playback-start BEFORE chooseServer — selection
-    // replaces status text with "FastAPI selected." (dataset still survives).
+    // Capture TTFB / playback-start / MediaSource disclosure BEFORE
+    // chooseServer — selection replaces status text with "FastAPI selected."
+    // (dataset still survives). Observed values only — never invent defaults.
     const ttfb = await page.evaluate((needles) => {
         const status = document.getElementById('serverStatus');
         const text = status?.textContent || '';
+        const measuredRaw = status?.dataset?.mediasourceProgressiveTtfaMeasured;
+        const notMeasuredRaw =
+            status?.dataset?.mediasourceProgressiveTtfaNotMeasured;
+        const textHasNeedle = text.includes(needles.mediasourceNotMeasured);
         return {
             streamingFirstBodyByteMeasured:
                 status?.dataset?.streamingFirstBodyByteMeasured === 'true',
@@ -1189,10 +1200,21 @@ async function acceptFastApiServerCard(page, apiUrl) {
                 text.includes(needles.playbackStart) &&
                 text.includes(needles.notMediaSource),
             playbackStartP50Ms: Number(status?.dataset?.playbackStartP50Ms),
+            // Observed from page — omit/wrong values must fail assert.
+            mediasourceProgressiveTtfaMeasured: measuredRaw === 'true'
+                ? true
+                : measuredRaw === 'false' ? false : null,
+            mediasourceProgressiveTtfaNotMeasured:
+                notMeasuredRaw === 'true' && textHasNeedle,
+            mediasourceProgressiveTtfaDisclosure: textHasNeedle
+                ? needles.mediasourceNotMeasured
+                : '',
         };
     }, {
         playbackStart: SERVER_PLAYBACK_START_NEEDLE,
         notMediaSource: SERVER_NOT_MEDIASOURCE_NEEDLE,
+        mediasourceNotMeasured:
+            SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE,
     });
 
     // Switch away from fastapi so chooseServer must write the preference.
@@ -1232,6 +1254,12 @@ async function acceptFastApiServerCard(page, apiUrl) {
         firstBodyByteP50Ms: ttfb.firstBodyByteP50Ms,
         synthesisP50Ms: ttfb.synthesisP50Ms,
         playbackStartP50Ms: ttfb.playbackStartP50Ms,
+        mediasourceProgressiveTtfaMeasured:
+            ttfb.mediasourceProgressiveTtfaMeasured,
+        mediasourceProgressiveTtfaNotMeasured:
+            ttfb.mediasourceProgressiveTtfaNotMeasured,
+        mediasourceProgressiveTtfaDisclosure:
+            ttfb.mediasourceProgressiveTtfaDisclosure,
     });
 }
 
