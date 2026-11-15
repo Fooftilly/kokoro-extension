@@ -33,6 +33,7 @@ import {
     requireLongFormBackend,
 } from './long-form-memory-acceptance.mjs';
 import { buildCurrentProviderSnapshot } from './live-chromium-report.mjs';
+import { probeLocalProviderIdleRelease } from './local-provider-idle-probe.mjs';
 import {
     assertOnnxOovG2pDisclosure,
     assertOovG2pDisclosureReport,
@@ -2476,12 +2477,14 @@ async function walkLongFormSentences(page, visitIndexes) {
         if (index === 0 || index === visitIndexes[visitIndexes.length - 1]) {
             samples.push({ index, ...(await readLongFormWavMeta(page)), ...stats });
         }
-        if (index % 4 === 0) {
-            liveHeartbeat('long-form-memory-progress', {
-                index, cacheSize: stats.cacheSize,
-                objectUrlCount: stats.objectUrlCount,
-            });
-        }
+        // Sparse visit indexes can leave several slow MediaPipe syntheses
+        // between multiples of four. Report every completed, validated position
+        // so the stall watchdog observes real work rather than killing a walk
+        // that is still advancing. No keepalive-only progress is emitted here.
+        liveHeartbeat('long-form-memory-progress', {
+            index, cacheSize: stats.cacheSize,
+            objectUrlCount: stats.objectUrlCount,
+        });
     }
     return { maxCacheSize, maxObjectUrlCount, samples };
 }
@@ -3272,6 +3275,15 @@ try {
             result.bufferedModelDiagnostic = bufferedDiagnostic;
             console.log('MEDIAPIPE MODEL BUFFER DIAGNOSTIC', bufferedDiagnostic);
         }
+            if (originDownload && result.success) {
+                stage = 'offline-local-provider-idle-release';
+                liveHeartbeat(stage, { provider: manifest.provider });
+                result.idleReleaseAcceptance = await withTimeout(page.evaluate(
+                    probeLocalProviderIdleRelease,
+                    { backend: manifest.provider, apiName: 'chrome' }),
+                180000, 'local provider idle release and offline reload');
+                liveHeartbeat('local-provider-idle-release-done', result.idleReleaseAcceptance);
+            }
             if (originDownload && manifest.provider === 'onnx' && result.success) {
                 stage = 'offline-audio-manager-onnx-english-wav-playback';
                 onnxPlaybackAcceptance = await page.evaluate(async (oovWord) => {

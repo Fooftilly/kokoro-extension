@@ -4492,6 +4492,26 @@ def main():
             # AudioManager route as a separate opt-in, offline browser gate:
             # ordinary English -> serialized ONNX q8 -> locally generated WAV.
             # Unsupported English must fail closed rather than contact FastAPI.
+            if origin_download and metrics.get("success"):
+                result["stage"] = "offline-local-provider-idle-release"
+                probe = subprocess.run(
+                    ["node", "--input-type=module", "-e",
+                     "import {probeLocalProviderIdleRelease} from "
+                     "'./scripts/local-provider-idle-probe.mjs';"
+                     "process.stdout.write(probeLocalProviderIdleRelease.toString());"],
+                    check=True, capture_output=True, text=True,
+                ).stdout
+                idle = driver.execute_async_script(
+                    "const done=arguments[arguments.length-1]; (" + probe +
+                    ")(arguments[0]).then(done,e=>done({success:false,error:String(e)}));",
+                    {"backend": provider, "apiName": "browser"},
+                )
+                if (idle.get("success") is not True or
+                        idle.get("offline") is not True):
+                    raise RuntimeError("Firefox local provider idle release failed: " +
+                                       json.dumps(idle))
+                metrics["idleReleaseAcceptance"] = idle
+
             playback_acceptance = None
             if origin_download and provider == "onnx" and metrics.get("success"):
                 playback_acceptance = driver.execute_async_script("""
