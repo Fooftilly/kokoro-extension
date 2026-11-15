@@ -2,9 +2,12 @@
  * Shared long-form memory/performance live-acceptance helpers (Chromium +
  * Firefox origin; onnx + mediapipe). Speech tokens are short English number
  * words (CMUdict-friendly for ONNX q8; plain text for MediaPipe CPU).
+ *
+ * KE-52 / #57: deeper walk (36 sentences) stays memory-bound only —
+ * subjective quality / MOS are explicitly not measured.
  */
 
-export const LONG_FORM_SENTENCE_COUNT = 24;
+export const LONG_FORM_SENTENCE_COUNT = 36;
 
 /** Steady-state retainWindow(center, 2, 2) holds at most five indices; allow
  *  brief transition slack while the active source is replaced and prefetched. */
@@ -15,8 +18,13 @@ export const LONG_FORM_NUMBER_WORDS = Object.freeze([
     'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
     'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen',
     'seventeen', 'eighteen', 'nineteen', 'twenty', 'thirty', 'forty',
-    'fifty', 'sixty',
+    'fifty', 'sixty', 'seventy', 'eighty', 'ninety', 'hundred', 'thousand',
+    'million', 'billion', 'trillion', 'zero', 'dozen', 'score', 'pair',
 ]);
+
+/** Honesty needle — deeper quality/performance beyond memory bounds is unmeasured. */
+export const LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE =
+    'deeper long-form quality/performance not measured';
 
 export const ALLOWED_LONG_FORM_BACKENDS = Object.freeze(['onnx', 'mediapipe']);
 
@@ -129,4 +137,74 @@ export function assertLongFormHeapDelta(beforeBytes, afterBytes, options = {}) {
         }));
     }
     return { growth, maxGrowthBytes };
+}
+
+/**
+ * Honesty flags for deeper long-form quality/MOS — always false until a
+ * dedicated measurement lands. Fail-closed if a report claims measured.
+ */
+export function longFormQualityDisclosureFlags() {
+    return {
+        longFormQualityMeasured: false,
+        longFormMosMeasured: false,
+        longFormQualityDisclosure: LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
+    };
+}
+
+/**
+ * Assert memory-bound long-form report + honesty that quality/MOS were not
+ * measured. Fail closed if quality or MOS is claimed measured, sentence count
+ * is below the deeper walk, or the disclosure needle is missing.
+ */
+export function assertLongFormMemoryAcceptanceReport(report) {
+    if (!report || typeof report !== 'object') {
+        throw new Error('Long-form memory acceptance report missing');
+    }
+    if (report.success !== true) {
+        throw new Error('Long-form memory acceptance not successful: ' +
+            JSON.stringify(report));
+    }
+    if (!Number.isInteger(report.sentenceCount) ||
+            report.sentenceCount < LONG_FORM_SENTENCE_COUNT) {
+        throw new Error(
+            'Long-form report sentenceCount must be >= ' +
+            LONG_FORM_SENTENCE_COUNT + ': ' + JSON.stringify(report.sentenceCount));
+    }
+    if (report.longFormQualityMeasured !== false) {
+        throw new Error(
+            'Deeper long-form quality must not be reported as measured: ' +
+            JSON.stringify(report.longFormQualityMeasured));
+    }
+    if (report.longFormMosMeasured !== false) {
+        throw new Error(
+            'Long-form MOS must not be reported as measured: ' +
+            JSON.stringify(report.longFormMosMeasured));
+    }
+    const disclosure = String(report.longFormQualityDisclosure || '').toLowerCase();
+    if (!disclosure.includes(LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE)) {
+        throw new Error(
+            'Long-form quality disclosure needle missing: ' +
+            JSON.stringify(report.longFormQualityDisclosure));
+    }
+    return {
+        success: true,
+        sentenceCount: report.sentenceCount,
+        longFormQualityMeasured: false,
+        longFormMosMeasured: false,
+        longFormQualityDisclosure: LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
+    };
+}
+
+/**
+ * Finalize a live long-form report: attach honesty flags, assert fail-closed.
+ * Keeps Chromium/Firefox validate-live diffs to a one-liner wrap.
+ */
+export function finalizeLongFormMemoryAcceptanceReport(partial = {}) {
+    const report = {
+        ...partial,
+        sentenceCount: partial.sentenceCount ?? LONG_FORM_SENTENCE_COUNT,
+        ...longFormQualityDisclosureFlags(),
+    };
+    assertLongFormMemoryAcceptanceReport(report);
+    return report;
 }

@@ -2,6 +2,7 @@
 /**
  * Contract checks for long-form memory acceptance — keep this file's shape
  * distinct from article-selection-acceptance.test.js (Sonar new-code duplication).
+ * KE-52 / #57: deeper 36-sentence walk + quality/MOS not-measured honesty.
  */
 const { spawnSync } = require('child_process');
 const fs = require('fs');
@@ -29,8 +30,36 @@ const capture = (fn) => {
     try { fn(); return { ok: true }; }
     catch (error) { return { ok: false, message: String(error.message || error) }; }
 };
+const finalized = longForm.finalizeLongFormMemoryAcceptanceReport({
+    success: true,
+    browser: 'chromium',
+    backend: 'onnx',
+    maxCacheSize: 4,
+});
+const qualityClaimFail = capture(() => longForm.assertLongFormMemoryAcceptanceReport({
+    success: true,
+    sentenceCount: longForm.LONG_FORM_SENTENCE_COUNT,
+    longFormQualityMeasured: true,
+    longFormMosMeasured: false,
+    longFormQualityDisclosure: longForm.LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
+}));
+const mosClaimFail = capture(() => longForm.assertLongFormMemoryAcceptanceReport({
+    success: true,
+    sentenceCount: longForm.LONG_FORM_SENTENCE_COUNT,
+    longFormQualityMeasured: false,
+    longFormMosMeasured: true,
+    longFormQualityDisclosure: longForm.LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
+}));
+const shortCountFail = capture(() => longForm.assertLongFormMemoryAcceptanceReport({
+    success: true,
+    sentenceCount: 24,
+    longFormQualityMeasured: false,
+    longFormMosMeasured: false,
+    longFormQualityDisclosure: longForm.LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
+}));
 console.log(JSON.stringify({
     sentenceCount: longForm.LONG_FORM_SENTENCE_COUNT,
+    numberWordLen: longForm.LONG_FORM_NUMBER_WORDS.length,
     speechHead: speech.slice(0, 3),
     speechTail: speech.slice(-2),
     pendingLen: pending.length,
@@ -76,6 +105,11 @@ console.log(JSON.stringify({
         cache: longForm.LONG_FORM_MAX_CACHE_ENTRIES,
         urls: longForm.LONG_FORM_MAX_OBJECT_URLS,
     },
+    needle: longForm.LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
+    finalized,
+    qualityClaimFail,
+    mosClaimFail,
+    shortCountFail,
 }));
 `], { encoding: 'utf8', cwd: root });
     return child;
@@ -87,12 +121,13 @@ describe('long-form memory acceptance', () => {
         expect(child.status).toBe(0);
         expect(child.stderr || '').toBe('');
         const snap = JSON.parse(child.stdout.trim());
-        expect(snap.sentenceCount).toBe(24);
-        expect(snap.pendingLen).toBe(24);
+        expect(snap.sentenceCount).toBe(36);
+        expect(snap.numberWordLen).toBeGreaterThanOrEqual(36);
+        expect(snap.pendingLen).toBe(36);
         expect(snap.speechHead).toEqual([
             'Hello one.', 'Hello two.', 'Hello three.',
         ]);
-        expect(snap.speechTail).toEqual(['Hello fifty.', 'Hello sixty.']);
+        expect(snap.speechTail).toEqual(['Hello score.', 'Hello pair.']);
         expect(snap.pendingShape).toEqual({ type: 'text', content: 'Hello one.' });
         expect(snap.backend).toBe('onnx');
         expect(snap.probeArmed).toBe(true);
@@ -103,7 +138,7 @@ describe('long-form memory acceptance', () => {
         ]));
         expect(snap.seedsLocalTtsBackend).toBe(false);
         expect(snap.visitEndsOnLast).toBe(false);
-        expect(snap.visits[snap.visits.length - 1]).toBeLessThan(23);
+        expect(snap.visits[snap.visits.length - 1]).toBeLessThan(35);
         expect(snap.stageTruthTable.onnxOriginOk).toBe(true);
         expect(snap.stageTruthTable.mediapipeOriginOk).toBe(true);
         expect(snap.stageTruthTable.noOrigin).toBe(false);
@@ -125,6 +160,18 @@ describe('long-form memory acceptance', () => {
         expect(snap.mediapipeAccept).toEqual({ ok: true });
         expect(snap.backends).toEqual(['mediapipe', 'onnx']);
         expect(snap.bounds).toEqual({ cache: 8, urls: 8 });
+        expect(snap.needle).toBe(
+            'deeper long-form quality/performance not measured');
+        expect(snap.finalized.longFormQualityMeasured).toBe(false);
+        expect(snap.finalized.longFormMosMeasured).toBe(false);
+        expect(snap.finalized.longFormQualityDisclosure).toBe(snap.needle);
+        expect(snap.finalized.sentenceCount).toBe(36);
+        expect(snap.qualityClaimFail.ok).toBe(false);
+        expect(snap.qualityClaimFail.message).toMatch(/quality must not/);
+        expect(snap.mosClaimFail.ok).toBe(false);
+        expect(snap.mosClaimFail.message).toMatch(/MOS must not/);
+        expect(snap.shortCountFail.ok).toBe(false);
+        expect(snap.shortCountFail.message).toMatch(/sentenceCount must be >=/);
     });
 
     test('overlay probe and long-form stage are wired for Chromium origin', () => {
@@ -144,6 +191,7 @@ describe('long-form memory acceptance', () => {
         expect(harness).toContain('waitLongFormOverlayReady');
         expect(harness).toContain('({ idx, count })');
         expect(harness).toContain('count: LONG_FORM_SENTENCE_COUNT');
+        expect(harness).toContain('finalizeLongFormMemoryAcceptanceReport');
         expect(harness).not.toContain('waitForFunction(longFormOverlayReady');
         expect(harness).not.toContain('jumpLongFormToLastSentence');
         expect(overlay).toContain('pendingAcceptanceProbe');
@@ -152,5 +200,12 @@ describe('long-form memory acceptance', () => {
         expect(overlay).toContain('appendOverlayRenderBlock');
         expect(overlay).toContain('audioManager.audioCache.size');
         expect(overlay).toContain('audioManager.objectUrls.size');
+        const helper = fs.readFileSync(
+            path.join(root, 'scripts', 'long-form-memory-acceptance.mjs'), 'utf8');
+        expect(helper).toContain('LONG_FORM_SENTENCE_COUNT = 36');
+        expect(helper).toContain('longFormQualityMeasured: false');
+        expect(helper).toContain('longFormMosMeasured: false');
+        expect(helper).toContain(
+            'deeper long-form quality/performance not measured');
     });
 });

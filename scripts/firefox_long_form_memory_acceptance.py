@@ -3,6 +3,9 @@
 Speech/storage/visit indexes stay owned by long-form-memory-acceptance.mjs
 (Chromium). Pure bound checks are ported here so Selenium can call them
 without a Node round-trip on every sentence click.
+
+KE-52 / #57: deeper walk (36 sentences) stays memory-bound only —
+subjective quality / MOS are explicitly not measured.
 """
 import json
 import subprocess
@@ -11,9 +14,11 @@ from pathlib import Path
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 
 # Keep in sync with scripts/long-form-memory-acceptance.mjs
-LONG_FORM_SENTENCE_COUNT = 24
+LONG_FORM_SENTENCE_COUNT = 36
 LONG_FORM_MAX_CACHE_ENTRIES = 8
 LONG_FORM_MAX_OBJECT_URLS = 8
+LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE = (
+    "deeper long-form quality/performance not measured")
 ALLOWED_LONG_FORM_BACKENDS = frozenset({"onnx", "mediapipe"})
 
 
@@ -30,6 +35,14 @@ def origin_long_form_memory_stage_enabled(origin_download, provider, success):
         origin_download and
         provider in ALLOWED_LONG_FORM_BACKENDS and
         success)
+
+
+def long_form_quality_disclosure_flags():
+    return {
+        "longFormQualityMeasured": False,
+        "longFormMosMeasured": False,
+        "longFormQualityDisclosure": LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
+    }
 
 
 def load_long_form_fixture(backend="onnx"):
@@ -135,3 +148,48 @@ def assert_long_form_heap_delta(before_bytes, after_bytes,
             json.dumps({"beforeBytes": before_bytes, "afterBytes": after_bytes,
                         "growth": growth, "maxGrowthBytes": max_growth_bytes}))
     return {"growth": growth, "maxGrowthBytes": max_growth_bytes}
+
+
+def assert_long_form_memory_acceptance_report(report):
+    """Fail-closed: deeper quality/MOS unmeasured + sentence count >= 36."""
+    if not isinstance(report, dict):
+        raise RuntimeError(
+            "Long-form memory acceptance report missing: " + repr(report))
+    if report.get("success") is not True:
+        raise RuntimeError(
+            "Long-form memory acceptance not successful: " + json.dumps(report))
+    sentence_count = report.get("sentenceCount")
+    if (not isinstance(sentence_count, int) or
+            sentence_count < LONG_FORM_SENTENCE_COUNT):
+        raise RuntimeError(
+            "Long-form report sentenceCount must be >= " +
+            str(LONG_FORM_SENTENCE_COUNT) + ": " + json.dumps(sentence_count))
+    if report.get("longFormQualityMeasured") is not False:
+        raise RuntimeError(
+            "Deeper long-form quality must not be reported as measured: " +
+            json.dumps(report.get("longFormQualityMeasured")))
+    if report.get("longFormMosMeasured") is not False:
+        raise RuntimeError(
+            "Long-form MOS must not be reported as measured: " +
+            json.dumps(report.get("longFormMosMeasured")))
+    disclosure = str(report.get("longFormQualityDisclosure") or "").lower()
+    if LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE not in disclosure:
+        raise RuntimeError(
+            "Long-form quality disclosure needle missing: " +
+            json.dumps(report.get("longFormQualityDisclosure")))
+    return {
+        "success": True,
+        "sentenceCount": sentence_count,
+        "longFormQualityMeasured": False,
+        "longFormMosMeasured": False,
+        "longFormQualityDisclosure": LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
+    }
+
+
+def finalize_long_form_memory_acceptance_report(partial=None):
+    """Attach honesty flags and assert — one-liner wrap for Firefox live."""
+    report = dict(partial or {})
+    report.setdefault("sentenceCount", LONG_FORM_SENTENCE_COUNT)
+    report.update(long_form_quality_disclosure_flags())
+    assert_long_form_memory_acceptance_report(report)
+    return report

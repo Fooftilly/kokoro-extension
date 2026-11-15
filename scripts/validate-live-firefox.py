@@ -44,6 +44,7 @@ from firefox_long_form_memory_acceptance import (
     assert_bounded_audio_manager_stats,
     assert_long_form_cache_window_near,
     assert_long_form_heap_delta,
+    finalize_long_form_memory_acceptance_report,
     load_long_form_fixture,
     origin_long_form_memory_stage_enabled,
     require_long_form_backend,
@@ -3639,7 +3640,7 @@ def accept_firefox_long_form_memory(driver, origin, backend):
             json.dumps({"syncBefore": sync_before_backend,
                         "syncAfter": sync_after["ttsBackend"]}))
 
-    return {
+    return finalize_long_form_memory_acceptance_report({
         "success": True,
         "browser": "Firefox",
         "backend": backend,
@@ -3663,7 +3664,7 @@ def accept_firefox_long_form_memory(driver, origin, backend):
         "syncTtsBackend": sync_after["ttsBackend"],
         "userBackendUnchanged":
             sync_after["ttsBackend"] == sync_before_backend,
-    }
+    })
 
 
 def run_offline_long_form_memory_acceptance(driver, origin, result, backend):

@@ -2,6 +2,7 @@
 /**
  * Contract for Firefox long-form memory acceptance — keep shape distinct from
  * long-form-memory-acceptance.test.js (Chromium helper probe).
+ * KE-52 / #57: deeper 36-sentence walk + quality/MOS not-measured honesty.
  */
 const { spawnSync } = require('child_process');
 const fs = require('fs');
@@ -21,10 +22,13 @@ from firefox_long_form_memory_acceptance import (
     ALLOWED_LONG_FORM_BACKENDS,
     LONG_FORM_MAX_CACHE_ENTRIES,
     LONG_FORM_MAX_OBJECT_URLS,
+    LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
     LONG_FORM_SENTENCE_COUNT,
     assert_bounded_audio_manager_stats,
     assert_long_form_cache_window_near,
     assert_long_form_heap_delta,
+    assert_long_form_memory_acceptance_report,
+    finalize_long_form_memory_acceptance_report,
     load_long_form_fixture,
     origin_long_form_memory_stage_enabled,
     require_long_form_backend,
@@ -43,6 +47,12 @@ sample = {
     'sentenceCount': LONG_FORM_SENTENCE_COUNT,
     'window': {'first': 0, 'last': 4},
 }
+finalized = finalize_long_form_memory_acceptance_report({
+    'success': True,
+    'browser': 'Firefox',
+    'backend': 'onnx',
+    'maxCacheSize': 4,
+})
 print(json.dumps({
     'backends': sorted(ALLOWED_LONG_FORM_BACKENDS),
     'sentenceCount': LONG_FORM_SENTENCE_COUNT,
@@ -79,6 +89,29 @@ print(json.dumps({
     'rejectRemote': capture(lambda: require_long_form_backend('remote')),
     'mpFixture': load_long_form_fixture('mediapipe')['storage'].get(
         'pendingTtsBackend'),
+    'needle': LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
+    'finalized': finalized,
+    'qualityClaimFail': capture(lambda: assert_long_form_memory_acceptance_report({
+        'success': True,
+        'sentenceCount': LONG_FORM_SENTENCE_COUNT,
+        'longFormQualityMeasured': True,
+        'longFormMosMeasured': False,
+        'longFormQualityDisclosure': LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
+    })),
+    'mosClaimFail': capture(lambda: assert_long_form_memory_acceptance_report({
+        'success': True,
+        'sentenceCount': LONG_FORM_SENTENCE_COUNT,
+        'longFormQualityMeasured': False,
+        'longFormMosMeasured': True,
+        'longFormQualityDisclosure': LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
+    })),
+    'shortCountFail': capture(lambda: assert_long_form_memory_acceptance_report({
+        'success': True,
+        'sentenceCount': 24,
+        'longFormQualityMeasured': False,
+        'longFormMosMeasured': False,
+        'longFormQualityDisclosure': LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
+    })),
 }))
 `], { encoding: 'utf8', cwd: root });
 }
@@ -90,7 +123,7 @@ describe('firefox long-form memory acceptance', () => {
         expect(child.stderr || '').toBe('');
         const snap = JSON.parse(child.stdout.trim());
         expect(snap.backends).toEqual(['mediapipe', 'onnx']);
-        expect(snap.sentenceCount).toBe(24);
+        expect(snap.sentenceCount).toBe(36);
         expect(snap.bounds).toEqual({ cache: 8, urls: 8 });
         expect(snap.onnxRequired).toBe('onnx');
         expect(snap.probe).toBe(true);
@@ -102,7 +135,7 @@ describe('firefox long-form memory acceptance', () => {
             'pendingAcceptanceProbe', 'pendingContent', 'pendingTtsBackend',
         ]));
         expect(snap.visitEndsOnLast).toBe(false);
-        expect(snap.visits[snap.visits.length - 1]).toBeLessThan(23);
+        expect(snap.visits[snap.visits.length - 1]).toBeLessThan(35);
         expect(snap.gates).toEqual({
             onnxOrigin: true,
             mediapipe: true,
@@ -117,6 +150,18 @@ describe('firefox long-form memory acceptance', () => {
         expect(snap.heapFail.ok).toBe(false);
         expect(snap.acceptMp.ok).toBe(true);
         expect(snap.rejectRemote.ok).toBe(false);
+        expect(snap.needle).toBe(
+            'deeper long-form quality/performance not measured');
+        expect(snap.finalized.longFormQualityMeasured).toBe(false);
+        expect(snap.finalized.longFormMosMeasured).toBe(false);
+        expect(snap.finalized.longFormQualityDisclosure).toBe(snap.needle);
+        expect(snap.finalized.sentenceCount).toBe(36);
+        expect(snap.qualityClaimFail.ok).toBe(false);
+        expect(snap.qualityClaimFail.message).toMatch(/quality must not/);
+        expect(snap.mosClaimFail.ok).toBe(false);
+        expect(snap.mosClaimFail.message).toMatch(/MOS must not/);
+        expect(snap.shortCountFail.ok).toBe(false);
+        expect(snap.shortCountFail.message).toMatch(/sentenceCount must be >=/);
     });
 
     test('firefox live harness wires long-form stage after article/selection', () => {
@@ -130,6 +175,7 @@ describe('firefox long-form memory acceptance', () => {
         expect(source).toContain('__kokoroAudioManagerStats');
         expect(source).toContain('_jump_firefox_long_form_across_windows');
         expect(source).toContain('load_long_form_fixture');
+        expect(source).toContain('finalize_long_form_memory_acceptance_report');
         expect(source).not.toContain(
             'no subjective audio-quality or long-form acceptance');
         const helper = fs.readFileSync(
@@ -137,6 +183,11 @@ describe('firefox long-form memory acceptance', () => {
             'utf8');
         expect(helper).toContain('longFormStorageConfig');
         expect(helper).toContain('pendingAcceptanceProbe');
+        expect(helper).toContain('LONG_FORM_SENTENCE_COUNT = 36');
+        expect(helper).toContain('longFormQualityMeasured');
+        expect(helper).toContain('longFormMosMeasured');
+        expect(helper).toContain(
+            'deeper long-form quality/performance not measured');
         const workflowSource = fs.readFileSync(workflow, 'utf8');
         const firefoxJob = workflowSource.split('firefox-model-origin:')[1]
             ?.split(/\n {2}[a-z]/)[0] || '';
