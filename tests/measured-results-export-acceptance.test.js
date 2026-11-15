@@ -26,12 +26,16 @@ const payload = {
     measurementKind: 'warm-full-clip-synthesis',
     coldPrepMeasured: true,
     firstAudioMeasured: false,
+    storageFootprintMeasured: true,
+    runtimeHeapMeasured: false,
     sampleText: 'Hello world.',
     measurements: [
         { key: 'onnx-q8', label: 'ONNX', coldPrepMs: 40, synthesisP50Ms: 12,
-            synthesisP95Ms: 15, realTimeFactorP50: 0.2 },
+            synthesisP95Ms: 15, realTimeFactorP50: 0.2,
+            storageFootprintBytes: 92885404 },
         { key: 'mediapipe-cpu', label: 'MediaPipe', coldPrepMs: 55,
-            synthesisP50Ms: 18, synthesisP95Ms: 22, realTimeFactorP50: 0.3 },
+            synthesisP50Ms: 18, synthesisP95Ms: 22, realTimeFactorP50: 0.3,
+            storageFootprintBytes: 294783298 },
     ],
 };
 exp.assertMeasuredResultsExportPayload(payload, {
@@ -63,6 +67,28 @@ const badPayload = (() => {
         return { ok: false, message: String(error.message || error) };
     }
 })();
+const badHeap = (() => {
+    try {
+        exp.assertMeasuredResultsExportPayload({
+            ...payload, runtimeHeapMeasured: true,
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
+const badFootprint = (() => {
+    try {
+        const rows = payload.measurements.map((row, i) =>
+            i === 0 ? { ...row, storageFootprintBytes: 0 } : row);
+        exp.assertMeasuredResultsExportPayload({
+            ...payload, measurements: rows,
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
 console.log(JSON.stringify({
     kind: exp.MEASURED_EXPORT_KIND,
     filename: exp.MEASURED_EXPORT_FILENAME,
@@ -75,7 +101,7 @@ console.log(JSON.stringify({
     acceptRename: exp.isAcceptableMeasuredExportFilename(
         'kokoro-measured-local-english (1).json'),
     rejectOther: exp.isAcceptableMeasuredExportFilename('notes.txt'),
-    report, fail, badPayload,
+    report, fail, badPayload, badHeap, badFootprint,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
@@ -107,6 +133,10 @@ describe('Measured results export acceptance', () => {
         expect(snap.fail.message).toMatch(/not successful/i);
         expect(snap.badPayload.ok).toBe(false);
         expect(snap.badPayload.message).toMatch(/local-only|telemetry/i);
+        expect(snap.badHeap.ok).toBe(false);
+        expect(snap.badHeap.message).toMatch(/runtime heap/i);
+        expect(snap.badFootprint.ok).toBe(false);
+        expect(snap.badFootprint.message).toMatch(/Invalid measured export metric/i);
     });
 
     test('product page exposes local-only measured export control', () => {
@@ -114,6 +144,8 @@ describe('Measured results export acceptance', () => {
         const source = fs.readFileSync(modelManager, 'utf8');
         expect(html).toContain('id="exportMeasuredResults"');
         expect(html).toContain('id="measuredExportStatus"');
+        expect(html).toContain('catalog storage footprint bytes');
+        expect(html).toContain('runtime WASM/WebGPU heap is not measured');
         expect(source).toContain('buildMeasuredEnglishExport');
         expect(source).toContain('exportMeasuredEnglishResults');
         expect(source).toContain('downloadPinnedMeasuredExport');
@@ -127,6 +159,9 @@ describe('Measured results export acceptance', () => {
         expect(source).toContain('noRanking: true');
         expect(source).toContain('coldPrepMeasured: true');
         expect(source).toContain('coldPrepMs');
+        expect(source).toContain('storageFootprintBytes');
+        expect(source).toContain('storageFootprintMeasured: true');
+        expect(source).toContain('runtimeHeapMeasured: false');
         expect(html).toContain('Cold prep');
         expect(source).toContain('Nothing was uploaded');
         expect(source).not.toContain('navigator.sendBeacon');

@@ -47,6 +47,10 @@ function assertMeasuredExportDisclosure(payload) {
         'Measured export must disclose cold prep separately from warm runs');
     requireMeasuredFlag(payload, 'firstAudioMeasured', false,
         'Measured export must disclose warm full-clip (not first-audio)');
+    requireMeasuredFlag(payload, 'storageFootprintMeasured', true,
+        'Measured export must include catalog storage footprint bytes');
+    requireMeasuredFlag(payload, 'runtimeHeapMeasured', false,
+        'Measured export must not invent runtime heap (WASM/WebGPU)');
 }
 
 function assertMeasuredExportRows(payload, expected = {}) {
@@ -64,6 +68,7 @@ function assertMeasuredExportRows(payload, expected = {}) {
     for (const row of payload.measurements) {
         for (const field of [
             'coldPrepMs', 'synthesisP50Ms', 'synthesisP95Ms', 'realTimeFactorP50',
+            'storageFootprintBytes',
         ]) {
             if (!Number.isFinite(row[field]) || row[field] <= 0) {
                 throw Error('Invalid measured export metric: ' +

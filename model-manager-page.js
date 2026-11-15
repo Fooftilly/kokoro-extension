@@ -84,6 +84,8 @@ function buildMeasuredEnglishExport() {
             synthesisP50Ms: result.synthesisP50Ms,
             synthesisP95Ms: result.synthesisP95Ms,
             realTimeFactorP50: result.realTimeFactorP50,
+            // Catalog asset sum — storage footprint, not WASM/WebGPU heap.
+            storageFootprintBytes: entry.totalBytes,
         });
     }
     return {
@@ -94,6 +96,10 @@ function buildMeasuredEnglishExport() {
         measurementKind: 'warm-full-clip-synthesis',
         coldPrepMeasured: true,
         firstAudioMeasured: false,
+        storageFootprintMeasured: true,
+        // Do not invent runtime heap; Chrome performance.memory is optional
+        // and not comparable across engines.
+        runtimeHeapMeasured: false,
         sampleText,
         browser: {
             userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
