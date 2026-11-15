@@ -1,7 +1,7 @@
 // Original Kokoro v1.0 ONNX input preparation from the published model interface.
 // This is not a phonemizer or an ONNX inference engine. It only prepares tensors
 // for the official onnxruntime-web package once model-backed integration is added.
-const MAX_PHONEMES = 510; // 512 graph positions minus start/end zero pad tokens.
+import { MAX_PHONEMES } from './phoneme-tokenizer.js';
 const VOICE_DIMENSION = 256;
 const BYTES_PER_STYLE = VOICE_DIMENSION * Float32Array.BYTES_PER_ELEMENT;
 
@@ -101,11 +101,15 @@ export function styleForLengthWeighted(voiceBinaries, weights, tokenCount) {
     return blendStyleVectors(styles, weights);
 }
 
-export function prepareKokoroOnnxInputs(phonemeIds, voiceBinary, speed = 1.0) {
-    assertPhonemes(phonemeIds);
+export function assertKokoroSpeed(speed) {
     if (!Number.isFinite(speed) || speed <= 0 || speed > 4) {
         throw new RangeError('Kokoro speaking speed must be positive and at most 4');
     }
+}
+
+export function prepareKokoroOnnxInputs(phonemeIds, voiceBinary, speed = 1.0) {
+    assertPhonemes(phonemeIds);
+    assertKokoroSpeed(speed);
 
     const inputIds = new BigInt64Array(phonemeIds.length + 2);
     for (let i = 0; i < phonemeIds.length; i++) {

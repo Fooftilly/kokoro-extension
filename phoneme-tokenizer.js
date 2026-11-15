@@ -119,6 +119,9 @@ export const PHONEME_VOCAB = Object.freeze({
     "ᵻ": 177
 });
 
+// 512 graph positions include the two edge padding tokens.
+export const MAX_PHONEMES = 510;
+
 export function tokenizePhonemes(phonemes) {
     if (typeof phonemes !== 'string' || !phonemes.trim()) {
         throw new TypeError('Non-empty Kokoro IPA phonemes are required');
@@ -130,7 +133,7 @@ export function tokenizePhonemes(phonemes) {
             throw new RangeError('Unknown Kokoro phoneme: ' + JSON.stringify(character));
         }
         tokens.push(id);
-        if (tokens.length > 510) throw new RangeError('Kokoro accepts at most 510 phoneme IDs');
+        if (tokens.length > MAX_PHONEMES) throw new RangeError('Kokoro accepts at most 510 phoneme IDs');
     }
     return tokens;
 }
