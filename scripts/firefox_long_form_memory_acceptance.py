@@ -3,6 +3,9 @@
 Speech/storage/visit indexes stay owned by long-form-memory-acceptance.mjs
 (Chromium). Pure bound checks are ported here so Selenium can call them
 without a Node round-trip on every sentence click.
+
+KE-52 / #57: deeper walk (36 sentences) stays memory-bound only —
+subjective quality / MOS are explicitly not measured.
 """
 import json
 import subprocess
@@ -11,9 +14,11 @@ from pathlib import Path
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 
 # Keep in sync with scripts/long-form-memory-acceptance.mjs
-LONG_FORM_SENTENCE_COUNT = 24
+LONG_FORM_SENTENCE_COUNT = 36
 LONG_FORM_MAX_CACHE_ENTRIES = 8
 LONG_FORM_MAX_OBJECT_URLS = 8
+LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE = (
+    "deeper long-form quality/performance not measured")
 ALLOWED_LONG_FORM_BACKENDS = frozenset({"onnx", "mediapipe"})
 
 
@@ -30,6 +35,47 @@ def origin_long_form_memory_stage_enabled(origin_download, provider, success):
         origin_download and
         provider in ALLOWED_LONG_FORM_BACKENDS and
         success)
+
+
+def _invoke_long_form_esm(action, payload):
+    """Run one honesty action in the shared ESM module (stdin JSON → stdout).
+
+    Keeps assert/finalize logic canonical in long-form-memory-acceptance.mjs so
+    Sonar does not count a Python mirror as new-code duplication.
+    """
+    script = (
+        "import { readFileSync } from 'node:fs';"
+        "import {"
+        "  longFormQualityDisclosureFlags,"
+        "  assertLongFormMemoryAcceptanceReport,"
+        "  finalizeLongFormMemoryAcceptanceReport,"
+        "} from './long-form-memory-acceptance.mjs';"
+        "const action = process.argv[1];"
+        "const raw = readFileSync(0, 'utf8').trim();"
+        "const data = raw ? JSON.parse(raw) : null;"
+        "let out;"
+        "if (action === 'flags') out = longFormQualityDisclosureFlags();"
+        "else if (action === 'assert') out = assertLongFormMemoryAcceptanceReport(data);"
+        "else if (action === 'finalize') out = finalizeLongFormMemoryAcceptanceReport(data || {});"
+        "else throw new Error('Unknown long-form honesty action: ' + action);"
+        "process.stdout.write(JSON.stringify(out) + '\\n');"
+    )
+    probe = subprocess.run(
+        ["node", "--input-type=module", "-e", script, action],
+        cwd=str(_SCRIPTS_DIR),
+        input=json.dumps(payload) if payload is not None else "",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        message = (probe.stderr or probe.stdout or "unknown error").strip()
+        raise RuntimeError(message)
+    return json.loads(probe.stdout.strip())
+
+
+def long_form_quality_disclosure_flags():
+    return _invoke_long_form_esm("flags", None)
 
 
 def load_long_form_fixture(backend="onnx"):
@@ -135,3 +181,13 @@ def assert_long_form_heap_delta(before_bytes, after_bytes,
             json.dumps({"beforeBytes": before_bytes, "afterBytes": after_bytes,
                         "growth": growth, "maxGrowthBytes": max_growth_bytes}))
     return {"growth": growth, "maxGrowthBytes": max_growth_bytes}
+
+
+def assert_long_form_memory_acceptance_report(report):
+    """Fail-closed via shared ESM assert (no Python mirror of the checks)."""
+    return _invoke_long_form_esm("assert", report)
+
+
+def finalize_long_form_memory_acceptance_report(partial=None):
+    """Finalize via shared ESM — preserves measured:true fail-closed claims."""
+    return _invoke_long_form_esm("finalize", dict(partial or {}))

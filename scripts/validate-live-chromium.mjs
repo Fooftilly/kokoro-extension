@@ -27,6 +27,7 @@ import {
     assertLongFormCacheWindowNear,
     assertLongFormHeapDelta,
     buildLongFormVisitIndexes,
+    finalizeLongFormMemoryAcceptanceReport,
     longFormStorageConfig,
     originLongFormMemoryStageEnabled,
     requireLongFormBackend,
@@ -2602,7 +2603,7 @@ async function acceptLongFormMemoryPerformance(page, context, extensionId, backe
         heapGrowth: heap?.growth ?? null,
         windowAfterJump: jump.windowAfterJump,
     });
-    return {
+    return finalizeLongFormMemoryAcceptanceReport({
         success: true,
         browser: 'chromium',
         backend,
@@ -2625,7 +2626,7 @@ async function acceptLongFormMemoryPerformance(page, context, extensionId, backe
         samples: walk.samples,
         syncTtsBackend: privacy.syncTtsBackend,
         userBackendUnchanged: privacy.syncTtsBackend === syncBefore,
-    };
+    });
 }
 
 // Verify that the real EPUB.js reader and embedded overlay—not a seeded
