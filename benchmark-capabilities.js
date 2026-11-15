@@ -2,6 +2,44 @@
 (function () {
     'use strict';
 
+    // KE-41a: adapter presence ≠ offered/measured GPU inference. Prefer the
+    // sibling module when require/globalThis is available; classic script pages
+    // that omit the extra <script> tag still get an identical fallback.
+    const GPU_INFERENCE_NOT_OFFERED_NEEDLE = 'gpu inference is not offered';
+
+    function discloseGpuInferenceOfferFallback(webgpuStatus) {
+        let adapterStatus = 'unknown';
+        if (webgpuStatus && typeof webgpuStatus === 'object' &&
+            webgpuStatus.status != null) {
+            adapterStatus = String(webgpuStatus.status);
+        } else if (typeof webgpuStatus === 'string' && webgpuStatus) {
+            adapterStatus = webgpuStatus;
+        }
+        return {
+            gpuInferenceOffered: false,
+            gpuInferenceMeasured: false,
+            webgpuAdapterStatus: adapterStatus,
+            disclosureNeedle: GPU_INFERENCE_NOT_OFFERED_NEEDLE,
+        };
+    }
+
+    function resolveDiscloseGpuInferenceOffer() {
+        if (typeof require === 'function') {
+            try {
+                return require('./gpu-execution-disclosure.js').discloseGpuInferenceOffer;
+            } catch {
+                // Classic extension page without CommonJS — fall through.
+            }
+        }
+        if (typeof globalThis !== 'undefined' &&
+            globalThis.KokoroGpuExecutionDisclosure &&
+            typeof globalThis.KokoroGpuExecutionDisclosure.discloseGpuInferenceOffer ===
+                'function') {
+            return globalThis.KokoroGpuExecutionDisclosure.discloseGpuInferenceOffer;
+        }
+        return discloseGpuInferenceOfferFallback;
+    }
+
     function adapterDetails(adapter) {
         return {
             status: 'adapter-available',
@@ -47,6 +85,8 @@
         const hasWasm = await canCompileWasm(env.WebAssembly);
         const isolated = env.crossOriginIsolated === true;
         const sharedMemory = typeof env.SharedArrayBuffer === 'function';
+        const webgpu = await inspectWebGPU(nav);
+        const discloseGpuInferenceOffer = resolveDiscloseGpuInferenceOffer();
         return {
             kind: 'capability-preflight',
             schemaVersion: 1,
@@ -57,7 +97,9 @@
             crossOriginIsolated: isolated,
             sharedArrayBuffer: sharedMemory,
             wasmThreadsPrerequisites: hasWasm && isolated && sharedMemory,
-            webgpu: await inspectWebGPU(nav),
+            webgpu,
+            // Honest disclosure: WebGPU adapter status is not GPU inference.
+            gpuInference: discloseGpuInferenceOffer(webgpu),
             inferenceValidated: false,
             offlineModelValidated: false,
         };

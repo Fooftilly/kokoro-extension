@@ -1386,6 +1386,36 @@ def run_offline_overlay_controls_acceptance(driver, origin, backend):
     })
 
 
+def assert_gpu_execution_disclosure(preflight, browser="Firefox"):
+    """#61 / KE-41a: dual scopes disclose GPU inference not offered/measured."""
+    scripts_dir = Path(__file__).resolve().parent
+    probe = subprocess.run(
+        [
+            "node", "--input-type=module", "-e",
+            "import { assertGpuExecutionDisclosure, "
+            "buildGpuExecutionDisclosureReport } from "
+            "'./gpu-execution-disclosure-acceptance.mjs';"
+            "const preflight = " + json.dumps(preflight) + ";"
+            "const asserted = assertGpuExecutionDisclosure(preflight);"
+            "const report = buildGpuExecutionDisclosureReport({"
+            "browser: " + json.dumps(browser) + ","
+            "webgpuAdapterStatus: asserted.webgpuAdapterStatus,"
+            "assertedFromPreflight: true,"
+            "});"
+            "console.log(JSON.stringify(report));",
+        ],
+        cwd=str(scripts_dir),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        raise RuntimeError(
+            "GPU execution disclosure assert failed: " +
+            (probe.stderr or probe.stdout or "unknown error"))
+    return json.loads(probe.stdout.strip())
+
+
 def accept_popup_test_tts_cta(driver, origin):
     """#61: popup Test TTS backends CTA opens benchmark.html with three cards."""
     from firefox_popup_test_tts_cta_acceptance import (
@@ -3922,6 +3952,12 @@ def main():
             if not browser_offline or not driver.execute_script("return navigator.onLine === false;"):
                 raise RuntimeError("Firefox did not enter offline mode before inference")
             if dual_comparison:
+                # #61 / KE-41a: adapter presence ≠ offered/measured GPU inference.
+                result["stage"] = "gpu-execution-disclosure"
+                gpu_execution_disclosure = assert_gpu_execution_disclosure(
+                    preflight, browser="Firefox")
+                result["gpuExecutionDisclosureAcceptance"] = (
+                    gpu_execution_disclosure)
                 result["stage"] = "popup-test-tts-cta"
                 popup_cta = accept_popup_test_tts_cta(driver, state["origin"])
                 result["popupTestTtsCtaAcceptance"] = popup_cta
@@ -3951,6 +3987,7 @@ def main():
                     "dictionaryCacheAcceptance": dictionary_cache_acceptance,
                     "dictionaryReloadAcceptance": dictionary_reload_acceptance,
                     "dictionaryUiDownloadAcceptance": dictionary_ui_acceptance,
+                    "gpuExecutionDisclosureAcceptance": gpu_execution_disclosure,
                     "popupTestTtsCtaAcceptance": popup_cta,
                     "dualComparisonAcceptance": comparison,
                     "fastapiServerCardAcceptance": fastapi_card,
