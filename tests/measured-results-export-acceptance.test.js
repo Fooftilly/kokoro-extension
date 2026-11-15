@@ -24,13 +24,14 @@ const payload = {
     telemetry: false,
     noRanking: true,
     measurementKind: 'warm-full-clip-synthesis',
+    coldPrepMeasured: true,
     firstAudioMeasured: false,
     sampleText: 'Hello world.',
     measurements: [
-        { key: 'onnx-q8', label: 'ONNX', synthesisP50Ms: 12,
+        { key: 'onnx-q8', label: 'ONNX', coldPrepMs: 40, synthesisP50Ms: 12,
             synthesisP95Ms: 15, realTimeFactorP50: 0.2 },
-        { key: 'mediapipe-cpu', label: 'MediaPipe', synthesisP50Ms: 18,
-            synthesisP95Ms: 22, realTimeFactorP50: 0.3 },
+        { key: 'mediapipe-cpu', label: 'MediaPipe', coldPrepMs: 55,
+            synthesisP50Ms: 18, synthesisP95Ms: 22, realTimeFactorP50: 0.3 },
     ],
 };
 exp.assertMeasuredResultsExportPayload(payload, {
@@ -124,6 +125,9 @@ describe('Measured results export acceptance', () => {
         expect(source).toContain('kokoro-measured-local-english');
         expect(source).toContain('telemetry: false');
         expect(source).toContain('noRanking: true');
+        expect(source).toContain('coldPrepMeasured: true');
+        expect(source).toContain('coldPrepMs');
+        expect(html).toContain('Cold prep');
         expect(source).toContain('Nothing was uploaded');
         expect(source).not.toContain('navigator.sendBeacon');
         expect(source).not.toMatch(

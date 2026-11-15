@@ -46,6 +46,7 @@ function renderSharedEnglishResults() {
         row.dataset.backend = entry.key;
         for (const value of [
             entry.label,
+            result.coldPrepMs.toFixed(0) + ' ms',
             result.synthesisP50Ms.toFixed(0) + ' ms',
             result.synthesisP95Ms.toFixed(0) + ' ms',
             result.realTimeFactorP50.toFixed(2),
@@ -58,7 +59,7 @@ function renderSharedEnglishResults() {
     }
     status.textContent = sharedEnglishResults.size >= 2
         ? 'Measured ' + sharedEnglishResults.size +
-            ' local backend paths on the current English sample (three warm runs each). No ranking is inferred.'
+            ' local backend paths on the current English sample (cold prep + three warm runs each). No ranking is inferred.'
         : sharedEnglishResults.size === 1
             ? 'One local backend measured. Test another on the same English sample to compare.'
             : 'Run at least two local English tests to compare their measured timings.';
@@ -75,6 +76,7 @@ function buildMeasuredEnglishExport() {
         measurements.push({
             key: entry.key,
             label: entry.label,
+            coldPrepMs: result.coldPrepMs,
             synthesisP50Ms: result.synthesisP50Ms,
             synthesisP95Ms: result.synthesisP95Ms,
             realTimeFactorP50: result.realTimeFactorP50,
@@ -86,6 +88,7 @@ function buildMeasuredEnglishExport() {
         telemetry: false,
         noRanking: true,
         measurementKind: 'warm-full-clip-synthesis',
+        coldPrepMeasured: true,
         firstAudioMeasured: false,
         sampleText,
         browser: {
@@ -204,7 +207,7 @@ function forgetSharedEnglishResult(entry) {
 function rememberSharedEnglishResult(entry, metrics, text, epoch) {
     const input = document.getElementById('benchmarkText');
     if (epoch !== sharedEnglishEpoch || input?.value.trim() !== text) return;
-    if (![metrics.synthesisP50Ms, metrics.synthesisP95Ms,
+    if (![metrics.coldPrepMs, metrics.synthesisP50Ms, metrics.synthesisP95Ms,
         metrics.realTimeFactorP50].every(v => Number.isFinite(v) && v >= 0)) return;
     sharedEnglishResults.set(entry.key, metrics);
     renderSharedEnglishResults();
@@ -674,9 +677,9 @@ async function measureWarmClip(synthesize) {
 // ONNX q8 can benchmark the *same English input* as MediaPipe only when its
 // verified dictionary resolves every word. Otherwise use an explicitly
 // non-comparable IPA diagnostic without authorizing regular English playback.
-async function testOnnxEnglishText(engine, text) {
+async function testOnnxEnglishText(engine, text, coldStartedAt) {
     if (!text || !(await cacheStore().status(dictionaryManifest())).ready) {
-        return { ready: false, measured: null,
+        return { ready: false, measured: null, coldPrepMs: null,
             message: !text
                 ? ' English text not tested: enter an English sample.'
                 : ' English text not tested: download the pronunciation dictionary first.' };
@@ -687,11 +690,12 @@ async function testOnnxEnglishText(engine, text) {
         // preparation from the three runs labeled as warm measurements.
         // A failed warm-up must still lead to IPA-only diagnostics, not approval.
         await engine.synthesize(text);
+        const coldPrepMs = performance.now() - coldStartedAt;
         const measured = await measureWarmClip(() => engine.synthesize(text));
-        return { ready: true, measured,
+        return { ready: true, measured, coldPrepMs,
             message: ' Measured the shared English text through the dictionary-backed ONNX path (after untimed warm-up).' };
     } catch (error) {
-        return { ready: false, measured: null,
+        return { ready: false, measured: null, coldPrepMs: null,
             message: ' English text synthesis failed: ' +
                 String(error.message || error) + '. Playing the IPA probe instead.' };
     }
@@ -699,12 +703,17 @@ async function testOnnxEnglishText(engine, text) {
 
 // The sample path and preparation belong together, not in the UI's model
 // operation state machine. IPA measurements stay isolated from English data.
-async function measureBackendSample(entry, engine, text, ipa) {
+// coldStartedAt marks initialize(); coldPrepMs ends after the first synth.
+async function measureBackendSample(entry, engine, text, ipa, coldStartedAt) {
     const english = entry.provider === 'onnx' && entry.variant === 'q8'
-        ? await testOnnxEnglishText(engine, text) : null;
+        ? await testOnnxEnglishText(engine, text, coldStartedAt) : null;
     const englishReady = english?.ready === true;
+    let coldPrepMs = english?.coldPrepMs ?? null;
     // MediaPipe can also do lazy setup on its first synthesis.
-    if (entry.provider === 'mediapipe') await engine.synthesize(text);
+    if (entry.provider === 'mediapipe') {
+        await engine.synthesize(text);
+        coldPrepMs = performance.now() - coldStartedAt;
+    }
     const measured = english?.measured || await measureWarmClip(
         entry.provider === 'mediapipe'
             ? () => engine.synthesize(text)
@@ -713,18 +722,23 @@ async function measureBackendSample(entry, engine, text, ipa) {
         english,
         englishReady,
         measured,
+        coldPrepMs,
         isEnglishMeasurement: entry.provider === 'mediapipe' || englishReady,
     };
 }
 
 function formatLocalBenchmarkStatus(entry, metrics, isEnglishMeasurement, english) {
+    const coldNote = Number.isFinite(metrics.coldPrepMs)
+        ? ' Cold prep (init + first synth): ' +
+            metrics.coldPrepMs.toFixed(0) + ' ms.'
+        : '';
     return 'Real local inference, warm (3 runs, ' +
         (isEnglishMeasurement ? 'shared English text' : 'IPA-only diagnostic') +
         '). Full-clip synthesis p50: ' +
         metrics.synthesisP50Ms.toFixed(0) + ' ms, p95: ' +
         metrics.synthesisP95Ms.toFixed(0) + ' ms; RTF p50: ' +
-        metrics.realTimeFactorP50.toFixed(2) +
-        '. Streaming time-to-first-audio was not measured.' +
+        metrics.realTimeFactorP50.toFixed(2) + '.' + coldNote +
+        ' Streaming time-to-first-audio was not measured.' +
         (entry.provider === 'onnx'
             ? (isEnglishMeasurement
                 ? ' Same English text as MediaPipe; voices and phonemization may differ. Local backends use a single voice (no weighted FastAPI-style mix).'
@@ -785,13 +799,20 @@ async function testEngine(entry, ui) {
                 }
             }
             const engine = currentEngine(entry);
-            await engine.initialize(); // Initialize outside warm-run timings.
+            // Cold prep spans initialize + first untimed synthesis; warm runs
+            // start only after that window closes (KE-31 / #61 disclosure).
+            const coldStartedAt = performance.now();
+            await engine.initialize();
             const text = document.getElementById('benchmarkText').value.trim();
             const sampleEpoch = sharedEnglishEpoch;
             const ipa = document.getElementById('benchmarkIpa').value.trim();
-            const { english, englishReady, measured, isEnglishMeasurement } =
-                await measureBackendSample(entry, engine, text, ipa);
-            const metrics = window.KokoroBenchmark.summarizeRuns(measured.runs);
+            const { english, englishReady, measured, coldPrepMs,
+                isEnglishMeasurement } =
+                await measureBackendSample(entry, engine, text, ipa, coldStartedAt);
+            const metrics = {
+                ...window.KokoroBenchmark.summarizeRuns(measured.runs),
+                coldPrepMs,
+            };
             const previous = lastAudioUrl.get(entry.key);
             if (previous) URL.revokeObjectURL(previous);
             const audioUrl = URL.createObjectURL(

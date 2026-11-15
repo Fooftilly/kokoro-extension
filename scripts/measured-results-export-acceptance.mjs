@@ -43,6 +43,8 @@ function assertMeasuredExportPrivacy(payload) {
 function assertMeasuredExportDisclosure(payload) {
     requireMeasuredFlag(payload, 'measurementKind', 'warm-full-clip-synthesis',
         'Measured export must disclose warm full-clip (not first-audio)');
+    requireMeasuredFlag(payload, 'coldPrepMeasured', true,
+        'Measured export must disclose cold prep separately from warm runs');
     requireMeasuredFlag(payload, 'firstAudioMeasured', false,
         'Measured export must disclose warm full-clip (not first-audio)');
 }
@@ -61,7 +63,7 @@ function assertMeasuredExportRows(payload, expected = {}) {
     }
     for (const row of payload.measurements) {
         for (const field of [
-            'synthesisP50Ms', 'synthesisP95Ms', 'realTimeFactorP50',
+            'coldPrepMs', 'synthesisP50Ms', 'synthesisP95Ms', 'realTimeFactorP50',
         ]) {
             if (!Number.isFinite(row[field]) || row[field] <= 0) {
                 throw Error('Invalid measured export metric: ' +

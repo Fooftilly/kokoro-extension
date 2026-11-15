@@ -1160,9 +1160,10 @@ def accept_local_benchmark_ui(driver, origin, provider):
                 throw Error('Real Firefox local-English comparison row invalid');
             const cells=Array.from(row.cells,c=>c.textContent.trim());
             const values=cells.slice(1).map(Number.parseFloat);
-            if(values.length!==3 || values.some(v=>!Number.isFinite(v)||v<=0))
+            if(values.length!==4 || values.some(v=>!Number.isFinite(v)||v<=0))
                 throw Error('Invalid synthesis measurements: '+JSON.stringify(cells));
-            return {cells,p50Ms:values[0],p95Ms:values[1],rtfP50:values[2]};
+            return {cells,coldPrepMs:values[0],p50Ms:values[1],
+                p95Ms:values[2],rtfP50:values[3]};
         """, key)
         return value
 
@@ -1483,11 +1484,11 @@ def accept_two_backend_comparison(driver, origin):
                 throw Error('Firefox dual comparison missing real offline audio/row');
             const cells=Array.from(row.cells,c=>c.textContent.trim());
             const values=cells.slice(1).map(Number.parseFloat);
-            if(values.length!==3 || values.some(v=>!Number.isFinite(v)||v<=0) ||
-                values[1]<values[0])
+            if(values.length!==4 || values.some(v=>!Number.isFinite(v)||v<=0) ||
+                values[2]<values[1])
                 throw Error('Invalid Firefox dual timings: '+JSON.stringify(cells));
-            return {key,label:cells[0],p50Ms:values[0],p95Ms:values[1],
-                rtfP50:values[2],rowCount:tbody.rows.length};
+            return {key,label:cells[0],coldPrepMs:values[0],p50Ms:values[1],
+                p95Ms:values[2],rtfP50:values[3],rowCount:tbody.rows.length};
         """, key)
         measurements.append(measurement)
     if ([item["rowCount"] for item in measurements] != [1, 2]):
