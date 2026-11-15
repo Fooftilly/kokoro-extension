@@ -36,21 +36,29 @@ describe('chromium EPUB acceptance backend wiring', () => {
         );
     });
 
-    test('EPUB fixture uses distinct speech and WAV content hashes', () => {
+    test('EPUB fixture uses nested TOC, distinct speech, and WAV hashes', () => {
         const fixture = fs.readFileSync(
             path.join(__dirname, '..', 'scripts', 'reader-acceptance-epub.mjs'),
             'utf8',
         );
         expect(source).toMatch(/from '\.\/reader-acceptance-epub\.mjs'/);
         expect(fixture).toContain("Hello first chapter.");
+        expect(fixture).toContain("Hello first section.");
         expect(fixture).toContain("Hello second chapter.");
         expect(fixture).toContain("Hello third chapter.");
         expect(fixture).toContain("Hello plain text.");
+        expect(fixture).toContain('first-section.xhtml');
+        expect(fixture).toContain(
+            '<ol><li><a href="first-section.xhtml">First Section</a></li></ol>',
+        );
         expect(source).toMatch(/blocks\[0\]\.content === expectedSpeech/);
         expect(source).toMatch(/crypto\.subtle\.digest\('SHA-256'/);
         expect(source).toMatch(/differentAudioPerChapter = new Set\(\[/);
+        expect(source).toMatch(/clickTocChapter\(\s*'First Section'\s*\)/);
+        expect(source).toMatch(/waitForChapter\(\s*'First Section'/);
         expect(source).toMatch(/waitForChapter\(\s*'Third Chapter'/);
-        expect(source).toMatch(/chapterCount: 3/);
+        expect(source).toMatch(/chapterCount: 4/);
+        expect(source).toMatch(/READER_ACCEPTANCE_SPEECH\['First Section'\]/);
         expect(source).toMatch(/READER_ACCEPTANCE_SPEECH\['Third Chapter'\]/);
         expect(source).not.toMatch(
             /pendingContent\?\.some\(b => b\.content\?\.includes\('Hello world\.'\)\)/,
