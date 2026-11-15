@@ -54,6 +54,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
             </button>
             <p id="measuredExportStatus" role="status"></p>
             <textarea id="benchmarkText">Hello world.</textarea>
+            <button type="button" id="useLongerEnglishSample">Use longer sample</button>
             <input id="benchmarkIpa" value="hɛˈloʊ.">
             <button id="testServer"></button><button id="chooseServer"></button>
             <p id="serverStatus"></p><audio id="serverAudio"></audio>`;
@@ -1253,6 +1254,19 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(comparison.children).toHaveLength(0);
         expect(document.getElementById('sharedEnglishComparisonStatus').textContent)
             .toContain('at least two local English tests');
+    });
+
+    test('Use longer sample fills the shared English textarea and clears rows', async () => {
+        const {
+            LONGER_SHARED_ENGLISH_SAMPLE,
+        } = require('../longer-shared-english-sample.js');
+        await runProbe();
+        const comparison = document.getElementById('sharedEnglishComparisonRows');
+        expect(comparison.children).toHaveLength(1);
+        document.getElementById('useLongerEnglishSample').click();
+        expect(document.getElementById('benchmarkText').value)
+            .toBe(LONGER_SHARED_ENGLISH_SAMPLE);
+        expect(comparison.children).toHaveLength(0);
     });
 
     test('an obsolete asynchronous measurement cannot restore a row after input edit', async () => {

@@ -32,11 +32,20 @@ import {
     requireLongFormBackend,
 } from './long-form-memory-acceptance.mjs';
 import { buildCurrentProviderSnapshot } from './live-chromium-report.mjs';
-// The extension's .js modules are ESM while package.json is CommonJS for the
-// build tool. Copy the pure catalog into a temporary .mjs file for the Node harness.
+// Extension .js modules are ESM in the browser while package.json is CommonJS
+// for the build tool. Copy pure modules into temporary .mjs files for Node.
 const catalogFile = path.join(os.tmpdir(), 'kokoro-runtime-model-catalog.mjs');
 await writeFile(catalogFile, await readFile(path.resolve('model-catalog.js')));
 const { manifestForVariant, dictionaryManifest } = await import(pathToFileURL(catalogFile).href);
+const longerSampleFile = path.join(os.tmpdir(),
+    'kokoro-longer-shared-english-sample.mjs');
+await writeFile(longerSampleFile,
+    await readFile(path.resolve('longer-shared-english-sample.js')));
+const {
+    LONGER_SHARED_ENGLISH_SAMPLE,
+    LONGER_SHARED_ENGLISH_BUTTON_ID,
+    assertLongerSharedEnglishSample,
+} = await import(pathToFileURL(longerSampleFile).href);
 
 if (process.env.KOKORO_LIVE_DOWNLOAD !== '1' || !process.env.PLAYWRIGHT_MODULE_PATH) {
     throw Error('Live model download opt-in and pinned Playwright module path required');
@@ -838,6 +847,11 @@ async function acceptTwoBackendComparison(page, extensionId) {
             row?.querySelector('.model-remove')?.disabled === false;
     }), keys, { timeout: 30000 });
 
+    // #61 / KE-32: dual comparison uses the longer shared English paragraph.
+    await page.locator('#' + LONGER_SHARED_ENGLISH_BUTTON_ID).click();
+    const sharedSample = await page.locator('#benchmarkText').inputValue();
+    assertLongerSharedEnglishSample(sharedSample);
+
     const selectedBefore = await page.evaluate(async () =>
         (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
     const measured = [];
@@ -851,7 +865,7 @@ async function acceptTwoBackendComparison(page, extensionId) {
                     'warm (3 runs, shared English text)') &&
                 !!document.querySelector(
                     '#sharedEnglishComparisonRows tr[data-backend="' + key + '"]');
-        }, key, { timeout: 240000 });
+        }, key, { timeout: 600000 });
 
         const row = await page.evaluate(key => {
             const model = document.querySelector('[data-variant="' + key + '"]');
@@ -895,7 +909,7 @@ async function acceptTwoBackendComparison(page, extensionId) {
     });
     // #61 / KE-30: export measured rows while both still present (local-only).
     const measuredResultsExport = await acceptMeasuredResultsExport(page, {
-        sampleText: 'Hello world.',
+        sampleText: LONGER_SHARED_ENGLISH_SAMPLE,
         keys,
     });
     await page.locator('#benchmarkText').fill('Another shared English sample.');
@@ -934,7 +948,7 @@ async function acceptTwoBackendComparison(page, extensionId) {
         throw Error('Use this backend did not select MediaPipe: ' + afterMediaPipeChoose);
     }
 
-    return { success: true, providers: keys, sharedSample: 'Hello world.',
+    return { success: true, providers: keys, sharedSample: LONGER_SHARED_ENGLISH_SAMPLE,
         measurements: measured, rowsBeforeEdit: 2, rowsAfterEdit: 0,
         bothRetainedOnOnePage: true,
         backendSelectionUnchangedDuringMeasure: true,

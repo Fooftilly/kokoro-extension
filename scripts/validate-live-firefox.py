@@ -1432,6 +1432,14 @@ def accept_popup_test_tts_cta(driver, origin):
     return build_popup_cta_acceptance_report(benchmark_url)
 
 
+# Keep in sync with longer-shared-english-sample.js (Jest asserts equality).
+LONGER_SHARED_ENGLISH_SAMPLE = (
+    "Hello friends. Please measure this longer English paragraph carefully "
+    "so both local systems share one sample."
+)
+LONGER_SHARED_ENGLISH_BUTTON_ID = "useLongerEnglishSample"
+
+
 def accept_two_backend_comparison(driver, origin):
     """Measure ONNX q8 and MediaPipe CPU sequentially on one real, offline page."""
     keys = ("onnx-q8", "mediapipe-cpu")
@@ -1445,6 +1453,14 @@ def accept_two_backend_comparison(driver, origin):
     """, list(keys)))
     if not driver.execute_script("return navigator.onLine===false;"):
         raise RuntimeError("Firefox dual comparison was not fully offline")
+
+    # #61 / KE-32: dual comparison uses the longer shared English paragraph.
+    driver.find_element(By.ID, LONGER_SHARED_ENGLISH_BUTTON_ID).click()
+    shared_sample = driver.execute_script(
+        "return document.getElementById('benchmarkText')?.value||'';")
+    if shared_sample.strip() != LONGER_SHARED_ENGLISH_SAMPLE:
+        raise RuntimeError(
+            "Firefox dual comparison longer sample mismatch: " + repr(shared_sample))
 
     def selected_backend():
         value = driver.execute_async_script("""
@@ -1462,7 +1478,7 @@ def accept_two_backend_comparison(driver, origin):
     for key in keys:
         row_selector = f'[data-variant="{key}"]'
         driver.find_element(By.CSS_SELECTOR, row_selector + " .model-test").click()
-        WebDriverWait(driver, 280).until(lambda d: d.execute_script("""
+        WebDriverWait(driver, 600).until(lambda d: d.execute_script("""
             const key=arguments[0];
             const row=document.querySelector('[data-variant="'+key+'"]');
             return row?.querySelector('.model-test')?.disabled===false &&
@@ -1507,7 +1523,7 @@ def accept_two_backend_comparison(driver, origin):
     """)
     # #61 / KE-30: export measured rows while both still present (local-only).
     measured_results_export = accept_measured_results_export(
-        driver, sample_text="Hello world.", keys=list(keys))
+        driver, sample_text=LONGER_SHARED_ENGLISH_SAMPLE, keys=list(keys))
     remaining = driver.execute_script("""
         const text=document.getElementById('benchmarkText');
         text.value='Another shared English sample.';
@@ -1549,7 +1565,8 @@ def accept_two_backend_comparison(driver, origin):
             repr(after_mediapipe))
 
     return {
-        "success": True, "providers": list(keys), "sharedSample": "Hello world.",
+        "success": True, "providers": list(keys),
+        "sharedSample": LONGER_SHARED_ENGLISH_SAMPLE,
         "measurements": measurements, "rowsBeforeEdit": 2, "rowsAfterEdit": 0,
         "bothRetainedOnOnePage": True,
         "backendSelectionUnchangedDuringMeasure": True,

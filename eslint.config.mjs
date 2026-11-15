@@ -100,10 +100,11 @@ export default [
   },
   // Classic scripts that optionally export for Jest via CJS interop
   {
-    files: ['content.js', 'api-client.js', 'overlay-position.js', 'floating-mic-position.js', 'benchmark-capabilities.js', 'tts-providers.js', 'local-voice-mixing.js', 'backend-disclosure.js'],
+    files: ['content.js', 'api-client.js', 'overlay-position.js', 'floating-mic-position.js', 'benchmark-capabilities.js', 'tts-providers.js', 'local-voice-mixing.js', 'backend-disclosure.js', 'longer-shared-english-sample.js'],
     languageOptions: {
       globals: {
         module: 'readonly',
+        window: 'readonly',
       },
     },
   },
