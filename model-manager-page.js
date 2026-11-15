@@ -11,6 +11,7 @@ import {
     LONGER_SHARED_ENGLISH_SAMPLE,
     LONGER_SHARED_ENGLISH_BUTTON_ID,
 } from './longer-shared-english-sample.js';
+import { discloseStoreSigning } from './store-signing-disclosure.js';
 import { waitServerAudioPlaybackStart } from './server-audio-playback-start.js';
 
 const page = document.getElementById('modelManager');
@@ -183,6 +184,8 @@ async function buildMeasuredEnglishExport() {
         // Do not invent runtime heap; Chrome performance.memory is optional
         // and not comparable across engines.
         runtimeHeapMeasured: false,
+        // #61 / KE-46: do not claim Chrome Web Store / AMO package signing.
+        storeSigning: discloseStoreSigning(),
         sampleText,
         browser: {
             userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',

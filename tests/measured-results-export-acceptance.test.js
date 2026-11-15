@@ -31,6 +31,11 @@ const payload = {
     cachePresenceProbed: true,
     englishDictionaryCatalogBytes: 3618488,
     runtimeHeapMeasured: false,
+    storeSigning: {
+        storePackagesSigned: false,
+        storeSigningMeasured: false,
+        disclosureNeedle: 'store distribution signing not measured',
+    },
     sampleText: 'Hello world.',
     measurements: [
         { key: 'onnx-q8', label: 'ONNX', coldPrepMs: 40, synthesisP50Ms: 12,
@@ -214,6 +219,7 @@ describe('Measured results export acceptance', () => {
         expect(source).toContain('requiredDictionaryCatalogBytes');
         expect(source).toContain('catalogEnglishPathBytes');
         expect(source).toContain('runtimeHeapMeasured: false');
+        expect(source).toContain('storeSigning: discloseStoreSigning()');
         expect(source).toContain('await buildMeasuredEnglishExport()');
         expect(source).not.toContain('storageFootprintBytes');
         expect(source).not.toContain('cacheStorageStoredBytes');

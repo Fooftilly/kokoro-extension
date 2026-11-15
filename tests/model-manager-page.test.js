@@ -1150,6 +1150,11 @@ describe('ONNX model manager English synthesis diagnostics', () => {
                 storageFootprintSource: 'cache-presence-catalog',
                 cachePresenceProbed: true,
                 runtimeHeapMeasured: false,
+                storeSigning: {
+                    storePackagesSigned: false,
+                    storeSigningMeasured: false,
+                    disclosureNeedle: 'store distribution signing not measured',
+                },
                 sampleText: 'Hello world.',
             }));
         expect(globalThis.__kokoroLastMeasuredExport.measurements.map(r => r.key)
@@ -1201,6 +1206,11 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(payload.storageFootprintSource).toBe('catalog');
         expect(payload.cachePresenceProbed).toBe(false);
         expect(payload.runtimeHeapMeasured).toBe(false);
+        expect(payload.storeSigning).toEqual({
+            storePackagesSigned: false,
+            storeSigningMeasured: false,
+            disclosureNeedle: 'store distribution signing not measured',
+        });
         expect(payload.measurements).toHaveLength(2);
         for (const row of payload.measurements) {
             expect(row.catalogModelAssetBytes).toBeGreaterThan(0);

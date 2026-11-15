@@ -1416,6 +1416,45 @@ def assert_gpu_execution_disclosure(preflight, browser="Firefox"):
     return json.loads(probe.stdout.strip())
 
 
+def assert_store_signing_disclosure_from_payload(payload, browser="Firefox"):
+    """#61 / KE-46: assert nested storeSigning from a real measured export payload.
+
+    Payload is passed on stdin (not interpolated into ``node -e``) so file-sourced
+    export JSON cannot become a command-argument injection sink (Sonar S6350).
+    """
+    scripts_dir = Path(__file__).resolve().parent
+    env = os.environ.copy()
+    env["KOKORO_STORE_SIGNING_BROWSER"] = str(browser or "Firefox")
+    probe = subprocess.run(
+        [
+            "node", "--input-type=module", "-e",
+            "import { readFileSync } from 'node:fs';"
+            "import { assertStoreSigningDisclosure, "
+            "buildStoreSigningDisclosureReport } from "
+            "'./store-signing-disclosure-acceptance.mjs';"
+            "const payload = JSON.parse(readFileSync(0, 'utf8'));"
+            "const asserted = assertStoreSigningDisclosure(payload);"
+            "const report = buildStoreSigningDisclosureReport({"
+            "browser: process.env.KOKORO_STORE_SIGNING_BROWSER || 'Firefox',"
+            "assertedFromExport: true,"
+            "success: asserted.success === true,"
+            "});"
+            "console.log(JSON.stringify(report));",
+        ],
+        cwd=str(scripts_dir),
+        input=json.dumps(payload),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        raise RuntimeError(
+            "Store signing disclosure assert failed: " +
+            (probe.stderr or probe.stdout or "unknown error"))
+    return json.loads(probe.stdout.strip())
+
+
 def accept_popup_test_tts_cta(driver, origin):
     """#61: popup Test TTS backends CTA opens benchmark.html with three cards."""
     from firefox_popup_test_tts_cta_acceptance import (
@@ -1688,6 +1727,10 @@ def accept_measured_results_export(driver, sample_text="Hello world.", keys=None
         "keys": keys,
         "sampleText": sample_text,
     })
+    # #61 / KE-46: assert store signing against the real export payload only.
+    store_signing = assert_store_signing_disclosure_from_payload(
+        payload, browser="Firefox")
+    assert_store_signing_disclosure_from_payload(from_file, browser="Firefox")
     # Prove the click path stayed offline (no FastAPI / model fetch).
     if driver.execute_script("return navigator.onLine!==false;"):
         raise RuntimeError("Firefox measured export left the page online")
@@ -1700,6 +1743,7 @@ def accept_measured_results_export(driver, sample_text="Hello world.", keys=None
         fileContentsVerified=True,
     )
     assert_measured_results_export_report(report)
+    report["storeSigningDisclosureAcceptance"] = store_signing
     return report
 
 
@@ -4018,6 +4062,19 @@ def main():
                 result["stage"] = "offline-two-provider-same-page-benchmark"
                 comparison = accept_two_backend_comparison(driver, state["origin"])
                 result["dualComparisonAcceptance"] = comparison
+                # #61 / KE-46: store signing must come from verified measured export.
+                result["stage"] = "store-signing-disclosure"
+                store_signing_disclosure = (
+                    (comparison or {}).get("measuredResultsExport") or {}
+                ).get("storeSigningDisclosureAcceptance")
+                if (not store_signing_disclosure or
+                        store_signing_disclosure.get("assertedFromExport") is not True or
+                        store_signing_disclosure.get("success") is not True):
+                    raise RuntimeError(
+                        "Store signing disclosure missing verified export evidence: " +
+                        repr(store_signing_disclosure))
+                result["storeSigningDisclosureAcceptance"] = (
+                    store_signing_disclosure)
                 # Local dual leaves server untested; FastAPI card needs online.
                 result["stage"] = "fastapi-server-card"
                 _set_firefox_network_offline(driver, False)
@@ -4042,6 +4099,7 @@ def main():
                     "dictionaryReloadAcceptance": dictionary_reload_acceptance,
                     "dictionaryUiDownloadAcceptance": dictionary_ui_acceptance,
                     "gpuExecutionDisclosureAcceptance": gpu_execution_disclosure,
+                    "storeSigningDisclosureAcceptance": store_signing_disclosure,
                     "popupTestTtsCtaAcceptance": popup_cta,
                     "dualComparisonAcceptance": comparison,
                     "fastapiServerCardAcceptance": fastapi_card,
