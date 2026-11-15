@@ -52,7 +52,8 @@ export async function waitServerAudioPlaybackStart(audio, options = {}) {
                 }, timeoutMs);
             }
             const playResult = audio.play();
-            if (playResult && typeof playResult.then === 'function') {
+            // Avoid Promise-in-boolean (Sonar S7735); thenable check is enough.
+            if (typeof playResult?.then === 'function') {
                 playResult.catch(error => {
                     finish(reject, error instanceof Error ? error
                         : new Error(String(error?.message || error)));
