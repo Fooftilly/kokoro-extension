@@ -45,7 +45,7 @@ export function disclosureHasProgressiveTtfaMeasuredNeedle(text) {
     return needle.includes('progressive') &&
         needle.includes('mediasource') &&
         needle.includes('ttfa') &&
-        needle.includes('measured') &&
+        /\bmeasured\b/.test(needle) &&
         !needle.includes('not measured');
 }
 
@@ -154,6 +154,11 @@ export function assertProgressiveStreamingTtfaMeasured(report) {
             throw Error(
                 'unavailable progressive MediaSource path must not claim measured');
         }
+        if (block.trueMediaSourceTtfaMeasured === true) {
+            throw Error(
+                'unavailable progressive MediaSource path must not claim ' +
+                'trueMediaSourceTtfaMeasured');
+        }
         if (Number.isFinite(block.progressiveStreamingTtfaP50Ms)) {
             throw Error(
                 'unavailable progressive MediaSource path must not invent TTFA ms: ' +
@@ -242,6 +247,7 @@ export function buildProgressiveStreamingTtfaMeasuredReport(options = {}) {
             success: options.success !== false,
             browser: options.browser || 'unknown',
             progressiveStreamingTtfaMeasured: false,
+            trueMediaSourceTtfaMeasured: false,
             progressiveStreamingTtfaUnavailable: true,
             progressiveStreamingTtfaP50Ms: null,
             usedMediaSource: options.usedMediaSource === true,
@@ -252,6 +258,14 @@ export function buildProgressiveStreamingTtfaMeasuredReport(options = {}) {
     }
     const ttfaP50Ms = options.progressiveStreamingTtfaP50Ms ??
         options.ttfaP50Ms;
+    if (!(Number.isFinite(ttfaP50Ms) && ttfaP50Ms >= 0)) {
+        throw Error(
+            'buildProgressiveStreamingTtfaMeasuredReport requires finite p50 ms');
+    }
+    if (options.usedMediaSource === false) {
+        throw Error(
+            'buildProgressiveStreamingTtfaMeasuredReport requires usedMediaSource');
+    }
     return {
         success: options.success !== false,
         browser: options.browser || 'unknown',
@@ -259,7 +273,7 @@ export function buildProgressiveStreamingTtfaMeasuredReport(options = {}) {
         trueMediaSourceTtfaMeasured: true,
         progressiveStreamingTtfaUnavailable: false,
         progressiveStreamingTtfaP50Ms: ttfaP50Ms,
-        usedMediaSource: options.usedMediaSource !== false,
+        usedMediaSource: true,
         disclosureNeedle: options.disclosureNeedle ||
             PROGRESSIVE_MEDIASOURCE_TTFA_MEASURED_NEEDLE,
         assertedFromServerCard: options.assertedFromServerCard !== false,

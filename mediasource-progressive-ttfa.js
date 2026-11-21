@@ -6,6 +6,7 @@
  *
  * Concurrent deadline: playback, stream failure, and timeout settle the
  * measurement — never wait forever for EOF after playing/timeout/error.
+ * Measured only when `playing` fires before stream EOF (post-EOF = unavailable).
  */
 
 export const DEFAULT_PROGRESSIVE_TTFA_TIMEOUT_MS = 15000;
@@ -52,6 +53,7 @@ export function progressiveTtfaUnavailable(partial = {}) {
         ttfaMs: null,
         mimeType: partial.mimeType ?? null,
         reason: String(partial.reason || 'Progressive MediaSource TTFA unavailable'),
+        playedBeforeEof: partial.playedBeforeEof === true,
     };
 }
 
@@ -63,24 +65,35 @@ function measuredResult(ttfaMs, mimeType) {
         ttfaMs,
         mimeType,
         reason: null,
+        playedBeforeEof: true,
     };
 }
 
-/** Best-effort cancel of an unused fetch body (unsupported / early exit). */
+/** Swallow rejected cancel() promises (locked-body TypeError must not escape). */
+function swallowCancel(result) {
+    if (result && typeof result.then === 'function') {
+        void result.catch(() => {});
+    }
+}
+
+/**
+ * Cancel an unlocked fetch body (before a reader is acquired).
+ * Never call this while a reader still owns the lock.
+ */
 export function cancelReadableStreamBody(body) {
-    if (!body) return;
+    if (!body || typeof body.cancel !== 'function') return;
     try {
-        if (typeof body.cancel === 'function') {
-            void body.cancel();
-            return;
-        }
+        swallowCancel(body.cancel());
+    } catch { /* ignore */ }
+}
+
+function releaseReader(reader) {
+    if (!reader) return;
+    try {
+        swallowCancel(reader.cancel());
     } catch { /* ignore */ }
     try {
-        const reader = typeof body.getReader === 'function'
-            ? body.getReader() : null;
-        if (reader && typeof reader.cancel === 'function') {
-            void reader.cancel();
-        }
+        if (typeof reader.releaseLock === 'function') reader.releaseLock();
     } catch { /* ignore */ }
 }
 
@@ -163,7 +176,7 @@ function createAppendQueue(mediaSource, sourceBuffer, state) {
 
 /**
  * Wait for muted progressive `playing`. Returns promise + detach so callers
- * can clear listeners/timeouts on every early unavailable path (PR Lens).
+ * can clear listeners on every early unavailable path.
  * @returns {{ promise: Promise<number>, detach: () => void }}
  */
 function waitPlayingTtfa(audio, startedAt, signal) {
@@ -201,7 +214,6 @@ function waitPlayingTtfa(audio, startedAt, signal) {
             cleanupListeners();
             if (settled) return;
             settled = true;
-            // Detach without rejecting — caller already settled via finish().
         };
         audio.addEventListener('playing', onPlaying, { once: true });
         audio.addEventListener('error', onError, { once: true });
@@ -217,20 +229,26 @@ function waitPlayingTtfa(audio, startedAt, signal) {
             });
         }
     });
-    // No-op catch so early finish()/detach cannot leave an unhandled rejection
-    // if the caller abandons the promise after cleanup.
     promise.catch(() => {});
     return { promise, detach: () => detach() };
 }
 
+/**
+ * Pump body → SourceBuffer. Releases reader lock in finally (cancel only if
+ * not normal EOF). Settlement is independent of cancel completion.
+ */
 async function pumpBodyToSourceBuffer(body, queueAppend, state) {
     const reader = body.getReader();
     state.reader = reader;
     let firstChunkAppended = false;
+    let reachedEof = false;
     try {
         while (!state.aborted) {
             const { done, value } = await reader.read();
-            if (done) break;
+            if (done) {
+                reachedEof = true;
+                break;
+            }
             if (state.aborted) break;
             if (!value || value.byteLength === 0) continue;
             const copy = value instanceof Uint8Array
@@ -240,10 +258,16 @@ async function pumpBodyToSourceBuffer(body, queueAppend, state) {
             firstChunkAppended = true;
         }
     } finally {
+        // Release lock always. Cancel only when aborted/incomplete — not after
+        // normal EOF (cancelling a locked body from cleanup would race).
         try {
-            if (!state.aborted) await reader.cancel();
+            if (!reachedEof) swallowCancel(reader.cancel());
+        } catch { /* ignore */ }
+        try {
+            if (typeof reader.releaseLock === 'function') reader.releaseLock();
         } catch { /* ignore */ }
         state.reader = null;
+        state.reachedEof = reachedEof;
     }
     return firstChunkAppended;
 }
@@ -252,8 +276,8 @@ async function pumpBodyToSourceBuffer(body, queueAppend, state) {
  * Measure progressive MediaSource TTFA from an already-open fetch Response
  * body stream. Caller owns request start time via `startedAt`.
  *
- * Settles on first of: playing (measured), timeout/error/abort (unavailable).
- * Never blocks forever waiting for EOF after settle.
+ * Settles on first of: playing-before-EOF (measured), timeout/error/abort /
+ * playing-after-EOF (unavailable). Never blocks forever waiting for EOF.
  *
  * @param {object} options
  * @param {ReadableStream} options.body
@@ -261,14 +285,6 @@ async function pumpBodyToSourceBuffer(body, queueAppend, state) {
  * @param {string} [options.contentType]
  * @param {number} [options.timeoutMs]
  * @param {AbortSignal} [options.signal]
- * @returns {Promise<{
- *   measured: boolean,
- *   unavailable: boolean,
- *   usedMediaSource: boolean,
- *   ttfaMs: number|null,
- *   mimeType: string|null,
- *   reason: string|null
- * }>}
  */
 export async function measureProgressiveMediaSourceTtfa(options = {}) {
     const probe = probeMediaSourceProgressiveMp3Support();
@@ -303,8 +319,10 @@ export async function measureProgressiveMediaSourceTtfa(options = {}) {
         endOfStreamCalled: false,
         aborted: false,
         reader: null,
+        reachedEof: false,
         detachPlaying: null,
         deadlineTimer: null,
+        readerAcquired: false,
     };
     const abortController = new AbortController();
     const onOuterAbort = () => abortController.abort();
@@ -323,23 +341,26 @@ export async function measureProgressiveMediaSourceTtfa(options = {}) {
         try { state.detachPlaying?.(); } catch { /* ignore */ }
         state.detachPlaying = null;
         try { abortController.abort(); } catch { /* ignore */ }
-        try { state.reader?.cancel(); } catch { /* ignore */ }
+        // Cancel via reader once acquired — never body.cancel while locked.
+        const reader = state.reader;
         state.reader = null;
+        if (reader) {
+            releaseReader(reader);
+        } else if (!state.readerAcquired) {
+            cancelReadableStreamBody(body);
+        }
         try { audio.pause(); } catch { /* ignore */ }
         try {
             if (audio.src) audio.removeAttribute('src');
             audio.load();
         } catch { /* ignore */ }
         try { URL.revokeObjectURL(objectUrl); } catch { /* ignore */ }
-        cancelReadableStreamBody(body);
         options.signal?.removeEventListener?.('abort', onOuterAbort);
     };
 
     let settled = false;
     let settleResolve;
     const settledPromise = new Promise((resolve) => { settleResolve = resolve; });
-    // finish() always clears deadline + playing listeners before return
-    // (PR Lens: no pending playingPromise timeout/listeners on unavailable).
     const finish = (result) => {
         if (settled) return;
         settled = true;
@@ -378,7 +399,6 @@ export async function measureProgressiveMediaSourceTtfa(options = {}) {
         const { queueAppend, maybeEndOfStream, getAppendChain } =
             createAppendQueue(mediaSource, sourceBuffer, state);
 
-        // Observe playing concurrently with the stream pump.
         const playing = waitPlayingTtfa(audio, startedAt, signal);
         state.detachPlaying = playing.detach;
         playing.promise.then((ttfaMs) => {
@@ -387,6 +407,17 @@ export async function measureProgressiveMediaSourceTtfa(options = {}) {
                     usedMediaSource: true,
                     mimeType,
                     reason: 'Progressive MediaSource TTFA was not a finite ms value',
+                }));
+                return;
+            }
+            // Progressive TTFA requires playing before stream EOF.
+            if (state.streamDone) {
+                finish(progressiveTtfaUnavailable({
+                    usedMediaSource: true,
+                    mimeType,
+                    reason: 'Playback started after stream EOF ' +
+                        '(post-download, not progressive MediaSource TTFA)',
+                    playedBeforeEof: false,
                 }));
                 return;
             }
@@ -400,11 +431,9 @@ export async function measureProgressiveMediaSourceTtfa(options = {}) {
             }));
         });
 
-        // Pump stream; EOS before playing lets short clips still start.
-        // Early reader/queueAppend throws finish() via catch — detachPlaying
-        // + deadline cleared inside finish/cleanup (no unhandled rejection).
         void (async () => {
             try {
+                state.readerAcquired = true;
                 const firstChunkAppended = await pumpBodyToSourceBuffer(
                     body, queueAppend, state);
                 if (settled || state.aborted) return;
@@ -419,7 +448,6 @@ export async function measureProgressiveMediaSourceTtfa(options = {}) {
                         reason: 'Stream completed without MediaSource appendable bytes',
                     }));
                 }
-                // Else: wait for playing / deadline (already racing).
             } catch (error) {
                 if (settled) return;
                 finish(progressiveTtfaUnavailable({

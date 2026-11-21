@@ -1231,10 +1231,12 @@ async function acceptFastApiServerCard(page, apiUrl) {
             status?.dataset?.mediasourceProgressiveTtfaMeasured === 'true';
         const unavailable =
             status?.dataset?.mediasourceProgressiveTtfaUnavailable === 'true';
+        const p50Raw = status?.dataset?.mediasourceProgressiveTtfaP50Ms;
+        const p50Trimmed = p50Raw == null ? '' : String(p50Raw).trim();
+        // Reject blank/whitespace before Number() so '' never becomes 0.
+        const p50Ok = p50Trimmed !== '' && Number.isFinite(Number(p50Trimmed));
         const progressiveOk = measured
-            ? (text.includes(needles.mediasourceMeasured) &&
-                Number.isFinite(Number(
-                    status?.dataset?.mediasourceProgressiveTtfaP50Ms)))
+            ? (text.includes(needles.mediasourceMeasured) && p50Ok)
             : (unavailable &&
                 (text.includes(needles.mediasourceUnavailable) ||
                     text.includes(needles.mediasourceNotMeasured)) &&

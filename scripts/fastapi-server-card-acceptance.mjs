@@ -124,6 +124,72 @@ export function parseObservedProgressiveTtfaP50Ms(p50Raw, p50Ms) {
     return p50Ms;
 }
 
+function progressiveDisclosureLooksMeasured(disclosure) {
+    const needle = disclosure.toLowerCase();
+    return needle.includes('progressive') &&
+        needle.includes('mediasource') &&
+        needle.includes('ttfa') &&
+        /\bmeasured\b/.test(needle) &&
+        !needle.includes('not measured');
+}
+
+function progressiveDisclosureLooksHonesty(disclosure, unavailable) {
+    const needle = disclosure.toLowerCase();
+    if (unavailable) {
+        return needle.includes('unavailable') ||
+            disclosure === SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE;
+    }
+    return disclosure === SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE ||
+        needle.includes('unavailable');
+}
+
+function assertMeasuredProgressiveTtfa(report, disclosure, p50Ms) {
+    if (report.mediasourceProgressiveTtfaUnavailable === true) {
+        throw new Error(
+            'measured progressive MediaSource TTFA must not also claim unavailable');
+    }
+    if (report.mediasourceProgressiveTtfaNotMeasured === true) {
+        throw new Error(
+            'mediasourceProgressiveTtfaNotMeasured must be false when measured');
+    }
+    if (report.mediasourceProgressiveTtfaP50Raw != null &&
+        String(report.mediasourceProgressiveTtfaP50Raw).trim() === '') {
+        throw new Error(
+            'empty mediasourceProgressiveTtfaP50Raw must not become 0');
+    }
+    if (!(Number.isFinite(p50Ms) && p50Ms >= 0)) {
+        throw new Error(
+            'mediasourceProgressiveTtfaP50Ms must be finite ms when measured: ' +
+            p50Ms);
+    }
+    if (report.usedMediaSource !== true) {
+        throw new Error('usedMediaSource must be true when MSE TTFA measured');
+    }
+    if (!progressiveDisclosureLooksMeasured(disclosure)) {
+        throw new Error(
+            'mediasourceProgressiveTtfaDisclosure must be measured needle: ' +
+            disclosure);
+    }
+}
+
+function assertUnmeasuredProgressiveTtfa(report, disclosure, p50Ms, unavailable) {
+    requireTrue(report, 'mediasourceProgressiveTtfaNotMeasured',
+        'mediasourceProgressiveTtfaNotMeasured must be true when unmeasured');
+    // Do not discard leftover p50Raw on unavailable — invent check must see it.
+    const raw = report.mediasourceProgressiveTtfaP50Raw;
+    if ((raw != null && String(raw).trim() !== '') || Number.isFinite(p50Ms)) {
+        throw new Error(
+            'unmeasured/unavailable MediaSource TTFA must not invent p50 ms: ' +
+            (Number.isFinite(p50Ms) ? p50Ms : raw));
+    }
+    if (!progressiveDisclosureLooksHonesty(disclosure, unavailable)) {
+        throw new Error(
+            'mediasourceProgressiveTtfaDisclosure must be honesty/unavailable: ' +
+            disclosure);
+    }
+}
+
+/** Nested helpers keep CodeFactor method complexity under the gate. */
 function assertFastApiMediaSourceProgressiveTtfa(report) {
     const measured = report.mediasourceProgressiveTtfaMeasured;
     const unavailable = report.mediasourceProgressiveTtfaUnavailable === true;
@@ -133,32 +199,7 @@ function assertFastApiMediaSourceProgressiveTtfa(report) {
         report.mediasourceProgressiveTtfaP50Raw,
         report.mediasourceProgressiveTtfaP50Ms);
     if (measured === true) {
-        if (report.mediasourceProgressiveTtfaNotMeasured === true) {
-            throw new Error(
-                'mediasourceProgressiveTtfaNotMeasured must be false when measured');
-        }
-        if (report.mediasourceProgressiveTtfaP50Raw != null &&
-            String(report.mediasourceProgressiveTtfaP50Raw).trim() === '') {
-            throw new Error(
-                'empty mediasourceProgressiveTtfaP50Raw must not become 0');
-        }
-        if (!(Number.isFinite(p50Ms) && p50Ms >= 0)) {
-            throw new Error(
-                'mediasourceProgressiveTtfaP50Ms must be finite ms when measured: ' +
-                p50Ms);
-        }
-        if (report.usedMediaSource !== true) {
-            throw new Error('usedMediaSource must be true when MSE TTFA measured');
-        }
-        if (!disclosure.toLowerCase().includes('progressive') ||
-            !disclosure.toLowerCase().includes('mediasource') ||
-            !disclosure.toLowerCase().includes('ttfa') ||
-            !disclosure.toLowerCase().includes('measured') ||
-            disclosure.toLowerCase().includes('not measured')) {
-            throw new Error(
-                'mediasourceProgressiveTtfaDisclosure must be measured needle: ' +
-                disclosure);
-        }
+        assertMeasuredProgressiveTtfa(report, disclosure, p50Ms);
         return;
     }
     if (measured !== false) {
@@ -166,24 +207,7 @@ function assertFastApiMediaSourceProgressiveTtfa(report) {
             'mediasourceProgressiveTtfaMeasured must be true or false: ' +
             measured);
     }
-    requireTrue(report, 'mediasourceProgressiveTtfaNotMeasured',
-        'mediasourceProgressiveTtfaNotMeasured must be true when unmeasured');
-    // Do not discard leftover p50Raw on unavailable — invent check must see it.
-    if (Number.isFinite(p50Ms)) {
-        throw new Error(
-            'unmeasured/unavailable MediaSource TTFA must not invent p50 ms: ' +
-            p50Ms);
-    }
-    const disclosureOk = unavailable
-        ? (disclosure.toLowerCase().includes('unavailable') ||
-            disclosure === SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE)
-        : disclosure === SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE ||
-            disclosure.toLowerCase().includes('unavailable');
-    if (!disclosureOk) {
-        throw new Error(
-            'mediasourceProgressiveTtfaDisclosure must be honesty/unavailable: ' +
-            disclosure);
-    }
+    assertUnmeasuredProgressiveTtfa(report, disclosure, p50Ms, unavailable);
 }
 
 function assertFastApiCardChoose(report) {

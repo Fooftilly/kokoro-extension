@@ -1326,11 +1326,14 @@ function applyProgressiveMediaSourceTtfaStatus(
         '; MediaSource progressive TTFA not measured; ';
 }
 
-async function collectFastApiWarmRuns(endpoint, input, voice, audio) {
+async function collectFastApiWarmRuns(
+    endpoint, input, voice, audio, options = {}) {
     const runs = [];
     const progressiveSamples = [];
-    let progressiveUnavailableReason = null;
-    let progressiveUsedMediaSource = false;
+    let progressiveUnavailableReason = options.progressiveUnavailableReason ||
+        null;
+    let progressiveUsedMediaSource = options.progressiveUsedMediaSource === true;
+    const measureProgressive = options.measureProgressive !== false;
     for (let n = 0; n < 3; n++) {
         const clip = await fetchFastApiPlayableClip(
             endpoint, input, voice, audio);
@@ -1343,6 +1346,7 @@ async function collectFastApiWarmRuns(endpoint, input, voice, audio) {
             playbackStartMs: clip.playbackStartMs,
             audioDurationSec: clip.audioDurationSec,
         });
+        if (!measureProgressive) continue;
         const progressive = await measureFastApiProgressiveMediaSourceTtfa(
             endpoint, input, voice);
         if (progressive.usedMediaSource) progressiveUsedMediaSource = true;
@@ -1386,11 +1390,20 @@ async function testFastApi() {
         await fetchFastApiPlayableClip(
             endpoint.href, input, settings.voice, audio);
         // Untimed progressive MSE warm-up (separate stream) so cold MSE init
-        // is not blended into measured progressive TTFA samples.
-        await measureFastApiProgressiveMediaSourceTtfa(
+        // is not blended into measured progressive TTFA samples. Timed samples
+        // require warm-up to reach playing before EOF — otherwise skip POSTs.
+        const progressiveWarm = await measureFastApiProgressiveMediaSourceTtfa(
             endpoint.href, input, settings.voice);
         const warm = await collectFastApiWarmRuns(
-            endpoint.href, input, settings.voice, audio);
+            endpoint.href, input, settings.voice, audio, {
+                measureProgressive: progressiveWarm.measured === true,
+                progressiveUnavailableReason: progressiveWarm.measured
+                    ? null
+                    : (progressiveWarm.reason ||
+                        'progressive MediaSource warm-up did not reach playing'),
+                progressiveUsedMediaSource:
+                    progressiveWarm.usedMediaSource === true,
+            });
         const metrics = window.KokoroBenchmark.summarizeRuns(warm.runs);
         const playbackStartP50Ms = window.KokoroBenchmark.nearestRank(
             warm.runs.map(r => r.playbackStartMs), 50);
