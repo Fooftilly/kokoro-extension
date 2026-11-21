@@ -2,7 +2,7 @@
 /**
  * Contract checks for long-form memory acceptance — keep this file's shape
  * distinct from article-selection-acceptance.test.js (Sonar new-code duplication).
- * KE-52 / #57: deeper 36-sentence walk + quality/MOS not-measured honesty.
+ * KE-52 walk + leave-open objective waveform quality measured; MOS unmeasured.
  */
 const { spawnSync } = require('child_process');
 const fs = require('fs');
@@ -26,6 +26,14 @@ const sampleStats = {
     sentenceCount: longForm.LONG_FORM_SENTENCE_COUNT,
     window: { first: 0, last: 4 },
 };
+const qualitySamples = [
+    longForm.buildLongFormQualitySampleFixture({ index: 0, rms: 0.03 }),
+    longForm.buildLongFormQualitySampleFixture({ index: 6, rms: 0.04 }),
+    longForm.buildLongFormQualitySampleFixture({ index: 12, rms: 0.05 }),
+    longForm.buildLongFormQualitySampleFixture({
+        index: 35, rms: 0.045, durationSec: 1.2,
+    }),
+];
 const capture = (fn) => {
     try { fn(); return { ok: true }; }
     catch (error) { return { ok: false, message: String(error.message || error) }; }
@@ -35,41 +43,55 @@ const finalized = longForm.finalizeLongFormMemoryAcceptanceReport({
     browser: 'chromium',
     backend: 'onnx',
     maxCacheSize: 4,
+    samples: qualitySamples,
 });
-const qualityClaimFail = capture(() => longForm.assertLongFormMemoryAcceptanceReport({
+const qualityOffFail = capture(() => longForm.assertLongFormMemoryAcceptanceReport({
     success: true,
     sentenceCount: longForm.LONG_FORM_SENTENCE_COUNT,
-    longFormQualityMeasured: true,
+    longFormQualityMeasured: false,
     longFormMosMeasured: false,
-    longFormQualityDisclosure: longForm.LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
+    longFormQualityDisclosure: longForm.LONG_FORM_QUALITY_MEASURED_NEEDLE,
+    samples: qualitySamples,
 }));
 const mosClaimFail = capture(() => longForm.assertLongFormMemoryAcceptanceReport({
     success: true,
     sentenceCount: longForm.LONG_FORM_SENTENCE_COUNT,
-    longFormQualityMeasured: false,
+    longFormQualityMeasured: true,
     longFormMosMeasured: true,
-    longFormQualityDisclosure: longForm.LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
+    longFormQualityDisclosure: longForm.LONG_FORM_QUALITY_MEASURED_NEEDLE,
+    samples: qualitySamples,
 }));
+const silentFail = capture(() => longForm.assertLongFormWaveformQuality([
+    ...qualitySamples.slice(0, 3),
+    longForm.buildLongFormQualitySampleFixture({ index: 99, rms: 0.00001 }),
+]));
 const shortCountFail = capture(() => longForm.assertLongFormMemoryAcceptanceReport({
     success: true,
     sentenceCount: 24,
-    longFormQualityMeasured: false,
+    longFormQualityMeasured: true,
     longFormMosMeasured: false,
-    longFormQualityDisclosure: longForm.LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
+    longFormQualityDisclosure: longForm.LONG_FORM_QUALITY_MEASURED_NEEDLE,
+    samples: qualitySamples,
 }));
-// Devin P2: finalizer must reject claimed measured:true (not overwrite first).
-const finalizeQualityClaimFail = capture(() =>
-    longForm.finalizeLongFormMemoryAcceptanceReport({
-        success: true,
-        sentenceCount: longForm.LONG_FORM_SENTENCE_COUNT,
-        longFormQualityMeasured: true,
-    }));
 const finalizeMosClaimFail = capture(() =>
     longForm.finalizeLongFormMemoryAcceptanceReport({
         success: true,
         sentenceCount: longForm.LONG_FORM_SENTENCE_COUNT,
         longFormMosMeasured: true,
+        samples: qualitySamples,
     }));
+const finalizeNoSamplesFail = capture(() =>
+    longForm.finalizeLongFormMemoryAcceptanceReport({
+        success: true,
+        sentenceCount: longForm.LONG_FORM_SENTENCE_COUNT,
+    }));
+const sampleGate = {
+    first: longForm.shouldSampleLongFormWaveform(0, visits),
+    mid: longForm.shouldSampleLongFormWaveform(6, visits),
+    skip: longForm.shouldSampleLongFormWaveform(7, visits),
+    lastVisit: longForm.shouldSampleLongFormWaveform(
+        visits[visits.length - 1], visits),
+};
 console.log(JSON.stringify({
     sentenceCount: longForm.LONG_FORM_SENTENCE_COUNT,
     numberWordLen: longForm.LONG_FORM_NUMBER_WORDS.length,
@@ -118,20 +140,23 @@ console.log(JSON.stringify({
         cache: longForm.LONG_FORM_MAX_CACHE_ENTRIES,
         urls: longForm.LONG_FORM_MAX_OBJECT_URLS,
     },
-    needle: longForm.LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
+    measuredNeedle: longForm.LONG_FORM_QUALITY_MEASURED_NEEDLE,
+    legacyNeedle: longForm.LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
+    sampleGate,
     finalized,
-    qualityClaimFail,
+    qualityOffFail,
     mosClaimFail,
+    silentFail,
     shortCountFail,
-    finalizeQualityClaimFail,
     finalizeMosClaimFail,
+    finalizeNoSamplesFail,
 }));
 `], { encoding: 'utf8', cwd: root });
     return child;
 }
 
 describe('long-form memory acceptance', () => {
-    test('helper snapshot covers document, probe storage, bounds, and gates', () => {
+    test('helper snapshot covers document, probe storage, bounds, and quality', () => {
         const child = loadHelperSnapshot();
         expect(child.status).toBe(0);
         expect(child.stderr || '').toBe('');
@@ -175,22 +200,31 @@ describe('long-form memory acceptance', () => {
         expect(snap.mediapipeAccept).toEqual({ ok: true });
         expect(snap.backends).toEqual(['mediapipe', 'onnx']);
         expect(snap.bounds).toEqual({ cache: 8, urls: 8 });
-        expect(snap.needle).toBe(
+        expect(snap.measuredNeedle).toBe(
+            'long-form objective waveform quality measured; MOS not measured');
+        expect(snap.legacyNeedle).toBe(
             'deeper long-form quality/performance not measured');
-        expect(snap.finalized.longFormQualityMeasured).toBe(false);
+        expect(snap.sampleGate).toEqual({
+            first: true, mid: true, skip: false, lastVisit: true,
+        });
+        expect(snap.finalized.longFormQualityMeasured).toBe(true);
         expect(snap.finalized.longFormMosMeasured).toBe(false);
-        expect(snap.finalized.longFormQualityDisclosure).toBe(snap.needle);
+        expect(snap.finalized.longFormQualityDisclosure).toBe(snap.measuredNeedle);
         expect(snap.finalized.sentenceCount).toBe(36);
-        expect(snap.qualityClaimFail.ok).toBe(false);
-        expect(snap.qualityClaimFail.message).toMatch(/quality must not/);
+        expect(snap.finalized.qualitySampleCount).toBe(4);
+        expect(snap.finalized.minRms).toBeGreaterThan(0.0001);
+        expect(snap.qualityOffFail.ok).toBe(false);
+        expect(snap.qualityOffFail.message).toMatch(/must be reported as measured/);
         expect(snap.mosClaimFail.ok).toBe(false);
         expect(snap.mosClaimFail.message).toMatch(/MOS must not/);
+        expect(snap.silentFail.ok).toBe(false);
+        expect(snap.silentFail.message).toMatch(/silent|RMS/i);
         expect(snap.shortCountFail.ok).toBe(false);
         expect(snap.shortCountFail.message).toMatch(/sentenceCount must be >=/);
-        expect(snap.finalizeQualityClaimFail.ok).toBe(false);
-        expect(snap.finalizeQualityClaimFail.message).toMatch(/quality must not/);
         expect(snap.finalizeMosClaimFail.ok).toBe(false);
         expect(snap.finalizeMosClaimFail.message).toMatch(/MOS must not/);
+        expect(snap.finalizeNoSamplesFail.ok).toBe(false);
+        expect(snap.finalizeNoSamplesFail.message).toMatch(/quality requires/);
     });
 
     test('overlay probe and long-form stage are wired for Chromium origin', () => {
@@ -211,6 +245,8 @@ describe('long-form memory acceptance', () => {
         expect(harness).toContain('({ idx, count })');
         expect(harness).toContain('count: LONG_FORM_SENTENCE_COUNT');
         expect(harness).toContain('finalizeLongFormMemoryAcceptanceReport');
+        expect(harness).toContain('shouldSampleLongFormWaveform');
+        expect(harness).toContain('sampleRateHz, rms, durationSec');
         expect(harness).not.toContain('waitForFunction(longFormOverlayReady');
         expect(harness).not.toContain('jumpLongFormToLastSentence');
         expect(overlay).toContain('pendingAcceptanceProbe');
@@ -222,9 +258,11 @@ describe('long-form memory acceptance', () => {
         const helper = fs.readFileSync(
             path.join(root, 'scripts', 'long-form-memory-acceptance.mjs'), 'utf8');
         expect(helper).toContain('LONG_FORM_SENTENCE_COUNT = 36');
-        expect(helper).toContain('longFormQualityMeasured: false');
+        expect(helper).toContain('longFormQualityMeasured: true');
         expect(helper).toContain('longFormMosMeasured: false');
         expect(helper).toContain(
-            'deeper long-form quality/performance not measured');
+            'long-form objective waveform quality measured; MOS not measured');
+        expect(helper).toContain('assertLongFormWaveformQuality');
+        expect(helper).toContain('shouldSampleLongFormWaveform');
     });
 });

@@ -48,6 +48,7 @@ from firefox_long_form_memory_acceptance import (
     load_long_form_fixture,
     origin_long_form_memory_stage_enabled,
     require_long_form_backend,
+    should_sample_long_form_waveform,
 )
 from firefox_overlay_controls_acceptance import (
     assert_overlay_paused_after_toggle,
@@ -3845,18 +3846,29 @@ def _read_firefox_long_form_wav_meta(driver):
             const wav = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
             const tag = (start, length) =>
                 String.fromCharCode(...bytes.subarray(start, start + length));
+            const sampleRateHz = wav.getUint32(24, true);
             const audioBytes = wav.getUint32(40, true);
             if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
-                wav.getUint32(24, true) !== 24000 || audioBytes < 2 ||
-                bytes.length !== 44 + audioBytes) {
+                sampleRateHz !== 24000 || audioBytes < 2 ||
+                bytes.length !== 44 + audioBytes || audioBytes % 2 !== 0) {
                 throw Error('Long-form overlay WAV mismatch');
             }
+            const sampleCount = audioBytes / 2;
+            let squares = 0;
+            for (let i = 0; i < sampleCount; i++) {
+                const s = wav.getInt16(44 + i * 2, true) / 32768;
+                if (!Number.isFinite(s)) throw Error('Long-form WAV sample not finite');
+                squares += s * s;
+            }
+            const rms = Math.sqrt(squares / sampleCount);
+            const durationSec = sampleCount / sampleRateHz;
             const digest = await crypto.subtle.digest('SHA-256', bytes);
             const audioSha256 = [...new Uint8Array(digest)]
                 .map(b => b.toString(16).padStart(2, '0')).join('');
             done({
                 audioBytes, audioSha256, paused: audio.paused,
                 offline: navigator.onLine === false,
+                sampleRateHz, rms, durationSec,
             });
         })().catch(e => done({ error: String(e) }));
     """)
@@ -3895,7 +3907,7 @@ def _walk_firefox_long_form_sentences(driver, visit_indexes):
         assert_bounded_audio_manager_stats(stats)
         max_cache = max(max_cache, stats["cacheSize"])
         max_urls = max(max_urls, stats["objectUrlCount"])
-        if index in (0, visit_indexes[-1]):
+        if should_sample_long_form_waveform(index, visit_indexes):
             samples.append({
                 "index": index,
                 **_read_firefox_long_form_wav_meta(driver),

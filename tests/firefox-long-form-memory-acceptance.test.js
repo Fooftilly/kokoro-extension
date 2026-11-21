@@ -2,7 +2,7 @@
 /**
  * Contract for Firefox long-form memory acceptance — keep shape distinct from
  * long-form-memory-acceptance.test.js (Chromium helper probe).
- * KE-52 / #57: deeper 36-sentence walk + quality/MOS not-measured honesty.
+ * KE-52 walk + leave-open objective waveform quality measured; MOS unmeasured.
  */
 const { spawnSync } = require('child_process');
 const fs = require('fs');
@@ -22,16 +22,16 @@ from firefox_long_form_memory_acceptance import (
     ALLOWED_LONG_FORM_BACKENDS,
     LONG_FORM_MAX_CACHE_ENTRIES,
     LONG_FORM_MAX_OBJECT_URLS,
-    LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
+    LONG_FORM_QUALITY_MEASURED_NEEDLE,
     LONG_FORM_SENTENCE_COUNT,
     assert_bounded_audio_manager_stats,
     assert_long_form_cache_window_near,
     assert_long_form_heap_delta,
-    assert_long_form_memory_acceptance_report,
     finalize_long_form_memory_acceptance_report,
     load_long_form_fixture,
     origin_long_form_memory_stage_enabled,
     require_long_form_backend,
+    should_sample_long_form_waveform,
 )
 
 def capture(fn):
@@ -47,12 +47,22 @@ sample = {
     'sentenceCount': LONG_FORM_SENTENCE_COUNT,
     'window': {'first': 0, 'last': 4},
 }
+quality_samples = [
+    {
+        'index': i, 'audioBytes': 48000, 'sampleRateHz': 24000,
+        'durationSec': 1.0, 'rms': 0.03 + (i * 0.001),
+        'audioSha256': 'fx-' + str(i),
+    }
+    for i in (0, 6, 12, 35)
+]
 finalized = finalize_long_form_memory_acceptance_report({
     'success': True,
     'browser': 'Firefox',
     'backend': 'onnx',
     'maxCacheSize': 4,
+    'samples': quality_samples,
 })
+visits = fixture['visits']
 print(json.dumps({
     'backends': sorted(ALLOWED_LONG_FORM_BACKENDS),
     'sentenceCount': LONG_FORM_SENTENCE_COUNT,
@@ -66,8 +76,8 @@ print(json.dumps({
     'autoplayOff': fixture['storage'].get('pendingAutoplay') is False,
     'pendingBackend': fixture['storage'].get('pendingTtsBackend'),
     'noSyncTts': 'ttsBackend' not in fixture['storage'],
-    'visits': fixture['visits'],
-    'visitEndsOnLast': (LONG_FORM_SENTENCE_COUNT - 1) in fixture['visits'],
+    'visits': visits,
+    'visitEndsOnLast': (LONG_FORM_SENTENCE_COUNT - 1) in visits,
     'gates': {
         'onnxOrigin': origin_long_form_memory_stage_enabled(True, 'onnx', True),
         'mediapipe': origin_long_form_memory_stage_enabled(True, 'mediapipe', True),
@@ -89,21 +99,29 @@ print(json.dumps({
     'rejectRemote': capture(lambda: require_long_form_backend('remote')),
     'mpFixture': load_long_form_fixture('mediapipe')['storage'].get(
         'pendingTtsBackend'),
+    'sampleGate': {
+        'first': should_sample_long_form_waveform(0, visits),
+        'mid': should_sample_long_form_waveform(6, visits),
+        'skip': should_sample_long_form_waveform(7, visits),
+        'lastVisit': should_sample_long_form_waveform(visits[-1], visits),
+    },
     # Compact honesty gate — shape distinct from Chromium Jest expects so
-    # Sonar new-code duplication stays under the ≤3% gate (KE-52).
+    # Sonar new-code duplication stays under the ≤3% gate.
     'honestyGate': {
         'walk': finalized.get('sentenceCount'),
-        'qualityOff': finalized.get('longFormQualityMeasured') is False,
+        'qualityOn': finalized.get('longFormQualityMeasured') is True,
         'mosOff': finalized.get('longFormMosMeasured') is False,
-        'needleHit': LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE in str(
+        'needleHit': LONG_FORM_QUALITY_MEASURED_NEEDLE in str(
             finalized.get('longFormQualityDisclosure') or ''),
-        'finalizeBlocksQuality': not capture(
-            lambda: finalize_long_form_memory_acceptance_report({
-                'success': True, 'longFormQualityMeasured': True,
-            }))['ok'],
+        'sampleCount': finalized.get('qualitySampleCount'),
         'finalizeBlocksMos': not capture(
             lambda: finalize_long_form_memory_acceptance_report({
                 'success': True, 'longFormMosMeasured': True,
+                'samples': quality_samples,
+            }))['ok'],
+        'finalizeNeedsSamples': not capture(
+            lambda: finalize_long_form_memory_acceptance_report({
+                'success': True,
             }))['ok'],
     },
 }))
@@ -111,7 +129,7 @@ print(json.dumps({
 }
 
 describe('firefox long-form memory acceptance', () => {
-    test('python helper snapshot covers gates, fixture, and bounds', () => {
+    test('python helper snapshot covers gates, fixture, and quality', () => {
         const child = loadFirefoxLongFormSnapshot();
         expect(child.status).toBe(0);
         expect(child.stderr || '').toBe('');
@@ -144,13 +162,17 @@ describe('firefox long-form memory acceptance', () => {
         expect(snap.heapFail.ok).toBe(false);
         expect(snap.acceptMp.ok).toBe(true);
         expect(snap.rejectRemote.ok).toBe(false);
+        expect(snap.sampleGate).toEqual({
+            first: true, mid: true, skip: false, lastVisit: true,
+        });
         expect(snap.honestyGate).toEqual({
             walk: 36,
-            qualityOff: true,
+            qualityOn: true,
             mosOff: true,
             needleHit: true,
-            finalizeBlocksQuality: true,
+            sampleCount: 4,
             finalizeBlocksMos: true,
+            finalizeNeedsSamples: true,
         });
     });
 
@@ -166,6 +188,8 @@ describe('firefox long-form memory acceptance', () => {
         expect(source).toContain('_jump_firefox_long_form_across_windows');
         expect(source).toContain('load_long_form_fixture');
         expect(source).toContain('finalize_long_form_memory_acceptance_report');
+        expect(source).toContain('should_sample_long_form_waveform');
+        expect(source).toContain('sampleRateHz, rms, durationSec');
         expect(source).not.toContain(
             'no subjective audio-quality or long-form acceptance');
         const helper = fs.readFileSync(
@@ -176,8 +200,9 @@ describe('firefox long-form memory acceptance', () => {
         expect(helper).toContain('LONG_FORM_SENTENCE_COUNT = 36');
         expect(helper).toContain('_invoke_long_form_esm');
         expect(helper).toContain('finalizeLongFormMemoryAcceptanceReport');
+        expect(helper).toContain('should_sample_long_form_waveform');
         expect(helper).toContain(
-            'deeper long-form quality/performance not measured');
+            'long-form objective waveform quality measured; MOS not measured');
         const workflowSource = fs.readFileSync(workflow, 'utf8');
         const firefoxJob = workflowSource.split('firefox-model-origin:')[1]
             ?.split(/\n {2}[a-z]/)[0] || '';

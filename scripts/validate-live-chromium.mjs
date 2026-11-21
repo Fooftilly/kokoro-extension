@@ -31,6 +31,7 @@ import {
     longFormStorageConfig,
     originLongFormMemoryStageEnabled,
     requireLongFormBackend,
+    shouldSampleLongFormWaveform,
 } from './long-form-memory-acceptance.mjs';
 import { buildCurrentProviderSnapshot } from './live-chromium-report.mjs';
 import { probeLocalProviderIdleRelease } from './local-provider-idle-probe.mjs';
@@ -2517,18 +2518,29 @@ function readLongFormWavMeta(page) {
         const wav = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
         const tag = (start, length) =>
             String.fromCharCode(...bytes.subarray(start, start + length));
+        const sampleRateHz = wav.getUint32(24, true);
         const audioBytes = wav.getUint32(40, true);
         if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
-            wav.getUint32(24, true) !== 24000 || audioBytes < 2 ||
-            bytes.length !== 44 + audioBytes) {
+            sampleRateHz !== 24000 || audioBytes < 2 ||
+            bytes.length !== 44 + audioBytes || audioBytes % 2 !== 0) {
             throw Error('Long-form overlay WAV mismatch');
         }
+        const sampleCount = audioBytes / 2;
+        let squares = 0;
+        for (let i = 0; i < sampleCount; i++) {
+            const s = wav.getInt16(44 + i * 2, true) / 32768;
+            if (!Number.isFinite(s)) throw Error('Long-form WAV sample not finite');
+            squares += s * s;
+        }
+        const rms = Math.sqrt(squares / sampleCount);
+        const durationSec = sampleCount / sampleRateHz;
         const digest = await crypto.subtle.digest('SHA-256', bytes);
         const audioSha256 = [...new Uint8Array(digest)]
             .map(b => b.toString(16).padStart(2, '0')).join('');
         return {
             audioBytes, audioSha256, paused: audio.paused,
             offline: navigator.onLine === false,
+            sampleRateHz, rms, durationSec,
         };
     });
 }
@@ -2550,7 +2562,7 @@ async function walkLongFormSentences(page, visitIndexes) {
         assertBoundedAudioManagerStats(stats);
         maxCacheSize = Math.max(maxCacheSize, stats.cacheSize);
         maxObjectUrlCount = Math.max(maxObjectUrlCount, stats.objectUrlCount);
-        if (index === 0 || index === visitIndexes[visitIndexes.length - 1]) {
+        if (shouldSampleLongFormWaveform(index, visitIndexes)) {
             samples.push({ index, ...(await readLongFormWavMeta(page)), ...stats });
         }
         // Sparse visit indexes can leave several slow MediaPipe syntheses

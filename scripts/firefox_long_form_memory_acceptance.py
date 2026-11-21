@@ -4,8 +4,9 @@ Speech/storage/visit indexes stay owned by long-form-memory-acceptance.mjs
 (Chromium). Pure bound checks are ported here so Selenium can call them
 without a Node round-trip on every sentence click.
 
-KE-52 / #57: deeper walk (36 sentences) stays memory-bound only —
-subjective quality / MOS are explicitly not measured.
+KE-52 / #57: deeper walk (36 sentences) stays memory-bound.
+Leave-open: objective waveform quality (PCM RMS / duration) measured;
+subjective MOS remains unmeasured.
 """
 import json
 import subprocess
@@ -19,6 +20,8 @@ LONG_FORM_MAX_CACHE_ENTRIES = 8
 LONG_FORM_MAX_OBJECT_URLS = 8
 LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE = (
     "deeper long-form quality/performance not measured")
+LONG_FORM_QUALITY_MEASURED_NEEDLE = (
+    "long-form objective waveform quality measured; MOS not measured")
 ALLOWED_LONG_FORM_BACKENDS = frozenset({"onnx", "mediapipe"})
 
 
@@ -35,6 +38,17 @@ def origin_long_form_memory_stage_enabled(origin_download, provider, success):
         origin_download and
         provider in ALLOWED_LONG_FORM_BACKENDS and
         success)
+
+
+def should_sample_long_form_waveform(index, visit_indexes):
+    """Sparse WAV probes — keep in sync with shouldSampleLongFormWaveform."""
+    if not isinstance(visit_indexes, list) or not visit_indexes:
+        raise ValueError("visitIndexes required for long-form quality sampling")
+    if index == 0:
+        return True
+    if index == visit_indexes[-1]:
+        return True
+    return index > 0 and index % 6 == 0
 
 
 def _invoke_long_form_esm(action, payload):
