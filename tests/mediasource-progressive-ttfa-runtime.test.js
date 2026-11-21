@@ -218,9 +218,10 @@ describe('measureProgressiveMediaSourceTtfa runtime', () => {
             /after stream EOF|post-download/i);
     });
 
-    test('playing after body closes while updateend pending is unavailable', async () => {
+    test('playing during last-chunk append (reader.closed early) stays measured', async () => {
         stub.restore();
-        // Body closes immediately; append stays pending; playing fires mid-append.
+        // Real ReadableStream fulfills reader.closed when the last chunk is
+        // dequeued — before updateend. Playing mid-append must still measure.
         stub = installMediaSourceStub({
             playAfterMs: 15,
             firePlaying: true,
@@ -237,15 +238,42 @@ describe('measureProgressiveMediaSourceTtfa runtime', () => {
         });
         const result = await mse.measureProgressiveMediaSourceTtfa({
             body,
-            startedAt: performance.now(),
+            startedAt: performance.now() - 10,
             timeoutMs: 500,
         });
-        expect(result.measured).toBe(false);
-        expect(result.unavailable).toBe(true);
-        expect(result.ttfaMs).toBeNull();
-        expect(result.playedBeforeEof).toBe(false);
-        expect(String(result.reason || '')).toMatch(
-            /after stream EOF|post-download/i);
+        expect(result.measured).toBe(true);
+        expect(result.unavailable).toBe(false);
+        expect(result.playedBeforeEof).toBe(true);
+        expect(Number.isFinite(result.ttfaMs)).toBe(true);
+    });
+
+    test('multi-chunk close with unread queue: playing mid-append is measured', async () => {
+        stub.restore();
+        stub = installMediaSourceStub({
+            playAfterMs: 20,
+            firePlaying: true,
+            appendDelayMs: 100,
+        });
+        jest.resetModules();
+        mse = await import('../mediasource-progressive-ttfa.js');
+
+        // Producer finishes with chunk2 still unread while chunk1 appends.
+        const body = new ReadableStream({
+            start(controller) {
+                controller.enqueue(new Uint8Array([1, 2, 3]));
+                controller.enqueue(new Uint8Array([4, 5, 6]));
+                controller.close();
+            },
+        });
+        const result = await mse.measureProgressiveMediaSourceTtfa({
+            body,
+            startedAt: performance.now() - 10,
+            timeoutMs: 800,
+        });
+        expect(result.measured).toBe(true);
+        expect(result.unavailable).toBe(false);
+        expect(result.playedBeforeEof).toBe(true);
+        expect(Number.isFinite(result.ttfaMs)).toBe(true);
     });
 
     test('cleanup cancels via reader only — never body.cancel while locked', async () => {

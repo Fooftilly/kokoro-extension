@@ -234,30 +234,22 @@ function waitPlayingTtfa(audio, startedAt, signal) {
 }
 
 /**
- * Mark body closed as soon as the reader observes closure — independent of
- * pending SourceBuffer append / endOfStream. Used for playing-before-EOF.
- */
-function watchReaderBodyClosed(reader, state) {
-    const closed = reader?.closed;
-    if (!closed || typeof closed.then !== 'function') return;
-    closed.then(() => {
-        state.bodyClosed = true;
-    }, () => {
-        // Cancelled / errored — body is no longer open for progressive delivery.
-        state.bodyClosed = true;
-    });
-}
-
-/**
  * Pump body → SourceBuffer. Releases reader lock in finally (cancel only if
  * not normal EOF). Settlement is independent of cancel completion.
+ *
+ * bodyClosed flips only when read() returns done (queue fully drained). Do not
+ * use reader.closed for the playing gate: UA streams fulfill closed when the
+ * last chunk is dequeued — before that chunk's append finishes — which would
+ * mark short one-chunk FastAPI responses as post-download incorrectly.
  */
 async function pumpBodyToSourceBuffer(body, queueAppend, state) {
     const reader = body.getReader();
     state.reader = reader;
     state.readerAcquired = true;
-    // Body closure ≠ append completion: observe closed immediately.
-    watchReaderBodyClosed(reader, state);
+    // Swallow closed rejection on cancel so it cannot escape as unhandled.
+    if (reader?.closed && typeof reader.closed.then === 'function') {
+        reader.closed.then(() => {}, () => {});
+    }
     let firstChunkAppended = false;
     let reachedEof = false;
     try {
@@ -265,6 +257,8 @@ async function pumpBodyToSourceBuffer(body, queueAppend, state) {
             const { done, value } = await reader.read();
             if (done) {
                 reachedEof = true;
+                // Fully drained — including any chunks that were queued when
+                // the producer closed. Distinct from pending updateend.
                 state.bodyClosed = true;
                 break;
             }
@@ -273,6 +267,8 @@ async function pumpBodyToSourceBuffer(body, queueAppend, state) {
             const copy = value instanceof Uint8Array
                 ? value.slice()
                 : new Uint8Array(value);
+            // Playing during this append still counts as progressive: the
+            // chunk was read while the body had unread/in-flight data.
             await queueAppend(copy);
             firstChunkAppended = true;
         }
@@ -335,8 +331,8 @@ export async function measureProgressiveMediaSourceTtfa(options = {}) {
 
     const state = {
         streamDone: false,
-        // True when the fetch body has closed (reader.closed / read done) —
-        // independent of pending appendBuffer / MediaSource endOfStream.
+        // True when pump has drained the body (read done). Not reader.closed
+        // (that fires when the last chunk is dequeued, before its append).
         bodyClosed: false,
         endOfStreamCalled: false,
         aborted: false,
@@ -432,8 +428,9 @@ export async function measureProgressiveMediaSourceTtfa(options = {}) {
                 }));
                 return;
             }
-            // Progressive TTFA requires playing while the response body is
-            // still open — not after body closure with a pending append.
+            // Progressive TTFA requires playing before the pump has drained
+            // the body (read done). Pending append of an already-read chunk
+            // still counts — reader.closed alone is too early (see pump).
             if (state.bodyClosed) {
                 finish(progressiveTtfaUnavailable({
                     usedMediaSource: true,
