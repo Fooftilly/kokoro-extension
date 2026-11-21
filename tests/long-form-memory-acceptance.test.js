@@ -55,10 +55,12 @@ const repeatPadFail = capture(() => longForm.assertLongFormWaveformQuality([
     longForm.buildLongFormQualitySampleFixture({ index: 0, rms: 0.05 }),
     longForm.buildLongFormQualitySampleFixture({ index: 0, rms: 0.06 }),
 ]));
-// Revisit of index 0 supplies an extreme without increasing distinct count.
+// Revisit of index 0 supplies RMS + duration extrema without raising distinct count.
 const withRevisitExtreme = longForm.assertLongFormWaveformQuality([
     ...qualitySamples,
-    longForm.buildLongFormQualitySampleFixture({ index: 0, rms: 0.001 }),
+    longForm.buildLongFormQualitySampleFixture({
+        index: 0, rms: 0.001, audioBytes: 24000, durationSec: 0.5,
+    }),
 ]);
 const durationMismatchFail = capture(() => longForm.assertLongFormWaveformSample(
     longForm.buildLongFormQualitySampleFixture({
@@ -197,8 +199,11 @@ console.log(JSON.stringify({
     withRevisitExtreme: {
         distinctCount: withRevisitExtreme.qualitySampleCount,
         validatedProbeCount: withRevisitExtreme.validatedProbeCount,
+        distinctSentenceIndexes: withRevisitExtreme.distinctSentenceIndexes,
         minRms: withRevisitExtreme.minRms,
         maxRms: withRevisitExtreme.maxRms,
+        minDurationSec: withRevisitExtreme.minDurationSec,
+        maxDurationSec: withRevisitExtreme.maxDurationSec,
     },
     durationMismatchFail,
     finalized,
@@ -270,6 +275,8 @@ describe('long-form memory acceptance', () => {
         expect(snap.finalized.longFormQualityDisclosure).toBe(snap.measuredNeedle);
         expect(snap.finalized.sentenceCount).toBe(36);
         expect(snap.finalized.qualitySampleCount).toBe(4);
+        expect(snap.finalized.validatedProbeCount).toBe(4);
+        expect(snap.finalized.distinctSentenceIndexes).toEqual([0, 6, 12, 35]);
         expect(snap.finalized.minRms).toBeGreaterThan(0.0001);
         expect(snap.decoded.oneSecond).toBe(true);
         expect(snap.decoded.sampleRateHz).toBe(24000);
@@ -288,8 +295,11 @@ describe('long-form memory acceptance', () => {
         expect(snap.withRevisitExtreme).toEqual({
             distinctCount: 4,
             validatedProbeCount: 5,
+            distinctSentenceIndexes: [0, 6, 12, 35],
             minRms: 0.001,
             maxRms: 0.05,
+            minDurationSec: 0.5,
+            maxDurationSec: 1,
         });
         expect(snap.durationMismatchFail.ok).toBe(false);
         expect(snap.durationMismatchFail.message).toMatch(/duration must match/);
