@@ -15,18 +15,71 @@ export const DEFAULT_PROGRESSIVE_TTFA_TIMEOUT_MS = 15000;
 export const PROGRESSIVE_HTTP_ERROR_BODY_LIMIT = 512;
 
 /**
- * Read a bounded response body for diagnostics. Prefer this before any
- * cancel — cancel marks the body disturbed and makes text() reject.
+ * Read a bounded response body for diagnostics without waiting for EOF.
+ * Prefers a streamed reader so a long/open error body cannot stall the
+ * FastAPI card; cancels once the preview cap is reached.
  * @param {Response} response
  * @param {number} [limit]
+ * @param {AbortSignal} [signal]
  * @returns {Promise<string>}
  */
 export async function readBoundedResponseText(
-    response, limit = PROGRESSIVE_HTTP_ERROR_BODY_LIMIT) {
-    if (!response || typeof response.text !== 'function') return '';
+    response,
+    limit = PROGRESSIVE_HTTP_ERROR_BODY_LIMIT,
+    signal = undefined,
+) {
+    if (!response) return '';
     const max = Number.isFinite(limit) && limit >= 0
         ? limit
         : PROGRESSIVE_HTTP_ERROR_BODY_LIMIT;
+    if (max === 0) return '';
+    if (signal?.aborted) return '';
+
+    const body = response.body;
+    if (body && typeof body.getReader === 'function') {
+        const reader = body.getReader();
+        const decoder = new TextDecoder();
+        let out = '';
+        const cancelReader = () => {
+            try {
+                const cancelResult = reader.cancel();
+                if (cancelResult && typeof cancelResult.then === 'function') {
+                    void cancelResult.catch(() => {});
+                }
+            } catch { /* ignore */ }
+        };
+        const onAbort = () => cancelReader();
+        if (signal) {
+            if (signal.aborted) cancelReader();
+            else signal.addEventListener('abort', onAbort, { once: true });
+        }
+        try {
+            while (out.length < max) {
+                if (signal?.aborted) break;
+                const { done, value } = await reader.read();
+                if (done) break;
+                out += decoder.decode(value || new Uint8Array(), {
+                    stream: true,
+                });
+                if (out.length > max) out = out.slice(0, max);
+            }
+        } catch {
+            /* ignore stream errors — status-only reason is fine */
+        } finally {
+            signal?.removeEventListener?.('abort', onAbort);
+            // Cancel+release — do not wait for EOF past the preview cap.
+            cancelReader();
+            try {
+                if (typeof reader.releaseLock === 'function') {
+                    reader.releaseLock();
+                }
+            } catch { /* ignore */ }
+        }
+        return out;
+    }
+
+    // No ReadableStream body — last-resort full text, still truncated.
+    if (typeof response.text !== 'function') return '';
     try {
         const text = await response.text();
         if (typeof text !== 'string' || !text) return '';

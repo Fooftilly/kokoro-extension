@@ -54,7 +54,11 @@ describe('Streaming first-body-byte acceptance (KE-34 / KE-40)', () => {
         // Header deadline must arm before await fetch (hung headers → unavailable).
         expect(progressiveFn.indexOf('headerDeadlineTimer = setTimeout'))
             .toBeLessThan(progressiveFn.indexOf('await fetch(endpoint'));
-        expect(progressiveFn).toContain('readBoundedResponseText(response)');
+        expect(progressiveFn).toContain('readBoundedResponseText(');
+        // Exhausted budget must refuse MSE handoff (timeoutMs 0 = no deadline).
+        expect(progressiveFn.indexOf('remainingMs <= 0'))
+            .toBeLessThan(progressiveFn.indexOf(
+                'measureProgressiveMediaSourceTtfa({'));
         // Playable-clip path is separate — storage failure must not sit on it.
         const playableFn = source.slice(
             source.indexOf('async function fetchFastApiPlayableClip'),

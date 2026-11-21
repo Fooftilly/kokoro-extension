@@ -53,6 +53,34 @@ async function progressiveFetchWithHeaderTimeout(fetchImpl, timeoutMs) {
     }
 }
 
+/**
+ * Mirror of post-headers remaining-budget handoff (page is not exported).
+ * Models headers arriving past deadline while abort callback is still queued.
+ */
+function progressiveHandoffAfterHeaders({
+    startedAt,
+    timeoutMs,
+    now,
+    body,
+    cancelBody,
+    abort,
+}) {
+    const remainingMs = timeoutMs - (now - startedAt);
+    if (remainingMs <= 0) {
+        cancelBody(body);
+        abort();
+        return {
+            measured: false,
+            unavailable: true,
+            ttfaMs: null,
+            reason: 'Progressive MediaSource TTFA timed out after ' +
+                timeoutMs + 'ms',
+            handedOff: false,
+        };
+    }
+    return { handedOff: true, timeoutMs: remainingMs };
+}
+
 describe('progressive FastAPI fetch header timeout', () => {
     test('page arms abortable deadline before progressive fetch()', () => {
         expect(progressiveFn).toContain('DEFAULT_PROGRESSIVE_TTFA_TIMEOUT_MS');
@@ -105,6 +133,48 @@ describe('progressive FastAPI fetch header timeout', () => {
             expect(playableCalls).toBe(1);
             expect(clip.firstBodyByteMs).toBe(90);
         });
+
+    test('page refuses MSE handoff when remainingMs <= 0', () => {
+        expect(progressiveFn).toContain('remainingMs <= 0');
+        expect(progressiveFn).toContain(
+            'Progressive MediaSource TTFA timed out after');
+        const remainIdx = progressiveFn.indexOf('remainingMs <= 0');
+        const measureIdx = progressiveFn.indexOf(
+            'measureProgressiveMediaSourceTtfa({');
+        expect(remainIdx).toBeGreaterThanOrEqual(0);
+        expect(remainIdx).toBeLessThan(measureIdx);
+    });
+
+    test('past-deadline handoff with abort still queued → unavailable', () => {
+        let bodyCancelCount = 0;
+        let abortCount = 0;
+        let measureCalls = 0;
+        const body = { cancel() { bodyCancelCount += 1; } };
+        // Headers arrive 1ms past deadline; abort setTimeout still pending.
+        const startedAt = 1000;
+        const timeoutMs = 15000;
+        const now = startedAt + timeoutMs + 1;
+        const abortQueued = setTimeout(() => { abortCount += 1; }, 50);
+        const result = progressiveHandoffAfterHeaders({
+            startedAt,
+            timeoutMs,
+            now,
+            body,
+            cancelBody: (b) => { b.cancel(); },
+            abort: () => { abortCount += 1; },
+        });
+        clearTimeout(abortQueued);
+        if (result.handedOff) measureCalls += 1;
+        expect(result.unavailable).toBe(true);
+        expect(result.measured).toBe(false);
+        expect(result.ttfaMs).toBeNull();
+        expect(result.handedOff).toBe(false);
+        expect(result.reason).toMatch(
+            /Progressive MediaSource TTFA timed out after 15000ms/);
+        expect(bodyCancelCount).toBe(1);
+        expect(abortCount).toBe(1);
+        expect(measureCalls).toBe(0);
+    });
 });
 
 describe('progressive HTTP error body diagnostics', () => {
@@ -112,7 +182,7 @@ describe('progressive HTTP error body diagnostics', () => {
         expect(progressiveFn).toContain('readBoundedResponseText');
         const errIdx = progressiveFn.indexOf('if (!response.ok)');
         const readIdx = progressiveFn.indexOf(
-            'readBoundedResponseText(response)', errIdx);
+            'readBoundedResponseText(', errIdx);
         expect(errIdx).toBeGreaterThanOrEqual(0);
         expect(readIdx).toBeGreaterThan(errIdx);
         // Must not cancel before reading on the HTTP-error path.
@@ -120,7 +190,8 @@ describe('progressive HTTP error body diagnostics', () => {
             errIdx,
             progressiveFn.indexOf(
                 'if (!probeMediaSourceProgressiveMp3Support()', errIdx));
-        expect(errBlock).toContain('readBoundedResponseText(response)');
+        expect(errBlock).toContain('readBoundedResponseText(');
+        expect(errBlock).toContain('abortController.signal');
         expect(errBlock).not.toContain('cancelReadableStreamBody');
     });
 

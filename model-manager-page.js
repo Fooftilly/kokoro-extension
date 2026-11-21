@@ -1249,8 +1249,9 @@ async function measureFastApiProgressiveMediaSourceTtfa(
             });
         }
         if (!response.ok) {
-            // Read diagnostics first — cancel would disturb the body.
-            const errText = await readBoundedResponseText(response);
+            // Streamed bounded preview — do not wait for error-body EOF.
+            const errText = await readBoundedResponseText(
+                response, undefined, abortController.signal);
             return progressiveTtfaUnavailable({
                 mimeType: probe.mimeType,
                 reason: 'Progressive MediaSource HTTP ' + response.status +
@@ -1264,7 +1265,19 @@ async function measureFastApiProgressiveMediaSourceTtfa(
                 reason: 'MediaSource progressive support lost before measure',
             });
         }
-        const remainingMs = Math.max(0, timeoutMs - (performance.now() - startedAt));
+        // Headers can arrive after the deadline while the abort callback is
+        // still queued. timeoutMs 0 means "no timeout" inside the measurer —
+        // refuse the handoff instead of hanging on a stalled body.
+        const remainingMs = timeoutMs - (performance.now() - startedAt);
+        if (remainingMs <= 0) {
+            cancelReadableStreamBody(response.body);
+            abortController.abort();
+            return progressiveTtfaUnavailable({
+                mimeType: probe.mimeType,
+                reason: 'Progressive MediaSource TTFA timed out after ' +
+                    timeoutMs + 'ms',
+            });
+        }
         return measureProgressiveMediaSourceTtfa({
             body: response.body,
             startedAt,
