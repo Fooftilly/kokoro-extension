@@ -60,8 +60,10 @@ const textAt = (view, offset, value) => {
     }
 };
 const badFmtTag = mutateWav((view) => textAt(view, 12, 'JUNK'));
+const badFmtChunkSize = mutateWav((view) => view.setUint32(16, 18, true));
 const badFloatFormat = mutateWav((view) => view.setUint16(20, 3, true));
 const badStereo = mutateWav((view) => view.setUint16(22, 2, true));
+const badByteRate = mutateWav((view) => view.setUint32(28, 96000, true));
 const badBits8 = mutateWav((view) => view.setUint16(34, 8, true));
 const badDataTag = mutateWav((view) => textAt(view, 36, 'JUNK'));
 const badBlockAlign = mutateWav((view) => view.setUint16(32, 4, true));
@@ -214,8 +216,8 @@ console.log(JSON.stringify({
     silentAssertFail,
     badHeader,
     wavFormatFails: {
-        badFmtTag, badFloatFormat, badStereo, badBits8,
-        badDataTag, badBlockAlign, badRiffSize,
+        badFmtTag, badFmtChunkSize, badFloatFormat, badStereo, badByteRate,
+        badBits8, badDataTag, badBlockAlign, badRiffSize,
     },
     repeatPadFail,
     withRevisitExtreme: {
@@ -319,8 +321,9 @@ describe('long-form memory acceptance', () => {
             expect(fail.message).toMatch(/WAV mismatch/i);
         }
         expect(Object.keys(snap.wavFormatFails)).toEqual([
-            'badFmtTag', 'badFloatFormat', 'badStereo', 'badBits8',
-            'badDataTag', 'badBlockAlign', 'badRiffSize',
+            'badFmtTag', 'badFmtChunkSize', 'badFloatFormat', 'badStereo',
+            'badByteRate', 'badBits8', 'badDataTag', 'badBlockAlign',
+            'badRiffSize',
         ]);
         expect(snap.repeatPadFail.ok).toBe(false);
         expect(snap.repeatPadFail.message).toMatch(/distinct sentence positions/);
