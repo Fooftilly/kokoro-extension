@@ -244,11 +244,24 @@ export function decodeLongFormWavPcm16Metrics(wavBytes) {
     const wav = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const tag = (start, length) =>
         String.fromCharCode(...bytes.subarray(start, start + length));
+    // Match encodePcm16Wav / buildLongFormTestWavPcm16 fixed 44-byte layout.
+    const riffSize = wav.getUint32(4, true);
+    const fmtChunkSize = wav.getUint32(16, true);
+    const audioFormat = wav.getUint16(20, true);
+    const numChannels = wav.getUint16(22, true);
     const sampleRateHz = wav.getUint32(24, true);
+    const byteRate = wav.getUint32(28, true);
+    const blockAlign = wav.getUint16(32, true);
+    const bitsPerSample = wav.getUint16(34, true);
     const audioBytes = wav.getUint32(40, true);
     if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
-        sampleRateHz !== 24000 || audioBytes < 2 ||
-        bytes.length !== 44 + audioBytes || audioBytes % 2 !== 0) {
+        tag(12, 4) !== 'fmt ' || tag(36, 4) !== 'data' ||
+        fmtChunkSize !== 16 || audioFormat !== 1 || numChannels !== 1 ||
+        bitsPerSample !== 16 || blockAlign !== 2 ||
+        sampleRateHz !== 24000 || byteRate !== sampleRateHz * 2 ||
+        audioBytes < 2 || audioBytes % 2 !== 0 ||
+        bytes.length !== 44 + audioBytes ||
+        riffSize !== 36 + audioBytes) {
         throw new Error('Long-form overlay WAV mismatch');
     }
     const sampleCount = audioBytes / 2;

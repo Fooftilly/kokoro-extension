@@ -48,6 +48,24 @@ const silentAssertFail = capture(() => longForm.assertLongFormWaveformSample({
 }));
 const badHeader = capture(() => longForm.decodeLongFormWavPcm16Metrics(
     new Uint8Array(64)));
+// Mutate a valid PCM16 mono header; each must fail closed (CR P2).
+const mutateWav = (fn) => {
+    const copy = new Uint8Array(wavBytes);
+    fn(new DataView(copy.buffer), copy);
+    return capture(() => longForm.decodeLongFormWavPcm16Metrics(copy));
+};
+const textAt = (view, offset, value) => {
+    for (let i = 0; i < value.length; i++) {
+        view.setUint8(offset + i, value.charCodeAt(i));
+    }
+};
+const badFmtTag = mutateWav((view) => textAt(view, 12, 'JUNK'));
+const badFloatFormat = mutateWav((view) => view.setUint16(20, 3, true));
+const badStereo = mutateWav((view) => view.setUint16(22, 2, true));
+const badBits8 = mutateWav((view) => view.setUint16(34, 8, true));
+const badDataTag = mutateWav((view) => textAt(view, 36, 'JUNK'));
+const badBlockAlign = mutateWav((view) => view.setUint16(32, 4, true));
+const badRiffSize = mutateWav((view) => view.setUint32(4, 99, true));
 // Distinct-index gate: four copies of index 0 must not pad the minimum.
 const repeatPadFail = capture(() => longForm.assertLongFormWaveformQuality([
     longForm.buildLongFormQualitySampleFixture({ index: 0, rms: 0.03 }),
@@ -195,6 +213,10 @@ console.log(JSON.stringify({
     },
     silentAssertFail,
     badHeader,
+    wavFormatFails: {
+        badFmtTag, badFloatFormat, badStereo, badBits8,
+        badDataTag, badBlockAlign, badRiffSize,
+    },
     repeatPadFail,
     withRevisitExtreme: {
         distinctCount: withRevisitExtreme.qualitySampleCount,
@@ -290,6 +312,16 @@ describe('long-form memory acceptance', () => {
         expect(snap.silentAssertFail.message).toMatch(/silent|RMS/i);
         expect(snap.badHeader.ok).toBe(false);
         expect(snap.badHeader.message).toMatch(/WAV/i);
+        for (const [name, fail] of Object.entries(snap.wavFormatFails)) {
+            expect({ name, ...fail }).toEqual(expect.objectContaining({
+                name, ok: false,
+            }));
+            expect(fail.message).toMatch(/WAV mismatch/i);
+        }
+        expect(Object.keys(snap.wavFormatFails)).toEqual([
+            'badFmtTag', 'badFloatFormat', 'badStereo', 'badBits8',
+            'badDataTag', 'badBlockAlign', 'badRiffSize',
+        ]);
         expect(snap.repeatPadFail.ok).toBe(false);
         expect(snap.repeatPadFail.message).toMatch(/distinct sentence positions/);
         expect(snap.withRevisitExtreme).toEqual({
