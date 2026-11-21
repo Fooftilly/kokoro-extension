@@ -137,50 +137,39 @@ export function assertProgressiveStreamingTtfaUnmeasured(report) {
     };
 }
 
-/**
- * Assert progressive MediaSource TTFA was measured with a real finite p50,
- * or fail-closed unavailable (no invented numbers).
- *
- * @param {object} report
- */
-export function assertProgressiveStreamingTtfaMeasured(report) {
-    if (!report || typeof report !== 'object') {
-        throw Error('Progressive MediaSource TTFA measured report missing');
+function assertUnavailableProgressiveBlock(block) {
+    if (block.progressiveStreamingTtfaMeasured === true) {
+        throw Error(
+            'unavailable progressive MediaSource path must not claim measured');
     }
-    const block = normalizeProgressiveBlock(report);
-
-    if (block.progressiveStreamingTtfaUnavailable === true) {
-        if (block.progressiveStreamingTtfaMeasured === true) {
-            throw Error(
-                'unavailable progressive MediaSource path must not claim measured');
-        }
-        if (block.trueMediaSourceTtfaMeasured === true) {
-            throw Error(
-                'unavailable progressive MediaSource path must not claim ' +
-                'trueMediaSourceTtfaMeasured');
-        }
-        if (Number.isFinite(block.progressiveStreamingTtfaP50Ms)) {
-            throw Error(
-                'unavailable progressive MediaSource path must not invent TTFA ms: ' +
-                JSON.stringify(block.progressiveStreamingTtfaP50Ms));
-        }
-        if (!disclosureHasProgressiveTtfaUnavailableNeedle(block.disclosureNeedle) &&
-            !disclosureHasProgressiveTtfaNeedle(block.disclosureNeedle)) {
-            throw Error(
-                'unavailable progressive MediaSource TTFA needs disclosure: ' +
-                JSON.stringify(block.disclosureNeedle));
-        }
-        return {
-            success: true,
-            progressiveStreamingTtfaMeasured: false,
-            progressiveStreamingTtfaUnavailable: true,
-            progressiveStreamingTtfaP50Ms: null,
-            usedMediaSource: block.usedMediaSource,
-            disclosureNeedle: block.disclosureNeedle ||
-                PROGRESSIVE_MEDIASOURCE_TTFA_UNAVAILABLE_NEEDLE,
-        };
+    if (block.trueMediaSourceTtfaMeasured === true) {
+        throw Error(
+            'unavailable progressive MediaSource path must not claim ' +
+            'trueMediaSourceTtfaMeasured');
     }
+    if (Number.isFinite(block.progressiveStreamingTtfaP50Ms)) {
+        throw Error(
+            'unavailable progressive MediaSource path must not invent TTFA ms: ' +
+            JSON.stringify(block.progressiveStreamingTtfaP50Ms));
+    }
+    if (!disclosureHasProgressiveTtfaUnavailableNeedle(block.disclosureNeedle) &&
+        !disclosureHasProgressiveTtfaNeedle(block.disclosureNeedle)) {
+        throw Error(
+            'unavailable progressive MediaSource TTFA needs disclosure: ' +
+            JSON.stringify(block.disclosureNeedle));
+    }
+    return {
+        success: true,
+        progressiveStreamingTtfaMeasured: false,
+        progressiveStreamingTtfaUnavailable: true,
+        progressiveStreamingTtfaP50Ms: null,
+        usedMediaSource: block.usedMediaSource,
+        disclosureNeedle: block.disclosureNeedle ||
+            PROGRESSIVE_MEDIASOURCE_TTFA_UNAVAILABLE_NEEDLE,
+    };
+}
 
+function assertMeasuredProgressiveBlock(block) {
     if (block.progressiveStreamingTtfaMeasured !== true) {
         throw Error(
             'progressiveStreamingTtfaMeasured must be true when path available: ' +
@@ -218,6 +207,24 @@ export function assertProgressiveStreamingTtfaMeasured(report) {
         usedMediaSource: true,
         disclosureNeedle: PROGRESSIVE_MEDIASOURCE_TTFA_MEASURED_NEEDLE,
     };
+}
+
+/**
+ * Assert progressive MediaSource TTFA was measured with a real finite p50,
+ * or fail-closed unavailable (no invented numbers).
+ * Nested helpers keep CodeFactor method complexity under the gate.
+ *
+ * @param {object} report
+ */
+export function assertProgressiveStreamingTtfaMeasured(report) {
+    if (!report || typeof report !== 'object') {
+        throw Error('Progressive MediaSource TTFA measured report missing');
+    }
+    const block = normalizeProgressiveBlock(report);
+    if (block.progressiveStreamingTtfaUnavailable === true) {
+        return assertUnavailableProgressiveBlock(block);
+    }
+    return assertMeasuredProgressiveBlock(block);
 }
 
 /**

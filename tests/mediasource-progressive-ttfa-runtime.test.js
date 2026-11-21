@@ -2,11 +2,16 @@
  * @jest-environment jsdom
  *
  * Executing runtime coverage for measureProgressiveMediaSourceTtfa:
- * stalled-stream deadline, playing-before-EOF (measured), playing-after-EOF
- * (unavailable), and locked-stream cancel without unhandled rejection.
+ * stalled-stream deadline, playing-before-EOF (measured), playing-after-EOF /
+ * body-closed-before-playing (unavailable), and locked-stream cancel.
  */
+const { ReadableStream } = require('stream/web');
 
-function installMediaSourceStub({ playAfterMs = 5, firePlaying = true } = {}) {
+function installMediaSourceStub({
+    playAfterMs = 5,
+    firePlaying = true,
+    appendDelayMs = 0,
+} = {}) {
     class StubSourceBuffer extends EventTarget {
         constructor() {
             super();
@@ -14,10 +19,12 @@ function installMediaSourceStub({ playAfterMs = 5, firePlaying = true } = {}) {
         }
         appendBuffer() {
             this.updating = true;
-            queueMicrotask(() => {
+            const finish = () => {
                 this.updating = false;
                 this.dispatchEvent(new Event('updateend'));
-            });
+            };
+            if (appendDelayMs > 0) setTimeout(finish, appendDelayMs);
+            else queueMicrotask(finish);
         }
     }
     class StubMediaSource extends EventTarget {
@@ -76,12 +83,22 @@ function installMediaSourceStub({ playAfterMs = 5, firePlaying = true } = {}) {
 
 function controllableStream(chunks, { hangAfter = null } = {}) {
     let index = 0;
-    let cancelCount = 0;
+    let bodyCancelCount = 0;
+    let readerCancelCount = 0;
     let releaseLockCount = 0;
     let pendingReject = null;
+    let closedResolve;
+    let closedReject;
+    const closed = new Promise((resolve, reject) => {
+        closedResolve = resolve;
+        closedReject = reject;
+    });
+    // Prevent unhandled rejection if cancelled before closed is observed.
+    closed.catch(() => {});
     return {
         getReader() {
             return {
+                closed,
                 async read() {
                     if (hangAfter != null && index >= hangAfter) {
                         await new Promise((_, reject) => {
@@ -89,17 +106,19 @@ function controllableStream(chunks, { hangAfter = null } = {}) {
                         });
                     }
                     if (index >= chunks.length) {
+                        closedResolve();
                         return { done: true, value: undefined };
                     }
                     const value = chunks[index++];
                     return { done: false, value };
                 },
                 cancel() {
-                    cancelCount += 1;
+                    readerCancelCount += 1;
                     if (pendingReject) {
                         pendingReject(new Error('stream cancelled'));
                         pendingReject = null;
                     }
+                    closedReject(new Error('stream cancelled'));
                     return Promise.resolve();
                 },
                 releaseLock() {
@@ -108,10 +127,11 @@ function controllableStream(chunks, { hangAfter = null } = {}) {
             };
         },
         cancel() {
-            cancelCount += 1;
+            bodyCancelCount += 1;
             return Promise.reject(new TypeError('ReadableStream is locked'));
         },
-        get cancelCount() { return cancelCount; },
+        get bodyCancelCount() { return bodyCancelCount; },
+        get readerCancelCount() { return readerCancelCount; },
         get releaseLockCount() { return releaseLockCount; },
     };
 }
@@ -154,7 +174,8 @@ describe('measureProgressiveMediaSourceTtfa runtime', () => {
         expect(result.unavailable).toBe(true);
         expect(result.ttfaMs).toBeNull();
         expect(result.reason).toMatch(/timed out/i);
-        expect(body.cancelCount).toBeGreaterThanOrEqual(1);
+        expect(body.readerCancelCount).toBeGreaterThanOrEqual(1);
+        expect(body.bodyCancelCount).toBe(0);
         expect(body.releaseLockCount).toBeGreaterThanOrEqual(1);
         expect(unhandled).toEqual([]);
     });
@@ -174,6 +195,7 @@ describe('measureProgressiveMediaSourceTtfa runtime', () => {
         expect(result.ttfaMs).toBeGreaterThanOrEqual(0);
         expect(result.playedBeforeEof).toBe(true);
         expect(result.usedMediaSource).toBe(true);
+        expect(body.bodyCancelCount).toBe(0);
     });
 
     test('playing after EOF returns unavailable (not progressive TTFA)', async () => {
@@ -196,7 +218,37 @@ describe('measureProgressiveMediaSourceTtfa runtime', () => {
             /after stream EOF|post-download/i);
     });
 
-    test('cleanup does not reject when body is locked by reader', async () => {
+    test('playing after body closes while updateend pending is unavailable', async () => {
+        stub.restore();
+        // Body closes immediately; append stays pending; playing fires mid-append.
+        stub = installMediaSourceStub({
+            playAfterMs: 15,
+            firePlaying: true,
+            appendDelayMs: 80,
+        });
+        jest.resetModules();
+        mse = await import('../mediasource-progressive-ttfa.js');
+
+        const body = new ReadableStream({
+            start(controller) {
+                controller.enqueue(new Uint8Array([1, 2, 3, 4, 5]));
+                controller.close();
+            },
+        });
+        const result = await mse.measureProgressiveMediaSourceTtfa({
+            body,
+            startedAt: performance.now(),
+            timeoutMs: 500,
+        });
+        expect(result.measured).toBe(false);
+        expect(result.unavailable).toBe(true);
+        expect(result.ttfaMs).toBeNull();
+        expect(result.playedBeforeEof).toBe(false);
+        expect(String(result.reason || '')).toMatch(
+            /after stream EOF|post-download/i);
+    });
+
+    test('cleanup cancels via reader only — never body.cancel while locked', async () => {
         stub.restore();
         stub = installMediaSourceStub({ firePlaying: false });
         jest.resetModules();
@@ -219,6 +271,8 @@ describe('measureProgressiveMediaSourceTtfa runtime', () => {
         process.removeListener('unhandledRejection', onUnhandled);
 
         expect(result.unavailable).toBe(true);
+        expect(body.readerCancelCount).toBeGreaterThanOrEqual(1);
+        expect(body.bodyCancelCount).toBe(0);
         expect(unhandled.filter((m) => /locked/i.test(m))).toEqual([]);
     });
 });

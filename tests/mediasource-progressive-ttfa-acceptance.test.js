@@ -138,6 +138,8 @@ describe('progressive MediaSource TTFA measured acceptance', () => {
         expect(source).toContain('releaseLock');
         expect(source).toContain('readerAcquired');
         expect(source).toContain('playedBeforeEof');
+        expect(source).toContain('bodyClosed');
+        expect(source).toContain('watchReaderBodyClosed');
         expect(source).toContain('streamDone');
         expect(source).toMatch(/after stream EOF/);
         expect(source).not.toMatch(/ttfaMs\s*[:=]\s*\d+/);

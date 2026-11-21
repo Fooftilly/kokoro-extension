@@ -234,12 +234,30 @@ function waitPlayingTtfa(audio, startedAt, signal) {
 }
 
 /**
+ * Mark body closed as soon as the reader observes closure — independent of
+ * pending SourceBuffer append / endOfStream. Used for playing-before-EOF.
+ */
+function watchReaderBodyClosed(reader, state) {
+    const closed = reader?.closed;
+    if (!closed || typeof closed.then !== 'function') return;
+    closed.then(() => {
+        state.bodyClosed = true;
+    }, () => {
+        // Cancelled / errored — body is no longer open for progressive delivery.
+        state.bodyClosed = true;
+    });
+}
+
+/**
  * Pump body → SourceBuffer. Releases reader lock in finally (cancel only if
  * not normal EOF). Settlement is independent of cancel completion.
  */
 async function pumpBodyToSourceBuffer(body, queueAppend, state) {
     const reader = body.getReader();
     state.reader = reader;
+    state.readerAcquired = true;
+    // Body closure ≠ append completion: observe closed immediately.
+    watchReaderBodyClosed(reader, state);
     let firstChunkAppended = false;
     let reachedEof = false;
     try {
@@ -247,6 +265,7 @@ async function pumpBodyToSourceBuffer(body, queueAppend, state) {
             const { done, value } = await reader.read();
             if (done) {
                 reachedEof = true;
+                state.bodyClosed = true;
                 break;
             }
             if (state.aborted) break;
@@ -316,6 +335,9 @@ export async function measureProgressiveMediaSourceTtfa(options = {}) {
 
     const state = {
         streamDone: false,
+        // True when the fetch body has closed (reader.closed / read done) —
+        // independent of pending appendBuffer / MediaSource endOfStream.
+        bodyClosed: false,
         endOfStreamCalled: false,
         aborted: false,
         reader: null,
@@ -410,8 +432,9 @@ export async function measureProgressiveMediaSourceTtfa(options = {}) {
                 }));
                 return;
             }
-            // Progressive TTFA requires playing before stream EOF.
-            if (state.streamDone) {
+            // Progressive TTFA requires playing while the response body is
+            // still open — not after body closure with a pending append.
+            if (state.bodyClosed) {
                 finish(progressiveTtfaUnavailable({
                     usedMediaSource: true,
                     mimeType,
@@ -433,7 +456,6 @@ export async function measureProgressiveMediaSourceTtfa(options = {}) {
 
         void (async () => {
             try {
-                state.readerAcquired = true;
                 const firstChunkAppended = await pumpBodyToSourceBuffer(
                     body, queueAppend, state);
                 if (settled || state.aborted) return;
