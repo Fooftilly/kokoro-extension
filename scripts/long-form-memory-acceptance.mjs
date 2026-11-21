@@ -320,10 +320,10 @@ export function assertLongFormWaveformSample(sample) {
 
 /**
  * Assert objective waveform quality across sampled long-form clips.
- * Counts distinct sentence indexes only — revisit/copies of the same position
- * cannot pad the minimum probe count.
- * @returns {{ qualitySampleCount, distinctSentenceIndexes, minRms, maxRms,
- *   minDurationSec, maxDurationSec }}
+ * Distinct sentence indexes gate the minimum coverage count (revisits cannot
+ * pad). RMS/duration extrema use every validated probe, including revisits.
+ * @returns {{ qualitySampleCount, distinctSentenceIndexes, validatedProbeCount,
+ *   minRms, maxRms, minDurationSec, maxDurationSec }}
  */
 export function assertLongFormWaveformQuality(samples, options = {}) {
     const minSamples = options.minSamples ?? LONG_FORM_MIN_QUALITY_SAMPLES;
@@ -333,8 +333,10 @@ export function assertLongFormWaveformQuality(samples, options = {}) {
             JSON.stringify(samples));
     }
     const byIndex = new Map();
+    const validated = [];
     for (const sample of samples) {
         const checked = assertLongFormWaveformSample(sample);
+        validated.push(checked);
         if (!byIndex.has(checked.index)) {
             byIndex.set(checked.index, checked);
         }
@@ -345,12 +347,12 @@ export function assertLongFormWaveformQuality(samples, options = {}) {
             ' distinct sentence positions; got ' + byIndex.size +
             ' (raw probes: ' + samples.length + ')');
     }
-    const checked = [...byIndex.values()];
-    const rmsValues = checked.map((s) => s.rms);
-    const durations = checked.map((s) => s.durationSec);
+    const rmsValues = validated.map((s) => s.rms);
+    const durations = validated.map((s) => s.durationSec);
     return {
-        qualitySampleCount: checked.length,
+        qualitySampleCount: byIndex.size,
         distinctSentenceIndexes: [...byIndex.keys()].sort((a, b) => a - b),
+        validatedProbeCount: validated.length,
         minRms: Math.min(...rmsValues),
         maxRms: Math.max(...rmsValues),
         minDurationSec: Math.min(...durations),
@@ -445,6 +447,8 @@ export function finalizeLongFormMemoryAcceptanceReport(partial = {}) {
     report.longFormMosMeasured = false;
     report.longFormQualityDisclosure = LONG_FORM_QUALITY_MEASURED_NEEDLE;
     report.qualitySampleCount = quality.qualitySampleCount;
+    report.validatedProbeCount = quality.validatedProbeCount;
+    report.distinctSentenceIndexes = quality.distinctSentenceIndexes;
     report.minRms = quality.minRms;
     report.maxRms = quality.maxRms;
     report.minDurationSec = quality.minDurationSec;

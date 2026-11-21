@@ -55,10 +55,18 @@ const repeatPadFail = capture(() => longForm.assertLongFormWaveformQuality([
     longForm.buildLongFormQualitySampleFixture({ index: 0, rms: 0.05 }),
     longForm.buildLongFormQualitySampleFixture({ index: 0, rms: 0.06 }),
 ]));
+// Revisit of index 0 supplies an extreme without increasing distinct count.
+const withRevisitExtreme = longForm.assertLongFormWaveformQuality([
+    ...qualitySamples,
+    longForm.buildLongFormQualitySampleFixture({ index: 0, rms: 0.001 }),
+]);
 const durationMismatchFail = capture(() => longForm.assertLongFormWaveformSample(
     longForm.buildLongFormQualitySampleFixture({
         index: 1, audioBytes: 48000, durationSec: 1.2,
     })));
+// Tone RMS ≈ amplitude / √2 (PCM16 quantization tolerance).
+const expectedToneRms = 0.25 / Math.SQRT2;
+const toneRmsClose = Math.abs(decoded.rms - expectedToneRms) < 0.002;
 const finalized = longForm.finalizeLongFormMemoryAcceptanceReport({
     success: true,
     browser: 'chromium',
@@ -171,6 +179,9 @@ console.log(JSON.stringify({
         sampleCount: decoded.sampleCount,
         rmsFinite: Number.isFinite(decoded.rms),
         rmsAboveFloor: decoded.rms > longForm.LONG_FORM_MIN_RMS,
+        toneRmsClose,
+        expectedToneRms,
+        decodedRms: decoded.rms,
         wavByteLength: wavBytes.length,
         // 48_000 PCM bytes ⇒ 1.0 s at 24 kHz mono PCM16 (not 1.2 s).
         oneSecond: decoded.audioBytes === 48000 && decoded.durationSec === 1,
@@ -183,6 +194,12 @@ console.log(JSON.stringify({
     silentAssertFail,
     badHeader,
     repeatPadFail,
+    withRevisitExtreme: {
+        distinctCount: withRevisitExtreme.qualitySampleCount,
+        validatedProbeCount: withRevisitExtreme.validatedProbeCount,
+        minRms: withRevisitExtreme.minRms,
+        maxRms: withRevisitExtreme.maxRms,
+    },
     durationMismatchFail,
     finalized,
     qualityOffFail,
@@ -258,6 +275,7 @@ describe('long-form memory acceptance', () => {
         expect(snap.decoded.sampleRateHz).toBe(24000);
         expect(snap.decoded.sampleCount).toBe(24000);
         expect(snap.decoded.rmsAboveFloor).toBe(true);
+        expect(snap.decoded.toneRmsClose).toBe(true);
         expect(snap.decoded.wavByteLength).toBe(44 + 48000);
         expect(snap.silentMetrics.rmsNearZero).toBe(true);
         expect(snap.silentMetrics.durationSec).toBe(1);
@@ -267,6 +285,12 @@ describe('long-form memory acceptance', () => {
         expect(snap.badHeader.message).toMatch(/WAV/i);
         expect(snap.repeatPadFail.ok).toBe(false);
         expect(snap.repeatPadFail.message).toMatch(/distinct sentence positions/);
+        expect(snap.withRevisitExtreme).toEqual({
+            distinctCount: 4,
+            validatedProbeCount: 5,
+            minRms: 0.001,
+            maxRms: 0.05,
+        });
         expect(snap.durationMismatchFail.ok).toBe(false);
         expect(snap.durationMismatchFail.message).toMatch(/duration must match/);
         expect(snap.qualityOffFail.ok).toBe(false);
