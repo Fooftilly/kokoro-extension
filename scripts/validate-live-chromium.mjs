@@ -1165,12 +1165,15 @@ async function startFastApiSpeechStub() {
                     'Content-Length': body.length,
                     'Cache-Control': 'no-store',
                 });
-                const firstLen = Math.max(1, Math.min(64, body.length));
+                // Hold a playable MP3 prefix open before the final write so
+                // progressive MediaSource can fire `playing` before EOF.
+                const tailLen = Math.min(32, Math.max(1, body.length - 1));
+                const firstLen = Math.max(1, body.length - tailLen);
                 const first = body.subarray(0, firstLen);
                 const rest = body.subarray(firstLen);
                 setTimeout(() => {
                     res.write(first);
-                    setTimeout(() => res.end(rest), 20);
+                    setTimeout(() => res.end(rest), 250);
                 }, 100);
             });
             return;
@@ -1197,9 +1200,12 @@ async function acceptFastApiServerCard(page, apiUrl) {
         SERVER_PLAYBACK_START_NEEDLE,
         SERVER_NOT_MEDIASOURCE_NEEDLE,
         SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE,
+        SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_MEASURED_NEEDLE,
+        SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_UNAVAILABLE_NEEDLE,
         FASTAPI_SELECTED_NEEDLE,
         BACKEND_BEFORE_CHOOSE,
         buildFastApiServerCardReport,
+        parseObservedProgressiveTtfaP50Ms,
     } = await import('./fastapi-server-card-acceptance.mjs');
 
     // testFastApi refuses unless the selected backend is already fastapi.
@@ -1221,15 +1227,28 @@ async function acceptFastApiServerCard(page, apiUrl) {
         const text = status?.textContent || '';
         const audio = document.getElementById('serverAudio');
         const choose = document.getElementById('chooseServer');
+        const measured =
+            status?.dataset?.mediasourceProgressiveTtfaMeasured === 'true';
+        const unavailable =
+            status?.dataset?.mediasourceProgressiveTtfaUnavailable === 'true';
+        const p50Raw = status?.dataset?.mediasourceProgressiveTtfaP50Ms;
+        const p50Trimmed = p50Raw == null ? '' : String(p50Raw).trim();
+        // Reject blank/whitespace before Number() so '' never becomes 0.
+        const p50Ok = p50Trimmed !== '' && Number.isFinite(Number(p50Trimmed));
+        const progressiveOk = measured
+            ? (text.includes(needles.mediasourceMeasured) && p50Ok)
+            : (unavailable &&
+                (text.includes(needles.mediasourceUnavailable) ||
+                    text.includes(needles.mediasourceNotMeasured)) &&
+                status?.dataset?.mediasourceProgressiveTtfaNotMeasured ===
+                    'true');
         return text.includes(needles.playable) &&
             text.includes(needles.ttfb) &&
             text.includes(needles.playbackStart) &&
             text.includes(needles.notMediaSource) &&
-            text.includes(needles.mediasourceNotMeasured) &&
+            progressiveOk &&
             status?.dataset?.streamingFirstBodyByteMeasured === 'true' &&
             status?.dataset?.playbackStartMeasured === 'true' &&
-            status?.dataset?.mediasourceProgressiveTtfaMeasured === 'false' &&
-            status?.dataset?.mediasourceProgressiveTtfaNotMeasured === 'true' &&
             Number.isFinite(Number(status?.dataset?.firstBodyByteP50Ms)) &&
             Number.isFinite(Number(status?.dataset?.playbackStartP50Ms)) &&
             audio && !audio.hidden &&
@@ -1242,7 +1261,11 @@ async function acceptFastApiServerCard(page, apiUrl) {
         notMediaSource: SERVER_NOT_MEDIASOURCE_NEEDLE,
         mediasourceNotMeasured:
             SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE,
-    }, { timeout: 60000 });
+        mediasourceMeasured:
+            SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_MEASURED_NEEDLE,
+        mediasourceUnavailable:
+            SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_UNAVAILABLE_NEEDLE,
+    }, { timeout: 120000 });
 
     // Prove the stub MP3 actually decodes (not just a data: URL prefix).
     const audioDurationSec = await page.evaluate(async () => {
@@ -1284,7 +1307,24 @@ async function acceptFastApiServerCard(page, apiUrl) {
         const measuredRaw = status?.dataset?.mediasourceProgressiveTtfaMeasured;
         const notMeasuredRaw =
             status?.dataset?.mediasourceProgressiveTtfaNotMeasured;
-        const textHasNeedle = text.includes(needles.mediasourceNotMeasured);
+        const unavailableRaw =
+            status?.dataset?.mediasourceProgressiveTtfaUnavailable;
+        const p50Raw = status?.dataset?.mediasourceProgressiveTtfaP50Ms;
+        const measured = measuredRaw === 'true';
+        const unavailable = unavailableRaw === 'true';
+        const textHasMeasured = text.includes(needles.mediasourceMeasured);
+        const textHasUnavailable =
+            text.includes(needles.mediasourceUnavailable);
+        const textHasNotMeasured =
+            text.includes(needles.mediasourceNotMeasured);
+        let disclosure = '';
+        if (measured && textHasMeasured) {
+            disclosure = needles.mediasourceMeasured;
+        } else if (unavailable && textHasUnavailable) {
+            disclosure = needles.mediasourceUnavailable;
+        } else if (textHasNotMeasured) {
+            disclosure = needles.mediasourceNotMeasured;
+        }
         return {
             streamingFirstBodyByteMeasured:
                 status?.dataset?.streamingFirstBodyByteMeasured === 'true',
@@ -1300,17 +1340,28 @@ async function acceptFastApiServerCard(page, apiUrl) {
                 ? true
                 : measuredRaw === 'false' ? false : null,
             mediasourceProgressiveTtfaNotMeasured:
-                notMeasuredRaw === 'true' && textHasNeedle,
-            mediasourceProgressiveTtfaDisclosure: textHasNeedle
-                ? needles.mediasourceNotMeasured
-                : '',
+                notMeasuredRaw === 'true',
+            mediasourceProgressiveTtfaUnavailable: unavailable,
+            // Raw dataset only — parse outside evaluate (NaN does not survive
+            // JSON). Never drop leftovers; never Number('') → 0 in-page.
+            mediasourceProgressiveTtfaP50Raw:
+                p50Raw == null ? null : String(p50Raw),
+            usedMediaSource: status?.dataset?.usedMediaSource === 'true',
+            mediasourceProgressiveTtfaDisclosure: disclosure,
         };
     }, {
         playbackStart: SERVER_PLAYBACK_START_NEEDLE,
         notMediaSource: SERVER_NOT_MEDIASOURCE_NEEDLE,
         mediasourceNotMeasured:
             SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE,
+        mediasourceMeasured:
+            SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_MEASURED_NEEDLE,
+        mediasourceUnavailable:
+            SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_UNAVAILABLE_NEEDLE,
     });
+
+    const mediasourceProgressiveTtfaP50Ms = parseObservedProgressiveTtfaP50Ms(
+        ttfb.mediasourceProgressiveTtfaP50Raw);
 
     // Switch away from fastapi so chooseServer must write the preference.
     await page.evaluate(async (backend) => {
@@ -1353,19 +1404,43 @@ async function acceptFastApiServerCard(page, apiUrl) {
             ttfb.mediasourceProgressiveTtfaMeasured,
         mediasourceProgressiveTtfaNotMeasured:
             ttfb.mediasourceProgressiveTtfaNotMeasured,
+        mediasourceProgressiveTtfaUnavailable:
+            ttfb.mediasourceProgressiveTtfaUnavailable,
+        mediasourceProgressiveTtfaP50Raw:
+            ttfb.mediasourceProgressiveTtfaP50Raw,
+        mediasourceProgressiveTtfaP50Ms,
+        usedMediaSource: ttfb.usedMediaSource,
         mediasourceProgressiveTtfaDisclosure:
             ttfb.mediasourceProgressiveTtfaDisclosure,
     });
-    // #61 / KE-54: first-class progressive MediaSource TTFA remains unmeasured.
+    // Progressive MediaSource TTFA: measured with real p50, or fail-closed
+    // unavailable (never invent numbers).
     const {
-        assertProgressiveStreamingTtfaUnmeasured,
-        buildProgressiveStreamingTtfaReport,
+        assertProgressiveStreamingTtfaMeasured,
+        buildProgressiveStreamingTtfaMeasuredReport,
     } = await import('./mediasource-progressive-ttfa-acceptance.mjs');
-    assertProgressiveStreamingTtfaUnmeasured(report);
+    const progressiveAcceptance = assertProgressiveStreamingTtfaMeasured({
+        progressiveStreamingTtfaMeasured:
+            report.mediasourceProgressiveTtfaMeasured,
+        trueMediaSourceTtfaMeasured:
+            report.mediasourceProgressiveTtfaMeasured === true,
+        progressiveStreamingTtfaUnavailable:
+            report.mediasourceProgressiveTtfaUnavailable === true,
+        progressiveStreamingTtfaP50Ms:
+            report.mediasourceProgressiveTtfaP50Ms,
+        usedMediaSource: report.usedMediaSource === true,
+        disclosureNeedle: report.mediasourceProgressiveTtfaDisclosure,
+    });
     report.progressiveStreamingTtfaAcceptance =
-        buildProgressiveStreamingTtfaReport({
+        buildProgressiveStreamingTtfaMeasuredReport({
             browser: 'chromium',
             assertedFromServerCard: true,
+            progressiveStreamingTtfaUnavailable:
+                progressiveAcceptance.progressiveStreamingTtfaUnavailable,
+            progressiveStreamingTtfaP50Ms:
+                progressiveAcceptance.progressiveStreamingTtfaP50Ms,
+            usedMediaSource: progressiveAcceptance.usedMediaSource,
+            disclosureNeedle: progressiveAcceptance.disclosureNeedle,
         });
     return report;
 }
@@ -3716,16 +3791,26 @@ try {
                 progressiveStreamingTtfaAcceptance =
                     fastapiServerCardAcceptance
                         ?.progressiveStreamingTtfaAcceptance || null;
+                const progressiveMeasured =
+                    progressiveStreamingTtfaAcceptance
+                        ?.progressiveStreamingTtfaMeasured === true &&
+                    Number.isFinite(progressiveStreamingTtfaAcceptance
+                        ?.progressiveStreamingTtfaP50Ms) &&
+                    progressiveStreamingTtfaAcceptance?.usedMediaSource === true;
+                const progressiveUnavailable =
+                    progressiveStreamingTtfaAcceptance
+                        ?.progressiveStreamingTtfaUnavailable === true &&
+                    progressiveStreamingTtfaAcceptance
+                        ?.progressiveStreamingTtfaMeasured === false &&
+                    !Number.isFinite(progressiveStreamingTtfaAcceptance
+                        ?.progressiveStreamingTtfaP50Ms);
                 if (progressiveStreamingTtfaAcceptance?.assertedFromServerCard !==
                         true ||
                     progressiveStreamingTtfaAcceptance?.success !== true ||
-                    progressiveStreamingTtfaAcceptance
-                        ?.progressiveStreamingTtfaMeasured !== false ||
-                    progressiveStreamingTtfaAcceptance
-                        ?.trueMediaSourceTtfaMeasured !== false) {
+                    !(progressiveMeasured || progressiveUnavailable)) {
                     throw Error(
-                        'Progressive MediaSource TTFA unmeasured acceptance ' +
-                        'missing verified server-card evidence: ' +
+                        'Progressive MediaSource TTFA measured/unavailable ' +
+                        'acceptance missing verified server-card evidence: ' +
                         JSON.stringify(progressiveStreamingTtfaAcceptance));
                 }
                 liveHeartbeat('fastapi-server-card-done', {
@@ -3733,9 +3818,12 @@ try {
                     progressiveStreamingTtfaMeasured:
                         progressiveStreamingTtfaAcceptance
                             ?.progressiveStreamingTtfaMeasured,
-                    trueMediaSourceTtfaMeasured:
+                    progressiveStreamingTtfaUnavailable:
                         progressiveStreamingTtfaAcceptance
-                            ?.trueMediaSourceTtfaMeasured,
+                            ?.progressiveStreamingTtfaUnavailable,
+                    progressiveStreamingTtfaP50Ms:
+                        progressiveStreamingTtfaAcceptance
+                            ?.progressiveStreamingTtfaP50Ms,
                 });
                 await saveReport();
                 liveHeartbeat('fastapi-preference-honor-start');

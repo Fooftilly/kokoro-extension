@@ -33,6 +33,7 @@ const SRC_FILES = [
     'benchmark-page.js',
     'model-manager-page.js',
     'server-audio-playback-start.js',
+    'mediasource-progressive-ttfa.js',
     'longer-shared-english-sample.js',
     'text-processor.js',
     'audio-manager.js',

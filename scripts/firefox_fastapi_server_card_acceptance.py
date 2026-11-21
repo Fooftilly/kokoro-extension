@@ -13,6 +13,10 @@ def build_fastapi_server_card_report(
         playback_start_measured=True,
         mediasource_progressive_ttfa_measured=None,
         mediasource_progressive_ttfa_not_measured=None,
+        mediasource_progressive_ttfa_unavailable=None,
+        mediasource_progressive_ttfa_p50_ms=None,
+        mediasource_progressive_ttfa_p50_raw=None,
+        used_media_source=None,
         mediasource_progressive_ttfa_disclosure=None,
         first_body_byte_p50_ms=None, synthesis_p50_ms=None,
         playback_start_p50_ms=None):
@@ -20,7 +24,8 @@ def build_fastapi_server_card_report(
 
     MediaSource progressive TTFA fields must be observed from the page by
     live acceptance — pass them explicitly. Omitting them leaves None/empty
-    so shared assert fails closed (no invented honesty defaults).
+    so shared assert fails closed (no invented honesty defaults). Prefer
+    mediasource_progressive_ttfa_p50_raw so empty leftovers are not Number('')→0.
     """
     options = {
         "browser": browser,
@@ -37,6 +42,13 @@ def build_fastapi_server_card_report(
             mediasource_progressive_ttfa_measured,
         "mediasourceProgressiveTtfaNotMeasured":
             mediasource_progressive_ttfa_not_measured is True,
+        "mediasourceProgressiveTtfaUnavailable":
+            mediasource_progressive_ttfa_unavailable is True,
+        "mediasourceProgressiveTtfaP50Raw":
+            mediasource_progressive_ttfa_p50_raw,
+        "mediasourceProgressiveTtfaP50Ms":
+            mediasource_progressive_ttfa_p50_ms,
+        "usedMediaSource": used_media_source is True,
         "mediasourceProgressiveTtfaDisclosure":
             mediasource_progressive_ttfa_disclosure
             if mediasource_progressive_ttfa_disclosure is not None

@@ -28,17 +28,58 @@ describe('Streaming first-body-byte acceptance (KE-34 / KE-40)', () => {
         expect(source).toContain('playback start p50');
         expect(source).toContain('not MediaSource streaming TTFA');
         expect(source).toContain('MediaSource progressive TTFA not measured');
+        expect(source).toContain('progressive MediaSource TTFA measured');
+        expect(source).toContain('progressive MediaSource TTFA unavailable');
+        expect(source).toContain('measureProgressiveMediaSourceTtfa');
+        expect(source).toContain('measureFastApiProgressiveMediaSourceTtfa');
+        expect(source).toContain('probeMediaSourceProgressiveMp3Support');
+        expect(source).toContain('progressiveTtfaUnavailable');
+        expect(source).toContain('cancelReadableStreamBody');
+        expect(source).toContain('readBoundedResponseText');
+        expect(source).toContain('DEFAULT_PROGRESSIVE_TTFA_TIMEOUT_MS');
+        // Re-check fastapi before progressive POST (local-mode must not leak).
+        expect(source).toContain(
+            "selected.ttsBackend !== 'fastapi'");
+        // Storage get failure → progressive unavailable (playable path kept).
+        expect(source).toContain('Progressive settings read failed');
+        const progressiveFn = source.slice(
+            source.indexOf('async function measureFastApiProgressiveMediaSourceTtfa'),
+            source.indexOf('async function fetchFastApiPlayableClip'));
+        expect(progressiveFn).toMatch(
+            /try\s*\{[\s\S]*storage\.sync\.get[\s\S]*\}\s*catch/);
+        expect(progressiveFn.indexOf('storage.sync.get'))
+            .toBeLessThan(progressiveFn.indexOf('fetch(endpoint'));
+        expect(progressiveFn.indexOf('Progressive settings read failed'))
+            .toBeLessThan(progressiveFn.indexOf('fetch(endpoint'));
+        // Header deadline must arm before await fetch (hung headers → unavailable).
+        expect(progressiveFn.indexOf('headerDeadlineTimer = setTimeout'))
+            .toBeLessThan(progressiveFn.indexOf('await fetch(endpoint'));
+        expect(progressiveFn).toContain('readBoundedResponseText(');
+        // Exhausted budget must refuse MSE handoff (timeoutMs 0 = no deadline).
+        expect(progressiveFn.indexOf('remainingMs <= 0'))
+            .toBeLessThan(progressiveFn.indexOf(
+                'measureProgressiveMediaSourceTtfa({'));
+        // Playable-clip path is separate — storage failure must not sit on it.
+        const playableFn = source.slice(
+            source.indexOf('async function fetchFastApiPlayableClip'),
+            source.indexOf('function applyProgressiveMediaSourceTtfaStatus'));
+        expect(playableFn).not.toContain('Progressive settings read failed');
+        expect(source).toContain(
+            "mediasourceProgressiveTtfaMeasured = 'true'");
         expect(source).toContain(
             "mediasourceProgressiveTtfaMeasured = 'false'");
         expect(source).toContain(
             "mediasourceProgressiveTtfaNotMeasured = 'true'");
+        expect(source).toContain('mediasourceProgressiveTtfaP50Ms');
         expect(source).toContain(
             "from './server-audio-playback-start.js'");
         expect(source).toContain('waitServerAudioPlaybackStart');
         expect(source).toContain('streamingFirstBodyByteMeasured');
         expect(source).toContain('playbackStartMeasured');
         expect(source).toContain('playbackStartP50Ms');
-        expect(source).toContain('summarizeRuns(runs)');
+        expect(source).toContain('summarizeRuns(warm.runs)');
+        expect(source).toContain('collectFastApiWarmRuns');
+        expect(source).toContain('applyProgressiveMediaSourceTtfaStatus');
         expect(source).toContain('nearestRank');
         expect(source).not.toContain('Streaming TTFA p50');
         expect(source).toMatch(/for \(let n = 0; n < 3; n\+\+\)/);
@@ -55,6 +96,7 @@ describe('Streaming first-body-byte acceptance (KE-34 / KE-40)', () => {
         expect(helper).toContain('finally');
         const build = fs.readFileSync(path.join(root, 'build.js'), 'utf8');
         expect(build).toContain("'server-audio-playback-start.js'");
+        expect(build).toContain("'mediasource-progressive-ttfa.js'");
     });
 
     test('testFastApi discards an untimed warm-up before three warm runs', () => {
@@ -64,19 +106,23 @@ describe('Streaming first-body-byte acceptance (KE-34 / KE-40)', () => {
         expect(source).toContain('after untimed warm-up');
         expect(source).toContain(
             'Untimed warm-up absorbs cold FastAPI/model init');
+        const collectStart = source.indexOf(
+            'async function collectFastApiWarmRuns(');
+        expect(collectStart).toBeGreaterThan(0);
+        const collectBody = source.slice(collectStart, collectStart + 1800);
+        expect(collectBody).toContain('for (let n = 0; n < 3; n++)');
+        expect(collectBody).toContain("kind: 'warm'");
         const fnStart = source.indexOf('async function testFastApi()');
         expect(fnStart).toBeGreaterThan(0);
-        const fnBody = source.slice(fnStart, fnStart + 4200);
+        const fnBody = source.slice(fnStart, fnStart + 2800);
         const warmUpIdx = fnBody.indexOf(
             'await fetchFastApiPlayableClip(\n' +
             '            endpoint.href, input, settings.voice, audio);');
-        const loopIdx = fnBody.indexOf('for (let n = 0; n < 3; n++)');
-        const pushIdx = fnBody.indexOf("kind: 'warm'");
+        const collectIdx = fnBody.indexOf('await collectFastApiWarmRuns(');
         expect(warmUpIdx).toBeGreaterThan(0);
-        expect(loopIdx).toBeGreaterThan(warmUpIdx);
-        expect(pushIdx).toBeGreaterThan(loopIdx);
-        // Warm-up call must not push into runs (only the measured loop does).
-        expect(fnBody.slice(warmUpIdx, loopIdx)).not.toContain('runs.push');
+        expect(collectIdx).toBeGreaterThan(warmUpIdx);
+        // Untimed warm-up must not push into runs (only collectFastApiWarmRuns).
+        expect(fnBody.slice(warmUpIdx, collectIdx)).not.toContain('runs.push');
     });
 
     test('server-card assert requires playback start at/after full response', () => {
@@ -91,9 +137,13 @@ describe('Streaming first-body-byte acceptance (KE-34 / KE-40)', () => {
         expect(source).toContain('post-download start, not MediaSource');
         expect(source).toContain(
             'SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE');
+        expect(source).toContain(
+            'SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_MEASURED_NEEDLE');
         expect(source).toContain('mediasourceProgressiveTtfaMeasured');
         expect(source).toContain('mediasourceProgressiveTtfaNotMeasured');
+        expect(source).toContain('mediasourceProgressiveTtfaP50Ms');
         expect(source).toContain('MediaSource progressive TTFA not measured');
+        expect(source).toContain('progressive MediaSource TTFA measured');
     });
 
     test('local measured export still denies first-audio claims', () => {

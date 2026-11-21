@@ -13,6 +13,14 @@ import {
 } from './longer-shared-english-sample.js';
 import { discloseStoreSigning } from './store-signing-disclosure.js';
 import { waitServerAudioPlaybackStart } from './server-audio-playback-start.js';
+import {
+    DEFAULT_PROGRESSIVE_TTFA_TIMEOUT_MS,
+    measureProgressiveMediaSourceTtfa,
+    probeMediaSourceProgressiveMp3Support,
+    progressiveTtfaUnavailable,
+    cancelReadableStreamBody,
+    readBoundedResponseText,
+} from './mediasource-progressive-ttfa.js';
 
 const page = document.getElementById('modelManager');
 const dictionary = dictionaryManifest();
@@ -1176,6 +1184,110 @@ function clearServerFirstBodyByteDataset(status) {
     delete status.dataset.playbackStartNotMeasured;
     delete status.dataset.mediasourceProgressiveTtfaMeasured;
     delete status.dataset.mediasourceProgressiveTtfaNotMeasured;
+    delete status.dataset.mediasourceProgressiveTtfaUnavailable;
+    delete status.dataset.mediasourceProgressiveTtfaP50Ms;
+    delete status.dataset.usedMediaSource;
+}
+
+/**
+ * Page-level streamed fetch for progressive MediaSource TTFA only.
+ * Never invents a number: unavailable when MSE/mime/stream cannot run.
+ * Progressive-only HTTP/fetch failures map to unavailable (do not fail the
+ * whole FastAPI card). Re-checks fastapi selection before POST (like
+ * background FETCH_TTS_AUDIO) so local-mode switches never leak text.
+ */
+async function measureFastApiProgressiveMediaSourceTtfa(
+    endpoint, input, voice) {
+    const probe = probeMediaSourceProgressiveMp3Support();
+    if (!probe.supported) {
+        return progressiveTtfaUnavailable({ reason: probe.reason });
+    }
+    // Per-request gate: user may have switched to a local backend mid-test.
+    // Storage read failure must not fail the whole FastAPI card — map to
+    // progressive unavailable and keep playable-clip results.
+    let selected;
+    try {
+        selected = await browser.storage.sync.get({ ttsBackend: 'fastapi' });
+    } catch (error) {
+        return progressiveTtfaUnavailable({
+            reason: 'Progressive settings read failed: ' +
+                String(error?.message || error),
+        });
+    }
+    if (selected.ttsBackend !== 'fastapi') {
+        return progressiveTtfaUnavailable({
+            reason: 'FastAPI no longer selected; progressive request skipped',
+        });
+    }
+    const startedAt = performance.now();
+    const timeoutMs = DEFAULT_PROGRESSIVE_TTFA_TIMEOUT_MS;
+    const abortController = new AbortController();
+    // Arm deadline before fetch so hung headers cannot stall the FastAPI card.
+    let headerDeadlineTimer = null;
+    if (timeoutMs > 0) {
+        headerDeadlineTimer = setTimeout(() => {
+            try { abortController.abort(); } catch { /* ignore */ }
+        }, timeoutMs);
+    }
+    let response;
+    try {
+        try {
+            response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model: 'kokoro', input, voice,
+                    response_format: 'mp3', speed: 1,
+                }),
+                signal: abortController.signal,
+            });
+        } catch (error) {
+            return progressiveTtfaUnavailable({
+                mimeType: probe.mimeType,
+                reason: 'Progressive MediaSource fetch failed: ' +
+                    String(error?.message || error),
+            });
+        }
+        if (!response.ok) {
+            // Streamed bounded preview — do not wait for error-body EOF.
+            const errText = await readBoundedResponseText(
+                response, undefined, abortController.signal);
+            return progressiveTtfaUnavailable({
+                mimeType: probe.mimeType,
+                reason: 'Progressive MediaSource HTTP ' + response.status +
+                    (errText ? ' ' + errText : ''),
+            });
+        }
+        if (!probeMediaSourceProgressiveMp3Support().supported) {
+            cancelReadableStreamBody(response.body);
+            abortController.abort();
+            return progressiveTtfaUnavailable({
+                reason: 'MediaSource progressive support lost before measure',
+            });
+        }
+        // Headers can arrive after the deadline while the abort callback is
+        // still queued. timeoutMs 0 means "no timeout" inside the measurer —
+        // refuse the handoff instead of hanging on a stalled body.
+        const remainingMs = timeoutMs - (performance.now() - startedAt);
+        if (remainingMs <= 0) {
+            cancelReadableStreamBody(response.body);
+            abortController.abort();
+            return progressiveTtfaUnavailable({
+                mimeType: probe.mimeType,
+                reason: 'Progressive MediaSource TTFA timed out after ' +
+                    timeoutMs + 'ms',
+            });
+        }
+        return measureProgressiveMediaSourceTtfa({
+            body: response.body,
+            startedAt,
+            contentType: response.headers?.get?.('Content-Type') || 'audio/mpeg',
+            signal: abortController.signal,
+            timeoutMs: remainingMs,
+        });
+    } finally {
+        if (headerDeadlineTimer != null) clearTimeout(headerDeadlineTimer);
+    }
 }
 
 /**
@@ -1216,6 +1328,80 @@ async function fetchFastApiPlayableClip(endpoint, input, voice, audio) {
     };
 }
 
+/**
+ * Apply progressive MediaSource TTFA dataset + status tail. Never invents p50.
+ * @returns {string} progressiveStatusTail
+ */
+function applyProgressiveMediaSourceTtfaStatus(
+    status, progressiveSamples, progressiveUnavailableReason,
+    progressiveUsedMediaSource) {
+    status.dataset.usedMediaSource = progressiveUsedMediaSource
+        ? 'true' : 'false';
+    if (progressiveSamples.length === 3) {
+        const progressiveTtfaP50Ms = window.KokoroBenchmark.nearestRank(
+            progressiveSamples, 50);
+        if (!(Number.isFinite(progressiveTtfaP50Ms) &&
+            progressiveTtfaP50Ms >= 0)) {
+            throw new Error(
+                'Progressive MediaSource TTFA p50 was not finite');
+        }
+        status.dataset.mediasourceProgressiveTtfaMeasured = 'true';
+        status.dataset.mediasourceProgressiveTtfaNotMeasured = 'false';
+        status.dataset.mediasourceProgressiveTtfaUnavailable = 'false';
+        status.dataset.mediasourceProgressiveTtfaP50Ms =
+            String(progressiveTtfaP50Ms);
+        return 'progressive MediaSource TTFA measured p50: ' +
+            progressiveTtfaP50Ms.toFixed(0) + ' ms; ';
+    }
+    // Fail closed: never invent a progressive TTFA number.
+    status.dataset.mediasourceProgressiveTtfaMeasured = 'false';
+    status.dataset.mediasourceProgressiveTtfaNotMeasured = 'true';
+    status.dataset.mediasourceProgressiveTtfaUnavailable = 'true';
+    delete status.dataset.mediasourceProgressiveTtfaP50Ms;
+    return 'progressive MediaSource TTFA unavailable' +
+        (progressiveUnavailableReason
+            ? ' (' + progressiveUnavailableReason + ')'
+            : '') +
+        '; MediaSource progressive TTFA not measured; ';
+}
+
+async function collectFastApiWarmRuns(
+    endpoint, input, voice, audio, options = {}) {
+    const runs = [];
+    const progressiveSamples = [];
+    let progressiveUnavailableReason = options.progressiveUnavailableReason ||
+        null;
+    let progressiveUsedMediaSource = options.progressiveUsedMediaSource === true;
+    const measureProgressive = options.measureProgressive !== false;
+    for (let n = 0; n < 3; n++) {
+        const clip = await fetchFastApiPlayableClip(
+            endpoint, input, voice, audio);
+        // summarizeRuns' firstAudioMs slot holds first-body-byte samples;
+        // UI/export must label them TTFB, never MediaSource streaming TTFA.
+        runs.push({
+            kind: 'warm',
+            firstAudioMs: clip.firstBodyByteMs,
+            synthesisMs: clip.synthesisMs,
+            playbackStartMs: clip.playbackStartMs,
+            audioDurationSec: clip.audioDurationSec,
+        });
+        if (!measureProgressive) continue;
+        const progressive = await measureFastApiProgressiveMediaSourceTtfa(
+            endpoint, input, voice);
+        if (progressive.usedMediaSource) progressiveUsedMediaSource = true;
+        if (progressive.measured && Number.isFinite(progressive.ttfaMs)) {
+            progressiveSamples.push(progressive.ttfaMs);
+        } else if (progressive.unavailable) {
+            progressiveUnavailableReason = progressive.reason ||
+                'progressive MediaSource TTFA unavailable';
+        }
+    }
+    return {
+        runs, progressiveSamples, progressiveUnavailableReason,
+        progressiveUsedMediaSource,
+    };
+}
+
 async function testFastApi() {
     const button = document.getElementById('testServer');
     const choose = document.getElementById('chooseServer');
@@ -1242,23 +1428,24 @@ async function testFastApi() {
         // local ONNX (exclude cold prep from runs labeled warm).
         await fetchFastApiPlayableClip(
             endpoint.href, input, settings.voice, audio);
-        const runs = [];
-        for (let n = 0; n < 3; n++) {
-            const clip = await fetchFastApiPlayableClip(
-                endpoint.href, input, settings.voice, audio);
-            // summarizeRuns' firstAudioMs slot holds first-body-byte samples;
-            // UI/export must label them TTFB, never MediaSource streaming TTFA.
-            runs.push({
-                kind: 'warm',
-                firstAudioMs: clip.firstBodyByteMs,
-                synthesisMs: clip.synthesisMs,
-                playbackStartMs: clip.playbackStartMs,
-                audioDurationSec: clip.audioDurationSec,
+        // Untimed progressive MSE warm-up (separate stream) so cold MSE init
+        // is not blended into measured progressive TTFA samples. Timed samples
+        // require warm-up to reach playing before EOF — otherwise skip POSTs.
+        const progressiveWarm = await measureFastApiProgressiveMediaSourceTtfa(
+            endpoint.href, input, settings.voice);
+        const warm = await collectFastApiWarmRuns(
+            endpoint.href, input, settings.voice, audio, {
+                measureProgressive: progressiveWarm.measured === true,
+                progressiveUnavailableReason: progressiveWarm.measured
+                    ? null
+                    : (progressiveWarm.reason ||
+                        'progressive MediaSource warm-up did not reach playing'),
+                progressiveUsedMediaSource:
+                    progressiveWarm.usedMediaSource === true,
             });
-        }
-        const metrics = window.KokoroBenchmark.summarizeRuns(runs);
+        const metrics = window.KokoroBenchmark.summarizeRuns(warm.runs);
         const playbackStartP50Ms = window.KokoroBenchmark.nearestRank(
-            runs.map(r => r.playbackStartMs), 50);
+            warm.runs.map(r => r.playbackStartMs), 50);
         if (!(Number.isFinite(playbackStartP50Ms) &&
             playbackStartP50Ms >= metrics.synthesisP50Ms)) {
             throw new Error(
@@ -1271,10 +1458,10 @@ async function testFastApi() {
         // Survives chooseServer replacing status text with "FastAPI selected."
         status.dataset.playbackStartMeasured = 'true';
         status.dataset.playbackStartP50Ms = String(playbackStartP50Ms);
-        // Honesty: post-download HTMLAudioElement start is measured; MediaSource
-        // / progressive streaming TTFA is still not implemented or timed.
-        status.dataset.mediasourceProgressiveTtfaMeasured = 'false';
-        status.dataset.mediasourceProgressiveTtfaNotMeasured = 'true';
+        const progressiveStatusTail = applyProgressiveMediaSourceTtfaStatus(
+            status, warm.progressiveSamples,
+            warm.progressiveUnavailableReason,
+            warm.progressiveUsedMediaSource);
         setMessage(status,
             'Server returned playable MP3. First body byte (TTFB) p50: ' +
             metrics.firstAudioP50Ms.toFixed(0) +
@@ -1284,7 +1471,7 @@ async function testFastApi() {
             playbackStartP50Ms.toFixed(0) +
             ' ms (HTMLAudioElement after full download; muted; ' +
             'not MediaSource streaming TTFA; ' +
-            'MediaSource progressive TTFA not measured; ' +
+            progressiveStatusTail +
             'after untimed warm-up; ' +
             '3 warm runs). Local backends do not measure first-audio.');
         choose.disabled = false;
