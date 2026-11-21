@@ -278,10 +278,11 @@ describe('measureProgressiveMediaSourceTtfa runtime', () => {
 
     test('reader.closed rejection mid-append reports unavailable', async () => {
         stub.restore();
+        // Long appendDelay so closed can reject while appendBuffer is pending.
         stub = installMediaSourceStub({
-            playAfterMs: 40,
+            playAfterMs: 200,
             firePlaying: true,
-            appendDelayMs: 80,
+            appendDelayMs: 120,
         });
         jest.resetModules();
         mse = await import('../mediasource-progressive-ttfa.js');
@@ -291,7 +292,28 @@ describe('measureProgressiveMediaSourceTtfa runtime', () => {
         closed.catch(() => {});
         let releaseLockCount = 0;
         let index = 0;
+        let appendStarted = false;
         const chunks = [new Uint8Array([1, 2, 3])];
+        // Hook appendBuffer to reject closed only after append is in flight.
+        const OrigMS = global.MediaSource;
+        class TrackingMediaSource extends OrigMS {
+            addSourceBuffer() {
+                const sb = super.addSourceBuffer();
+                const origAppend = sb.appendBuffer.bind(sb);
+                sb.appendBuffer = (chunk) => {
+                    appendStarted = true;
+                    // Reject closed while this append's updateend is still pending.
+                    queueMicrotask(() => {
+                        closedReject(new Error('network reset'));
+                    });
+                    return origAppend(chunk);
+                };
+                return sb;
+            }
+        }
+        TrackingMediaSource.isTypeSupported = OrigMS.isTypeSupported;
+        global.MediaSource = TrackingMediaSource;
+
         const body = {
             getReader() {
                 return {
@@ -300,12 +322,7 @@ describe('measureProgressiveMediaSourceTtfa runtime', () => {
                         if (index >= chunks.length) {
                             return { done: true, value: undefined };
                         }
-                        const value = chunks[index++];
-                        // Error the stream while the first append is pending.
-                        queueMicrotask(() => {
-                            closedReject(new Error('network reset'));
-                        });
-                        return { done: false, value };
+                        return { done: false, value: chunks[index++] };
                     },
                     cancel() { return Promise.resolve(); },
                     releaseLock() { releaseLockCount += 1; },
@@ -320,6 +337,7 @@ describe('measureProgressiveMediaSourceTtfa runtime', () => {
             startedAt: 0,
             timeoutMs: 500,
         });
+        expect(appendStarted).toBe(true);
         expect(result.measured).toBe(false);
         expect(result.unavailable).toBe(true);
         expect(result.ttfaMs).toBeNull();

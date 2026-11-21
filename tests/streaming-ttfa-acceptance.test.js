@@ -38,6 +38,22 @@ describe('Streaming first-body-byte acceptance (KE-34 / KE-40)', () => {
         // Re-check fastapi before progressive POST (local-mode must not leak).
         expect(source).toContain(
             "selected.ttsBackend !== 'fastapi'");
+        // Storage get failure → progressive unavailable (playable path kept).
+        expect(source).toContain('Progressive settings read failed');
+        const progressiveFn = source.slice(
+            source.indexOf('async function measureFastApiProgressiveMediaSourceTtfa'),
+            source.indexOf('async function fetchFastApiPlayableClip'));
+        expect(progressiveFn).toMatch(
+            /try\s*\{[\s\S]*storage\.sync\.get[\s\S]*\}\s*catch/);
+        expect(progressiveFn.indexOf('storage.sync.get'))
+            .toBeLessThan(progressiveFn.indexOf('fetch(endpoint'));
+        expect(progressiveFn.indexOf('Progressive settings read failed'))
+            .toBeLessThan(progressiveFn.indexOf('fetch(endpoint'));
+        // Playable-clip path is separate — storage failure must not sit on it.
+        const playableFn = source.slice(
+            source.indexOf('async function fetchFastApiPlayableClip'),
+            source.indexOf('function applyProgressiveMediaSourceTtfaStatus'));
+        expect(playableFn).not.toContain('Progressive settings read failed');
         expect(source).toContain(
             "mediasourceProgressiveTtfaMeasured = 'true'");
         expect(source).toContain(
