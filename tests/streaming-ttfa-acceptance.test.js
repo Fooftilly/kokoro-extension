@@ -32,6 +32,12 @@ describe('Streaming first-body-byte acceptance (KE-34 / KE-40)', () => {
         expect(source).toContain('progressive MediaSource TTFA unavailable');
         expect(source).toContain('measureProgressiveMediaSourceTtfa');
         expect(source).toContain('measureFastApiProgressiveMediaSourceTtfa');
+        expect(source).toContain('probeMediaSourceProgressiveMp3Support');
+        expect(source).toContain('progressiveTtfaUnavailable');
+        expect(source).toContain('cancelReadableStreamBody');
+        // Re-check fastapi before progressive POST (local-mode must not leak).
+        expect(source).toContain(
+            "selected.ttsBackend !== 'fastapi'");
         expect(source).toContain(
             "mediasourceProgressiveTtfaMeasured = 'true'");
         expect(source).toContain(
@@ -45,7 +51,9 @@ describe('Streaming first-body-byte acceptance (KE-34 / KE-40)', () => {
         expect(source).toContain('streamingFirstBodyByteMeasured');
         expect(source).toContain('playbackStartMeasured');
         expect(source).toContain('playbackStartP50Ms');
-        expect(source).toContain('summarizeRuns(runs)');
+        expect(source).toContain('summarizeRuns(warm.runs)');
+        expect(source).toContain('collectFastApiWarmRuns');
+        expect(source).toContain('applyProgressiveMediaSourceTtfaStatus');
         expect(source).toContain('nearestRank');
         expect(source).not.toContain('Streaming TTFA p50');
         expect(source).toMatch(/for \(let n = 0; n < 3; n\+\+\)/);
@@ -72,19 +80,23 @@ describe('Streaming first-body-byte acceptance (KE-34 / KE-40)', () => {
         expect(source).toContain('after untimed warm-up');
         expect(source).toContain(
             'Untimed warm-up absorbs cold FastAPI/model init');
+        const collectStart = source.indexOf(
+            'async function collectFastApiWarmRuns(');
+        expect(collectStart).toBeGreaterThan(0);
+        const collectBody = source.slice(collectStart, collectStart + 1800);
+        expect(collectBody).toContain('for (let n = 0; n < 3; n++)');
+        expect(collectBody).toContain("kind: 'warm'");
         const fnStart = source.indexOf('async function testFastApi()');
         expect(fnStart).toBeGreaterThan(0);
-        const fnBody = source.slice(fnStart, fnStart + 4200);
+        const fnBody = source.slice(fnStart, fnStart + 2800);
         const warmUpIdx = fnBody.indexOf(
             'await fetchFastApiPlayableClip(\n' +
             '            endpoint.href, input, settings.voice, audio);');
-        const loopIdx = fnBody.indexOf('for (let n = 0; n < 3; n++)');
-        const pushIdx = fnBody.indexOf("kind: 'warm'");
+        const collectIdx = fnBody.indexOf('await collectFastApiWarmRuns(');
         expect(warmUpIdx).toBeGreaterThan(0);
-        expect(loopIdx).toBeGreaterThan(warmUpIdx);
-        expect(pushIdx).toBeGreaterThan(loopIdx);
-        // Warm-up call must not push into runs (only the measured loop does).
-        expect(fnBody.slice(warmUpIdx, loopIdx)).not.toContain('runs.push');
+        expect(collectIdx).toBeGreaterThan(warmUpIdx);
+        // Untimed warm-up must not push into runs (only collectFastApiWarmRuns).
+        expect(fnBody.slice(warmUpIdx, collectIdx)).not.toContain('runs.push');
     });
 
     test('server-card assert requires playback start at/after full response', () => {

@@ -2040,13 +2040,16 @@ def _start_fastapi_speech_stub():
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 # Delay the first body byte so streamed TTFB is measurable.
-                first_len = max(1, min(64, len(mp3)))
+                # Hold a playable MP3 prefix open before the final write so
+                # progressive MediaSource can fire `playing` before EOF.
+                tail_len = min(32, max(1, len(mp3) - 1))
+                first_len = max(1, len(mp3) - tail_len)
                 first = mp3[:first_len]
                 rest = mp3[first_len:]
                 time.sleep(0.1)
                 self.wfile.write(first)
                 self.wfile.flush()
-                time.sleep(0.02)
+                time.sleep(0.25)
                 if rest:
                     self.wfile.write(rest)
                 return
@@ -2197,8 +2200,10 @@ def accept_fastapi_server_card(driver, origin, api_url):
             mediasourceProgressiveTtfaNotMeasured:
                 notMeasuredRaw==='true',
             mediasourceProgressiveTtfaUnavailable: unavailable,
-            mediasourceProgressiveTtfaP50Ms: measured && p50Raw!=null
-                ? Number(p50Raw) : null,
+            // Raw dataset only — parse in Python/Node (NaN does not survive
+            // JSON). Never drop leftovers; never Number('') → 0 in-page.
+            mediasourceProgressiveTtfaP50Raw:
+                p50Raw == null ? null : String(p50Raw),
             usedMediaSource: status?.dataset?.usedMediaSource==='true',
             mediasourceProgressiveTtfaDisclosure: disclosure,
         };
@@ -2258,6 +2263,8 @@ def accept_fastapi_server_card(driver, origin, api_url):
             ttfb.get("mediasourceProgressiveTtfaNotMeasured")),
         mediasource_progressive_ttfa_unavailable=bool(
             ttfb.get("mediasourceProgressiveTtfaUnavailable")),
+        mediasource_progressive_ttfa_p50_raw=ttfb.get(
+            "mediasourceProgressiveTtfaP50Raw"),
         mediasource_progressive_ttfa_p50_ms=ttfb.get(
             "mediasourceProgressiveTtfaP50Ms"),
         used_media_source=bool(ttfb.get("usedMediaSource")),

@@ -1165,12 +1165,15 @@ async function startFastApiSpeechStub() {
                     'Content-Length': body.length,
                     'Cache-Control': 'no-store',
                 });
-                const firstLen = Math.max(1, Math.min(64, body.length));
+                // Hold a playable MP3 prefix open before the final write so
+                // progressive MediaSource can fire `playing` before EOF.
+                const tailLen = Math.min(32, Math.max(1, body.length - 1));
+                const firstLen = Math.max(1, body.length - tailLen);
                 const first = body.subarray(0, firstLen);
                 const rest = body.subarray(firstLen);
                 setTimeout(() => {
                     res.write(first);
-                    setTimeout(() => res.end(rest), 20);
+                    setTimeout(() => res.end(rest), 250);
                 }, 100);
             });
             return;
@@ -1202,6 +1205,7 @@ async function acceptFastApiServerCard(page, apiUrl) {
         FASTAPI_SELECTED_NEEDLE,
         BACKEND_BEFORE_CHOOSE,
         buildFastApiServerCardReport,
+        parseObservedProgressiveTtfaP50Ms,
     } = await import('./fastapi-server-card-acceptance.mjs');
 
     // testFastApi refuses unless the selected backend is already fastapi.
@@ -1336,9 +1340,10 @@ async function acceptFastApiServerCard(page, apiUrl) {
             mediasourceProgressiveTtfaNotMeasured:
                 notMeasuredRaw === 'true',
             mediasourceProgressiveTtfaUnavailable: unavailable,
-            mediasourceProgressiveTtfaP50Ms: measured && p50Raw != null
-                ? Number(p50Raw)
-                : null,
+            // Raw dataset only — parse outside evaluate (NaN does not survive
+            // JSON). Never drop leftovers; never Number('') → 0 in-page.
+            mediasourceProgressiveTtfaP50Raw:
+                p50Raw == null ? null : String(p50Raw),
             usedMediaSource: status?.dataset?.usedMediaSource === 'true',
             mediasourceProgressiveTtfaDisclosure: disclosure,
         };
@@ -1352,6 +1357,9 @@ async function acceptFastApiServerCard(page, apiUrl) {
         mediasourceUnavailable:
             SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_UNAVAILABLE_NEEDLE,
     });
+
+    const mediasourceProgressiveTtfaP50Ms = parseObservedProgressiveTtfaP50Ms(
+        ttfb.mediasourceProgressiveTtfaP50Raw);
 
     // Switch away from fastapi so chooseServer must write the preference.
     await page.evaluate(async (backend) => {
@@ -1396,8 +1404,9 @@ async function acceptFastApiServerCard(page, apiUrl) {
             ttfb.mediasourceProgressiveTtfaNotMeasured,
         mediasourceProgressiveTtfaUnavailable:
             ttfb.mediasourceProgressiveTtfaUnavailable,
-        mediasourceProgressiveTtfaP50Ms:
-            ttfb.mediasourceProgressiveTtfaP50Ms,
+        mediasourceProgressiveTtfaP50Raw:
+            ttfb.mediasourceProgressiveTtfaP50Raw,
+        mediasourceProgressiveTtfaP50Ms,
         usedMediaSource: ttfb.usedMediaSource,
         mediasourceProgressiveTtfaDisclosure:
             ttfb.mediasourceProgressiveTtfaDisclosure,

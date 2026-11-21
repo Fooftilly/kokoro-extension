@@ -125,6 +125,15 @@ describe('progressive MediaSource TTFA measured acceptance', () => {
         expect(source).toContain('appendBuffer');
         expect(source).toContain('unavailable: true');
         expect(source).toContain('ttfaMs: null');
+        expect(source).toContain('cancelReadableStreamBody');
+        expect(source).toContain('AbortController');
+        expect(source).toContain('state.aborted');
+        // PR Lens: finish/cleanup must clear deadline + playing listeners.
+        expect(source).toContain('detachPlaying');
+        expect(source).toContain('deadlineTimer');
+        expect(source).toContain('clearTimeout(state.deadlineTimer)');
+        expect(source).toContain('state.detachPlaying?.()');
+        expect(source).toContain('promise.catch(() => {})');
         expect(source).not.toMatch(/ttfaMs\s*[:=]\s*\d+/);
     });
 

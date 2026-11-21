@@ -106,21 +106,46 @@ function assertFastApiFirstBodyByte(report) {
     }
 }
 
+/**
+ * Parse observed progressive p50 from dataset raw (never Number('') → 0).
+ * Empty string → NaN so measured asserts fail closed; finite leftovers on
+ * unavailable paths stay visible to the invent check.
+ * @param {unknown} p50Raw
+ * @param {unknown} [p50Ms]
+ * @returns {number|null}
+ */
+export function parseObservedProgressiveTtfaP50Ms(p50Raw, p50Ms) {
+    if (p50Raw !== undefined && p50Raw !== null) {
+        const trimmed = String(p50Raw).trim();
+        if (trimmed === '') return Number.NaN;
+        return Number(trimmed);
+    }
+    if (p50Ms === undefined) return null;
+    return p50Ms;
+}
+
 function assertFastApiMediaSourceProgressiveTtfa(report) {
     const measured = report.mediasourceProgressiveTtfaMeasured;
     const unavailable = report.mediasourceProgressiveTtfaUnavailable === true;
     const disclosure = String(
         report.mediasourceProgressiveTtfaDisclosure || '');
+    const p50Ms = parseObservedProgressiveTtfaP50Ms(
+        report.mediasourceProgressiveTtfaP50Raw,
+        report.mediasourceProgressiveTtfaP50Ms);
     if (measured === true) {
         if (report.mediasourceProgressiveTtfaNotMeasured === true) {
             throw new Error(
                 'mediasourceProgressiveTtfaNotMeasured must be false when measured');
         }
-        if (!(Number.isFinite(report.mediasourceProgressiveTtfaP50Ms) &&
-            report.mediasourceProgressiveTtfaP50Ms >= 0)) {
+        if (report.mediasourceProgressiveTtfaP50Raw != null &&
+            String(report.mediasourceProgressiveTtfaP50Raw).trim() === '') {
+            throw new Error(
+                'empty mediasourceProgressiveTtfaP50Raw must not become 0');
+        }
+        if (!(Number.isFinite(p50Ms) && p50Ms >= 0)) {
             throw new Error(
                 'mediasourceProgressiveTtfaP50Ms must be finite ms when measured: ' +
-                report.mediasourceProgressiveTtfaP50Ms);
+                p50Ms);
         }
         if (report.usedMediaSource !== true) {
             throw new Error('usedMediaSource must be true when MSE TTFA measured');
@@ -143,10 +168,11 @@ function assertFastApiMediaSourceProgressiveTtfa(report) {
     }
     requireTrue(report, 'mediasourceProgressiveTtfaNotMeasured',
         'mediasourceProgressiveTtfaNotMeasured must be true when unmeasured');
-    if (Number.isFinite(report.mediasourceProgressiveTtfaP50Ms)) {
+    // Do not discard leftover p50Raw on unavailable — invent check must see it.
+    if (Number.isFinite(p50Ms)) {
         throw new Error(
             'unmeasured/unavailable MediaSource TTFA must not invent p50 ms: ' +
-            report.mediasourceProgressiveTtfaP50Ms);
+            p50Ms);
     }
     const disclosureOk = unavailable
         ? (disclosure.toLowerCase().includes('unavailable') ||
@@ -240,11 +266,20 @@ export function buildFastApiServerCardReport(options = {}) {
                 : true,
         mediasourceProgressiveTtfaUnavailable:
             options.mediasourceProgressiveTtfaUnavailable === true,
-        mediasourceProgressiveTtfaP50Ms:
+        mediasourceProgressiveTtfaP50Raw:
+            Object.prototype.hasOwnProperty.call(
+                options, 'mediasourceProgressiveTtfaP50Raw')
+                ? options.mediasourceProgressiveTtfaP50Raw
+                : undefined,
+        mediasourceProgressiveTtfaP50Ms: parseObservedProgressiveTtfaP50Ms(
+            Object.prototype.hasOwnProperty.call(
+                options, 'mediasourceProgressiveTtfaP50Raw')
+                ? options.mediasourceProgressiveTtfaP50Raw
+                : undefined,
             Object.prototype.hasOwnProperty.call(
                 options, 'mediasourceProgressiveTtfaP50Ms')
                 ? options.mediasourceProgressiveTtfaP50Ms
-                : null,
+                : null),
         usedMediaSource: options.usedMediaSource === true,
         mediasourceProgressiveTtfaDisclosure:
             Object.prototype.hasOwnProperty.call(

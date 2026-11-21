@@ -252,6 +252,11 @@ describe('FastAPI server-card acceptance', () => {
         expect(source).toContain('mediasourceProgressiveTtfaP50Ms');
         expect(source).toContain('mediasourceProgressiveTtfaDisclosure');
         expect(source).toContain('assertProgressiveStreamingTtfaMeasured');
+        // Playable prefix held open before final write (pre-EOF playing).
+        expect(source).toContain('setTimeout(() => res.end(rest), 250)');
+        // Observed p50 raw forwarded; empty string must not become 0.
+        expect(source).toContain('mediasourceProgressiveTtfaP50Raw');
+        expect(source).toContain('parseObservedProgressiveTtfaP50Ms');
         expect(source).toContain('setTimeout(() => {');
         expect(source).toContain('FASTAPI_SELECTED_NEEDLE');
         expect(source).toContain('BACKEND_BEFORE_CHOOSE');
@@ -313,6 +318,9 @@ describe('FastAPI server-card acceptance', () => {
         expect(source).toContain('mediasource_progressive_ttfa_disclosure');
         expect(source).toContain('assert_progressive_streaming_ttfa_measured');
         expect(source).toContain('time.sleep(0.1)');
+        expect(source).toContain('time.sleep(0.25)');
+        expect(source).toContain('mediasourceProgressiveTtfaP50Raw');
+        expect(source).toContain('mediasource_progressive_ttfa_p50_raw');
         expect(source).toMatch(
             /find_element\(\s*By\.ID,\s*["']testServer["']\s*\)\.click\(\)/);
         expect(source).toMatch(
