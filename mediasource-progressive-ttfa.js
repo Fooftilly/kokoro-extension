@@ -11,6 +11,31 @@
 
 export const DEFAULT_PROGRESSIVE_TTFA_TIMEOUT_MS = 15000;
 
+/** Cap HTTP error diagnostics kept in progressive unavailable reasons. */
+export const PROGRESSIVE_HTTP_ERROR_BODY_LIMIT = 512;
+
+/**
+ * Read a bounded response body for diagnostics. Prefer this before any
+ * cancel — cancel marks the body disturbed and makes text() reject.
+ * @param {Response} response
+ * @param {number} [limit]
+ * @returns {Promise<string>}
+ */
+export async function readBoundedResponseText(
+    response, limit = PROGRESSIVE_HTTP_ERROR_BODY_LIMIT) {
+    if (!response || typeof response.text !== 'function') return '';
+    const max = Number.isFinite(limit) && limit >= 0
+        ? limit
+        : PROGRESSIVE_HTTP_ERROR_BODY_LIMIT;
+    try {
+        const text = await response.text();
+        if (typeof text !== 'string' || !text) return '';
+        return text.length > max ? text.slice(0, max) : text;
+    } catch {
+        return '';
+    }
+}
+
 /** Primary MSE mime candidates for Kokoro-FastAPI MP3 streams. */
 export const PROGRESSIVE_MP3_MIME_CANDIDATES = Object.freeze([
     'audio/mpeg',

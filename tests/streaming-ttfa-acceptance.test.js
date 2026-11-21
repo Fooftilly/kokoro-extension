@@ -35,6 +35,8 @@ describe('Streaming first-body-byte acceptance (KE-34 / KE-40)', () => {
         expect(source).toContain('probeMediaSourceProgressiveMp3Support');
         expect(source).toContain('progressiveTtfaUnavailable');
         expect(source).toContain('cancelReadableStreamBody');
+        expect(source).toContain('readBoundedResponseText');
+        expect(source).toContain('DEFAULT_PROGRESSIVE_TTFA_TIMEOUT_MS');
         // Re-check fastapi before progressive POST (local-mode must not leak).
         expect(source).toContain(
             "selected.ttsBackend !== 'fastapi'");
@@ -49,6 +51,10 @@ describe('Streaming first-body-byte acceptance (KE-34 / KE-40)', () => {
             .toBeLessThan(progressiveFn.indexOf('fetch(endpoint'));
         expect(progressiveFn.indexOf('Progressive settings read failed'))
             .toBeLessThan(progressiveFn.indexOf('fetch(endpoint'));
+        // Header deadline must arm before await fetch (hung headers → unavailable).
+        expect(progressiveFn.indexOf('headerDeadlineTimer = setTimeout'))
+            .toBeLessThan(progressiveFn.indexOf('await fetch(endpoint'));
+        expect(progressiveFn).toContain('readBoundedResponseText(response)');
         // Playable-clip path is separate — storage failure must not sit on it.
         const playableFn = source.slice(
             source.indexOf('async function fetchFastApiPlayableClip'),

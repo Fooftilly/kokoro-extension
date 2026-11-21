@@ -14,10 +14,12 @@ import {
 import { discloseStoreSigning } from './store-signing-disclosure.js';
 import { waitServerAudioPlaybackStart } from './server-audio-playback-start.js';
 import {
+    DEFAULT_PROGRESSIVE_TTFA_TIMEOUT_MS,
     measureProgressiveMediaSourceTtfa,
     probeMediaSourceProgressiveMp3Support,
     progressiveTtfaUnavailable,
     cancelReadableStreamBody,
+    readBoundedResponseText,
 } from './mediasource-progressive-ttfa.js';
 
 const page = document.getElementById('modelManager');
@@ -1218,47 +1220,61 @@ async function measureFastApiProgressiveMediaSourceTtfa(
         });
     }
     const startedAt = performance.now();
+    const timeoutMs = DEFAULT_PROGRESSIVE_TTFA_TIMEOUT_MS;
     const abortController = new AbortController();
+    // Arm deadline before fetch so hung headers cannot stall the FastAPI card.
+    let headerDeadlineTimer = null;
+    if (timeoutMs > 0) {
+        headerDeadlineTimer = setTimeout(() => {
+            try { abortController.abort(); } catch { /* ignore */ }
+        }, timeoutMs);
+    }
     let response;
     try {
-        response = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                model: 'kokoro', input, voice,
-                response_format: 'mp3', speed: 1,
-            }),
+        try {
+            response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model: 'kokoro', input, voice,
+                    response_format: 'mp3', speed: 1,
+                }),
+                signal: abortController.signal,
+            });
+        } catch (error) {
+            return progressiveTtfaUnavailable({
+                mimeType: probe.mimeType,
+                reason: 'Progressive MediaSource fetch failed: ' +
+                    String(error?.message || error),
+            });
+        }
+        if (!response.ok) {
+            // Read diagnostics first — cancel would disturb the body.
+            const errText = await readBoundedResponseText(response);
+            return progressiveTtfaUnavailable({
+                mimeType: probe.mimeType,
+                reason: 'Progressive MediaSource HTTP ' + response.status +
+                    (errText ? ' ' + errText : ''),
+            });
+        }
+        if (!probeMediaSourceProgressiveMp3Support().supported) {
+            cancelReadableStreamBody(response.body);
+            abortController.abort();
+            return progressiveTtfaUnavailable({
+                reason: 'MediaSource progressive support lost before measure',
+            });
+        }
+        const remainingMs = Math.max(0, timeoutMs - (performance.now() - startedAt));
+        return measureProgressiveMediaSourceTtfa({
+            body: response.body,
+            startedAt,
+            contentType: response.headers?.get?.('Content-Type') || 'audio/mpeg',
             signal: abortController.signal,
+            timeoutMs: remainingMs,
         });
-    } catch (error) {
-        return progressiveTtfaUnavailable({
-            mimeType: probe.mimeType,
-            reason: 'Progressive MediaSource fetch failed: ' +
-                String(error?.message || error),
-        });
+    } finally {
+        if (headerDeadlineTimer != null) clearTimeout(headerDeadlineTimer);
     }
-    if (!response.ok) {
-        cancelReadableStreamBody(response.body);
-        const errText = await response.text().catch(() => '');
-        return progressiveTtfaUnavailable({
-            mimeType: probe.mimeType,
-            reason: 'Progressive MediaSource HTTP ' + response.status +
-                (errText ? ' ' + errText : ''),
-        });
-    }
-    if (!probeMediaSourceProgressiveMp3Support().supported) {
-        cancelReadableStreamBody(response.body);
-        abortController.abort();
-        return progressiveTtfaUnavailable({
-            reason: 'MediaSource progressive support lost before measure',
-        });
-    }
-    return measureProgressiveMediaSourceTtfa({
-        body: response.body,
-        startedAt,
-        contentType: response.headers?.get?.('Content-Type') || 'audio/mpeg',
-        signal: abortController.signal,
-    });
 }
 
 /**
