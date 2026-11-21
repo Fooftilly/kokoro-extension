@@ -113,12 +113,24 @@ describe('progressive FastAPI fetch header timeout', () => {
             'measureProgressiveMediaSourceTtfa({');
         expect(ifIdx).toBeGreaterThanOrEqual(0);
         expect(ifIdx).toBeLessThan(measureIdx);
-        // Brace-bounded if body — a missing `return` must fail (fallthrough).
-        const afterIf = progressiveFn.slice(ifIdx);
-        const ifBodyMatch = afterIf.match(
-            /if\s*\(\s*remainingMs\s*<=\s*0\s*\)\s*\{([\s\S]*?)\}/);
-        expect(ifBodyMatch).toBeTruthy();
-        const ifBody = ifBodyMatch[1];
+        // Brace-depth scan — do not stop at the first `}` (object literal).
+        const openBraceIdx = progressiveFn.indexOf('{', ifIdx);
+        expect(openBraceIdx).toBeGreaterThan(ifIdx);
+        let depth = 0;
+        let closeBraceIdx = -1;
+        for (let i = openBraceIdx; i < progressiveFn.length; i += 1) {
+            const ch = progressiveFn[i];
+            if (ch === '{') depth += 1;
+            else if (ch === '}') {
+                depth -= 1;
+                if (depth === 0) {
+                    closeBraceIdx = i;
+                    break;
+                }
+            }
+        }
+        expect(closeBraceIdx).toBeGreaterThan(openBraceIdx);
+        const ifBody = progressiveFn.slice(openBraceIdx + 1, closeBraceIdx);
         expect(ifBody).toContain('cancelReadableStreamBody(response.body)');
         expect(ifBody).toContain('abortController.abort()');
         expect(ifBody).toContain(
@@ -126,8 +138,7 @@ describe('progressive FastAPI fetch header timeout', () => {
         expect(ifBody).toMatch(/return\s+progressiveTtfaUnavailable\s*\(/);
         expect(ifBody).not.toContain('measureProgressiveMediaSourceTtfa');
         // Measure call must sit after the exhausted-budget if (not inside it).
-        const ifEndIdx = ifIdx + ifBodyMatch.index + ifBodyMatch[0].length;
-        expect(ifEndIdx).toBeLessThan(measureIdx);
+        expect(closeBraceIdx).toBeLessThan(measureIdx);
     });
 });
 
