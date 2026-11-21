@@ -14,6 +14,72 @@ export const DEFAULT_PROGRESSIVE_TTFA_TIMEOUT_MS = 15000;
 /** Cap HTTP error diagnostics kept in progressive unavailable reasons. */
 export const PROGRESSIVE_HTTP_ERROR_BODY_LIMIT = 512;
 
+/** Swallow rejected cancel() promises (locked-body TypeError must not escape). */
+function swallowCancel(result) {
+    if (result && typeof result.then === 'function') {
+        void result.catch(() => {});
+    }
+}
+
+function cancelReaderQuietly(reader) {
+    if (!reader || typeof reader.cancel !== 'function') return;
+    try {
+        swallowCancel(reader.cancel());
+    } catch { /* ignore */ }
+}
+
+function releaseReaderLockQuietly(reader) {
+    if (!reader || typeof reader.releaseLock !== 'function') return;
+    try {
+        reader.releaseLock();
+    } catch { /* ignore */ }
+}
+
+/**
+ * Stream up to `max` decoded characters, then cancel — never wait for EOF.
+ * @param {ReadableStream} body
+ * @param {number} max
+ * @param {AbortSignal} [signal]
+ */
+async function readStreamPreview(body, max, signal) {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let out = '';
+    const onAbort = () => cancelReaderQuietly(reader);
+    if (signal) {
+        if (signal.aborted) cancelReaderQuietly(reader);
+        else signal.addEventListener('abort', onAbort, { once: true });
+    }
+    try {
+        while (out.length < max) {
+            if (signal?.aborted) break;
+            const { done, value } = await reader.read();
+            if (done) break;
+            out += decoder.decode(value || new Uint8Array(), { stream: true });
+            if (out.length > max) out = out.slice(0, max);
+        }
+    } catch {
+        /* ignore stream errors — status-only reason is fine */
+    } finally {
+        signal?.removeEventListener?.('abort', onAbort);
+        cancelReaderQuietly(reader);
+        releaseReaderLockQuietly(reader);
+    }
+    return out;
+}
+
+/** Last-resort full text() when no ReadableStream body is available. */
+async function readFallbackResponseText(response, max) {
+    if (typeof response.text !== 'function') return '';
+    try {
+        const text = await response.text();
+        if (typeof text !== 'string' || !text) return '';
+        return text.length > max ? text.slice(0, max) : text;
+    } catch {
+        return '';
+    }
+}
+
 /**
  * Read a bounded response body for diagnostics without waiting for EOF.
  * Prefers a streamed reader so a long/open error body cannot stall the
@@ -32,61 +98,12 @@ export async function readBoundedResponseText(
     const max = Number.isFinite(limit) && limit >= 0
         ? limit
         : PROGRESSIVE_HTTP_ERROR_BODY_LIMIT;
-    if (max === 0) return '';
-    if (signal?.aborted) return '';
-
+    if (max === 0 || signal?.aborted) return '';
     const body = response.body;
     if (body && typeof body.getReader === 'function') {
-        const reader = body.getReader();
-        const decoder = new TextDecoder();
-        let out = '';
-        const cancelReader = () => {
-            try {
-                const cancelResult = reader.cancel();
-                if (cancelResult && typeof cancelResult.then === 'function') {
-                    void cancelResult.catch(() => {});
-                }
-            } catch { /* ignore */ }
-        };
-        const onAbort = () => cancelReader();
-        if (signal) {
-            if (signal.aborted) cancelReader();
-            else signal.addEventListener('abort', onAbort, { once: true });
-        }
-        try {
-            while (out.length < max) {
-                if (signal?.aborted) break;
-                const { done, value } = await reader.read();
-                if (done) break;
-                out += decoder.decode(value || new Uint8Array(), {
-                    stream: true,
-                });
-                if (out.length > max) out = out.slice(0, max);
-            }
-        } catch {
-            /* ignore stream errors — status-only reason is fine */
-        } finally {
-            signal?.removeEventListener?.('abort', onAbort);
-            // Cancel+release — do not wait for EOF past the preview cap.
-            cancelReader();
-            try {
-                if (typeof reader.releaseLock === 'function') {
-                    reader.releaseLock();
-                }
-            } catch { /* ignore */ }
-        }
-        return out;
+        return readStreamPreview(body, max, signal);
     }
-
-    // No ReadableStream body — last-resort full text, still truncated.
-    if (typeof response.text !== 'function') return '';
-    try {
-        const text = await response.text();
-        if (typeof text !== 'string' || !text) return '';
-        return text.length > max ? text.slice(0, max) : text;
-    } catch {
-        return '';
-    }
+    return readFallbackResponseText(response, max);
 }
 
 /** Primary MSE mime candidates for Kokoro-FastAPI MP3 streams. */
@@ -147,13 +164,6 @@ function measuredResult(ttfaMs, mimeType) {
     };
 }
 
-/** Swallow rejected cancel() promises (locked-body TypeError must not escape). */
-function swallowCancel(result) {
-    if (result && typeof result.then === 'function') {
-        void result.catch(() => {});
-    }
-}
-
 /**
  * Cancel an unlocked fetch body (before a reader is acquired).
  * Never call this while a reader still owns the lock.
@@ -167,12 +177,8 @@ export function cancelReadableStreamBody(body) {
 
 function releaseReader(reader) {
     if (!reader) return;
-    try {
-        swallowCancel(reader.cancel());
-    } catch { /* ignore */ }
-    try {
-        if (typeof reader.releaseLock === 'function') reader.releaseLock();
-    } catch { /* ignore */ }
+    cancelReaderQuietly(reader);
+    releaseReaderLockQuietly(reader);
 }
 
 function waitMediaSourceOpen(mediaSource, timeoutMs, signal) {

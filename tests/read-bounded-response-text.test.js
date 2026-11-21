@@ -79,6 +79,35 @@ describe('readBoundedResponseText', () => {
         releaseHold();
     });
 
+    test('abort unblocks a pending stalled error-body read', async () => {
+        const controller = new AbortController();
+        // Hold before any chunk so reader.read() stays pending.
+        let releaseFirst;
+        const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+        let pullCount = 0;
+        const body = new ReadableStream({
+            async pull(controllerStream) {
+                pullCount += 1;
+                if (pullCount === 1) await firstGate;
+                controllerStream.enqueue(new TextEncoder().encode('late'));
+                controllerStream.close();
+            },
+        });
+        const pending = readBoundedResponseText(
+            { body }, 512, controller.signal);
+        // Let the pending read start, then abort mid-wait.
+        await new Promise((r) => setTimeout(r, 20));
+        controller.abort();
+        const out = await Promise.race([
+            pending,
+            new Promise((_, reject) => setTimeout(
+                () => reject(new Error('stalled read not aborted')), 500)),
+        ]);
+        expect(out).toBe('');
+        releaseFirst();
+        await pending.catch(() => {});
+    });
+
     test('falls back to text() when body missing', async () => {
         const response = { text: async () => 'gateway timeout' };
         expect(await readBoundedResponseText(response)).toBe('gateway timeout');
