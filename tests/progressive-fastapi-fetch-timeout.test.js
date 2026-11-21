@@ -108,19 +108,26 @@ describe('progressive FastAPI fetch header timeout', () => {
 
     test('page refuses MSE handoff when remainingMs <= 0 (source wiring)', () => {
         // Prefer source asserts over a duplicated handoff mirror (Devin ANALYSIS).
-        const remainIdx = progressiveFn.indexOf('remainingMs <= 0');
+        const ifIdx = progressiveFn.indexOf('if (remainingMs <= 0)');
         const measureIdx = progressiveFn.indexOf(
             'measureProgressiveMediaSourceTtfa({');
-        expect(remainIdx).toBeGreaterThanOrEqual(0);
-        expect(remainIdx).toBeLessThan(measureIdx);
-        const exhaustedBlock = progressiveFn.slice(remainIdx, measureIdx);
-        expect(exhaustedBlock).toContain('cancelReadableStreamBody(response.body)');
-        expect(exhaustedBlock).toContain('abortController.abort()');
-        expect(exhaustedBlock).toContain(
+        expect(ifIdx).toBeGreaterThanOrEqual(0);
+        expect(ifIdx).toBeLessThan(measureIdx);
+        // Brace-bounded if body — a missing `return` must fail (fallthrough).
+        const afterIf = progressiveFn.slice(ifIdx);
+        const ifBodyMatch = afterIf.match(
+            /if\s*\(\s*remainingMs\s*<=\s*0\s*\)\s*\{([\s\S]*?)\}/);
+        expect(ifBodyMatch).toBeTruthy();
+        const ifBody = ifBodyMatch[1];
+        expect(ifBody).toContain('cancelReadableStreamBody(response.body)');
+        expect(ifBody).toContain('abortController.abort()');
+        expect(ifBody).toContain(
             'Progressive MediaSource TTFA timed out after');
-        expect(exhaustedBlock).toContain('progressiveTtfaUnavailable');
-        // Must not hand timeoutMs:0 into the measurer from this branch.
-        expect(exhaustedBlock).not.toContain('measureProgressiveMediaSourceTtfa');
+        expect(ifBody).toMatch(/return\s+progressiveTtfaUnavailable\s*\(/);
+        expect(ifBody).not.toContain('measureProgressiveMediaSourceTtfa');
+        // Measure call must sit after the exhausted-budget if (not inside it).
+        const ifEndIdx = ifIdx + ifBodyMatch.index + ifBodyMatch[0].length;
+        expect(ifEndIdx).toBeLessThan(measureIdx);
     });
 });
 
