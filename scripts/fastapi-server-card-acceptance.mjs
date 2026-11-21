@@ -117,7 +117,12 @@ function assertFastApiFirstBodyByte(report) {
 export function parseObservedProgressiveTtfaP50Ms(p50Raw, p50Ms) {
     if (p50Raw !== undefined && p50Raw !== null) {
         const trimmed = String(p50Raw).trim();
-        if (trimmed === '') return Number.NaN;
+        if (trimmed === '') {
+            // Blank raw must not hide an independently supplied finite p50
+            // (invent checks on unavailable cards need to see it).
+            if (Number.isFinite(p50Ms)) return p50Ms;
+            return Number.NaN;
+        }
         return Number(trimmed);
     }
     if (p50Ms === undefined) return null;

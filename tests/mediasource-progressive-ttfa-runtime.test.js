@@ -276,6 +276,57 @@ describe('measureProgressiveMediaSourceTtfa runtime', () => {
         expect(Number.isFinite(result.ttfaMs)).toBe(true);
     });
 
+    test('reader.closed rejection mid-append reports unavailable', async () => {
+        stub.restore();
+        stub = installMediaSourceStub({
+            playAfterMs: 40,
+            firePlaying: true,
+            appendDelayMs: 80,
+        });
+        jest.resetModules();
+        mse = await import('../mediasource-progressive-ttfa.js');
+
+        let closedReject;
+        const closed = new Promise((_, reject) => { closedReject = reject; });
+        closed.catch(() => {});
+        let releaseLockCount = 0;
+        let index = 0;
+        const chunks = [new Uint8Array([1, 2, 3])];
+        const body = {
+            getReader() {
+                return {
+                    closed,
+                    async read() {
+                        if (index >= chunks.length) {
+                            return { done: true, value: undefined };
+                        }
+                        const value = chunks[index++];
+                        // Error the stream while the first append is pending.
+                        queueMicrotask(() => {
+                            closedReject(new Error('network reset'));
+                        });
+                        return { done: false, value };
+                    },
+                    cancel() { return Promise.resolve(); },
+                    releaseLock() { releaseLockCount += 1; },
+                };
+            },
+            cancel() {
+                return Promise.reject(new TypeError('ReadableStream is locked'));
+            },
+        };
+        const result = await mse.measureProgressiveMediaSourceTtfa({
+            body,
+            startedAt: 0,
+            timeoutMs: 500,
+        });
+        expect(result.measured).toBe(false);
+        expect(result.unavailable).toBe(true);
+        expect(result.ttfaMs).toBeNull();
+        expect(String(result.reason || '')).toMatch(/stream failed|network reset/i);
+        expect(releaseLockCount).toBeGreaterThanOrEqual(1);
+    });
+
     test('cleanup cancels via reader only — never body.cancel while locked', async () => {
         stub.restore();
         stub = installMediaSourceStub({ firePlaying: false });

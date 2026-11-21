@@ -246,9 +246,14 @@ async function pumpBodyToSourceBuffer(body, queueAppend, state) {
     const reader = body.getReader();
     state.reader = reader;
     state.readerAcquired = true;
-    // Swallow closed rejection on cancel so it cannot escape as unhandled.
+    // Fulfill ignored for EOF gate (pump drain owns bodyClosed). Rejection
+    // while measuring → unavailable (stream error mid-append). Cancel after
+    // abort/settle is ignored via state.aborted / reachedEof.
     if (reader?.closed && typeof reader.closed.then === 'function') {
-        reader.closed.then(() => {}, () => {});
+        reader.closed.then(() => {}, (error) => {
+            if (state.aborted || state.reachedEof) return;
+            try { state.onStreamError?.(error); } catch { /* ignore */ }
+        });
     }
     let firstChunkAppended = false;
     let reachedEof = false;
@@ -416,6 +421,15 @@ export async function measureProgressiveMediaSourceTtfa(options = {}) {
 
         const { queueAppend, maybeEndOfStream, getAppendChain } =
             createAppendQueue(mediaSource, sourceBuffer, state);
+
+        state.onStreamError = (error) => {
+            finish(progressiveTtfaUnavailable({
+                usedMediaSource: true,
+                mimeType,
+                reason: 'Progressive MediaSource stream failed: ' +
+                    String(error?.message || error),
+            }));
+        };
 
         const playing = waitPlayingTtfa(audio, startedAt, signal);
         state.detachPlaying = playing.detach;

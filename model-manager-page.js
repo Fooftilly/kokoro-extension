@@ -1201,7 +1201,17 @@ async function measureFastApiProgressiveMediaSourceTtfa(
         return progressiveTtfaUnavailable({ reason: probe.reason });
     }
     // Per-request gate: user may have switched to a local backend mid-test.
-    const selected = await browser.storage.sync.get({ ttsBackend: 'fastapi' });
+    // Storage read failure must not fail the whole FastAPI card — map to
+    // progressive unavailable and keep playable-clip results.
+    let selected;
+    try {
+        selected = await browser.storage.sync.get({ ttsBackend: 'fastapi' });
+    } catch (error) {
+        return progressiveTtfaUnavailable({
+            reason: 'Progressive settings read failed: ' +
+                String(error?.message || error),
+        });
+    }
     if (selected.ttsBackend !== 'fastapi') {
         return progressiveTtfaUnavailable({
             reason: 'FastAPI no longer selected; progressive request skipped',

@@ -181,10 +181,27 @@ const invent = (() => {
         return { ok: false, message: String(error.message || error) };
     }
 })();
+const inventBlankRaw = (() => {
+    try {
+        card.buildFastApiServerCardReport({
+            mediasourceProgressiveTtfaMeasured: false,
+            mediasourceProgressiveTtfaNotMeasured: true,
+            mediasourceProgressiveTtfaUnavailable: true,
+            mediasourceProgressiveTtfaP50Raw: ' ',
+            mediasourceProgressiveTtfaP50Ms: 250,
+            mediasourceProgressiveTtfaDisclosure:
+                card.SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_UNAVAILABLE_NEEDLE,
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
 console.log(JSON.stringify({
     measuredP50: measured.mediasourceProgressiveTtfaP50Ms,
     unavailableMeasured: unavailable.mediasourceProgressiveTtfaMeasured,
     invent,
+    inventBlankRaw,
 }));
 `], { encoding: 'utf8', cwd: root });
         expect(child.status).toBe(0);
@@ -193,6 +210,8 @@ console.log(JSON.stringify({
         expect(snap.unavailableMeasured).toBe(false);
         expect(snap.invent.ok).toBe(false);
         expect(snap.invent.message).toMatch(/must not invent p50/i);
+        expect(snap.inventBlankRaw.ok).toBe(false);
+        expect(snap.inventBlankRaw.message).toMatch(/must not invent p50/i);
     });
 
     test('source wiring: dual live asserts measured or unavailable progressive TTFA', () => {
