@@ -52,10 +52,11 @@ def should_sample_long_form_waveform(index, visit_indexes):
 
 
 def _invoke_long_form_esm(action, payload):
-    """Run one honesty action in the shared ESM module (stdin JSON → stdout).
+    """Run one honesty/decode action in the shared ESM module (stdin JSON → stdout).
 
-    Keeps assert/finalize logic canonical in long-form-memory-acceptance.mjs so
-    Sonar does not count a Python mirror as new-code duplication.
+    Keeps assert/finalize/WAV decode logic canonical in
+    long-form-memory-acceptance.mjs so Sonar does not count a Python mirror as
+    new-code duplication.
     """
     script = (
         "import { readFileSync } from 'node:fs';"
@@ -63,6 +64,7 @@ def _invoke_long_form_esm(action, payload):
         "  longFormQualityDisclosureFlags,"
         "  assertLongFormMemoryAcceptanceReport,"
         "  finalizeLongFormMemoryAcceptanceReport,"
+        "  decodeLongFormWavPcm16Metrics,"
         "} from './long-form-memory-acceptance.mjs';"
         "const action = process.argv[1];"
         "const raw = readFileSync(0, 'utf8').trim();"
@@ -71,6 +73,10 @@ def _invoke_long_form_esm(action, payload):
         "if (action === 'flags') out = longFormQualityDisclosureFlags();"
         "else if (action === 'assert') out = assertLongFormMemoryAcceptanceReport(data);"
         "else if (action === 'finalize') out = finalizeLongFormMemoryAcceptanceReport(data || {});"
+        "else if (action === 'decodeWav') {"
+        "  const bytes = Buffer.from(String(data && data.wavBase64 || ''), 'base64');"
+        "  out = decodeLongFormWavPcm16Metrics(new Uint8Array(bytes));"
+        "}"
         "else throw new Error('Unknown long-form honesty action: ' + action);"
         "process.stdout.write(JSON.stringify(out) + '\\n');"
     )
@@ -205,3 +211,8 @@ def assert_long_form_memory_acceptance_report(report):
 def finalize_long_form_memory_acceptance_report(partial=None):
     """Finalize via shared ESM — preserves measured:true fail-closed claims."""
     return _invoke_long_form_esm("finalize", dict(partial or {}))
+
+
+def decode_long_form_wav_pcm16_metrics(wav_base64):
+    """Decode RIFF/WAVE PCM16 via shared ESM (same path as Jest/Chromium)."""
+    return _invoke_long_form_esm("decodeWav", {"wavBase64": wav_base64})

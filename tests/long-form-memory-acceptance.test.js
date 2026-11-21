@@ -31,13 +31,34 @@ const qualitySamples = [
     longForm.buildLongFormQualitySampleFixture({ index: 6, rms: 0.04 }),
     longForm.buildLongFormQualitySampleFixture({ index: 12, rms: 0.05 }),
     longForm.buildLongFormQualitySampleFixture({
-        index: 35, rms: 0.045, durationSec: 1.2,
+        index: 35, rms: 0.045, audioBytes: 48000, durationSec: 1,
     }),
 ];
 const capture = (fn) => {
     try { fn(); return { ok: true }; }
     catch (error) { return { ok: false, message: String(error.message || error) }; }
 };
+// Real WAV bytes → shared PCM16 decoder (Devin: exercise decoder path).
+const wavBytes = longForm.buildLongFormTestWavPcm16(24000);
+const decoded = longForm.decodeLongFormWavPcm16Metrics(wavBytes);
+const silentMetrics = longForm.decodeLongFormWavPcm16Metrics(
+    longForm.buildLongFormTestWavPcm16(24000, { amplitude: 0 }));
+const silentAssertFail = capture(() => longForm.assertLongFormWaveformSample({
+    index: 0, ...silentMetrics, audioSha256: 'silent',
+}));
+const badHeader = capture(() => longForm.decodeLongFormWavPcm16Metrics(
+    new Uint8Array(64)));
+// Distinct-index gate: four copies of index 0 must not pad the minimum.
+const repeatPadFail = capture(() => longForm.assertLongFormWaveformQuality([
+    longForm.buildLongFormQualitySampleFixture({ index: 0, rms: 0.03 }),
+    longForm.buildLongFormQualitySampleFixture({ index: 0, rms: 0.04 }),
+    longForm.buildLongFormQualitySampleFixture({ index: 0, rms: 0.05 }),
+    longForm.buildLongFormQualitySampleFixture({ index: 0, rms: 0.06 }),
+]));
+const durationMismatchFail = capture(() => longForm.assertLongFormWaveformSample(
+    longForm.buildLongFormQualitySampleFixture({
+        index: 1, audioBytes: 48000, durationSec: 1.2,
+    })));
 const finalized = longForm.finalizeLongFormMemoryAcceptanceReport({
     success: true,
     browser: 'chromium',
@@ -143,6 +164,26 @@ console.log(JSON.stringify({
     measuredNeedle: longForm.LONG_FORM_QUALITY_MEASURED_NEEDLE,
     legacyNeedle: longForm.LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
     sampleGate,
+    decoded: {
+        audioBytes: decoded.audioBytes,
+        sampleRateHz: decoded.sampleRateHz,
+        durationSec: decoded.durationSec,
+        sampleCount: decoded.sampleCount,
+        rmsFinite: Number.isFinite(decoded.rms),
+        rmsAboveFloor: decoded.rms > longForm.LONG_FORM_MIN_RMS,
+        wavByteLength: wavBytes.length,
+        // 48_000 PCM bytes ⇒ 1.0 s at 24 kHz mono PCM16 (not 1.2 s).
+        oneSecond: decoded.audioBytes === 48000 && decoded.durationSec === 1,
+    },
+    silentMetrics: {
+        durationSec: silentMetrics.durationSec,
+        audioBytes: silentMetrics.audioBytes,
+        rmsNearZero: silentMetrics.rms <= longForm.LONG_FORM_MIN_RMS,
+    },
+    silentAssertFail,
+    badHeader,
+    repeatPadFail,
+    durationMismatchFail,
     finalized,
     qualityOffFail,
     mosClaimFail,
@@ -213,6 +254,21 @@ describe('long-form memory acceptance', () => {
         expect(snap.finalized.sentenceCount).toBe(36);
         expect(snap.finalized.qualitySampleCount).toBe(4);
         expect(snap.finalized.minRms).toBeGreaterThan(0.0001);
+        expect(snap.decoded.oneSecond).toBe(true);
+        expect(snap.decoded.sampleRateHz).toBe(24000);
+        expect(snap.decoded.sampleCount).toBe(24000);
+        expect(snap.decoded.rmsAboveFloor).toBe(true);
+        expect(snap.decoded.wavByteLength).toBe(44 + 48000);
+        expect(snap.silentMetrics.rmsNearZero).toBe(true);
+        expect(snap.silentMetrics.durationSec).toBe(1);
+        expect(snap.silentAssertFail.ok).toBe(false);
+        expect(snap.silentAssertFail.message).toMatch(/silent|RMS/i);
+        expect(snap.badHeader.ok).toBe(false);
+        expect(snap.badHeader.message).toMatch(/WAV/i);
+        expect(snap.repeatPadFail.ok).toBe(false);
+        expect(snap.repeatPadFail.message).toMatch(/distinct sentence positions/);
+        expect(snap.durationMismatchFail.ok).toBe(false);
+        expect(snap.durationMismatchFail.message).toMatch(/duration must match/);
         expect(snap.qualityOffFail.ok).toBe(false);
         expect(snap.qualityOffFail.message).toMatch(/must be reported as measured/);
         expect(snap.mosClaimFail.ok).toBe(false);
@@ -224,7 +280,8 @@ describe('long-form memory acceptance', () => {
         expect(snap.finalizeMosClaimFail.ok).toBe(false);
         expect(snap.finalizeMosClaimFail.message).toMatch(/MOS must not/);
         expect(snap.finalizeNoSamplesFail.ok).toBe(false);
-        expect(snap.finalizeNoSamplesFail.message).toMatch(/quality requires/);
+        expect(snap.finalizeNoSamplesFail.message).toMatch(
+            /distinct sentence positions|quality requires/);
     });
 
     test('overlay probe and long-form stage are wired for Chromium origin', () => {
@@ -246,7 +303,8 @@ describe('long-form memory acceptance', () => {
         expect(harness).toContain('count: LONG_FORM_SENTENCE_COUNT');
         expect(harness).toContain('finalizeLongFormMemoryAcceptanceReport');
         expect(harness).toContain('shouldSampleLongFormWaveform');
-        expect(harness).toContain('sampleRateHz, rms, durationSec');
+        expect(harness).toContain('decodeLongFormWavPcm16Metrics');
+        expect(harness).toContain('wavBase64');
         expect(harness).not.toContain('waitForFunction(longFormOverlayReady');
         expect(harness).not.toContain('jumpLongFormToLastSentence');
         expect(overlay).toContain('pendingAcceptanceProbe');
@@ -264,5 +322,8 @@ describe('long-form memory acceptance', () => {
             'long-form objective waveform quality measured; MOS not measured');
         expect(helper).toContain('assertLongFormWaveformQuality');
         expect(helper).toContain('shouldSampleLongFormWaveform');
+        expect(helper).toContain('decodeLongFormWavPcm16Metrics');
+        expect(helper).toContain('buildLongFormTestWavPcm16');
+        expect(helper).toContain('distinct sentence positions');
     });
 });

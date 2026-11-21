@@ -167,6 +167,7 @@ export function assertLongFormHeapDelta(beforeBytes, afterBytes, options = {}) {
 
 /**
  * Fixture sample for Jest — mirrors live WAV meta after PCM16 RMS decode.
+ * Default 48_000 PCM bytes = 24_000 mono PCM16 samples = 1.0 s at 24 kHz.
  */
 export function buildLongFormQualitySampleFixture(overrides = {}) {
     return {
@@ -181,12 +182,101 @@ export function buildLongFormQualitySampleFixture(overrides = {}) {
 }
 
 /**
+ * Build a minimal 24 kHz mono PCM16 RIFF/WAVE for Jest decode coverage.
+ * amplitude 0 → near-silent; default produces non-silent 440 Hz tone.
+ *
+ * @param {number} sampleCount
+ * @param {{ amplitude?: number }} [options]
+ * @returns {Uint8Array}
+ */
+export function buildLongFormTestWavPcm16(sampleCount = 24000, options = {}) {
+    const amplitude = options.amplitude ?? 0.25;
+    if (!Number.isInteger(sampleCount) || sampleCount < 1) {
+        throw new Error('sampleCount must be a positive integer');
+    }
+    const audioBytes = sampleCount * 2;
+    const bytes = new Uint8Array(44 + audioBytes);
+    const view = new DataView(bytes.buffer);
+    const text = (offset, value) => {
+        for (let i = 0; i < value.length; i++) {
+            view.setUint8(offset + i, value.charCodeAt(i));
+        }
+    };
+    text(0, 'RIFF');
+    view.setUint32(4, 36 + audioBytes, true);
+    text(8, 'WAVE');
+    text(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, 24000, true);
+    view.setUint32(28, 48000, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    text(36, 'data');
+    view.setUint32(40, audioBytes, true);
+    for (let i = 0; i < sampleCount; i++) {
+        const s = amplitude * Math.sin((2 * Math.PI * 440 * i) / 24000);
+        const clamped = Math.max(-1, Math.min(1, s));
+        view.setInt16(
+            44 + i * 2,
+            Math.round(clamped * (clamped < 0 ? 32768 : 32767)),
+            true);
+    }
+    return bytes;
+}
+
+/**
+ * Decode a RIFF/WAVE 24 kHz mono PCM16 buffer into quality metrics.
+ * Shared by Jest + Chromium/Firefox live (after transferring WAV bytes out of
+ * the page). Fail closed on header mismatch / non-finite samples — never invent.
+ *
+ * @param {Uint8Array|ArrayBuffer} wavBytes
+ * @returns {{ audioBytes, sampleRateHz, rms, durationSec, sampleCount }}
+ */
+export function decodeLongFormWavPcm16Metrics(wavBytes) {
+    const bytes = wavBytes instanceof Uint8Array
+        ? wavBytes
+        : new Uint8Array(wavBytes);
+    if (bytes.byteLength < 44) {
+        throw new Error('Long-form WAV too short for header: ' + bytes.byteLength);
+    }
+    const wav = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const tag = (start, length) =>
+        String.fromCharCode(...bytes.subarray(start, start + length));
+    const sampleRateHz = wav.getUint32(24, true);
+    const audioBytes = wav.getUint32(40, true);
+    if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
+        sampleRateHz !== 24000 || audioBytes < 2 ||
+        bytes.length !== 44 + audioBytes || audioBytes % 2 !== 0) {
+        throw new Error('Long-form overlay WAV mismatch');
+    }
+    const sampleCount = audioBytes / 2;
+    let squares = 0;
+    for (let i = 0; i < sampleCount; i++) {
+        const s = wav.getInt16(44 + i * 2, true) / 32768;
+        if (!Number.isFinite(s)) {
+            throw new Error('Long-form WAV sample not finite at ' + i);
+        }
+        squares += s * s;
+    }
+    const rms = Math.sqrt(squares / sampleCount);
+    const durationSec = sampleCount / sampleRateHz;
+    return { audioBytes, sampleRateHz, rms, durationSec, sampleCount };
+}
+
+/**
  * Assert one long-form WAV probe has finite non-silent 24 kHz PCM metrics.
  * Fail closed on missing/silent/out-of-bounds — never invent RMS.
  */
 export function assertLongFormWaveformSample(sample) {
     if (!sample || typeof sample !== 'object') {
         throw new Error('Long-form quality sample missing: ' + String(sample));
+    }
+    if (!Number.isInteger(sample.index) || sample.index < 0) {
+        throw new Error(
+            'Long-form quality sample requires non-negative integer index: ' +
+            JSON.stringify(sample));
     }
     if (sample.sampleRateHz !== 24000) {
         throw new Error(
@@ -204,10 +294,20 @@ export function assertLongFormWaveformSample(sample) {
             'Long-form quality sample duration out of bounds: ' +
             JSON.stringify(sample));
     }
-    if (!Number.isInteger(sample.audioBytes) || sample.audioBytes < 2) {
+    if (!Number.isInteger(sample.audioBytes) || sample.audioBytes < 2 ||
+        sample.audioBytes % 2 !== 0) {
         throw new Error(
             'Long-form quality sample audioBytes invalid: ' +
             JSON.stringify(sample));
+    }
+    const expectedDuration = (sample.audioBytes / 2) / sample.sampleRateHz;
+    if (Math.abs(sample.durationSec - expectedDuration) > 1e-9) {
+        throw new Error(
+            'Long-form quality sample duration must match audioBytes/rate: ' +
+            JSON.stringify({
+                durationSec: sample.durationSec, expectedDuration,
+                audioBytes: sample.audioBytes,
+            }));
     }
     return {
         index: sample.index,
@@ -220,21 +320,37 @@ export function assertLongFormWaveformSample(sample) {
 
 /**
  * Assert objective waveform quality across sampled long-form clips.
- * @returns {{ qualitySampleCount, minRms, maxRms, minDurationSec, maxDurationSec }}
+ * Counts distinct sentence indexes only — revisit/copies of the same position
+ * cannot pad the minimum probe count.
+ * @returns {{ qualitySampleCount, distinctSentenceIndexes, minRms, maxRms,
+ *   minDurationSec, maxDurationSec }}
  */
 export function assertLongFormWaveformQuality(samples, options = {}) {
     const minSamples = options.minSamples ?? LONG_FORM_MIN_QUALITY_SAMPLES;
-    if (!Array.isArray(samples) || samples.length < minSamples) {
+    if (!Array.isArray(samples)) {
+        throw new Error(
+            'Long-form quality requires a samples array; got ' +
+            JSON.stringify(samples));
+    }
+    const byIndex = new Map();
+    for (const sample of samples) {
+        const checked = assertLongFormWaveformSample(sample);
+        if (!byIndex.has(checked.index)) {
+            byIndex.set(checked.index, checked);
+        }
+    }
+    if (byIndex.size < minSamples) {
         throw new Error(
             'Long-form quality requires >= ' + minSamples +
-            ' waveform samples; got ' +
-            JSON.stringify(Array.isArray(samples) ? samples.length : samples));
+            ' distinct sentence positions; got ' + byIndex.size +
+            ' (raw probes: ' + samples.length + ')');
     }
-    const checked = samples.map(assertLongFormWaveformSample);
+    const checked = [...byIndex.values()];
     const rmsValues = checked.map((s) => s.rms);
     const durations = checked.map((s) => s.durationSec);
     return {
         qualitySampleCount: checked.length,
+        distinctSentenceIndexes: [...byIndex.keys()].sort((a, b) => a - b),
         minRms: Math.min(...rmsValues),
         maxRms: Math.max(...rmsValues),
         minDurationSec: Math.min(...durations),

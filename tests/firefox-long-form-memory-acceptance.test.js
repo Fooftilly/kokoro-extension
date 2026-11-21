@@ -27,12 +27,14 @@ from firefox_long_form_memory_acceptance import (
     assert_bounded_audio_manager_stats,
     assert_long_form_cache_window_near,
     assert_long_form_heap_delta,
+    decode_long_form_wav_pcm16_metrics,
     finalize_long_form_memory_acceptance_report,
     load_long_form_fixture,
     origin_long_form_memory_stage_enabled,
     require_long_form_backend,
     should_sample_long_form_waveform,
 )
+import subprocess
 
 def capture(fn):
     try:
@@ -123,7 +125,31 @@ print(json.dumps({
             lambda: finalize_long_form_memory_acceptance_report({
                 'success': True,
             }))['ok'],
+        'repeatPadBlocked': not capture(
+            lambda: finalize_long_form_memory_acceptance_report({
+                'success': True,
+                'samples': [
+                    {**quality_samples[0], 'index': 0, 'rms': 0.03 + i * 0.001}
+                    for i in range(4)
+                ],
+            }))['ok'],
     },
+    # Real PCM16 WAV: ESM builder → base64 → Firefox decode bridge (1s=48000).
+    'decoded': (lambda m: {
+        'audioBytes': m.get('audioBytes'),
+        'durationSec': m.get('durationSec'),
+        'sampleRateHz': m.get('sampleRateHz'),
+        'oneSecond': m.get('audioBytes') == 48000 and m.get('durationSec') == 1,
+        'rmsOk': isinstance(m.get('rms'), (int, float)) and m['rms'] > 0.0001,
+    })(decode_long_form_wav_pcm16_metrics(
+        subprocess.check_output([
+            'node', '--input-type=module', '-e',
+            "import { buildLongFormTestWavPcm16 }"
+            " from './long-form-memory-acceptance.mjs';"
+            "process.stdout.write(Buffer.from("
+            "buildLongFormTestWavPcm16(24000)).toString('base64'));",
+        ], cwd=${JSON.stringify(scriptsDir)}).decode('ascii')
+    )),
 }))
 `], { encoding: 'utf8', cwd: root });
 }
@@ -173,7 +199,13 @@ describe('firefox long-form memory acceptance', () => {
             sampleCount: 4,
             finalizeBlocksMos: true,
             finalizeNeedsSamples: true,
+            repeatPadBlocked: true,
         });
+        expect(snap.decoded.oneSecond).toBe(true);
+        expect(snap.decoded.sampleRateHz).toBe(24000);
+        expect(snap.decoded.audioBytes).toBe(48000);
+        expect(snap.decoded.durationSec).toBe(1);
+        expect(snap.decoded.rmsOk).toBe(true);
     });
 
     test('firefox live harness wires long-form stage after article/selection', () => {
@@ -189,7 +221,8 @@ describe('firefox long-form memory acceptance', () => {
         expect(source).toContain('load_long_form_fixture');
         expect(source).toContain('finalize_long_form_memory_acceptance_report');
         expect(source).toContain('should_sample_long_form_waveform');
-        expect(source).toContain('sampleRateHz, rms, durationSec');
+        expect(source).toContain('decode_long_form_wav_pcm16_metrics');
+        expect(source).toContain('wavBase64');
         expect(source).not.toContain(
             'no subjective audio-quality or long-form acceptance');
         const helper = fs.readFileSync(
@@ -201,6 +234,8 @@ describe('firefox long-form memory acceptance', () => {
         expect(helper).toContain('_invoke_long_form_esm');
         expect(helper).toContain('finalizeLongFormMemoryAcceptanceReport');
         expect(helper).toContain('should_sample_long_form_waveform');
+        expect(helper).toContain('decode_long_form_wav_pcm16_metrics');
+        expect(helper).toContain('decodeLongFormWavPcm16Metrics');
         expect(helper).toContain(
             'long-form objective waveform quality measured; MOS not measured');
         const workflowSource = fs.readFileSync(workflow, 'utf8');
