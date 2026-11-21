@@ -233,8 +233,16 @@ describe('Measured results export acceptance', () => {
         expect(html).toContain('Cold prep');
         expect(source).toContain('Nothing was uploaded');
         expect(source).not.toContain('navigator.sendBeacon');
-        expect(source).not.toMatch(
-            /exportMeasuredEnglishResults[\s\S]*?fetch\(/);
+        // Export helper itself must stay local-download-only (FastAPI MSE
+        // measurement uses fetch later in the file — do not scan past the
+        // export function body).
+        const exportStart = source.indexOf(
+            'async function exportMeasuredEnglishResults()');
+        expect(exportStart).toBeGreaterThan(0);
+        const exportBody = source.slice(
+            exportStart, source.indexOf('\nfunction forgetSharedEnglishResult'));
+        expect(exportBody).toContain('downloadPinnedMeasuredExport');
+        expect(exportBody).not.toContain('fetch(');
         expect(source).not.toMatch(/setTimeout\(\s*\(\)\s*=>\s*\{[^}]*revokeObjectURL/);
     });
 

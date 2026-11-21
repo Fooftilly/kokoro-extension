@@ -73,16 +73,39 @@ const failPlayback = (() => {
         return { ok: false, message: String(error.message || error) };
     }
 })();
-const failMediaSourceMeasured = (() => {
+const failMediaSourceIncomplete = (() => {
     try {
+        // measured=true without finite p50 / usedMediaSource must fail closed.
         card.assertFastApiServerCardReport({
             ...report, mediasourceProgressiveTtfaMeasured: true,
+            mediasourceProgressiveTtfaNotMeasured: false,
+            mediasourceProgressiveTtfaDisclosure:
+                card.SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_MEASURED_NEEDLE,
         });
         return { ok: true };
     } catch (error) {
         return { ok: false, message: String(error.message || error) };
     }
 })();
+const measuredOk = card.buildFastApiServerCardReport({
+    browser: 'chromium', apiUrl, afterLocalDualComparison: true,
+    backendBeforeChoose: card.BACKEND_BEFORE_CHOOSE,
+    chooseChangedBackend: true,
+    decodeableMp3: true,
+    audioDurationSec: 0.13,
+    streamingFirstBodyByteMeasured: true,
+    playbackStartMeasured: true,
+    firstBodyByteP50Ms: 110,
+    synthesisP50Ms: 160,
+    playbackStartP50Ms: 200,
+    mediasourceProgressiveTtfaMeasured: true,
+    mediasourceProgressiveTtfaNotMeasured: false,
+    mediasourceProgressiveTtfaUnavailable: false,
+    mediasourceProgressiveTtfaP50Ms: 240,
+    usedMediaSource: true,
+    mediasourceProgressiveTtfaDisclosure:
+        card.SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_MEASURED_NEEDLE,
+});
 const failMediaSourceOmitted = (() => {
     try {
         // Live omit path: observed null/empty must fail closed (no invent).
@@ -129,9 +152,11 @@ console.log(JSON.stringify({
     notMediaSource: card.SERVER_NOT_MEDIASOURCE_NEEDLE,
     mediaSourceNotMeasured:
         card.SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE,
+    mediaSourceMeasured:
+        card.SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_MEASURED_NEEDLE,
     selected: card.FASTAPI_SELECTED_NEEDLE,
-    endpoint, report, fail, failTtfb, failBuffered, failPlayback,
-    failMediaSourceMeasured, failMediaSourceOmitted, failOmitBuild,
+    endpoint, report, measuredOk, fail, failTtfb, failBuffered, failPlayback,
+    failMediaSourceIncomplete, failMediaSourceOmitted, failOmitBuild,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
@@ -150,6 +175,8 @@ describe('FastAPI server-card acceptance', () => {
         expect(snap.notMediaSource).toMatch(/not MediaSource streaming TTFA/i);
         expect(snap.mediaSourceNotMeasured).toMatch(
             /MediaSource progressive TTFA not measured/i);
+        expect(snap.mediaSourceMeasured).toMatch(
+            /progressive MediaSource TTFA measured/i);
         expect(snap.selected).toBe('FastAPI selected.');
         expect(snap.endpoint).toContain('/v1/audio/speech');
         expect(snap.report).toEqual(expect.objectContaining({
@@ -173,6 +200,12 @@ describe('FastAPI server-card acceptance', () => {
             preferenceOnlyOnChoose: true,
             afterLocalDualComparison: true,
         }));
+        expect(snap.measuredOk).toEqual(expect.objectContaining({
+            mediasourceProgressiveTtfaMeasured: true,
+            mediasourceProgressiveTtfaNotMeasured: false,
+            mediasourceProgressiveTtfaP50Ms: 240,
+            usedMediaSource: true,
+        }));
         expect(snap.fail.ok).toBe(false);
         expect(snap.fail.message).toMatch(/not successful/i);
         expect(snap.failTtfb.ok).toBe(false);
@@ -181,9 +214,9 @@ describe('FastAPI server-card acceptance', () => {
         expect(snap.failBuffered.message).toMatch(/strictly greater/i);
         expect(snap.failPlayback.ok).toBe(false);
         expect(snap.failPlayback.message).toMatch(/playbackStartP50Ms/i);
-        expect(snap.failMediaSourceMeasured.ok).toBe(false);
-        expect(snap.failMediaSourceMeasured.message).toMatch(
-            /mediasourceProgressiveTtfaMeasured/i);
+        expect(snap.failMediaSourceIncomplete.ok).toBe(false);
+        expect(snap.failMediaSourceIncomplete.message).toMatch(
+            /mediasourceProgressiveTtfaP50Ms|usedMediaSource/i);
         expect(snap.failMediaSourceOmitted.ok).toBe(false);
         expect(snap.failMediaSourceOmitted.message).toMatch(
             /mediasourceProgressiveTtfa/i);
@@ -204,15 +237,21 @@ describe('FastAPI server-card acceptance', () => {
         expect(source).toContain('SERVER_NOT_MEDIASOURCE_NEEDLE');
         expect(source).toContain(
             'SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE');
+        expect(source).toContain(
+            'SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_MEASURED_NEEDLE');
+        expect(source).toContain(
+            'SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_UNAVAILABLE_NEEDLE');
         expect(source).toContain('streamingFirstBodyByteMeasured');
         expect(source).toContain('playbackStartMeasured');
         expect(source).toContain('playbackStartP50Ms');
-        // Live must observe MediaSource disclosure from the page (not invent).
+        // Live observes measured OR unavailable from the page (never invent).
         expect(source).toContain(
-            "status?.dataset?.mediasourceProgressiveTtfaMeasured === 'false'");
+            "status?.dataset?.mediasourceProgressiveTtfaMeasured === 'true'");
         expect(source).toContain(
-            "status?.dataset?.mediasourceProgressiveTtfaNotMeasured === 'true'");
+            "status?.dataset?.mediasourceProgressiveTtfaUnavailable === 'true'");
+        expect(source).toContain('mediasourceProgressiveTtfaP50Ms');
         expect(source).toContain('mediasourceProgressiveTtfaDisclosure');
+        expect(source).toContain('assertProgressiveStreamingTtfaMeasured');
         expect(source).toContain('setTimeout(() => {');
         expect(source).toContain('FASTAPI_SELECTED_NEEDLE');
         expect(source).toContain('BACKEND_BEFORE_CHOOSE');
@@ -223,7 +262,10 @@ describe('FastAPI server-card acceptance', () => {
             'utf8');
         expect(helper).toContain(
             'SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE');
+        expect(helper).toContain(
+            'SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_MEASURED_NEEDLE');
         expect(helper).toContain('mediasourceProgressiveTtfaNotMeasured');
+        expect(helper).toContain('mediasourceProgressiveTtfaP50Ms');
         const dualIdx = source.indexOf(
             'await acceptTwoBackendComparison(');
         const cardIdx = source.indexOf(
@@ -258,14 +300,18 @@ describe('FastAPI server-card acceptance', () => {
         expect(source).toContain('playback start p50');
         expect(source).toContain('not MediaSource streaming TTFA');
         expect(source).toContain('MediaSource progressive TTFA not measured');
+        expect(source).toContain('progressive MediaSource TTFA measured');
+        expect(source).toContain('progressive MediaSource TTFA unavailable');
         expect(source).toContain('streamingFirstBodyByteMeasured');
         expect(source).toContain('playbackStartMeasured');
         expect(source).toContain('playbackStartP50Ms');
         expect(source).toContain(
-            "status?.dataset?.mediasourceProgressiveTtfaMeasured==='false'");
+            "status?.dataset?.mediasourceProgressiveTtfaMeasured==='true'");
         expect(source).toContain(
-            "status?.dataset?.mediasourceProgressiveTtfaNotMeasured==='true'");
+            "status?.dataset?.mediasourceProgressiveTtfaUnavailable==='true'");
+        expect(source).toContain('mediasourceProgressiveTtfaP50Ms');
         expect(source).toContain('mediasource_progressive_ttfa_disclosure');
+        expect(source).toContain('assert_progressive_streaming_ttfa_measured');
         expect(source).toContain('time.sleep(0.1)');
         expect(source).toMatch(
             /find_element\(\s*By\.ID,\s*["']testServer["']\s*\)\.click\(\)/);
@@ -281,6 +327,8 @@ describe('FastAPI server-card acceptance', () => {
             'mediasource_progressive_ttfa_not_measured');
         expect(firefoxHelper).toContain(
             'mediasourceProgressiveTtfaNotMeasured');
+        expect(firefoxHelper).toContain(
+            'mediasource_progressive_ttfa_p50_ms');
         expect(firefoxHelper).toContain(
             'mediasource_progressive_ttfa_disclosure');
         const dualIdx = source.indexOf(

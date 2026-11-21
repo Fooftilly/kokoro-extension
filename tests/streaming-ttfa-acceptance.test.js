@@ -28,10 +28,17 @@ describe('Streaming first-body-byte acceptance (KE-34 / KE-40)', () => {
         expect(source).toContain('playback start p50');
         expect(source).toContain('not MediaSource streaming TTFA');
         expect(source).toContain('MediaSource progressive TTFA not measured');
+        expect(source).toContain('progressive MediaSource TTFA measured');
+        expect(source).toContain('progressive MediaSource TTFA unavailable');
+        expect(source).toContain('measureProgressiveMediaSourceTtfa');
+        expect(source).toContain('measureFastApiProgressiveMediaSourceTtfa');
+        expect(source).toContain(
+            "mediasourceProgressiveTtfaMeasured = 'true'");
         expect(source).toContain(
             "mediasourceProgressiveTtfaMeasured = 'false'");
         expect(source).toContain(
             "mediasourceProgressiveTtfaNotMeasured = 'true'");
+        expect(source).toContain('mediasourceProgressiveTtfaP50Ms');
         expect(source).toContain(
             "from './server-audio-playback-start.js'");
         expect(source).toContain('waitServerAudioPlaybackStart');
@@ -55,6 +62,7 @@ describe('Streaming first-body-byte acceptance (KE-34 / KE-40)', () => {
         expect(helper).toContain('finally');
         const build = fs.readFileSync(path.join(root, 'build.js'), 'utf8');
         expect(build).toContain("'server-audio-playback-start.js'");
+        expect(build).toContain("'mediasource-progressive-ttfa.js'");
     });
 
     test('testFastApi discards an untimed warm-up before three warm runs', () => {
@@ -91,9 +99,13 @@ describe('Streaming first-body-byte acceptance (KE-34 / KE-40)', () => {
         expect(source).toContain('post-download start, not MediaSource');
         expect(source).toContain(
             'SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE');
+        expect(source).toContain(
+            'SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_MEASURED_NEEDLE');
         expect(source).toContain('mediasourceProgressiveTtfaMeasured');
         expect(source).toContain('mediasourceProgressiveTtfaNotMeasured');
+        expect(source).toContain('mediasourceProgressiveTtfaP50Ms');
         expect(source).toContain('MediaSource progressive TTFA not measured');
+        expect(source).toContain('progressive MediaSource TTFA measured');
     });
 
     test('local measured export still denies first-audio claims', () => {

@@ -1446,6 +1446,41 @@ def assert_progressive_streaming_ttfa_unmeasured(report, browser="Firefox"):
     return json.loads(probe.stdout.strip())
 
 
+def assert_progressive_streaming_ttfa_measured(report, browser="Firefox"):
+    """Progressive MediaSource TTFA measured or fail-closed unavailable."""
+    scripts_dir = Path(__file__).resolve().parent
+    probe = subprocess.run(
+        [
+            "node", "--input-type=module", "-e",
+            "import { assertProgressiveStreamingTtfaMeasured, "
+            "buildProgressiveStreamingTtfaMeasuredReport } from "
+            "'./mediasource-progressive-ttfa-acceptance.mjs';"
+            "const report = " + json.dumps(report) + ";"
+            "const asserted = assertProgressiveStreamingTtfaMeasured(report);"
+            "const acceptance = buildProgressiveStreamingTtfaMeasuredReport({"
+            "browser: " + json.dumps(browser) + ","
+            "assertedFromServerCard: true,"
+            "progressiveStreamingTtfaUnavailable:"
+            " asserted.progressiveStreamingTtfaUnavailable === true,"
+            "progressiveStreamingTtfaP50Ms:"
+            " asserted.progressiveStreamingTtfaP50Ms,"
+            "usedMediaSource: asserted.usedMediaSource === true,"
+            "disclosureNeedle: asserted.disclosureNeedle,"
+            "});"
+            "console.log(JSON.stringify(acceptance));",
+        ],
+        cwd=str(scripts_dir),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        raise RuntimeError(
+            "Progressive MediaSource TTFA measured assert failed: " +
+            (probe.stderr or probe.stdout or "unknown error"))
+    return json.loads(probe.stdout.strip())
+
+
 def assert_model_variants_disclosure(driver, origin, browser="Firefox"):
     """#57 / #61 / KE-53: assert catalog and rendered rows from packaged Firefox."""
     if not origin:
@@ -2057,20 +2092,30 @@ def accept_fastapi_server_card(driver, origin, api_url):
         """)
 
     driver.find_element(By.ID, "testServer").click()
-    WebDriverWait(driver, 60).until(lambda d: d.execute_script("""
+    WebDriverWait(driver, 120).until(lambda d: d.execute_script("""
         const status=document.getElementById('serverStatus');
         const text=status?.textContent||'';
         const audio=document.getElementById('serverAudio');
         const choose=document.getElementById('chooseServer');
+        const measured=
+            status?.dataset?.mediasourceProgressiveTtfaMeasured==='true';
+        const unavailable=
+            status?.dataset?.mediasourceProgressiveTtfaUnavailable==='true';
+        const progressiveOk = measured
+            ? (text.includes('progressive MediaSource TTFA measured') &&
+                Number.isFinite(Number(
+                    status?.dataset?.mediasourceProgressiveTtfaP50Ms)))
+            : (unavailable &&
+                (text.includes('progressive MediaSource TTFA unavailable') ||
+                    text.includes('MediaSource progressive TTFA not measured')) &&
+                status?.dataset?.mediasourceProgressiveTtfaNotMeasured==='true');
         return text.includes('Server returned playable MP3') &&
             text.includes('First body byte (TTFB) p50') &&
             text.includes('playback start p50') &&
             text.includes('not MediaSource streaming TTFA') &&
-            text.includes('MediaSource progressive TTFA not measured') &&
+            progressiveOk &&
             status?.dataset?.streamingFirstBodyByteMeasured==='true' &&
             status?.dataset?.playbackStartMeasured==='true' &&
-            status?.dataset?.mediasourceProgressiveTtfaMeasured==='false' &&
-            status?.dataset?.mediasourceProgressiveTtfaNotMeasured==='true' &&
             Number.isFinite(Number(status?.dataset?.firstBodyByteP50Ms)) &&
             Number.isFinite(Number(status?.dataset?.playbackStartP50Ms)) &&
             audio && !audio.hidden &&
@@ -2117,11 +2162,25 @@ def accept_fastapi_server_card(driver, origin, api_url):
     ttfb = driver.execute_script("""
         const status=document.getElementById('serverStatus');
         const text=status?.textContent||'';
-        const needle='MediaSource progressive TTFA not measured';
+        const measuredNeedle='progressive MediaSource TTFA measured';
+        const unavailableNeedle='progressive MediaSource TTFA unavailable';
+        const notMeasuredNeedle='MediaSource progressive TTFA not measured';
         const measuredRaw=status?.dataset?.mediasourceProgressiveTtfaMeasured;
         const notMeasuredRaw=
             status?.dataset?.mediasourceProgressiveTtfaNotMeasured;
-        const textHasNeedle=text.includes(needle);
+        const unavailableRaw=
+            status?.dataset?.mediasourceProgressiveTtfaUnavailable;
+        const p50Raw=status?.dataset?.mediasourceProgressiveTtfaP50Ms;
+        const measured=measuredRaw==='true';
+        const unavailable=unavailableRaw==='true';
+        let disclosure='';
+        if (measured && text.includes(measuredNeedle)) {
+            disclosure=measuredNeedle;
+        } else if (unavailable && text.includes(unavailableNeedle)) {
+            disclosure=unavailableNeedle;
+        } else if (text.includes(notMeasuredNeedle)) {
+            disclosure=notMeasuredNeedle;
+        }
         return {
             streamingFirstBodyByteMeasured:
                 status?.dataset?.streamingFirstBodyByteMeasured==='true',
@@ -2136,9 +2195,12 @@ def accept_fastapi_server_card(driver, origin, api_url):
                 ? true
                 : measuredRaw==='false' ? false : null,
             mediasourceProgressiveTtfaNotMeasured:
-                notMeasuredRaw==='true' && textHasNeedle,
-            mediasourceProgressiveTtfaDisclosure:
-                textHasNeedle ? needle : '',
+                notMeasuredRaw==='true',
+            mediasourceProgressiveTtfaUnavailable: unavailable,
+            mediasourceProgressiveTtfaP50Ms: measured && p50Raw!=null
+                ? Number(p50Raw) : null,
+            usedMediaSource: status?.dataset?.usedMediaSource==='true',
+            mediasourceProgressiveTtfaDisclosure: disclosure,
         };
     """)
 
@@ -2194,13 +2256,30 @@ def accept_fastapi_server_card(driver, origin, api_url):
             "mediasourceProgressiveTtfaMeasured"),
         mediasource_progressive_ttfa_not_measured=bool(
             ttfb.get("mediasourceProgressiveTtfaNotMeasured")),
+        mediasource_progressive_ttfa_unavailable=bool(
+            ttfb.get("mediasourceProgressiveTtfaUnavailable")),
+        mediasource_progressive_ttfa_p50_ms=ttfb.get(
+            "mediasourceProgressiveTtfaP50Ms"),
+        used_media_source=bool(ttfb.get("usedMediaSource")),
         mediasource_progressive_ttfa_disclosure=ttfb.get(
             "mediasourceProgressiveTtfaDisclosure") or "",
     )
-    # #61 / KE-54: first-class progressive MediaSource TTFA remains unmeasured.
     card["progressiveStreamingTtfaAcceptance"] = (
-        assert_progressive_streaming_ttfa_unmeasured(
-            card, browser="Firefox"))
+        assert_progressive_streaming_ttfa_measured(
+            {
+                "progressiveStreamingTtfaMeasured":
+                    card.get("mediasourceProgressiveTtfaMeasured"),
+                "trueMediaSourceTtfaMeasured":
+                    card.get("mediasourceProgressiveTtfaMeasured") is True,
+                "progressiveStreamingTtfaUnavailable":
+                    card.get("mediasourceProgressiveTtfaUnavailable") is True,
+                "progressiveStreamingTtfaP50Ms":
+                    card.get("mediasourceProgressiveTtfaP50Ms"),
+                "usedMediaSource": card.get("usedMediaSource") is True,
+                "disclosureNeedle":
+                    card.get("mediasourceProgressiveTtfaDisclosure") or "",
+            },
+            browser="Firefox"))
     return card
 
 
@@ -4393,20 +4472,33 @@ def main():
                     progressive_ttfa = (
                         fastapi_card or {}).get(
                         "progressiveStreamingTtfaAcceptance")
+                    progressive_measured = (
+                        progressive_ttfa and
+                        progressive_ttfa.get(
+                            "progressiveStreamingTtfaMeasured") is True and
+                        isinstance(
+                            progressive_ttfa.get(
+                                "progressiveStreamingTtfaP50Ms"),
+                            (int, float)) and
+                        progressive_ttfa.get("usedMediaSource") is True)
+                    progressive_unavailable = (
+                        progressive_ttfa and
+                        progressive_ttfa.get(
+                            "progressiveStreamingTtfaUnavailable") is True and
+                        progressive_ttfa.get(
+                            "progressiveStreamingTtfaMeasured") is False and
+                        progressive_ttfa.get(
+                            "progressiveStreamingTtfaP50Ms") is None)
                     if (not progressive_ttfa or
                             progressive_ttfa.get("assertedFromServerCard")
                             is not True or
                             progressive_ttfa.get("success") is not True or
-                            progressive_ttfa.get(
-                                "progressiveStreamingTtfaMeasured")
-                            is not False or
-                            progressive_ttfa.get(
-                                "trueMediaSourceTtfaMeasured")
-                            is not False):
+                            not (progressive_measured or
+                                 progressive_unavailable)):
                         raise RuntimeError(
-                            "Progressive MediaSource TTFA unmeasured "
-                            "acceptance missing verified server-card "
-                            "evidence: " + repr(progressive_ttfa))
+                            "Progressive MediaSource TTFA measured/"
+                            "unavailable acceptance missing verified "
+                            "server-card evidence: " + repr(progressive_ttfa))
                     result["progressiveStreamingTtfaAcceptance"] = (
                         progressive_ttfa)
                     result["stage"] = "fastapi-preference-honor"

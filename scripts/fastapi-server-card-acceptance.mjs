@@ -19,9 +19,14 @@ export const SERVER_PLAYABLE_MP3_NEEDLE = 'Server returned playable MP3';
 export const SERVER_FIRST_BODY_BYTE_NEEDLE = 'First body byte (TTFB) p50';
 export const SERVER_PLAYBACK_START_NEEDLE = 'playback start p50';
 export const SERVER_NOT_MEDIASOURCE_NEEDLE = 'not MediaSource streaming TTFA';
-/** Honesty needle: progressive MSE TTFA remains unmeasured (KE-41c). */
+/** Honesty needle: progressive MSE TTFA remains unmeasured (KE-41c / unavailable). */
 export const SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE =
     'MediaSource progressive TTFA not measured';
+/** Measured progressive MSE TTFA needle (leave-open measurement path). */
+export const SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_MEASURED_NEEDLE =
+    'progressive MediaSource TTFA measured';
+export const SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_UNAVAILABLE_NEEDLE =
+    'progressive MediaSource TTFA unavailable';
 export const FASTAPI_SELECTED_NEEDLE = 'FastAPI selected.';
 export const SERVER_STATUS_NOT_TESTED = 'Not tested';
 /** Backend used to prove chooseServer writes (testFastApi needs fastapi first). */
@@ -68,21 +73,10 @@ function assertFastApiFirstBodyByte(report) {
         throw new Error(
             'playbackStartNotMeasured must not claim unmeasured when measured');
     }
-    // KE-41c: HTMLAudioElement start is measured; MediaSource progressive TTFA
-    // must remain explicitly not measured (do not invent MSE streaming TTFA).
-    if (report.mediasourceProgressiveTtfaMeasured !== false) {
-        throw new Error(
-            'mediasourceProgressiveTtfaMeasured must be false ' +
-            '(MediaSource progressive TTFA not measured)');
-    }
-    requireTrue(report, 'mediasourceProgressiveTtfaNotMeasured',
-        'mediasourceProgressiveTtfaNotMeasured must be true');
-    if (report.mediasourceProgressiveTtfaDisclosure !==
-        SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE) {
-        throw new Error(
-            'mediasourceProgressiveTtfaDisclosure must be the honesty needle: ' +
-            report.mediasourceProgressiveTtfaDisclosure);
-    }
+    // HTMLAudioElement start is measured. Progressive MediaSource TTFA is either
+    // measured with a real finite p50, or explicitly unavailable/unmeasured —
+    // never invent MSE streaming TTFA numbers.
+    assertFastApiMediaSourceProgressiveTtfa(report);
     if (!(Number.isFinite(report.firstBodyByteP50Ms) &&
         report.firstBodyByteP50Ms >= 0)) {
         throw new Error(
@@ -109,6 +103,60 @@ function assertFastApiFirstBodyByte(report) {
             'playbackStartP50Ms must be at/after synthesisP50Ms ' +
             '(post-download start, not MediaSource): ' +
             report.playbackStartP50Ms + ' vs ' + report.synthesisP50Ms);
+    }
+}
+
+function assertFastApiMediaSourceProgressiveTtfa(report) {
+    const measured = report.mediasourceProgressiveTtfaMeasured;
+    const unavailable = report.mediasourceProgressiveTtfaUnavailable === true;
+    const disclosure = String(
+        report.mediasourceProgressiveTtfaDisclosure || '');
+    if (measured === true) {
+        if (report.mediasourceProgressiveTtfaNotMeasured === true) {
+            throw new Error(
+                'mediasourceProgressiveTtfaNotMeasured must be false when measured');
+        }
+        if (!(Number.isFinite(report.mediasourceProgressiveTtfaP50Ms) &&
+            report.mediasourceProgressiveTtfaP50Ms >= 0)) {
+            throw new Error(
+                'mediasourceProgressiveTtfaP50Ms must be finite ms when measured: ' +
+                report.mediasourceProgressiveTtfaP50Ms);
+        }
+        if (report.usedMediaSource !== true) {
+            throw new Error('usedMediaSource must be true when MSE TTFA measured');
+        }
+        if (!disclosure.toLowerCase().includes('progressive') ||
+            !disclosure.toLowerCase().includes('mediasource') ||
+            !disclosure.toLowerCase().includes('ttfa') ||
+            !disclosure.toLowerCase().includes('measured') ||
+            disclosure.toLowerCase().includes('not measured')) {
+            throw new Error(
+                'mediasourceProgressiveTtfaDisclosure must be measured needle: ' +
+                disclosure);
+        }
+        return;
+    }
+    if (measured !== false) {
+        throw new Error(
+            'mediasourceProgressiveTtfaMeasured must be true or false: ' +
+            measured);
+    }
+    requireTrue(report, 'mediasourceProgressiveTtfaNotMeasured',
+        'mediasourceProgressiveTtfaNotMeasured must be true when unmeasured');
+    if (Number.isFinite(report.mediasourceProgressiveTtfaP50Ms)) {
+        throw new Error(
+            'unmeasured/unavailable MediaSource TTFA must not invent p50 ms: ' +
+            report.mediasourceProgressiveTtfaP50Ms);
+    }
+    const disclosureOk = unavailable
+        ? (disclosure.toLowerCase().includes('unavailable') ||
+            disclosure === SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE)
+        : disclosure === SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_NOT_MEASURED_NEEDLE ||
+            disclosure.toLowerCase().includes('unavailable');
+    if (!disclosureOk) {
+        throw new Error(
+            'mediasourceProgressiveTtfaDisclosure must be honesty/unavailable: ' +
+            disclosure);
     }
 }
 
@@ -190,6 +238,14 @@ export function buildFastApiServerCardReport(options = {}) {
                 options, 'mediasourceProgressiveTtfaNotMeasured')
                 ? options.mediasourceProgressiveTtfaNotMeasured === true
                 : true,
+        mediasourceProgressiveTtfaUnavailable:
+            options.mediasourceProgressiveTtfaUnavailable === true,
+        mediasourceProgressiveTtfaP50Ms:
+            Object.prototype.hasOwnProperty.call(
+                options, 'mediasourceProgressiveTtfaP50Ms')
+                ? options.mediasourceProgressiveTtfaP50Ms
+                : null,
+        usedMediaSource: options.usedMediaSource === true,
         mediasourceProgressiveTtfaDisclosure:
             Object.prototype.hasOwnProperty.call(
                 options, 'mediasourceProgressiveTtfaDisclosure')

@@ -90,6 +90,7 @@ export default [
       'phoneme-tokenizer.js',
       'model-manager-page.js',
       'server-audio-playback-start.js',
+      'mediasource-progressive-ttfa.js',
       'store-signing-disclosure.js',
       'broader-g2p-disclosure.js',
       'dom-utils.js',
