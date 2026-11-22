@@ -215,6 +215,8 @@ describe('Measured results export acceptance', () => {
         expect(html).toContain('pinned catalog model asset bytes');
         expect(html).toContain('measured Cache Storage body sizes');
         expect(html).toContain('blob.size');
+        expect(html).toContain('overall footprint stays unmeasured/catalog-only');
+        expect(html).toContain('per-row body sizes were retained');
         expect(html).not.toContain('Cache Storage presence estimate');
         expect(html).not.toContain('not measured body/disk usage');
         expect(html).toContain('runtime WASM/WebGPU heap is not measured');
