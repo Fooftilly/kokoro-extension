@@ -56,9 +56,25 @@ describe('local cancel-join measurement', () => {
             settledAt = performance.now();
             return {};
         };
-        const [join] = await measureCancelJoin(engine, synthesize);
+        // Three trials overwrite cancelAt/settledAt; compare the last join.
+        const joins = await measureCancelJoin(engine, synthesize);
+        const join = joins[joins.length - 1];
         expect(Math.abs(join - (settledAt - cancelAt))).toBeLessThan(8);
         expect(join).toBeGreaterThan(10);
+    });
+
+    test('rejects when synthesis settles before cancel()', async () => {
+        const engine = { cancel: jest.fn(async () => {}) };
+        const synthesize = async () => {
+            if (typeof engine.onInferenceStarted === 'function') {
+                engine.onInferenceStarted();
+            }
+            // Sync return after start → pending settles before cancel step.
+            return {};
+        };
+        await expect(measureCancelJoin(engine, synthesize))
+            .rejects.toThrow(/in-flight inference/i);
+        expect(engine.cancel).not.toHaveBeenCalled();
     });
 
     test('AbortError settlement counts; other failures rethrow', async () => {

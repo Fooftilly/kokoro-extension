@@ -45,6 +45,16 @@ export async function measureCancelJoin(engine, synthesize) {
                 throw new Error(
                     'Cancel join requires in-flight inference before cancel()');
             }
+            // Start can fire in the same turn as a sync settle. Re-check that
+            // synthesis is still pending immediately before cancel/t0.
+            const stillInFlight = await Promise.race([
+                pending.then(() => false, () => false),
+                Promise.resolve().then(() => true),
+            ]);
+            if (!stillInFlight) {
+                throw new Error(
+                    'Cancel join requires in-flight inference before cancel()');
+            }
             // Clock starts at the cancel request, ends when synthesize settles
             // (not when cancel() itself resolves). Non-AbortError failures are
             // not cancel-join measurements. A rejected cancel() invalidates

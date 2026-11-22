@@ -34,6 +34,14 @@ export async function measureCancelJoin(engine, synthesize) {
                 throw new Error(
                     'Cancel join requires in-flight inference before cancel()');
             }
+            const stillInFlight = await Promise.race([
+                pending.then(() => false, () => false),
+                Promise.resolve().then(() => true),
+            ]);
+            if (!stillInFlight) {
+                throw new Error(
+                    'Cancel join requires in-flight inference before cancel()');
+            }
             const t0 = performance.now();
             const cancelOutcome = Promise.resolve()
                 .then(() => engine.cancel())
