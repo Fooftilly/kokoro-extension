@@ -1291,6 +1291,7 @@ try {
                 localPlaybackStartMeasured: true,
                 localCancelMeasured: true,
                 nativeForceInterruptSupported: false,
+                cancelJoinProbeText: 'Cancel join probe.',
                 storageFootprintMeasured: true,
                 storageFootprintSource: 'cache-body-bytes',
                 cachePresenceProbed: true,

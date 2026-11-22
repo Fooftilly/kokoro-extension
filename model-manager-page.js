@@ -206,6 +206,10 @@ async function buildMeasuredEnglishExport() {
         // Cancel → synthesize settlement join (best-effort; not force-interrupt).
         localCancelMeasured: allCancelJoinsMeasured,
         nativeForceInterruptSupported: false,
+        // Join latency uses a short probe (not sampleText) when cancel cannot
+        // force-interrupt — disclose so dual readers do not assume sampleText.
+        cancelJoinProbeText: allCancelJoinsMeasured
+            ? CANCEL_JOIN_PROBE_TEXT : null,
         // Real Cache Storage body sizes (blob.size), not catalog-header presence.
         storageFootprintMeasured: allBodiesMeasured,
         storageFootprintSource: allBodiesMeasured

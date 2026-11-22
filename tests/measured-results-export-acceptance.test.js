@@ -29,6 +29,7 @@ const payload = {
     localPlaybackStartMeasured: true,
     localCancelMeasured: true,
     nativeForceInterruptSupported: false,
+    cancelJoinProbeText: 'Cancel join probe.',
     storageFootprintMeasured: true,
     storageFootprintSource: 'cache-body-bytes',
     cachePresenceProbed: true,
@@ -195,6 +196,16 @@ const badCancelJoin = (() => {
         return { ok: false, message: String(error.message || error) };
     }
 })();
+const badCancelProbe = (() => {
+    try {
+        exp.assertMeasuredResultsExportPayload({
+            ...payload, cancelJoinProbeText: 'Hello world.',
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
 console.log(JSON.stringify({
     kind: exp.MEASURED_EXPORT_KIND,
     filename: exp.MEASURED_EXPORT_FILENAME,
@@ -209,7 +220,7 @@ console.log(JSON.stringify({
     rejectOther: exp.isAcceptableMeasuredExportFilename('notes.txt'),
     report, fail, badPayload, badHeap, badFootprint,
     badMeasuredClaim, badOnnxDict, badDictBodySize, badPlaybackMeasured,
-    badCancelMeasured, badForceInterrupt, badCancelJoin,
+    badCancelMeasured, badForceInterrupt, badCancelJoin, badCancelProbe,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
@@ -262,6 +273,8 @@ describe('Measured results export acceptance', () => {
         expect(snap.badForceInterrupt.message).toMatch(/force-interrupt/i);
         expect(snap.badCancelJoin.ok).toBe(false);
         expect(snap.badCancelJoin.message).toMatch(/cancelJoinP50Ms/i);
+        expect(snap.badCancelProbe.ok).toBe(false);
+        expect(snap.badCancelProbe.message).toMatch(/cancelJoinProbeText/i);
     });
 
     test('product page exposes local-only measured export control', () => {
@@ -286,6 +299,8 @@ describe('Measured results export acceptance', () => {
         expect(source).toContain('localCancelMeasured:');
         expect(source).toContain('nativeForceInterruptSupported: false');
         expect(source).toContain('cancelJoinP50Ms');
+        expect(source).toContain('cancelJoinProbeText');
+        expect(source).toContain('CANCEL_JOIN_PROBE_TEXT');
         expect(source).toContain('measureCancelJoin');
         expect(source).toContain("from './local-cancel-join.js'");
         expect(source).toContain('Cancel-join is diagnostic-only');

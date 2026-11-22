@@ -85,4 +85,22 @@ describe('local cancel-join measurement', () => {
         await expect(measureCancelJoin(engine, failing))
             .rejects.toThrow(/boom/);
     });
+
+    test('rejecting cancel() invalidates join (does not export latency)', async () => {
+        const engine = {
+            cancel: jest.fn(async () => {
+                throw new Error('cancel failed');
+            }),
+        };
+        const synthesize = async () => {
+            if (typeof engine.onInferenceStarted === 'function') {
+                engine.onInferenceStarted();
+            }
+            await delay(30);
+            return { ok: true };
+        };
+        await expect(measureCancelJoin(engine, synthesize))
+            .rejects.toThrow(/cancel failed/);
+        expect(engine.cancel).toHaveBeenCalled();
+    });
 });

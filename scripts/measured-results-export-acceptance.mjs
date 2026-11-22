@@ -59,6 +59,12 @@ function assertMeasuredExportDisclosure(payload) {
         'Measured export must report local cancel-join latency');
     requireMeasuredFlag(payload, 'nativeForceInterruptSupported', false,
         'Measured export must not claim native force-interrupt support');
+    // Join uses a short fixed probe distinct from sampleText (non-interruptible).
+    if (payload.cancelJoinProbeText !== 'Cancel join probe.') {
+        throw Error(
+            'Measured export must disclose cancelJoinProbeText: ' +
+            JSON.stringify(payload.cancelJoinProbeText));
+    }
     requireMeasuredFlag(payload, 'storageFootprintMeasured', true,
         'Measured export must report measured cache-body storage footprint');
     requireMeasuredFlag(payload, 'storageFootprintSource', 'cache-body-bytes',

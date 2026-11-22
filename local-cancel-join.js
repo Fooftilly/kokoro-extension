@@ -47,9 +47,15 @@ export async function measureCancelJoin(engine, synthesize) {
             }
             // Clock starts at the cancel request, ends when synthesize settles
             // (not when cancel() itself resolves). Non-AbortError failures are
-            // not cancel-join measurements.
+            // not cancel-join measurements. A rejected cancel() invalidates
+            // the trial — do not export latency for a failed cancel request.
             const t0 = performance.now();
-            const cancelPromise = Promise.resolve().then(() => engine.cancel());
+            const cancelOutcome = Promise.resolve()
+                .then(() => engine.cancel())
+                .then(
+                    () => ({ ok: true }),
+                    (error) => ({ ok: false, error }),
+                );
             let settledAt = null;
             await pending.then(
                 () => { settledAt = performance.now(); },
@@ -59,7 +65,12 @@ export async function measureCancelJoin(engine, synthesize) {
                     settledAt = performance.now();
                 },
             );
-            await cancelPromise.catch(() => {});
+            const cancelResult = await cancelOutcome;
+            if (!cancelResult.ok) {
+                throw cancelResult.error instanceof Error
+                    ? cancelResult.error
+                    : new Error('Cancel request failed during join measurement');
+            }
             const joinMs = settledAt - t0;
             if (!Number.isFinite(joinMs) || joinMs < 0) {
                 throw new Error('Cancel join measurement failed');
