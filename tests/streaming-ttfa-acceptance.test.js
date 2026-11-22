@@ -157,10 +157,17 @@ describe('Streaming first-body-byte acceptance (KE-34 / KE-40)', () => {
             "requireMeasuredFlag(payload, 'firstAudioMeasured', false");
         expect(exportHelper).toContain(
             "requireMeasuredFlag(payload, 'localPlaybackStartMeasured', true");
+        expect(exportHelper).toContain(
+            "requireMeasuredFlag(payload, 'localCancelMeasured', true");
+        expect(exportHelper).toContain(
+            "requireMeasuredFlag(payload, 'nativeForceInterruptSupported', false");
         expect(page).toContain('firstAudioMeasured: false');
         expect(page).toContain('localPlaybackStartMeasured:');
+        expect(page).toContain('localCancelMeasured:');
+        expect(page).toContain('nativeForceInterruptSupported: false');
         expect(page).toContain('firstAudioMs: null');
         expect(page).toContain('playbackStartMs');
         expect(page).toContain('waitServerAudioPlaybackStart');
+        expect(page).toContain('measureCancelJoin');
     });
 });

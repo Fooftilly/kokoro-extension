@@ -27,6 +27,8 @@ const payload = {
     coldPrepMeasured: true,
     firstAudioMeasured: false,
     localPlaybackStartMeasured: true,
+    localCancelMeasured: true,
+    nativeForceInterruptSupported: false,
     storageFootprintMeasured: true,
     storageFootprintSource: 'cache-body-bytes',
     cachePresenceProbed: true,
@@ -41,6 +43,7 @@ const payload = {
     measurements: [
         { key: 'onnx-q8', label: 'ONNX', coldPrepMs: 40, synthesisP50Ms: 12,
             synthesisP95Ms: 15, realTimeFactorP50: 0.2, playbackStartP50Ms: 14,
+            cancelJoinP50Ms: 8,
             catalogModelAssetBytes: 92885404,
             requiredDictionaryCatalogBytes: 3618488,
             catalogEnglishPathBytes: 92885404 + 3618488,
@@ -51,7 +54,7 @@ const payload = {
             cachedCatalogEnglishPathBytes: 92885404 + 3618488 },
         { key: 'mediapipe-cpu', label: 'MediaPipe', coldPrepMs: 55,
             synthesisP50Ms: 18, synthesisP95Ms: 22, realTimeFactorP50: 0.3,
-            playbackStartP50Ms: 20,
+            playbackStartP50Ms: 20, cancelJoinP50Ms: 9,
             catalogModelAssetBytes: 294783298,
             cachedCatalogAssetBytes: 294783298,
             measuredCacheBodyBytes: 294783298 },
@@ -160,6 +163,38 @@ const badPlaybackMeasured = (() => {
         return { ok: false, message: String(error.message || error) };
     }
 })();
+const badCancelMeasured = (() => {
+    try {
+        exp.assertMeasuredResultsExportPayload({
+            ...payload, localCancelMeasured: false,
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
+const badForceInterrupt = (() => {
+    try {
+        exp.assertMeasuredResultsExportPayload({
+            ...payload, nativeForceInterruptSupported: true,
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
+const badCancelJoin = (() => {
+    try {
+        const rows = payload.measurements.map((row, i) =>
+            i === 0 ? { ...row, cancelJoinP50Ms: -1 } : row);
+        exp.assertMeasuredResultsExportPayload({
+            ...payload, measurements: rows,
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
 console.log(JSON.stringify({
     kind: exp.MEASURED_EXPORT_KIND,
     filename: exp.MEASURED_EXPORT_FILENAME,
@@ -174,6 +209,7 @@ console.log(JSON.stringify({
     rejectOther: exp.isAcceptableMeasuredExportFilename('notes.txt'),
     report, fail, badPayload, badHeap, badFootprint,
     badMeasuredClaim, badOnnxDict, badDictBodySize, badPlaybackMeasured,
+    badCancelMeasured, badForceInterrupt, badCancelJoin,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
@@ -220,6 +256,12 @@ describe('Measured results export acceptance', () => {
         expect(snap.badPlaybackMeasured.ok).toBe(false);
         expect(snap.badPlaybackMeasured.message).toMatch(
             /muted full-clip playback start/i);
+        expect(snap.badCancelMeasured.ok).toBe(false);
+        expect(snap.badCancelMeasured.message).toMatch(/cancel-join/i);
+        expect(snap.badForceInterrupt.ok).toBe(false);
+        expect(snap.badForceInterrupt.message).toMatch(/force-interrupt/i);
+        expect(snap.badCancelJoin.ok).toBe(false);
+        expect(snap.badCancelJoin.message).toMatch(/cancelJoinP50Ms/i);
     });
 
     test('product page exposes local-only measured export control', () => {
@@ -236,9 +278,15 @@ describe('Measured results export acceptance', () => {
         expect(html).not.toContain('not measured body/disk usage');
         expect(html).toContain('runtime WASM/WebGPU heap is not measured');
         expect(html).toContain('muted HTMLAudioElement playback start');
+        expect(html).toContain('cancel-join latency');
+        expect(html).toContain('native force-interrupt is not supported');
         expect(html).toContain('Streaming time to first audio is not measured');
         expect(source).toContain('localPlaybackStartMeasured:');
         expect(source).toContain('playbackStartP50Ms');
+        expect(source).toContain('localCancelMeasured:');
+        expect(source).toContain('nativeForceInterruptSupported: false');
+        expect(source).toContain('cancelJoinP50Ms');
+        expect(source).toContain('measureCancelJoin');
         expect(source).toContain('buildMeasuredEnglishExport');
         expect(source).toContain('exportMeasuredEnglishResults');
         expect(source).toContain('downloadPinnedMeasuredExport');
@@ -252,6 +300,10 @@ describe('Measured results export acceptance', () => {
         expect(source).toContain('noRanking: true');
         expect(source).toContain('coldPrepMeasured: true');
         expect(source).toContain('coldPrepMs');
+        expect(fs.readFileSync(
+            path.join(root, 'scripts', 'measured-results-export-acceptance.mjs'),
+            'utf8')).toContain(
+            "requireMeasuredFlag(payload, 'localCancelMeasured', true");
         expect(source).toContain('catalogModelAssetBytes');
         expect(source).toContain('cachedCatalogAssetBytes');
         expect(source).toContain('cachedCatalogDictionaryBytes');
