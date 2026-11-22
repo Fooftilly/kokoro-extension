@@ -2046,14 +2046,24 @@ def _start_fastapi_speech_stub():
                 # Delay the first body byte so streamed TTFB is measurable.
                 # Hold a playable MP3 prefix open before the final write so
                 # progressive MediaSource can fire `playing` before EOF.
-                tail_len = min(32, max(1, len(mp3) - 1))
+                # Keep in sync with FASTAPI_STUB_* /
+                # splitFastApiStubMp3ForProgressive in
+                # fastapi-server-card-acceptance.mjs (Chromium dual requires
+                # measured progressive TTFA; Firefox may still be unavailable).
+                first_byte_delay_s = 0.1
+                progressive_tail_hold_s = 2.0
+                # 32 is a floor; shared fixture holds max(32, floor(len*0.4))
+                # bytes (~4126 of 10315) so Chromium MSE can play mid-stream.
+                progressive_tail_ratio = 0.4
+                ratio_tail = int(len(mp3) * progressive_tail_ratio)
+                tail_len = min(max(32, ratio_tail), max(1, len(mp3) - 1))
                 first_len = max(1, len(mp3) - tail_len)
                 first = mp3[:first_len]
                 rest = mp3[first_len:]
-                time.sleep(0.1)
+                time.sleep(first_byte_delay_s)
                 self.wfile.write(first)
                 self.wfile.flush()
-                time.sleep(0.25)
+                time.sleep(progressive_tail_hold_s)
                 if rest:
                     self.wfile.write(rest)
                 return
