@@ -9,6 +9,15 @@
 <body>
     <main>
         <h1>Browser speech tests</h1>
+        <section id="simpleSetupPath" class="simple-setup-path" aria-labelledby="simpleSetupHeading">
+            <h2 id="simpleSetupHeading">Quick setup</h2>
+            <ol>
+                <li><strong>Download</strong> the model (and ONNX dictionary, if needed) for the backend you want.</li>
+                <li><strong>Test</strong> that backend with the shared English sample below.</li>
+                <li><strong>Use this backend</strong> only after a successful test — preference changes only on your action.</li>
+            </ol>
+            <p>Measurements and browser-capability details stay further down for power users; they are not required for day-to-day listening.</p>
+        </section>
         <p>Test local Kokoro synthesis with models you explicitly download below. The separate browser support check at the bottom only inspects prerequisites; it does not download data, load models, or generate speech.</p>
         <section>
             <h2>Available backend modes</h2>
