@@ -66,6 +66,99 @@ const LocalVoice = globalThis.KokoroLocalVoiceMixing || {
     localVoiceLimitationNote: () => '',
 };
 
+/** Sticky banner after a failed local-backend switch (#194 item 3). */
+let stickyLocalSetupFailure = null;
+/** Soft warning when a saved local backend is selected but models are missing. */
+let localActiveSetupIssue = null;
+/** Invalidates in-flight soft probes when the user switches backends. */
+let localSetupHealthVersion = 0;
+
+function setLocalSetupBanner({ message, showCta, tone }) {
+    const banner = document.getElementById('localSetupBanner');
+    const msg = document.getElementById('localSetupMessage');
+    const cta = document.getElementById('localSetupOpenTest');
+    if (!banner || !msg) return;
+    banner.hidden = false;
+    banner.classList.toggle('setup-banner-error', tone === 'error');
+    banner.classList.toggle('setup-banner-ok', tone === 'ok');
+    msg.textContent = message || '';
+    if (cta) cta.hidden = !showCta;
+}
+
+function hideLocalSetupBanner() {
+    const banner = document.getElementById('localSetupBanner');
+    if (banner) banner.hidden = true;
+}
+
+/**
+ * Hide FastAPI-only chrome for local backends and drive empty-state banner (#194 1+3).
+ */
+function syncServerOnlyChrome(backend) {
+    const local = LocalVoice.isLocalBackend(backend);
+    const server = document.getElementById('serverSettings');
+    const mode = document.getElementById('playbackModeSection');
+    if (server) server.hidden = local;
+    if (mode) mode.hidden = local;
+    // Sticky failed-switch errors win over active-backend guidance, including
+    // when revert restores another local backend (e.g. ONNX fail → MediaPipe).
+    // If the restored local backend also needs setup, keep that warning too.
+    if (stickyLocalSetupFailure) {
+        const message = (local && localActiveSetupIssue)
+            ? stickyLocalSetupFailure + ' ' + localActiveSetupIssue
+            : stickyLocalSetupFailure;
+        setLocalSetupBanner({
+            message,
+            showCta: true,
+            tone: 'error',
+        });
+        return;
+    }
+    if (!local) {
+        hideLocalSetupBanner();
+        return;
+    }
+    if (localActiveSetupIssue) {
+        setLocalSetupBanner({
+            message: localActiveSetupIssue,
+            showCta: true,
+            tone: 'error',
+        });
+        return;
+    }
+    setLocalSetupBanner({
+        message: (backend === 'onnx' ? 'ONNX' : 'MediaPipe') +
+            ' is active on-device. Download, repair, or compare models on Test TTS backends.',
+        showCta: true,
+        tone: 'ok',
+    });
+}
+
+/**
+ * Soft empty-state probe for an already-selected local backend (does not revert).
+ * Ignores results if the user switched backends while validation awaited.
+ */
+async function refreshLocalSetupHealth(backend) {
+    const version = ++localSetupHealthVersion;
+    const stillCurrent = () => version === localSetupHealthVersion &&
+        selectedBackendValue() === backend;
+    if (!LocalVoice.isLocalBackend(backend)) {
+        localActiveSetupIssue = null;
+        return;
+    }
+    try {
+        await validateSelectedLocalBackend(backend);
+        if (!stillCurrent()) return;
+        localActiveSetupIssue = null;
+    } catch (error) {
+        if (!stillCurrent()) return;
+        const label = backend === 'onnx' ? 'ONNX' : 'MediaPipe';
+        localActiveSetupIssue = label + ' needs setup: ' + String(error.message || error) +
+            ' Open Test TTS backends to download, repair, and retest.';
+    }
+    if (!stillCurrent()) return;
+    syncServerOnlyChrome(backend);
+}
+
 /**
  * FastAPI keeps the weighted mixer. MediaPipe shows an editable voice ID.
  * ONNX shows a catalogued voice-asset select (#60 voice-change).
@@ -92,6 +185,7 @@ function syncVoiceUiForBackend(backend) {
         note.hidden = !local;
         note.textContent = local ? LocalVoice.localVoiceLimitationNote(backend) : '';
     }
+    syncServerOnlyChrome(backend);
 }
 
 /**
@@ -949,6 +1043,9 @@ const restoreOptions = async () => {
             void refreshBackendStatus(items.apiUrl).catch(error => {
                 console.warn('Kokoro: server availability probe failed', error);
             });
+        } else if (LocalVoice.isLocalBackend(items.ttsBackend)) {
+            // Soft empty state if models were removed after activation (#194 item 3).
+            void refreshLocalSetupHealth(items.ttsBackend);
         }
 
         applyGeneralFormFields(items);
@@ -1073,7 +1170,11 @@ document.addEventListener('DOMContentLoaded', () => {
             onnxVoiceSelect.value = LocalVoice.normalizeOnnxVoiceAsset
                 ? LocalVoice.normalizeOnnxVoiceAsset(onnxVoiceSelect.value)
                 : (LocalVoice.ONNX_FIXED_VOICE_ASSET || 'voices/af.bin');
-            void saveOptions(false);
+            void saveOptions(false).then(() => {
+                if (selectedBackendValue() === 'onnx') {
+                    return refreshLocalSetupHealth('onnx');
+                }
+            });
         });
     }
 
@@ -1088,14 +1189,21 @@ document.addEventListener('DOMContentLoaded', () => {
         for (const item of document.querySelectorAll('input[name="ttsBackend"]')) {
             item.checked = item.value === saved;
         }
-        explanation.textContent = (radio.value === 'onnx' ? 'ONNX' : 'MediaPipe') +
-            ' unavailable: ' + String(error.message || error) +
+        const label = radio.value === 'onnx' ? 'ONNX' : 'MediaPipe';
+        const detail = String(error.message || error);
+        explanation.textContent = label + ' unavailable: ' + detail +
             ' Use the TTS test page to install and validate it.';
+        stickyLocalSetupFailure = label + ' is not ready: ' + detail +
+            ' Download and test it on Test TTS backends, then select it again.';
+        syncVoiceUiForBackend(saved || 'fastapi');
     }
 
     async function applySelectedBackendUi(radio, explanation) {
         explanation.textContent = BackendDisclosure.backendDisclosure(radio.value);
         if (radio.value === 'fastapi') {
+            stickyLocalSetupFailure = null;
+            localActiveSetupIssue = null;
+            localSetupHealthVersion++;
             syncVoiceUiForBackend('fastapi');
             await refreshBackendStatus(document.getElementById('apiUrl').value);
             return;
@@ -1103,6 +1211,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // Cancel any in-flight remote status/voice fetch when switching to local.
         refreshGeneration++;
         if (activeRefreshAbort) activeRefreshAbort.abort();
+        stickyLocalSetupFailure = null;
+        localActiveSetupIssue = null;
+        localSetupHealthVersion++;
         syncVoiceUiForBackend(radio.value);
         const status = document.getElementById('apiStatusRow');
         if (status) status.style.display = 'none';
@@ -1172,12 +1283,17 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    function openTestTtsPage() {
+        browser.tabs.create({ url: 'benchmark.html' });
+    }
     const openBenchmarkBtn = document.getElementById('openBenchmarkBtn');
     if (openBenchmarkBtn) {
         openBenchmarkBtn.textContent = BackendDisclosure.CTA_LABEL || 'Test TTS backends';
-        openBenchmarkBtn.addEventListener('click', () => {
-            browser.tabs.create({ url: 'benchmark.html' });
-        });
+        openBenchmarkBtn.addEventListener('click', openTestTtsPage);
+    }
+    const localSetupOpenTest = document.getElementById('localSetupOpenTest');
+    if (localSetupOpenTest) {
+        localSetupOpenTest.addEventListener('click', openTestTtsPage);
     }
     const openBenchmarkHint = document.getElementById('openBenchmarkHint');
     if (openBenchmarkHint && BackendDisclosure.CTA_HINT) {
@@ -1216,6 +1332,12 @@ if (typeof module !== 'undefined' && module.exports) {
         normalizeApiUrl,
         beginHostPermissionRequest,
         syncVoiceUiForBackend,
+        syncServerOnlyChrome,
+        refreshLocalSetupHealth,
+        getStickyLocalSetupFailure: () => stickyLocalSetupFailure,
+        setStickyLocalSetupFailureForTests: (value) => { stickyLocalSetupFailure = value; },
+        getLocalActiveSetupIssue: () => localActiveSetupIssue,
+        setLocalActiveSetupIssueForTests: (value) => { localActiveSetupIssue = value; },
         getConnectionStatus: () => connectionStatus,
         getAvailableVoices: () => availableVoices,
         getVoiceFetchStatus: () => voiceFetchStatus,

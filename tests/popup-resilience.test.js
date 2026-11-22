@@ -139,6 +139,48 @@ describe('popup backend-loss resilience (#4)', () => {
         }));
     }
 
+    /** Sync get/set that honors writes so rollback tests cannot mask a bad persist. */
+    function useWritableSyncStore(initial) {
+        const store = { ...initial };
+        browser.storage.sync.get.mockImplementation(async (defaults = {}) => ({
+            ...defaults,
+            ...store,
+        }));
+        browser.storage.sync.set.mockImplementation(async (patch) => {
+            Object.assign(store, patch);
+        });
+        return store;
+    }
+
+    /**
+     * Saved MediaPipe → failed ONNX switch. Asserts selection + store stay MediaPipe
+     * and no onnx persist. Returns banner text after the sticky failure is set.
+     */
+    async function failOnnxSwitchFromSavedMediaPipe({ modelReady }) {
+        allowMediaPipeSelection({ modelReady });
+        const store = useWritableSyncStore({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            mode: 'stream',
+            theme: 'light',
+        });
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('mediapipe');
+        browser.storage.sync.set.mockClear();
+        const onnx = document.querySelector('input[name="ttsBackend"][value="onnx"]');
+        onnx.checked = true;
+        onnx.dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('mediapipe');
+        expect(store.ttsBackend).toBe('mediapipe');
+        expect(browser.storage.sync.set.mock.calls.some(([v]) => v.ttsBackend === 'onnx'))
+            .toBe(false);
+        expect(popup.getStickyLocalSetupFailure()).toMatch(/ONNX/);
+        return document.getElementById('localSetupMessage').textContent;
+    }
+
     test('popup renders and settings remain editable when backend is down', async () => {
         document.dispatchEvent(new Event('DOMContentLoaded'));
         await flushAsync();
@@ -884,5 +926,135 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(writes.some((payload) => payload.mediaPipeVoice === 'af_bella')).toBe(true);
         expect(writes.every((payload) => !Object.hasOwn(payload, 'voice'))).toBe(true);
         expect(writes.every((payload) => !Object.hasOwn(payload, 'onnxVoiceAsset'))).toBe(true);
+    });
+
+    test('hides FastAPI-only chrome for local backends (#194 item 1)', async () => {
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        const server = document.getElementById('serverSettings');
+        const mode = document.getElementById('playbackModeSection');
+        expect(server.hidden).toBe(false);
+        expect(mode.hidden).toBe(false);
+
+        popup.syncVoiceUiForBackend('mediapipe');
+        expect(server.hidden).toBe(true);
+        expect(mode.hidden).toBe(true);
+        expect(document.getElementById('localSetupBanner').hidden).toBe(false);
+        expect(document.getElementById('localSetupMessage').textContent).toMatch(/MediaPipe/);
+        expect(document.getElementById('localSetupOpenTest').hidden).toBe(false);
+
+        popup.syncVoiceUiForBackend('onnx');
+        expect(server.hidden).toBe(true);
+        expect(mode.hidden).toBe(true);
+        expect(document.getElementById('localSetupMessage').textContent).toMatch(/ONNX/);
+
+        popup.syncVoiceUiForBackend('fastapi');
+        expect(server.hidden).toBe(false);
+        expect(mode.hidden).toBe(false);
+        expect(document.getElementById('localSetupBanner').hidden).toBe(true);
+    });
+
+    test('failed local switch keeps a setup banner with Test TTS CTA (#194 item 3)', async () => {
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        const radio = document.querySelector('input[name="ttsBackend"][value="mediapipe"]');
+        radio.checked = true;
+        radio.dispatchEvent(new Event('change'));
+        await flushAsync();
+
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('fastapi');
+        const banner = document.getElementById('localSetupBanner');
+        expect(banner.hidden).toBe(false);
+        expect(banner.classList.contains('setup-banner-error')).toBe(true);
+        expect(document.getElementById('localSetupMessage').textContent).toMatch(/not ready|Test TTS/i);
+        expect(document.getElementById('serverSettings').hidden).toBe(false);
+
+        browser.tabs.create.mockClear();
+        document.getElementById('localSetupOpenTest').click();
+        expect(browser.tabs.create).toHaveBeenCalledWith({ url: 'benchmark.html' });
+    });
+
+    test('sticky failure stays visible after reverting to another local backend', async () => {
+        // MediaPipe already active; a failed ONNX switch must not replace the
+        // sticky error with the ok “MediaPipe is active” banner.
+        const text = await failOnnxSwitchFromSavedMediaPipe({ modelReady: true });
+        const banner = document.getElementById('localSetupBanner');
+        expect(banner.hidden).toBe(false);
+        expect(banner.classList.contains('setup-banner-error')).toBe(true);
+        expect(text).toMatch(/ONNX.*not ready/i);
+        expect(document.getElementById('serverSettings').hidden).toBe(true);
+    });
+
+    test('failed local→local switch keeps sticky and restored setup warning', async () => {
+        // MediaPipe missing models → soft probe warning; failed ONNX keeps both.
+        const text = await failOnnxSwitchFromSavedMediaPipe({ modelReady: false });
+        expect(popup.getLocalActiveSetupIssue()).toMatch(/MediaPipe needs setup/);
+        expect(text).toMatch(/ONNX.*not ready/i);
+        expect(text).toMatch(/MediaPipe needs setup/);
+        expect(document.getElementById('localSetupBanner').classList.contains('setup-banner-error'))
+            .toBe(true);
+    });
+
+    test('saved local backend with missing models shows setup warning without reverting (#194 item 3)', async () => {
+        // Approved revision remains, but cache reports the model removed.
+        allowMediaPipeSelection({ modelReady: false });
+        browser.storage.sync.get.mockImplementation(async (defaults) => ({
+            ...defaults,
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            mode: 'stream',
+            theme: 'light',
+        }));
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('mediapipe');
+        expect(document.getElementById('serverSettings').hidden).toBe(true);
+        const banner = document.getElementById('localSetupBanner');
+        expect(banner.hidden).toBe(false);
+        expect(banner.classList.contains('setup-banner-error')).toBe(true);
+        expect(document.getElementById('localSetupMessage').textContent)
+            .toMatch(/no longer installed|needs setup/i);
+        expect(popup.getLocalActiveSetupIssue()).toMatch(/MediaPipe/);
+    });
+
+    test('late local setup probe does not hide FastAPI chrome after a switch', async () => {
+        allowMediaPipeSelection({ modelReady: false });
+        let releaseStatus;
+        const blocked = new Promise((resolve) => { releaseStatus = resolve; });
+        const { ModelDataStore } = require('../model-data-store.js');
+        ModelDataStore.prototype.status.mockImplementation(async () => {
+            await blocked;
+            return { ready: false };
+        });
+
+        browser.storage.sync.get.mockImplementation(async (defaults) => ({
+            ...defaults,
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            mode: 'stream',
+            theme: 'light',
+        }));
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        // Switch to FastAPI while the startup probe is still awaiting cache status.
+        const fastapi = document.querySelector('input[name="ttsBackend"][value="fastapi"]');
+        fastapi.checked = true;
+        fastapi.dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(document.getElementById('serverSettings').hidden).toBe(false);
+
+        releaseStatus();
+        await flushAsync();
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('fastapi');
+        expect(document.getElementById('serverSettings').hidden).toBe(false);
+        expect(document.getElementById('playbackModeSection').hidden).toBe(false);
     });
 });
