@@ -35,7 +35,7 @@
   },
   "type": "commonjs",
   "dependencies": {
-    "@mediapipe/tasks-audio": "1.2.2-rc.20261106",
+    "@mediapipe/tasks-audio": "1.2.3",
     "@mozilla/readability": "^0.6.0",
     "compromise": "^14.20.0",
     "compromise-dates": "^3.11.0",
