@@ -375,7 +375,9 @@ async function downloadModelFromOfficialOrigin(page, manifest) {
     // nominal model size). Instrument only this extension page's fetch; reject
     // any unpinned HTTP(S) request during the user-initiated download.
     await page.evaluate(expectedUrls => {
-        const original = globalThis.fetch.bind(globalThis);
+        const original = globalThis.__kokoroPinnedFetchOriginal ||
+            globalThis.fetch.bind(globalThis);
+        globalThis.__kokoroPinnedFetchOriginal = original;
         const expected = new Set(expectedUrls);
         const transfer = { requests: [], bytesByUrl: {}, completedUrls: [], unexpectedUrls: [] };
         globalThis.__officialModelTransfer = transfer;
@@ -3245,37 +3247,98 @@ try {
             }
             if (manifest.provider === 'dictionary') continue; // verified/cache-preloaded; no inference engine
             // Optional catalogued voices (af_bella) are not part of onnx-q8.
-            // Install them while still online so offline voice-change can synthesize.
+            // Install them via the real model-manager UI while still online, with
+            // the pinned-fetch allowlist widened to those voice URLs only.
             if (originDownload && manifest.provider === 'onnx') {
                 stage = 'online-optional-onnx-voice-install';
                 liveHeartbeat(stage, { provider: manifest.provider });
-                await withTimeout(page.evaluate(async () => {
+                const optionalVoices = await page.evaluate(async () => {
                     const {
                         listOnnxVoiceAssets, manifestForOnnxVoiceAsset,
                     } = await import('./model-catalog.js');
-                    const { ModelDataStore } = await import('./model-data-store.js');
-                    const store = new ModelDataStore({
-                        origin: chrome.runtime.getURL('/'),
-                        cacheStorage: caches, fetchImpl: fetch,
-                        responseClass: Response, streamClass: TransformStream,
-                    });
-                    const installed = [];
-                    for (const entry of listOnnxVoiceAssets()) {
-                        if (!entry?.voiceVariant) continue;
-                        const voiceManifest = manifestForOnnxVoiceAsset(entry.path);
-                        if ((await store.status(voiceManifest)).ready) {
-                            installed.push({ path: entry.path, alreadyReady: true });
-                            continue;
+                    return listOnnxVoiceAssets()
+                        .filter(entry => entry?.voiceVariant)
+                        .map(entry => {
+                            const voiceManifest = manifestForOnnxVoiceAsset(entry.path);
+                            return {
+                                path: entry.path,
+                                variant: entry.voiceVariant,
+                                key: 'onnx-' + entry.voiceVariant,
+                                urls: voiceManifest.assets.map(asset => asset.url),
+                            };
+                        });
+                });
+                for (const voice of optionalVoices) {
+                    const rowSelector = '[data-variant="' + voice.key + '"]';
+                    const alreadyReady = await page.evaluate(async (variant) => {
+                        const { ModelDataStore } = await import('./model-data-store.js');
+                        const { manifestForVariant } = await import('./model-catalog.js');
+                        const store = new ModelDataStore({
+                            origin: chrome.runtime.getURL('/'),
+                            cacheStorage: caches,
+                            fetchImpl: () => {
+                                throw Error('Unexpected fetch during optional voice status');
+                            },
+                            responseClass: Response, streamClass: TransformStream,
+                        });
+                        return (await store.status(manifestForVariant('onnx', variant))).ready;
+                    }, voice.variant);
+                    if (alreadyReady) continue;
+                    await page.evaluate(expectedUrls => {
+                        const original = globalThis.__kokoroPinnedFetchOriginal;
+                        if (typeof original !== 'function') {
+                            throw Error('Pinned fetch original missing before optional voice install');
                         }
-                        await store.install(voiceManifest, { onProgress() { /* live */ } });
-                        if (!(await store.status(voiceManifest)).ready) {
-                            throw Error('Optional ONNX voice install incomplete: ' + entry.path);
-                        }
-                        installed.push({ path: entry.path, alreadyReady: false });
+                        const expected = new Set(expectedUrls);
+                        const transfer = {
+                            requests: [], bytesByUrl: {}, completedUrls: [], unexpectedUrls: [],
+                        };
+                        globalThis.__officialOptionalVoiceTransfer = transfer;
+                        globalThis.fetch = async (input, options) => {
+                            const url = String(input?.url || input);
+                            if (/^https?:/i.test(url) && !expected.has(url)) {
+                                transfer.unexpectedUrls.push(url);
+                                throw Error('Unpinned HTTP(S) model fetch: ' + url);
+                            }
+                            if (!expected.has(url)) return original(input, options);
+                            transfer.requests.push(url);
+                            const response = await original(input, options);
+                            if (!response.ok || !response.body) return response;
+                            transfer.bytesByUrl[url] = 0;
+                            const body = response.body.pipeThrough(new TransformStream({
+                                transform(chunk, controller) {
+                                    transfer.bytesByUrl[url] += chunk.byteLength;
+                                    controller.enqueue(chunk);
+                                },
+                                flush() { transfer.completedUrls.push(url); },
+                            }));
+                            return new Response(body, {
+                                status: response.status, statusText: response.statusText,
+                                headers: response.headers,
+                            });
+                        };
+                    }, voice.urls);
+                    await page.waitForFunction(selector => {
+                        const row = document.querySelector(selector);
+                        return row?.querySelector('.model-download')?.disabled === false;
+                    }, rowSelector, { timeout: 30000 });
+                    await page.locator(rowSelector + ' .model-download').click();
+                    await page.waitForFunction(selector => {
+                        const row = document.querySelector(selector);
+                        const status = row?.querySelector('.model-status')?.textContent || '';
+                        return (status.includes('Installed') &&
+                            row?.querySelector('.model-download-progress')?.value === 100) ||
+                            /permission.*(denied|failed)|Cannot request|Download failed/i.test(status);
+                    }, rowSelector, { timeout: 360000 });
+                    const voiceUi = await page.locator(rowSelector + ' .model-status').textContent();
+                    if (!voiceUi.includes('Installed')) {
+                        throw Error('Optional ONNX voice UI install failed for ' +
+                            voice.path + ': ' + voiceUi);
                     }
-                    return { success: true, installed };
-                }), 360000, 'optional ONNX voice install while online');
-                liveHeartbeat('online-optional-onnx-voice-install-done');
+                }
+                liveHeartbeat('online-optional-onnx-voice-install-done', {
+                    voices: optionalVoices.map(voice => voice.path),
+                });
             }
             // Require the cached SDK, WASM, voices, model and dictionary to
             // produce speech with all HTTP(S) requests disabled by Chromium.
