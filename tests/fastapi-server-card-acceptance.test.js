@@ -264,7 +264,8 @@ describe('FastAPI server-card acceptance', () => {
         expect(source).toContain('FASTAPI_STUB_PROGRESSIVE_TAIL_HOLD_MS');
         expect(source).toContain('splitFastApiStubMp3ForProgressive');
         expect(source).toContain(
-            'Progressive MediaSource TTFA must be measured on');
+            'assertChromiumDualRequiresProgressiveTtfaMeasured');
+        expect(source).toContain('fastapi-server-card-progressive-ttfa');
         // Observed p50 raw forwarded; empty string must not become 0.
         expect(source).toContain('mediasourceProgressiveTtfaP50Raw');
         expect(source).toContain('parseObservedProgressiveTtfaP50Ms');

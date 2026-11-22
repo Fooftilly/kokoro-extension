@@ -3813,20 +3813,32 @@ try {
                 // Chromium dual must measure progressive MediaSource TTFA
                 // (stub holds the MP3 tail open). Firefox may still be
                 // unavailable when MSE progressive mime is missing.
-                const progressiveMeasured =
-                    progressiveStreamingTtfaAcceptance
-                        ?.progressiveStreamingTtfaMeasured === true &&
-                    Number.isFinite(progressiveStreamingTtfaAcceptance
-                        ?.progressiveStreamingTtfaP50Ms) &&
-                    progressiveStreamingTtfaAcceptance?.usedMediaSource === true;
-                if (progressiveStreamingTtfaAcceptance?.assertedFromServerCard !==
-                        true ||
-                    progressiveStreamingTtfaAcceptance?.success !== true ||
-                    !progressiveMeasured) {
-                    throw Error(
-                        'Progressive MediaSource TTFA must be measured on ' +
-                        'chromium-dual-comparison: ' +
-                        JSON.stringify(progressiveStreamingTtfaAcceptance));
+                try {
+                    const {
+                        assertChromiumDualRequiresProgressiveTtfaMeasured,
+                    } = await import(
+                        './mediasource-progressive-ttfa-acceptance.mjs');
+                    assertChromiumDualRequiresProgressiveTtfaMeasured(
+                        progressiveStreamingTtfaAcceptance);
+                } catch (progressiveError) {
+                    // Attribute to the server-card stage — preference honor
+                    // never ran. Do not leave card success:true in the report.
+                    const message = String(
+                        progressiveError?.message || progressiveError);
+                    progressiveStreamingTtfaAcceptance = {
+                        ...(progressiveStreamingTtfaAcceptance || {}),
+                        success: false,
+                        progressiveStreamingTtfaMeasured: false,
+                        error: message,
+                    };
+                    fastapiServerCardAcceptance = {
+                        ...(fastapiServerCardAcceptance || {}),
+                        success: false,
+                        stage: 'fastapi-server-card-progressive-ttfa',
+                        error: message,
+                        progressiveStreamingTtfaAcceptance,
+                    };
+                    throw progressiveError;
                 }
                 liveHeartbeat('fastapi-server-card-done', {
                     success: fastapiServerCardAcceptance?.success === true,
@@ -3861,9 +3873,13 @@ try {
                     error: String(error) };
             } else if (!fastapiServerCardAcceptance ||
                 fastapiServerCardAcceptance.success !== true) {
-                fastapiServerCardAcceptance = { success: false,
-                    stage: 'fastapi-server-card',
-                    error: String(error) };
+                fastapiServerCardAcceptance = {
+                    ...(fastapiServerCardAcceptance || {}),
+                    success: false,
+                    stage: fastapiServerCardAcceptance?.stage ||
+                        'fastapi-server-card',
+                    error: String(error),
+                };
             } else if (!fastapiPreferenceHonorAcceptance ||
                 fastapiPreferenceHonorAcceptance.success !== true) {
                 fastapiPreferenceHonorAcceptance = { success: false,
