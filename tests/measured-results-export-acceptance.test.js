@@ -287,7 +287,18 @@ describe('Measured results export acceptance', () => {
         expect(source).toContain('nativeForceInterruptSupported: false');
         expect(source).toContain('cancelJoinP50Ms');
         expect(source).toContain('measureCancelJoin');
+        expect(source).toContain("from './local-cancel-join.js'");
+        expect(source).toContain('Cancel-join is diagnostic-only');
         expect(source).toContain('buildMeasuredEnglishExport');
+        expect(fs.readFileSync(
+            path.join(root, 'build.js'), 'utf8')).toContain(
+            "'local-cancel-join.js'");
+        expect(fs.readFileSync(
+            path.join(root, 'onnx-provider.js'), 'utf8')).toContain(
+            'notifyInferenceStarted');
+        expect(fs.readFileSync(
+            path.join(root, 'mediapipe-provider.js'), 'utf8')).toContain(
+            'notifyInferenceStarted');
         expect(source).toContain('exportMeasuredEnglishResults');
         expect(source).toContain('downloadPinnedMeasuredExport');
         expect(source).toContain('downloads.onChanged');

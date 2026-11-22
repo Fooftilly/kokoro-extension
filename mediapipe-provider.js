@@ -106,11 +106,24 @@ export class MediaPipeKokoroProvider {
             throw new TypeError('Invalid text, speaking rate, or MediaPipe voice');
         }
         await this.initialize();
+        // Diagnostic hook for cancel-join: fire only once native synth is pending.
+        this.notifyInferenceStarted();
         const result = await this.engine.synthesize(text, { voiceId, speakingRate });
         // Successful SDK execution alone does not mean it produced usable audio.
         // Never validate a backend with silent, non-finite or unbounded PCM.
         validateKokoroPcm(result?.samples, result?.sampleRateHz);
         return { samples: result.samples, sampleRateHz: result.sampleRateHz, voiceId };
+    }
+
+    /** Optional diagnostic hook (cancel-join). Must not affect synthesis. */
+    notifyInferenceStarted() {
+        const hook = this.onInferenceStarted;
+        if (typeof hook !== 'function') return;
+        try {
+            hook();
+        } catch (_) {
+            // Diagnostic callbacks must never fail synthesis.
+        }
     }
 
     async cancel() {

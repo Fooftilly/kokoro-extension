@@ -21,6 +21,7 @@ import {
     cancelReadableStreamBody,
     readBoundedResponseText,
 } from './mediasource-progressive-ttfa.js';
+import { measureCancelJoin } from './local-cancel-join.js';
 
 const page = document.getElementById('modelManager');
 const dictionary = dictionaryManifest();
@@ -836,35 +837,6 @@ async function measureWarmClip(synthesize) {
     return { runs, audio };
 }
 
-/**
- * Wall time from cancel() until the in-flight synthesize settles (join).
- * ONNX cannot force-interrupt InferenceSession.run(); MediaPipe cancel is
- * best-effort. Never claim native force-interrupt from this measurement.
- */
-async function measureCancelJoin(engine, synthesize) {
-    if (!engine || typeof engine.cancel !== 'function') {
-        throw new TypeError('Local engine cancel() required for cancel-join');
-    }
-    const joins = [];
-    for (let n = 0; n < 3; n++) {
-        const started = performance.now();
-        const pending = Promise.resolve().then(() => synthesize());
-        await Promise.resolve();
-        await engine.cancel();
-        try {
-            await pending;
-        } catch (_) {
-            // AbortError / cancelled settlement is expected after cancel.
-        }
-        const joinMs = performance.now() - started;
-        if (!Number.isFinite(joinMs) || joinMs < 0) {
-            throw new Error('Cancel join measurement failed');
-        }
-        joins.push(joinMs);
-    }
-    return joins;
-}
-
 // ONNX q8 can benchmark the *same English input* as MediaPipe only when its
 // verified dictionary resolves every word. Otherwise use an explicitly
 // non-comparable IPA diagnostic without authorizing regular English playback.
@@ -1017,12 +989,17 @@ async function testEngine(entry, ui) {
                 playbackSamples.length === measured.runs.length
                     ? window.KokoroBenchmark.nearestRank(playbackSamples, 50)
                     : null;
+            // Cancel-join is diagnostic-only: failure must not block approval.
             let cancelJoinP50Ms = null;
             if (isEnglishMeasurement) {
-                const cancelJoins = await measureCancelJoin(
-                    engine, () => engine.synthesize(text));
-                cancelJoinP50Ms = window.KokoroBenchmark.nearestRank(
-                    cancelJoins, 50);
+                try {
+                    const cancelJoins = await measureCancelJoin(
+                        engine, () => engine.synthesize(text));
+                    cancelJoinP50Ms = window.KokoroBenchmark.nearestRank(
+                        cancelJoins, 50);
+                } catch (_) {
+                    cancelJoinP50Ms = null;
+                }
             }
             const metrics = {
                 ...window.KokoroBenchmark.summarizeRuns(measured.runs),

@@ -121,7 +121,13 @@ describe('ONNX model manager English synthesis diagnostics', () => {
                 await new Promise(resolve => setTimeout(resolve, 5));
             }),
             synthesizePhonemes: jest.fn(async () => audio()),
-            synthesize: jest.fn(async () => audio()),
+            synthesize: jest.fn(async () => {
+                if (typeof engine.onInferenceStarted === 'function') {
+                    engine.onInferenceStarted();
+                }
+                await new Promise(resolve => setTimeout(resolve, 5));
+                return audio();
+            }),
             cancel: jest.fn(async () => {}),
             close: jest.fn(async () => {}),
         };
@@ -1412,7 +1418,13 @@ try {
             initialize: jest.fn(async () => {
                 await new Promise(resolve => setTimeout(resolve, 5));
             }),
-            synthesize: jest.fn(async () => audio()),
+            synthesize: jest.fn(async () => {
+                if (typeof mediapipeEngine.onInferenceStarted === 'function') {
+                    mediapipeEngine.onInferenceStarted();
+                }
+                await new Promise(resolve => setTimeout(resolve, 5));
+                return audio();
+            }),
             cancel: jest.fn(async () => {}),
             close: jest.fn(async () => {}),
         };

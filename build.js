@@ -34,6 +34,7 @@ const SRC_FILES = [
     'model-manager-page.js',
     'server-audio-playback-start.js',
     'mediasource-progressive-ttfa.js',
+    'local-cancel-join.js',
     'longer-shared-english-sample.js',
     'text-processor.js',
     'audio-manager.js',

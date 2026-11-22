@@ -102,6 +102,8 @@ export class OnnxKokoroProvider {
         this.assertNotCancelled(generation);
         const inputs = prepareKokoroOnnxInputs(tokens, this.voice, speed);
         const feeds = asOnnxRuntimeFeeds(this.engine, inputs);
+        // Diagnostic hook for cancel-join: fire only once native run is pending.
+        this.notifyInferenceStarted();
         const outputs = await this.session.run(feeds);
         this.assertNotCancelled(generation);
         const name = this.session.outputNames[0];
@@ -170,6 +172,17 @@ export class OnnxKokoroProvider {
     assertNotCancelled(generation) {
         if (generation !== this.cancellationGeneration) {
             throw new DOMException('ONNX speech cancelled', 'AbortError');
+        }
+    }
+
+    /** Optional diagnostic hook (cancel-join). Must not affect synthesis. */
+    notifyInferenceStarted() {
+        const hook = this.onInferenceStarted;
+        if (typeof hook !== 'function') return;
+        try {
+            hook();
+        } catch (_) {
+            // Diagnostic callbacks must never fail synthesis.
         }
     }
 
