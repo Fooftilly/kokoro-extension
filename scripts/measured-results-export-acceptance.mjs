@@ -50,6 +50,9 @@ function assertMeasuredExportDisclosure(payload) {
         'Measured export must disclose cold prep separately from warm runs');
     requireMeasuredFlag(payload, 'firstAudioMeasured', false,
         'Measured export must disclose warm full-clip (not first-audio)');
+    // Dual-comparison live requires muted full-clip playback start measured.
+    // Synthesis-only honesty exports may set localPlaybackStartMeasured:false
+    // (audio-element quirks); those must not pass this dual gate.
     requireMeasuredFlag(payload, 'localPlaybackStartMeasured', true,
         'Measured export must report muted full-clip playback start');
     requireMeasuredFlag(payload, 'storageFootprintMeasured', true,

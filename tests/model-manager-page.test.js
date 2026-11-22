@@ -604,6 +604,41 @@ describe('ONNX model manager English synthesis diagnostics', () => {
             expect(browser.storage.local.set).toHaveBeenCalledWith({
                 'onnxValidatedRevision:q8': expect.any(String),
             });
+
+            // Synthesis-only rows stay exportable; do not claim playback measured.
+            installedModels.add('cpu');
+            require('../mediapipe-provider.js').MediaPipeKokoroProvider
+                .mockImplementation(() => engine);
+            document.getElementById('refreshModelCache').click();
+            await waitFor(() => document.querySelector(
+                '[data-variant="mediapipe-cpu"] .model-test').disabled === false);
+            document.querySelector('[data-variant="mediapipe-cpu"] .model-test')
+                .click();
+            await waitFor(() => document.getElementById(
+                'sharedEnglishComparisonRows').children.length === 2);
+            const exportButton = document.getElementById('exportMeasuredResults');
+            expect(exportButton.disabled).toBe(false);
+            exportButton.click();
+            await waitFor(() => browser.downloads.download.mock.calls.length === 1);
+            globalThis.__kokoroExportOnChanged({
+                id: 42, state: { current: 'complete' },
+            });
+            await waitFor(() => document.getElementById('measuredExportStatus')
+                .textContent.includes('Nothing was uploaded'));
+            const payload = globalThis.__kokoroLastMeasuredExport;
+            expect(payload.measurements).toHaveLength(2);
+            expect(payload.localPlaybackStartMeasured).toBe(false);
+            expect(payload.firstAudioMeasured).toBe(false);
+            for (const exported of payload.measurements) {
+                expect(exported.synthesisP50Ms).toBeGreaterThan(0);
+                expect(exported.playbackStartP50Ms == null).toBe(true);
+            }
+            // Dual-comparison acceptance still requires measured playback;
+            // this honesty export must not pass that gate.
+            const { assertMeasuredResultsExportPayload } =
+                require('../scripts/measured-results-export-acceptance.mjs');
+            expect(() => assertMeasuredResultsExportPayload(payload))
+                .toThrow(/muted full-clip playback start/i);
         });
 
     test('missing dictionary is never downloaded implicitly and IPA remains testable', async () => {
