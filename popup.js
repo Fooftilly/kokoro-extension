@@ -1314,11 +1314,24 @@ document.addEventListener('DOMContentLoaded', () => {
 /** Format chrome.commands shortcut strings for the cheat sheet (Alt+Comma → Alt+,). */
 function formatCommandShortcut(shortcut) {
     if (!shortcut) return 'Not set';
-    return String(shortcut)
-        .replace(/Comma/gi, ',')
-        .replace(/Period/gi, '.')
-        .replace(/ArrowLeft/gi, '←')
-        .replace(/ArrowRight/gi, '→');
+    // Match whole key tokens only — never substring-replace inside "Command".
+    return String(shortcut).split('+').map((part) => {
+        if (/^Comma$/i.test(part)) return ',';
+        if (/^Period$/i.test(part)) return '.';
+        if (/^ArrowLeft$/i.test(part)) return '←';
+        if (/^ArrowRight$/i.test(part)) return '→';
+        return part;
+    }).join('+');
+}
+
+function markShortcutsCheatSheetFallback(sheet) {
+    if (!sheet) return;
+    sheet.setAttribute('data-shortcuts-source', 'fallback');
+    const intro = document.getElementById('shortcutsIntro');
+    if (intro) {
+        intro.textContent = 'Could not read current bindings from the browser; ' +
+            'install defaults are shown below. Confirm or reassign in the extension shortcuts page.';
+    }
 }
 
 /**
@@ -1327,7 +1340,9 @@ function formatCommandShortcut(shortcut) {
  */
 async function refreshShortcutsCheatSheet() {
     const sheet = document.getElementById('shortcutsCheatSheet');
-    if (!sheet || !browser.commands || typeof browser.commands.getAll !== 'function') {
+    if (!sheet) return;
+    if (!browser.commands || typeof browser.commands.getAll !== 'function') {
+        markShortcutsCheatSheetFallback(sheet);
         return;
     }
     let commands;
@@ -1335,8 +1350,10 @@ async function refreshShortcutsCheatSheet() {
         commands = await browser.commands.getAll();
     } catch (error) {
         console.warn('Kokoro: could not read command shortcuts', error);
+        markShortcutsCheatSheetFallback(sheet);
         return;
     }
+    sheet.setAttribute('data-shortcuts-source', 'live');
     const byName = new Map((commands || []).map((cmd) => [cmd.name, cmd]));
     for (const item of sheet.querySelectorAll('[data-command]')) {
         const cmd = byName.get(item.getAttribute('data-command'));

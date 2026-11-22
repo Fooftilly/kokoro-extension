@@ -137,8 +137,19 @@ describe('popup settings IA + shortcuts (#194 2+4)', () => {
     test('formatCommandShortcut normalizes API shortcut names', () => {
         expect(popup.formatCommandShortcut('Alt+Comma')).toBe('Alt+,');
         expect(popup.formatCommandShortcut('Alt+Period')).toBe('Alt+.');
+        expect(popup.formatCommandShortcut('Command+Shift+7')).toBe('Command+Shift+7');
         expect(popup.formatCommandShortcut('')).toBe('Not set');
         expect(popup.formatCommandShortcut(null)).toBe('Not set');
+    });
+
+    test('marks install defaults when commands.getAll is unavailable', async () => {
+        delete global.browser.commands;
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        const sheet = document.getElementById('shortcutsCheatSheet');
+        expect(sheet.getAttribute('data-shortcuts-source')).toBe('fallback');
+        expect(document.getElementById('shortcutsIntro').textContent)
+            .toMatch(/Could not read current bindings/i);
     });
 
     test('cheat sheet uses live browser.commands bindings after reassignment', async () => {
