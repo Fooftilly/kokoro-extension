@@ -6,16 +6,21 @@ export async function probeLocalProviderIdleRelease({ backend, apiName }) {
     const { AudioManager } = await import('./audio-manager.js');
     const api = globalThis[apiName];
     await api.storage.local.set({ pendingTtsBackend: backend, pendingApiUrl: '' });
-    const manager = new AudioManager({ localProviderIdleMs: 100 });
+    const configuredIdleMs = 100;
+    const manager = new AudioManager({ localProviderIdleMs: configuredIdleMs });
     manager.setSentences([{ text: 'Hello world.' }, { text: 'Hello again.' }]);
     const unpin = manager.pinAudio(0);
     const waitForRelease = async () => {
+        const waitStarted = performance.now();
         const deadline = Date.now() + 30000;
         while (manager.localProvider !== null) {
             if (Date.now() > deadline) throw Error('Local engine did not become idle');
             await new Promise(resolve => setTimeout(resolve, 25));
         }
         await manager.localInferenceQueue; // Native close must have finished too.
+        const observedMs = performance.now() - waitStarted;
+        // Join after the configured idle timer — never invent negative latency.
+        return Math.max(0, observedMs - configuredIdleMs);
     };
     const readWav = async url => {
         if (!url.startsWith('blob:')) throw Error('Expected locally generated Blob URL');
@@ -40,7 +45,7 @@ export async function probeLocalProviderIdleRelease({ backend, apiName }) {
         const nativeClose = firstProvider.close.bind(firstProvider);
         firstProvider.close = async () => { await nativeClose(); closed = true; };
         const before = await readWav(firstUrl);
-        await waitForRelease();
+        const idleReleaseJoinMs = await waitForRelease();
         const nativeReleased = backend === 'mediapipe'
             ? firstProvider.engine === null && firstProvider.modelUrl === null
             : firstProvider.session === null && firstProvider.voice === null;
@@ -61,10 +66,11 @@ export async function probeLocalProviderIdleRelease({ backend, apiName }) {
         secondProvider.close = async () => { await secondClose(); closedAgain = true; };
         await readWav(secondUrl);
         if (navigator.onLine !== false) throw Error('Idle recovery was not offline');
-        await waitForRelease();
+        const repeatedIdleReleaseJoinMs = await waitForRelease();
         if (!closedAgain) throw Error('Recreated provider did not complete idle teardown');
         return {
-            success: true, backend, configuredIdleMs: 100,
+            success: true, backend, configuredIdleMs,
+            idleReleaseJoinMs, repeatedIdleReleaseJoinMs,
             nativeModelReferencesReleased: true,
             cachedAudioPreservedByteForByte: true,
             cachedReplayDidNotReloadModel: true,

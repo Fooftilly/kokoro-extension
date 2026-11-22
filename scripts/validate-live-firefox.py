@@ -4491,6 +4491,56 @@ def main():
                         repr(store_signing_disclosure))
                 result["storeSigningDisclosureAcceptance"] = (
                     store_signing_disclosure)
+                # #57 / #61: dual previously skipped AudioManager idle teardown.
+                result["stage"] = "local-idle-release-dual"
+                if not driver.execute_script("return navigator.onLine===false;"):
+                    raise RuntimeError(
+                        "Firefox must stay offline for dual idle-release")
+                idle_probes = []
+                for backend in ("onnx", "mediapipe"):
+                    probe_src = subprocess.run(
+                        ["node", "--input-type=module", "-e",
+                         "import {probeLocalProviderIdleRelease} from "
+                         "'./scripts/local-provider-idle-probe.mjs';"
+                         "process.stdout.write("
+                         "probeLocalProviderIdleRelease.toString());"],
+                        check=True, capture_output=True, text=True,
+                    ).stdout
+                    idle = driver.execute_async_script(
+                        "const done=arguments[arguments.length-1]; (" +
+                        probe_src +
+                        ")(arguments[0]).then(done,"
+                        "e=>done({success:false,error:String(e)}));",
+                        {"backend": backend, "apiName": "browser"},
+                    )
+                    idle_probes.append(idle)
+                idle_assert = subprocess.run(
+                    [
+                        "node", "--input-type=module", "-e",
+                        "import { assertLocalIdleReleaseDual, "
+                        "buildLocalIdleReleaseDualReport } from "
+                        "'./local-idle-release-acceptance.mjs';"
+                        "const backends = " + json.dumps(idle_probes) + ";"
+                        "const report = buildLocalIdleReleaseDualReport({"
+                        "browser: 'Firefox',"
+                        "backends,"
+                        "assertedFromDual: true,"
+                        "});"
+                        "assertLocalIdleReleaseDual(report);"
+                        "console.log(JSON.stringify(report));",
+                    ],
+                    cwd=str(Path(__file__).resolve().parent),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if idle_assert.returncode != 0:
+                    raise RuntimeError(
+                        "Firefox dual local idle-release assert failed: " +
+                        (idle_assert.stderr or idle_assert.stdout or
+                         "unknown error"))
+                result["localIdleReleaseAcceptance"] = json.loads(
+                    idle_assert.stdout.strip())
                 # Local dual leaves server untested; FastAPI card needs online.
                 result["stage"] = "fastapi-server-card"
                 _set_firefox_network_offline(driver, False)
