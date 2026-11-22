@@ -25,7 +25,12 @@ export async function measureCancelJoin(engine, synthesize) {
             resolveStarted();
         };
         try {
+            let pendingSettled = false;
             const pending = Promise.resolve().then(() => synthesize());
+            pending.then(
+                () => { pendingSettled = true; },
+                () => { pendingSettled = true; },
+            );
             const race = await Promise.race([
                 startedGate.then(() => 'started'),
                 pending.then(() => 'settled-early', () => 'settled-early'),
@@ -34,21 +39,21 @@ export async function measureCancelJoin(engine, synthesize) {
                 throw new Error(
                     'Cancel join requires in-flight inference before cancel()');
             }
-            const stillInFlight = await Promise.race([
-                pending.then(() => false, () => false),
-                Promise.resolve().then(() => true),
-            ]);
-            if (!stillInFlight) {
+            await Promise.resolve();
+            if (pendingSettled) {
                 throw new Error(
                     'Cancel join requires in-flight inference before cancel()');
             }
             const t0 = performance.now();
-            const cancelOutcome = Promise.resolve()
-                .then(() => engine.cancel())
-                .then(
+            let cancelOutcome;
+            try {
+                cancelOutcome = Promise.resolve(engine.cancel()).then(
                     () => ({ ok: true }),
                     (error) => ({ ok: false, error }),
                 );
+            } catch (error) {
+                cancelOutcome = Promise.resolve({ ok: false, error });
+            }
             let settledAt = null;
             await pending.then(
                 () => { settledAt = performance.now(); },

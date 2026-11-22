@@ -36,7 +36,14 @@ export async function measureCancelJoin(engine, synthesize) {
             resolveStarted();
         };
         try {
+            let pendingSettled = false;
             const pending = Promise.resolve().then(() => synthesize());
+            // Track settlement as early as possible so the final check + cancel
+            // can run in one synchronous step.
+            pending.then(
+                () => { pendingSettled = true; },
+                () => { pendingSettled = true; },
+            );
             const race = await Promise.race([
                 startedGate.then(() => 'started'),
                 pending.then(() => 'settled-early', () => 'settled-early'),
@@ -45,27 +52,23 @@ export async function measureCancelJoin(engine, synthesize) {
                 throw new Error(
                     'Cancel join requires in-flight inference before cancel()');
             }
-            // Start can fire in the same turn as a sync settle. Re-check that
-            // synthesis is still pending immediately before cancel/t0.
-            const stillInFlight = await Promise.race([
-                pending.then(() => false, () => false),
-                Promise.resolve().then(() => true),
-            ]);
-            if (!stillInFlight) {
+            // One microtask so a sync settle after start can flip pendingSettled.
+            await Promise.resolve();
+            // Final in-flight check and cancel() in the same synchronous step.
+            if (pendingSettled) {
                 throw new Error(
                     'Cancel join requires in-flight inference before cancel()');
             }
-            // Clock starts at the cancel request, ends when synthesize settles
-            // (not when cancel() itself resolves). Non-AbortError failures are
-            // not cancel-join measurements. A rejected cancel() invalidates
-            // the trial — do not export latency for a failed cancel request.
             const t0 = performance.now();
-            const cancelOutcome = Promise.resolve()
-                .then(() => engine.cancel())
-                .then(
+            let cancelOutcome;
+            try {
+                cancelOutcome = Promise.resolve(engine.cancel()).then(
                     () => ({ ok: true }),
                     (error) => ({ ok: false, error }),
                 );
+            } catch (error) {
+                cancelOutcome = Promise.resolve({ ok: false, error });
+            }
             let settledAt = null;
             await pending.then(
                 () => { settledAt = performance.now(); },

@@ -77,6 +77,28 @@ describe('local cancel-join measurement', () => {
         expect(engine.cancel).not.toHaveBeenCalled();
     });
 
+    test('invokes cancel() synchronously while still in flight', async () => {
+        let inFlight = 0;
+        let cancelWhilePending = 0;
+        const engine = {
+            cancel: jest.fn(() => {
+                if (inFlight > 0) cancelWhilePending += 1;
+            }),
+        };
+        const synthesize = async () => {
+            inFlight += 1;
+            if (typeof engine.onInferenceStarted === 'function') {
+                engine.onInferenceStarted();
+            }
+            await delay(20);
+            inFlight -= 1;
+            return {};
+        };
+        await measureCancelJoin(engine, synthesize);
+        expect(engine.cancel).toHaveBeenCalledTimes(3);
+        expect(cancelWhilePending).toBe(3);
+    });
+
     test('AbortError settlement counts; other failures rethrow', async () => {
         const engine = { cancel: jest.fn(async () => {}) };
         const aborting = async () => {
