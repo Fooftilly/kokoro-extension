@@ -8,6 +8,8 @@
     --progress-bar-bg: #4caf50;
     --time-text: #888;
     --status-text: #666;
+    /* Badge must stay ≥4.5:1 on --header-bg (#f8f9fa); #888 fails AA. */
+    --backend-badge-text: #666;
     --text-display-bg: #fafafa;
     --text-display-border: #eee;
     --control-btn-bg: #f0f0f0;
@@ -25,6 +27,7 @@
     --progress-bg: #444;
     --time-text: #aaa;
     --status-text: #aaa;
+    --backend-badge-text: #bbb;
     --text-display-bg: #252525;
     --text-display-border: #444;
     --control-btn-bg: #3d3d3d;
@@ -125,7 +128,7 @@ body.mode-full .drag-grip {
 .backend-badge {
     font-size: 11px;
     font-weight: 500;
-    color: var(--time-text);
+    color: var(--backend-badge-text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
