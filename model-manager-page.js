@@ -21,7 +21,10 @@ import {
     cancelReadableStreamBody,
     readBoundedResponseText,
 } from './mediasource-progressive-ttfa.js';
-import { measureCancelJoin } from './local-cancel-join.js';
+import {
+    CANCEL_JOIN_PROBE_TEXT,
+    measureCancelJoin,
+} from './local-cancel-join.js';
 
 const page = document.getElementById('modelManager');
 const dictionary = dictionaryManifest();
@@ -990,11 +993,12 @@ async function testEngine(entry, ui) {
                     ? window.KokoroBenchmark.nearestRank(playbackSamples, 50)
                     : null;
             // Cancel-join is diagnostic-only: failure must not block approval.
+            // Short probe — join tracks full synth when cancel cannot interrupt.
             let cancelJoinP50Ms = null;
             if (isEnglishMeasurement) {
                 try {
                     const cancelJoins = await measureCancelJoin(
-                        engine, () => engine.synthesize(text));
+                        engine, () => engine.synthesize(CANCEL_JOIN_PROBE_TEXT));
                     cancelJoinP50Ms = window.KokoroBenchmark.nearestRank(
                         cancelJoins, 50);
                 } catch (_) {

@@ -3,7 +3,12 @@
  * Wall time from cancel() until an in-flight synthesize settles.
  * Requires the engine to fire onInferenceStarted once native inference is
  * about to begin; otherwise the metric stays unmeasured (fail closed).
+ *
+ * Use a short English probe for cancel-join. MediaPipe cancel is best-effort
+ * and ONNX cannot abort an active session.run(), so join latency tracks full
+ * synth time — a long shared-sample probe stalls Chromium dual (180s heartbeat).
  */
+export const CANCEL_JOIN_PROBE_TEXT = 'Cancel join probe.';
 
 /**
  * @param {{ cancel: Function, onInferenceStarted?: Function }} engine

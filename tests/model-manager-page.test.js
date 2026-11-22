@@ -562,10 +562,11 @@ describe('ONNX model manager English synthesis diagnostics', () => {
     test('verified ONNX q8 English text enables explicit selection while IPA timings stay separate', async () => {
         const { row, message } = await runProbe();
         expect(engine.synthesizePhonemes).not.toHaveBeenCalled();
-        // 1 untimed warm-up + 3 timed + 3 cancel-join probes
+        // 1 untimed warm-up + 3 timed + 3 cancel-join probes (short probe text)
         expect(engine.synthesize).toHaveBeenCalledTimes(7);
-        expect(engine.synthesize.mock.calls.every(([input]) => input === 'Hello world.'))
-            .toBe(true);
+        const synthInputs = engine.synthesize.mock.calls.map(([input]) => input);
+        expect(synthInputs.slice(0, 4).every((t) => t === 'Hello world.')).toBe(true);
+        expect(synthInputs.slice(4).every((t) => t === 'Cancel join probe.')).toBe(true);
         expect(message).toContain('warm (3 runs, shared English text)');
         expect(message).toContain('after untimed warm-up');
         expect(message).toContain('Cold prep (init + first synth):');

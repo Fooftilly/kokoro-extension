@@ -2,6 +2,8 @@
  * Node mirror of ../local-cancel-join.js for spawnSync contracts.
  * Keep behavior identical to the packaged browser helper.
  */
+export const CANCEL_JOIN_PROBE_TEXT = 'Cancel join probe.';
+
 export async function measureCancelJoin(engine, synthesize) {
     if (!engine || typeof engine.cancel !== 'function') {
         throw new TypeError('Local engine cancel() required for cancel-join');

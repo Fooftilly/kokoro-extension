@@ -1,13 +1,21 @@
 /**
  * Cancel-join must wait for in-flight inference and time cancel→settle only.
  */
-const { measureCancelJoin } = require('../local-cancel-join.js');
+const {
+    CANCEL_JOIN_PROBE_TEXT,
+    measureCancelJoin,
+} = require('../local-cancel-join.js');
 
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 describe('local cancel-join measurement', () => {
+    test('exports a short cancel probe for non-interruptible backends', () => {
+        expect(CANCEL_JOIN_PROBE_TEXT).toMatch(/cancel join probe/i);
+        expect(CANCEL_JOIN_PROBE_TEXT.length).toBeLessThan(40);
+    });
+
     test('waits for inference and times cancel→settle only', async () => {
         const engine = {
             cancel: jest.fn(async () => { await delay(1); }),
