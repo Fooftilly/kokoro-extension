@@ -1006,6 +1006,43 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(document.getElementById('mediaPipeVoice').value).toBe('af_heart');
     });
 
+    test('MediaPipe custom typing keeps longer IDs whose prefixes are catalogued', async () => {
+        allowMediaPipeSelection();
+        browser.storage.sync.get.mockImplementation(async (defaults) => ({
+            ...defaults,
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
+            mediaPipeVoice: 'af_heart',
+            onnxVoiceAsset: 'voices/af.bin',
+            mode: 'stream',
+            theme: 'light',
+        }));
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        const customInput = document.getElementById('mediaPipeVoiceCustom');
+        const mediaPipeSelect = document.getElementById('mediaPipeVoice');
+        let draft = '';
+        for (const ch of 'zm_yunxia') {
+            draft += ch;
+            customInput.value = draft;
+            customInput.dispatchEvent(new Event('input'));
+        }
+        expect(customInput.value).toBe('zm_yunxia');
+
+        customInput.dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(mediaPipeSelect.value).toBe('zm_yunxia');
+
+        browser.storage.sync.set.mockClear();
+        await popup.saveOptions(false);
+        const writes = browser.storage.sync.set.mock.calls.map(([payload]) => payload);
+        expect(writes.some((payload) => payload.mediaPipeVoice === 'zm_yunxia')).toBe(true);
+    });
+
     test('hides FastAPI-only chrome for local backends (#194 item 1)', async () => {
         document.dispatchEvent(new Event('DOMContentLoaded'));
         await flushAsync();

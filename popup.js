@@ -1191,16 +1191,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const mediaPipeVoiceCustom = document.getElementById('mediaPipeVoiceCustom');
     if (mediaPipeVoiceCustom) {
+        // Commit only on change/blur — mid-type prefixes may match shorter catalog
+        // IDs (e.g. zm_yunxi while typing zm_yunxia) and must not clear the draft.
         mediaPipeVoiceCustom.addEventListener('change', () => {
             applyMediaPipeVoiceSelection(mediaPipeVoiceCustom.value);
             void saveOptions(false);
-        });
-        mediaPipeVoiceCustom.addEventListener('input', () => {
-            const raw = (mediaPipeVoiceCustom.value || '').trim().toLowerCase();
-            if (/^[a-z]{2}_[a-z]+$/.test(raw)) {
-                applyMediaPipeVoiceSelection(raw);
-            }
-            void saveOptions(true);
         });
     }
 
