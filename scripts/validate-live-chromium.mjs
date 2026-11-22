@@ -3151,6 +3151,7 @@ try {
     let storeSigningDisclosureAcceptance = null;
     let progressiveStreamingTtfaAcceptance = null;
     let twoBackendComparisonAcceptance = null;
+    let localIdleReleaseAcceptance = null;
     let fastapiServerCardAcceptance = null;
     let fastapiPreferenceHonorAcceptance = null;
     let oovG2pDisclosureAcceptance = null;
@@ -3164,7 +3165,8 @@ try {
             gpuExecutionDisclosureAcceptance, modelVariantsDisclosureAcceptance,
             broaderG2pDisclosureAcceptance, storeSigningDisclosureAcceptance,
             progressiveStreamingTtfaAcceptance,
-            twoBackendComparisonAcceptance, fastapiServerCardAcceptance,
+            twoBackendComparisonAcceptance, localIdleReleaseAcceptance,
+            fastapiServerCardAcceptance,
             fastapiPreferenceHonorAcceptance, oovG2pDisclosureAcceptance,
             results, currentProvider, originDownload, providerFilter,
             networkRequirement: providerFilter === 'dictionary'
@@ -3384,6 +3386,17 @@ try {
                     probeLocalProviderIdleRelease,
                     { backend: manifest.provider, apiName: 'chrome' }),
                 180000, 'local provider idle release and offline reload');
+                const {
+                    assertLocalIdleReleaseProbe,
+                } = await import('./local-idle-release-acceptance.mjs');
+                try {
+                    assertLocalIdleReleaseProbe(
+                        result.idleReleaseAcceptance, manifest.provider);
+                } catch (idleError) {
+                    throw Error(
+                        'Chromium local provider idle release failed: ' +
+                        String(idleError?.message || idleError));
+                }
                 liveHeartbeat('local-provider-idle-release-done', result.idleReleaseAcceptance);
             }
             if (originDownload && manifest.provider === 'onnx' && result.success) {
@@ -3806,6 +3819,55 @@ try {
                 errors.join('; '));
             await saveReport();
 
+            // #57 / #61: dual previously skipped AudioManager idle teardown.
+            // Require both local backends offline with measured join latency.
+            liveHeartbeat('local-idle-release-dual-start');
+            // Mark in-progress before asserts so a rejected dual report cannot
+            // leave success:true and mis-attribute failure to FastAPI card.
+            localIdleReleaseAcceptance = {
+                success: false,
+                localIdleReleaseMeasured: false,
+                stage: 'local-idle-release-dual',
+            };
+            {
+                const {
+                    assertLocalIdleReleaseDual,
+                    assertLocalIdleReleaseProbe,
+                    buildLocalIdleReleaseDualReport,
+                    DUAL_IDLE_RELEASE_BACKENDS,
+                } = await import('./local-idle-release-acceptance.mjs');
+                const idleProbes = [];
+                for (const backend of DUAL_IDLE_RELEASE_BACKENDS) {
+                    liveHeartbeat('local-idle-release-dual-backend', { backend });
+                    const probe = await withTimeout(comparisonPage.evaluate(
+                        probeLocalProviderIdleRelease,
+                        { backend, apiName: 'chrome' }),
+                    180000, 'dual local idle release ' + backend);
+                    assertLocalIdleReleaseProbe(probe, backend);
+                    idleProbes.push(probe);
+                    liveHeartbeat('local-idle-release-dual-backend-done', {
+                        backend,
+                        success: probe?.success === true,
+                        idleReleaseJoinMs: probe?.idleReleaseJoinMs,
+                    });
+                }
+                // Assert before promoting success:true so catch attributes
+                // rejections to idle-release, not the FastAPI card.
+                const idleReport = buildLocalIdleReleaseDualReport({
+                    browser: 'chromium',
+                    backends: idleProbes,
+                    assertedFromDual: true,
+                });
+                assertLocalIdleReleaseDual(idleReport);
+                localIdleReleaseAcceptance = idleReport;
+                liveHeartbeat('local-idle-release-dual-done', {
+                    success: localIdleReleaseAcceptance?.success === true,
+                    localIdleReleaseMeasured:
+                        localIdleReleaseAcceptance?.localIdleReleaseMeasured,
+                });
+                await saveReport();
+            }
+
             // Local dual must leave the server card untested; FastAPI card
             // needs a brief online window + loopback /v1/audio/speech stub.
             liveHeartbeat('fastapi-server-card-start');
@@ -3878,6 +3940,15 @@ try {
                 twoBackendComparisonAcceptance = { success: false,
                     stage: 'offline-two-backend-same-page-benchmark',
                     error: String(error) };
+            } else if (!localIdleReleaseAcceptance ||
+                localIdleReleaseAcceptance.success !== true) {
+                localIdleReleaseAcceptance = {
+                    ...(localIdleReleaseAcceptance || {}),
+                    success: false,
+                    localIdleReleaseMeasured: false,
+                    stage: 'local-idle-release-dual',
+                    error: String(error),
+                };
             } else if (!fastapiServerCardAcceptance ||
                 fastapiServerCardAcceptance.success !== true) {
                 fastapiServerCardAcceptance = {
