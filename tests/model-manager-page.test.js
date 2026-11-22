@@ -227,6 +227,21 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         confirm.mockRestore();
     });
 
+    test('optional ONNX voice rows hide synthesis Test and Use-this-backend', async () => {
+        installedOnnxVariants.add('voice-af-bella');
+        document.getElementById('refreshModelCache').click();
+        await waitFor(() => document.querySelector(
+            '[data-variant="onnx-voice-af-bella"] .model-download').disabled === true);
+        const row = document.querySelector('[data-variant="onnx-voice-af-bella"]');
+        expect(row).toBeTruthy();
+        expect(row.querySelector('.model-test').hidden).toBe(true);
+        expect(row.querySelector('.model-choose').hidden).toBe(true);
+        expect(row.querySelector('.model-footprint-note').textContent)
+            .toMatch(/voice download only/i);
+        expect(row.querySelector('.model-footprint-note').textContent)
+            .not.toMatch(/voices\/af\.bin/);
+    });
+
     async function runProbe() {
         const row = document.querySelector('[data-variant="onnx-q8"]');
         const button = row.querySelector('.model-test');

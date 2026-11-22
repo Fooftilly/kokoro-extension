@@ -18,7 +18,7 @@ Sources: [MediaPipe Text-to-Speech](https://developers.google.com/edge/mediapipe
 
 Published ONNX usage selects one voice `.bin`, reshapes to `(-1, 1, 256)`, and picks `style = voices[len(tokens)]` for the unpadded phoneme count. Inputs are `input_ids`, `style` `[1, 256]`, `speed`. This extension already mirrors that in `onnx-kokoro-inputs.js` (`styleForLength`).
 
-Linear interpolation of equal-length style vectors is a low-overhead, original in-repository operation on those tensors (`blendStyleVectors` / `styleForLengthWeighted`). It is **not** a copy of kokoro-js. Weighted ONNX mixing in the UI is still not enabled: the popup offers a **select** among catalogued single-voice assets (`voices/af.bin`, `voices/af_bella.bin`) shipped with the onnx-q8 opt-in download (#60 voice-change). Shipping weighted mixes waits on verified multi-voice blend UX.
+Linear interpolation of equal-length style vectors is a low-overhead, original in-repository operation on those tensors (`blendStyleVectors` / `styleForLengthWeighted`). It is **not** a copy of kokoro-js. Weighted ONNX mixing in the UI is still not enabled: the popup offers a **select** among catalogued single-voice assets (`voices/af.bin` bundled with onnx-q8; optional `voices/af_bella.bin` as a separate download for #60 voice-change). Shipping weighted mixes waits on verified multi-voice blend UX.
 
 Source: [onnx-community/Kokoro-82M-v1.0-ONNX](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX) (Python sample).
 

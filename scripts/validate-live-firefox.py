@@ -4439,6 +4439,44 @@ def main():
                 """, manifests, server.server_port, token)
                 if not cache_result.get("success"):
                     raise RuntimeError("Firefox extension cache preload failed: " + str(cache_result))
+            # Optional catalogued voices (af_bella) are not part of onnx-q8.
+            # Install them while online so offline voice-change can synthesize.
+            if origin_download and provider == "onnx":
+                result["stage"] = "online-optional-onnx-voice-install"
+                voice_install = driver.execute_async_script("""
+                    const done=arguments[arguments.length-1];
+                    (async()=>{
+                        const {
+                            listOnnxVoiceAssets, manifestForOnnxVoiceAsset,
+                        }=await import('./model-catalog.js');
+                        const {ModelDataStore}=await import('./model-data-store.js');
+                        const store=new ModelDataStore({
+                            origin:browser.runtime.getURL('/'),
+                            cacheStorage:caches, fetchImpl:fetch,
+                            responseClass:Response, streamClass:TransformStream,
+                        });
+                        const installed=[];
+                        for (const entry of listOnnxVoiceAssets()) {
+                            if (!entry?.voiceVariant) continue;
+                            const voiceManifest=manifestForOnnxVoiceAsset(entry.path);
+                            if ((await store.status(voiceManifest)).ready) {
+                                installed.push({path:entry.path, alreadyReady:true});
+                                continue;
+                            }
+                            await store.install(voiceManifest, {onProgress(){}});
+                            if (!(await store.status(voiceManifest)).ready) {
+                                throw Error('Optional ONNX voice install incomplete: '+entry.path);
+                            }
+                            installed.push({path:entry.path, alreadyReady:false});
+                        }
+                        return {success:true, installed};
+                    })().then(done,e=>done({success:false,error:String(e),stack:String(e.stack||'')}));
+                """)
+                if voice_install.get("success") is not True:
+                    raise RuntimeError(
+                        "Firefox optional ONNX voice install failed: " +
+                        json.dumps(voice_install))
+                result["optionalOnnxVoiceInstall"] = voice_install
             # Require the actual packaged Firefox extension to load cached
             # executable assets, weights, and dictionary while Firefox is
             # offline. Geckodriver commands remain local browser automation.
@@ -4729,12 +4767,14 @@ def main():
                             cacheStorage:caches, fetchImpl:fetch,
                             responseClass:Response, streamClass:TransformStream,
                         });
+                        // Voices must already be cached from the online install stage.
                         for (const path of opts.voicePaths) {
                             const entry=listOnnxVoiceAssets().find(item=>item.path===path);
                             if (!entry?.voiceVariant) continue;
                             const voiceManifest=manifestForOnnxVoiceAsset(path);
-                            if ((await store.status(voiceManifest)).ready) continue;
-                            await store.install(voiceManifest, {onProgress(){}});
+                            if (!(await store.status(voiceManifest)).ready) {
+                                throw Error('Optional ONNX voice missing offline: '+path);
+                            }
                         }
                         const voices=[];
                         for (const voiceAssetPath of opts.voicePaths) {

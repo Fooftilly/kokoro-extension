@@ -149,4 +149,34 @@ describe('ONNX cached model and voice integrity before inference (#55)', () => {
         expect(loadSDK).toHaveBeenCalledTimes(1);
         await provider.close();
     });
+
+    test('status() requires the selected optional voice when it uses a separate manifest', async () => {
+        const { provider } = fixture();
+        const storeStatus = jest.fn(async manifest => ({
+            ready: manifest.variant !== 'voice-af-bella',
+            storedBytes: 1,
+            totalBytes: 1,
+        }));
+        Object.defineProperty(provider, 'store', {
+            configurable: true,
+            get: () => ({ status: storeStatus }),
+        });
+        // Default af.bin shares the model manifest — ready follows model only.
+        await expect(provider.status()).resolves.toEqual({
+            ready: true, storedBytes: 1, totalBytes: 1,
+        });
+        expect(storeStatus).toHaveBeenCalledTimes(1);
+
+        provider.voiceAssetPath = 'voices/af_bella.bin';
+        provider.voiceCatalogEntry = {
+            path: 'voices/af_bella.bin', voiceVariant: 'voice-af-bella',
+        };
+        provider.voiceManifest = {
+            provider: 'onnx', variant: 'voice-af-bella', assets: [],
+        };
+        await expect(provider.status()).resolves.toEqual({
+            ready: false, storedBytes: 2, totalBytes: 2,
+        });
+        expect(storeStatus).toHaveBeenCalledTimes(3);
+    });
 });

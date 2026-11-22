@@ -109,6 +109,61 @@ try {
         expect(silent).toMatch(/near-silent/);
     });
 
+    test('rejects missing or malformed PCM digests', () => {
+        const missing = runHelper(`
+try {
+    voice.assertOnnxVoiceChange({
+        voices: [
+            {
+                voiceAssetPath: 'voices/af.bin',
+                sampleRateHz: 24000,
+                sampleCount: 48000,
+                rms: 0.04,
+                sha256Hex: 'a'.repeat(64),
+            },
+            {
+                voiceAssetPath: 'voices/af_bella.bin',
+                sampleRateHz: 24000,
+                sampleCount: 48000,
+                rms: 0.05,
+            },
+        ],
+    });
+    process.stdout.write('pass');
+} catch (error) {
+    process.stdout.write(String(error.message || error));
+}
+`);
+        expect(missing).toMatch(/sha256Hex/);
+
+        const malformed = runHelper(`
+try {
+    voice.assertOnnxVoiceChange({
+        voices: [
+            {
+                voiceAssetPath: 'voices/af.bin',
+                sampleRateHz: 24000,
+                sampleCount: 48000,
+                rms: 0.04,
+                sha256Hex: 'not-a-digest',
+            },
+            {
+                voiceAssetPath: 'voices/af_bella.bin',
+                sampleRateHz: 24000,
+                sampleCount: 48000,
+                rms: 0.05,
+                sha256Hex: 'b'.repeat(64),
+            },
+        ],
+    });
+    process.stdout.write('pass');
+} catch (error) {
+    process.stdout.write(String(error.message || error));
+}
+`);
+        expect(malformed).toMatch(/sha256Hex/);
+    });
+
     test('live harnesses import the shared acceptance module', () => {
         const chromium = fs.readFileSync(
             path.join(root, 'scripts', 'validate-live-chromium.mjs'), 'utf8');
@@ -116,7 +171,13 @@ try {
             path.join(root, 'scripts', 'validate-live-firefox.py'), 'utf8');
         expect(chromium).toContain('onnx-voice-change-acceptance.mjs');
         expect(chromium).toContain('offline-onnx-voice-change');
+        expect(chromium).toContain('online-optional-onnx-voice-install');
+        expect(chromium).toMatch(
+            /online-optional-onnx-voice-install[\s\S]*setOffline\(true\)/);
         expect(firefox).toContain('onnx-voice-change-acceptance.mjs');
         expect(firefox).toContain('offline-onnx-voice-change');
+        expect(firefox).toContain('online-optional-onnx-voice-install');
+        expect(firefox).toMatch(
+            /online-optional-onnx-voice-install[\s\S]*Services\.io\.offline = true/);
     });
 });

@@ -64,6 +64,19 @@ describe('dictionary-supported English chunk preparation (#60)', () => {
         const lexicon = new Map([['huge', Array(511).fill('B').join(' ')]]);
         expect(() => phonemizeEnglishChunks('huge', lexicon)).toThrow(/510/);
     });
+
+    test('Bella-sized voices cap chunks at 509 phonemes', () => {
+        // af_bella.bin is 522240 bytes → 510 style rows → max index 509.
+        expect(phonemizeEnglishChunks(longText(), dictionary(), 510)
+            .map(chunk => tokenizePhonemes(chunk).length)).toEqual([510, 7]);
+        const at509 = phonemizeEnglishChunks(longText(), dictionary(), 509)
+            .map(chunk => tokenizePhonemes(chunk).length);
+        expect(at509.every(count => count <= 509)).toBe(true);
+        expect(Math.max(...at509)).toBeLessThan(510);
+        const lexicon = new Map([['huge', Array(510).fill('B').join(' ')]]);
+        expect(() => phonemizeEnglishChunks('huge', lexicon, 509)).toThrow(/509/);
+        expect(() => phonemizeEnglishChunks('huge', lexicon, 510)).not.toThrow();
+    });
 });
 
 describe('bounded, cancellable ONNX long-text inference (#60)', () => {

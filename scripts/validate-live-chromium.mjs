@@ -3244,6 +3244,39 @@ try {
         }, { manifest, port: server.address().port, transferToken });
             }
             if (manifest.provider === 'dictionary') continue; // verified/cache-preloaded; no inference engine
+            // Optional catalogued voices (af_bella) are not part of onnx-q8.
+            // Install them while still online so offline voice-change can synthesize.
+            if (originDownload && manifest.provider === 'onnx') {
+                stage = 'online-optional-onnx-voice-install';
+                liveHeartbeat(stage, { provider: manifest.provider });
+                await withTimeout(page.evaluate(async () => {
+                    const {
+                        listOnnxVoiceAssets, manifestForOnnxVoiceAsset,
+                    } = await import('./model-catalog.js');
+                    const { ModelDataStore } = await import('./model-data-store.js');
+                    const store = new ModelDataStore({
+                        origin: chrome.runtime.getURL('/'),
+                        cacheStorage: caches, fetchImpl: fetch,
+                        responseClass: Response, streamClass: TransformStream,
+                    });
+                    const installed = [];
+                    for (const entry of listOnnxVoiceAssets()) {
+                        if (!entry?.voiceVariant) continue;
+                        const voiceManifest = manifestForOnnxVoiceAsset(entry.path);
+                        if ((await store.status(voiceManifest)).ready) {
+                            installed.push({ path: entry.path, alreadyReady: true });
+                            continue;
+                        }
+                        await store.install(voiceManifest, { onProgress() { /* live */ } });
+                        if (!(await store.status(voiceManifest)).ready) {
+                            throw Error('Optional ONNX voice install incomplete: ' + entry.path);
+                        }
+                        installed.push({ path: entry.path, alreadyReady: false });
+                    }
+                    return { success: true, installed };
+                }), 360000, 'optional ONNX voice install while online');
+                liveHeartbeat('online-optional-onnx-voice-install-done');
+            }
             // Require the cached SDK, WASM, voices, model and dictionary to
             // produce speech with all HTTP(S) requests disabled by Chromium.
             liveHeartbeat('offline-mode-enter', { provider: manifest.provider });
@@ -3432,14 +3465,14 @@ try {
                         cacheStorage: caches, fetchImpl: fetch,
                         responseClass: Response, streamClass: TransformStream,
                     });
+                    // Voices must already be cached from the online install stage.
                     for (const path of voicePaths) {
                         const entry = listOnnxVoiceAssets().find(item => item.path === path);
                         if (!entry?.voiceVariant) continue;
                         const voiceManifest = manifestForOnnxVoiceAsset(path);
-                        if ((await store.status(voiceManifest)).ready) continue;
-                        await store.install(voiceManifest, {
-                            onProgress() { /* live install */ },
-                        });
+                        if (!(await store.status(voiceManifest)).ready) {
+                            throw Error('Optional ONNX voice missing offline: ' + path);
+                        }
                     }
                     const voices = [];
                     for (const voiceAssetPath of voicePaths) {

@@ -64,7 +64,14 @@ export class OnnxKokoroProvider {
     }
 
     async status() {
-        return this.store.status(this.manifest);
+        const model = await this.store.status(this.manifest);
+        if (!model.ready || this.voiceManifest === this.manifest) return model;
+        const voice = await this.store.status(this.voiceManifest);
+        return {
+            ready: model.ready && voice.ready,
+            storedBytes: model.storedBytes + voice.storedBytes,
+            totalBytes: model.totalBytes + voice.totalBytes,
+        };
     }
 
     async initialize() {

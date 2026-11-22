@@ -30,10 +30,10 @@ function assertVoiceRow(row, seen) {
     if (!(row.rms > 0.001)) {
         throw new Error('ONNX voice-change near-silent for ' + row.voiceAssetPath);
     }
-    if (typeof row.sha256Hex === 'string' && /^[a-f0-9]{64}$/.test(row.sha256Hex)) {
-        return row.sha256Hex;
+    if (typeof row.sha256Hex !== 'string' || !/^[a-f0-9]{64}$/.test(row.sha256Hex)) {
+        throw new Error('ONNX voice-change missing valid sha256Hex for ' + row.voiceAssetPath);
     }
-    return null;
+    return row.sha256Hex;
 }
 
 /**
@@ -59,14 +59,12 @@ export function assertOnnxVoiceChange(report) {
     const seen = new Set();
     const digests = [];
     for (const row of voices) {
-        const digest = assertVoiceRow(row, seen);
-        if (digest) digests.push(digest);
+        digests.push(assertVoiceRow(row, seen));
     }
     if (seen.size !== ONNX_VOICE_CHANGE_ASSETS.length) {
         throw new Error('ONNX voice-change missing catalogued assets');
     }
-    if (digests.length === ONNX_VOICE_CHANGE_ASSETS.length &&
-        digests[0] === digests[1]) {
+    if (digests[0] === digests[1]) {
         throw new Error('ONNX voice-change PCM digests must differ across voices');
     }
     return true;

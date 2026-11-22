@@ -54,6 +54,11 @@
 
     function downloadFootprintNote(entry) {
         const source = entry && typeof entry === 'object' ? entry : {};
+        if (source.provider === 'onnx' &&
+            String(source.variant || '').startsWith('voice-')) {
+            return 'Optional ONNX voice download only (no graph). Install ONNX q8 separately; ' +
+                'this row caches a second catalogued voice binary for the popup voice select.';
+        }
         if (source.provider === 'onnx') {
             return 'Total model-data footprint includes the opt-in download (ONNX graph + voices/af.bin) ' +
                 'plus packaged tokenizer/config mapping (' + PACKAGED_ONNX_TOKENIZER_LABEL +
