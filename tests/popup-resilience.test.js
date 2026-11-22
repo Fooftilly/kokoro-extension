@@ -965,15 +965,34 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(document.getElementById('serverSettings').hidden).toBe(true);
     });
 
-    test('sticky failed switch also keeps restored local setup warning', () => {
+    test('failed local→local switch keeps sticky and restored setup warning', async () => {
+        // MediaPipe selected but models missing (soft probe → localActiveSetupIssue).
+        // A failed ONNX switch must keep both the sticky ONNX error and that warning.
+        allowMediaPipeSelection({ modelReady: false });
+        browser.storage.sync.get.mockImplementation(async (defaults) => ({
+            ...defaults,
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            mode: 'stream',
+            theme: 'light',
+        }));
+
         document.dispatchEvent(new Event('DOMContentLoaded'));
-        popup.setStickyLocalSetupFailureForTests(
-            'ONNX is not ready: Test ONNX q8 with English text first.');
-        popup.setLocalActiveSetupIssueForTests(
-            'MediaPipe needs setup: The tested model is no longer installed.');
-        popup.syncServerOnlyChrome('mediapipe');
+        await flushAsync();
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('mediapipe');
+        expect(popup.getLocalActiveSetupIssue()).toMatch(/MediaPipe needs setup/);
+
+        const onnx = document.querySelector('input[name="ttsBackend"][value="onnx"]');
+        onnx.checked = true;
+        onnx.dispatchEvent(new Event('change'));
+        await flushAsync();
+
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('mediapipe');
+        expect(popup.getStickyLocalSetupFailure()).toMatch(/ONNX/);
+        expect(popup.getLocalActiveSetupIssue()).toMatch(/MediaPipe needs setup/);
         const text = document.getElementById('localSetupMessage').textContent;
-        expect(text).toMatch(/ONNX is not ready/);
+        expect(text).toMatch(/ONNX.*not ready/i);
         expect(text).toMatch(/MediaPipe needs setup/);
         expect(document.getElementById('localSetupBanner').classList.contains('setup-banner-error'))
             .toBe(true);
