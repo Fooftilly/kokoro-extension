@@ -980,6 +980,32 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(writes.some((payload) => payload.mediaPipeVoice === 'ef_dora')).toBe(true);
     });
 
+    test('MediaPipe custom voice draft survives quiet autosave (#194 item 6)', async () => {
+        allowMediaPipeSelection();
+        browser.storage.sync.get.mockImplementation(async (defaults) => ({
+            ...defaults,
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
+            mediaPipeVoice: 'af_heart',
+            onnxVoiceAsset: 'voices/af.bin',
+            mode: 'stream',
+            theme: 'light',
+        }));
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        const customInput = document.getElementById('mediaPipeVoiceCustom');
+        customInput.value = 'xx_';
+        customInput.dispatchEvent(new Event('input'));
+        await popup.saveOptions(false);
+
+        expect(customInput.value).toBe('xx_');
+        expect(document.getElementById('mediaPipeVoice').value).toBe('af_heart');
+    });
+
     test('hides FastAPI-only chrome for local backends (#194 item 1)', async () => {
         document.dispatchEvent(new Event('DOMContentLoaded'));
         await flushAsync();

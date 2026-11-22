@@ -788,8 +788,11 @@ function readNormalizationOptionsFromForm() {
 function attachVoicePreference(settings, ttsBackend) {
     if (ttsBackend === 'mediapipe') {
         const mediaPipeSelect = document.getElementById('mediaPipeVoice');
-        settings.mediaPipeVoice = applyMediaPipeVoiceSelection(
+        // Read the committed select only — do not re-sync the advanced custom
+        // draft field (incomplete typing would be wiped by quiet autosave).
+        settings.mediaPipeVoice = LocalVoice.normalizeLocalVoiceId(
             mediaPipeSelect ? mediaPipeSelect.value : '');
+        if (mediaPipeSelect) mediaPipeSelect.value = settings.mediaPipeVoice;
         return;
     }
     if (ttsBackend === 'onnx') {
