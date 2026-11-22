@@ -150,6 +150,16 @@ const badDictBodySize = (() => {
         return { ok: false, message: String(error.message || error) };
     }
 })();
+const badPlaybackMeasured = (() => {
+    try {
+        exp.assertMeasuredResultsExportPayload({
+            ...payload, localPlaybackStartMeasured: false,
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
 console.log(JSON.stringify({
     kind: exp.MEASURED_EXPORT_KIND,
     filename: exp.MEASURED_EXPORT_FILENAME,
@@ -163,7 +173,7 @@ console.log(JSON.stringify({
         'kokoro-measured-local-english (1).json'),
     rejectOther: exp.isAcceptableMeasuredExportFilename('notes.txt'),
     report, fail, badPayload, badHeap, badFootprint,
-    badMeasuredClaim, badOnnxDict, badDictBodySize,
+    badMeasuredClaim, badOnnxDict, badDictBodySize, badPlaybackMeasured,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
@@ -207,6 +217,9 @@ describe('Measured results export acceptance', () => {
         expect(snap.badDictBodySize.ok).toBe(false);
         expect(snap.badDictBodySize.message).toMatch(
             /measured CMUdict body bytes equal/i);
+        expect(snap.badPlaybackMeasured.ok).toBe(false);
+        expect(snap.badPlaybackMeasured.message).toMatch(
+            /muted full-clip playback start/i);
     });
 
     test('product page exposes local-only measured export control', () => {

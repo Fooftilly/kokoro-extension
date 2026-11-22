@@ -634,15 +634,33 @@ describe('ONNX model manager English synthesis diagnostics', () => {
                 expect(exported.playbackStartP50Ms == null).toBe(true);
             }
             // Dual-comparison acceptance still requires measured playback;
-            // this honesty export must not pass that gate.
-            const fs = require('fs');
+            // invoke the real gate (not a source-string match).
+            const { spawnSync } = require('child_process');
+            const { pathToFileURL } = require('url');
             const path = require('path');
-            const acceptance = fs.readFileSync(path.join(
+            const helperUrl = pathToFileURL(path.join(
                 __dirname, '..', 'scripts',
-                'measured-results-export-acceptance.mjs'), 'utf8');
-            expect(acceptance).toContain(
-                "requireMeasuredFlag(payload, 'localPlaybackStartMeasured', true");
-            expect(payload.localPlaybackStartMeasured).not.toBe(true);
+                'measured-results-export-acceptance.mjs')).href;
+            const child = spawnSync(process.execPath, [
+                '--input-type=module', '-e', `
+import { assertMeasuredResultsExportPayload } from ${JSON.stringify(helperUrl)};
+const payload = ${JSON.stringify(payload)};
+try {
+    assertMeasuredResultsExportPayload(payload);
+    console.log(JSON.stringify({ ok: true }));
+} catch (error) {
+    console.log(JSON.stringify({
+        ok: false,
+        message: String(error.message || error),
+    }));
+}
+`,
+            ], { encoding: 'utf8' });
+            expect(child.status).toBe(0);
+            expect(child.stderr || '').toBe('');
+            const gate = JSON.parse(child.stdout.trim());
+            expect(gate.ok).toBe(false);
+            expect(gate.message).toMatch(/muted full-clip playback start/i);
         });
 
     test('missing dictionary is never downloaded implicitly and IPA remains testable', async () => {
