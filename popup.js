@@ -72,6 +72,8 @@ let stickyLocalSetupFailure = null;
 let localActiveSetupIssue = null;
 /** Invalidates in-flight soft probes when the user switches backends. */
 let localSetupHealthVersion = 0;
+/** Last committed MediaPipe voice — restore when an advanced draft is discarded. */
+let mediaPipeVoiceBaseline = (LocalVoice.DEFAULT_MEDIAPIPE_VOICE || 'af_heart');
 
 function setLocalSetupBanner({ message, showCta, tone }) {
     const banner = document.getElementById('localSetupBanner');
@@ -1012,6 +1014,7 @@ function previewMediaPipeVoiceSelection(voiceId) {
 /** Apply a MediaPipe voice ID to the curated select (+ optional custom row). */
 function applyMediaPipeVoiceSelection(voiceId) {
     const normalized = previewMediaPipeVoiceSelection(voiceId);
+    mediaPipeVoiceBaseline = normalized;
     syncMediaPipeCustomField(normalized);
     return normalized;
 }
@@ -1202,16 +1205,24 @@ document.addEventListener('DOMContentLoaded', () => {
     if (mediaPipeVoiceCustom) {
         // Preview into the select on valid drafts so quiet autosave persists the
         // preference, but do not sync/clear the draft (shorter catalog prefixes
-        // like zm_yunxi must not wipe typing zm_yunxia). Full sync on change.
+        // like zm_yunxi must not wipe typing zm_yunxia). Incomplete/cleared
+        // drafts restore the last committed baseline. Full sync on change.
         mediaPipeVoiceCustom.addEventListener('input', () => {
             const raw = (mediaPipeVoiceCustom.value || '').trim().toLowerCase();
             if (/^[a-z]{2}_[a-z]+$/.test(raw)) {
                 previewMediaPipeVoiceSelection(raw);
+            } else {
+                previewMediaPipeVoiceSelection(mediaPipeVoiceBaseline);
             }
             void saveOptions(true);
         });
         mediaPipeVoiceCustom.addEventListener('change', () => {
-            applyMediaPipeVoiceSelection(mediaPipeVoiceCustom.value);
+            const raw = (mediaPipeVoiceCustom.value || '').trim();
+            if (!raw) {
+                applyMediaPipeVoiceSelection(mediaPipeVoiceBaseline);
+            } else {
+                applyMediaPipeVoiceSelection(raw);
+            }
             void saveOptions(false);
         });
     }

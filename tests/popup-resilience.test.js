@@ -1006,6 +1006,44 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(document.getElementById('mediaPipeVoice').value).toBe('af_heart');
     });
 
+    test('MediaPipe discarded custom draft restores baseline voice', async () => {
+        allowMediaPipeSelection();
+        browser.storage.sync.get.mockImplementation(async (defaults) => ({
+            ...defaults,
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
+            mediaPipeVoice: 'af_sarah',
+            onnxVoiceAsset: 'voices/af.bin',
+            mode: 'stream',
+            theme: 'light',
+        }));
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        const customInput = document.getElementById('mediaPipeVoiceCustom');
+        const mediaPipeSelect = document.getElementById('mediaPipeVoice');
+        expect(mediaPipeSelect.value).toBe('af_sarah');
+        expect(customInput.value).toBe('');
+
+        customInput.value = 'af_bella';
+        customInput.dispatchEvent(new Event('input'));
+        expect(mediaPipeSelect.value).toBe('af_bella');
+
+        customInput.value = '';
+        customInput.dispatchEvent(new Event('input'));
+        expect(mediaPipeSelect.value).toBe('af_sarah');
+
+        browser.storage.sync.set.mockClear();
+        await popup.saveOptions(false);
+        const writes = browser.storage.sync.set.mock.calls.map(([payload]) => payload);
+        expect(writes.some((payload) => payload.mediaPipeVoice === 'af_sarah')).toBe(true);
+        expect(writes.every((payload) => payload.mediaPipeVoice !== 'af_bella' &&
+            (!Object.hasOwn(payload, 'mediaPipeVoice') || payload.mediaPipeVoice === 'af_sarah'))).toBe(true);
+    });
+
     test('MediaPipe custom typing keeps longer IDs whose prefixes are catalogued', async () => {
         allowMediaPipeSelection();
         browser.storage.sync.get.mockImplementation(async (defaults) => ({
