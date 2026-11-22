@@ -3,6 +3,10 @@
  * autoplay). Restores the caller's mute state so the visible preview stays
  * audible. Used for FastAPI MP3 and local WAV full-clip paths.
  * Not MediaSource / progressive streaming TTFA.
+ *
+ * Returns performance.now() captured in the `playing` handler — before
+ * pause/rewind/mute restore — so callers can subtract a trial start without
+ * including post-start cleanup latency.
  */
 
 /** Default bound so a stalled play() cannot hang the Model Manager Test CTA. */
@@ -11,18 +15,20 @@ export const DEFAULT_SERVER_PLAYBACK_START_TIMEOUT_MS = 10000;
 /**
  * @param {HTMLAudioElement} audio
  * @param {{ timeoutMs?: number }} [options]
+ * @returns {Promise<number>} performance.now() at the `playing` event
  */
 export async function waitServerAudioPlaybackStart(audio, options = {}) {
     const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs >= 0
         ? options.timeoutMs
         : DEFAULT_SERVER_PLAYBACK_START_TIMEOUT_MS;
     const wasMuted = audio.muted;
+    let playingAtMs = null;
     try {
         audio.pause();
         audio.currentTime = 0;
         // Muted play satisfies autoplay policies in packaged dual live.
         audio.muted = true;
-        await new Promise((resolve, reject) => {
+        playingAtMs = await new Promise((resolve, reject) => {
             let settled = false;
             let timer = null;
             const finish = (fn, value) => {
@@ -31,7 +37,10 @@ export async function waitServerAudioPlaybackStart(audio, options = {}) {
                 cleanup();
                 fn(value);
             };
-            const onPlaying = () => { finish(resolve); };
+            const onPlaying = () => {
+                // Capture before any pause/rewind/mute restore in finally.
+                finish(resolve, performance.now());
+            };
             const onError = () => {
                 finish(reject, new Error('Audio element failed to start playback'));
             };
@@ -70,4 +79,5 @@ export async function waitServerAudioPlaybackStart(audio, options = {}) {
         }
         audio.muted = wasMuted;
     }
+    return playingAtMs;
 }

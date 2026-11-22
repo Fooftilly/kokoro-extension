@@ -11,8 +11,11 @@ jest.mock('../mediapipe-provider.js', () => ({ MediaPipeKokoroProvider: jest.fn(
 jest.mock('../onnx-provider.js', () => ({ OnnxKokoroProvider: jest.fn() }));
 jest.mock('../pcm-wav.js', () => ({ pcmToWavBlob: jest.fn(() => new Blob(['wav'])) }));
 jest.mock('../server-audio-playback-start.js', () => ({
-    waitServerAudioPlaybackStart: jest.fn(async () => {}),
+    // Absolute playing timestamp after synth; offset > mocked synthesisP50Ms (12)
+    // so rememberSharedEnglishResult accepts playbackStartP50Ms >= synthesisP50.
+    waitServerAudioPlaybackStart: jest.fn(async () => performance.now() + 20),
 }));
+const { nearestRank: realNearestRank } = require('../benchmark-capabilities.js');
 
 const audio = () => ({ samples: new Float32Array([0.2, -0.2]), sampleRateHz: 24000 });
 
@@ -28,6 +31,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
     let pruneModels;
     let delayedCpuStatus;
     let failStatusFor;
+    let waitPlaybackStartMock;
     beforeEach(async () => {
         jest.resetModules();
         dictionaryReady = true;
@@ -91,8 +95,13 @@ describe('ONNX model manager English synthesis diagnostics', () => {
             summarizeRuns: jest.fn(() => ({
                 synthesisP50Ms: 12, synthesisP95Ms: 15, realTimeFactorP50: 0.2,
             })),
-            nearestRank: jest.fn((values) => Math.max(...values.map(Number), 12)),
+            nearestRank: jest.fn((values, pct) => realNearestRank(values, pct)),
         };
+        waitPlaybackStartMock = require('../server-audio-playback-start.js')
+            .waitServerAudioPlaybackStart;
+        waitPlaybackStartMock.mockReset();
+        waitPlaybackStartMock.mockImplementation(
+            async () => performance.now() + 20);
         // jsdom Audio must accept src assignment used by measureWarmClip.
         global.Audio = class FakeAudio {
             constructor() {
@@ -563,6 +572,13 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(message).toContain('Streaming time-to-first-audio was not measured');
         expect(message).toContain('Unknown English words are not supported');
         expect(row.querySelector('audio').hidden).toBe(false);
+        // Exact p50 from the three warm playbackStartMs values (not a floor max).
+        const warmRuns = window.KokoroBenchmark.summarizeRuns.mock.calls[0][0];
+        const playbackSamples = warmRuns.map(r => r.playbackStartMs);
+        expect(playbackSamples).toHaveLength(3);
+        expect(playbackSamples.every(Number.isFinite)).toBe(true);
+        expect(window.KokoroBenchmark.nearestRank).toHaveBeenCalledWith(
+            playbackSamples, 50);
         await waitFor(() => row.querySelector('.model-choose').disabled === false);
         expect(browser.storage.local.set).toHaveBeenCalledWith({
             'onnxValidatedRevision:q8': expect.any(String),
@@ -573,6 +589,22 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(row.querySelector('.model-status').textContent).toContain('dictionary-supported English reading');
         expect(global.fetch).not.toHaveBeenCalled();
     });
+
+    test('muted playback failure still approves backend after successful synthesis',
+        async () => {
+            waitPlaybackStartMock.mockRejectedValue(new Error('NotAllowedError'));
+            const { row, message } = await runProbe();
+            expect(engine.synthesize).toHaveBeenCalled();
+            expect(message).toContain(
+                'Full-clip muted playback start was not measured');
+            expect(message).toContain(
+                'synthesis still valid for backend approval');
+            await waitFor(() =>
+                row.querySelector('.model-choose').disabled === false);
+            expect(browser.storage.local.set).toHaveBeenCalledWith({
+                'onnxValidatedRevision:q8': expect.any(String),
+            });
+        });
 
     test('missing dictionary is never downloaded implicitly and IPA remains testable', async () => {
         dictionaryReady = false;
@@ -1203,12 +1235,26 @@ describe('ONNX model manager English synthesis diagnostics', () => {
             }));
         expect(globalThis.__kokoroLastMeasuredExport.measurements.map(r => r.key)
             .sort()).toEqual(['mediapipe-cpu', 'onnx-q8']);
+        // nearestRank was called with real warm samples; export p50 matches it.
+        const playbackRankCalls = window.KokoroBenchmark.nearestRank.mock.calls
+            .map((args, i) => ({
+                samples: args[0],
+                pct: args[1],
+                result: window.KokoroBenchmark.nearestRank.mock.results[i].value,
+            }))
+            .filter(call => call.pct === 50);
+        expect(playbackRankCalls.length).toBeGreaterThanOrEqual(2);
         const dictCatalog =
             globalThis.__kokoroLastMeasuredExport.englishDictionaryCatalogBytes;
         expect(dictCatalog).toBeGreaterThan(0);
         for (const row of globalThis.__kokoroLastMeasuredExport.measurements) {
             expect(row.coldPrepMs).toBeGreaterThan(0);
             expect(row.playbackStartP50Ms).toBeGreaterThanOrEqual(row.synthesisP50Ms);
+            const matching = playbackRankCalls.find(
+                call => call.result === row.playbackStartP50Ms);
+            expect(matching).toBeTruthy();
+            expect(row.playbackStartP50Ms).toBe(
+                realNearestRank(matching.samples, 50));
             expect(row.catalogModelAssetBytes).toBeGreaterThan(0);
             // Measured Cache Storage body sizes must match catalog bytes.
             expect(row.cachedCatalogAssetBytes).toBe(row.catalogModelAssetBytes);

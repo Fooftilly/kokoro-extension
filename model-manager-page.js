@@ -323,9 +323,16 @@ function rememberSharedEnglishResult(entry, metrics, text, epoch) {
     const input = document.getElementById('benchmarkText');
     if (epoch !== sharedEnglishEpoch || input?.value.trim() !== text) return;
     if (![metrics.coldPrepMs, metrics.synthesisP50Ms, metrics.synthesisP95Ms,
-        metrics.realTimeFactorP50, metrics.playbackStartP50Ms]
-        .every(v => Number.isFinite(v) && v >= 0)) return;
-    if (!(metrics.playbackStartP50Ms >= metrics.synthesisP50Ms)) return;
+        metrics.realTimeFactorP50].every(v => Number.isFinite(v) && v >= 0)) {
+        return;
+    }
+    // Playback start is optional for approval/table presence; export still
+    // fail-closes localPlaybackStartMeasured when any row lacks it.
+    if (metrics.playbackStartP50Ms != null &&
+        !(Number.isFinite(metrics.playbackStartP50Ms) &&
+            metrics.playbackStartP50Ms >= metrics.synthesisP50Ms)) {
+        return;
+    }
     sharedEnglishResults.set(entry.key, metrics);
     renderSharedEnglishResults();
 }
@@ -775,7 +782,8 @@ function currentEngine(entry) {
     return provider;
 }
 
-// Measure full-clip synthesis + muted HTMLAudioElement playback start.
+// Measure full-clip synthesis; muted HTMLAudioElement playback start is
+// best-effort and must not block backend approval when synthesis succeeded.
 // Streaming time-to-first-audio stays unmeasured (firstAudioMs null). Only
 // group runs for the *same input and provider path*; a failed English run must
 // never be mixed with IPA timings or count towards backend approval.
@@ -786,19 +794,23 @@ async function measureWarmClip(synthesize) {
         const started = performance.now();
         audio = await synthesize();
         const synthesisMs = performance.now() - started;
+        let playbackStartMs = null;
         const blob = pcmToWavBlob(audio.samples, audio.sampleRateHz);
         const objectUrl = URL.createObjectURL(blob);
         const el = new Audio();
         try {
             el.src = objectUrl;
-            await waitServerAudioPlaybackStart(el);
+            // playingAtMs is captured in the `playing` handler (before cleanup).
+            const playingAtMs = await waitServerAudioPlaybackStart(el);
+            const elapsed = playingAtMs - started;
+            if (Number.isFinite(elapsed) && elapsed >= synthesisMs) {
+                playbackStartMs = elapsed;
+            }
+        } catch {
+            // Audio-element quirks must not invalidate successful synthesis.
+            playbackStartMs = null;
         } finally {
             URL.revokeObjectURL(objectUrl);
-        }
-        const playbackStartMs = performance.now() - started;
-        if (!(playbackStartMs >= synthesisMs)) {
-            throw new Error(
-                'Local muted playback start must be at/after full-clip synthesis');
         }
         runs.push({
             kind: 'warm',
@@ -872,7 +884,8 @@ function formatLocalBenchmarkStatus(entry, metrics, isEnglishMeasurement, englis
     const playbackNote = Number.isFinite(metrics.playbackStartP50Ms)
         ? ' Full-clip muted playback start p50: ' +
             metrics.playbackStartP50Ms.toFixed(0) + ' ms.'
-        : '';
+        : ' Full-clip muted playback start was not measured' +
+            ' (synthesis still valid for backend approval).';
     return 'Real local inference, warm (3 runs, ' +
         (isEnglishMeasurement ? 'shared English text' : 'IPA-only diagnostic') +
         '). Full-clip synthesis p50: ' +
@@ -950,8 +963,13 @@ async function testEngine(entry, ui) {
             const { english, englishReady, measured, coldPrepMs,
                 isEnglishMeasurement } =
                 await measureBackendSample(entry, engine, text, ipa, coldStartedAt);
-            const playbackStartP50Ms = window.KokoroBenchmark.nearestRank(
-                measured.runs.map(r => r.playbackStartMs), 50);
+            const playbackSamples = measured.runs
+                .map(r => r.playbackStartMs)
+                .filter(v => Number.isFinite(v));
+            const playbackStartP50Ms =
+                playbackSamples.length === measured.runs.length
+                    ? window.KokoroBenchmark.nearestRank(playbackSamples, 50)
+                    : null;
             const metrics = {
                 ...window.KokoroBenchmark.summarizeRuns(measured.runs),
                 coldPrepMs,
@@ -1357,9 +1375,10 @@ async function fetchFastApiPlayableClip(endpoint, input, voice, audio) {
     audio.src = result.dataUrl;
     audio.hidden = false;
     const durationSec = await waitServerAudioDuration(audio);
-    await waitServerAudioPlaybackStart(audio);
+    // playingAtMs is captured in the `playing` handler (before cleanup).
+    const playingAtMs = await waitServerAudioPlaybackStart(audio);
     // Fetch-start → HTMLAudioElement 'playing' (full download, not MSE TTFA).
-    const playbackStartMs = performance.now() - wallStarted;
+    const playbackStartMs = playingAtMs - wallStarted;
     return {
         firstBodyByteMs: result.firstBodyByteMs,
         synthesisMs,
