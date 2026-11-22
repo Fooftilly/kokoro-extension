@@ -18,6 +18,25 @@ const firefoxLive = path.join(root, 'scripts', 'validate-live-firefox.py');
 function loadHelperSnapshot() {
     return spawnSync(process.execPath, ['--input-type=module', '-e', `
 import * as card from ${JSON.stringify(helperUrl)};
+const split = card.splitFastApiStubMp3ForProgressive(card.MINIMAL_MP3_BYTES);
+const expectedTail = Math.min(
+    Math.max(
+        card.FASTAPI_STUB_PROGRESSIVE_TAIL_BYTES,
+        Math.floor(card.MINIMAL_MP3_BYTES.byteLength *
+            card.FASTAPI_STUB_PROGRESSIVE_TAIL_RATIO)),
+    card.MINIMAL_MP3_BYTES.byteLength - 1);
+// Ratio (not the 32-byte floor) must drive the shared fixture split so CI
+// Chromium gets a multi-second prefix while ~40% (~4126 bytes) stays held.
+// MediaSource playing-before-EOF is chromium-dual-only (no MSE in Jest).
+const splitOk = split.first.byteLength + split.rest.byteLength ===
+    card.MINIMAL_MP3_BYTES.byteLength &&
+    split.rest.byteLength === expectedTail &&
+    expectedTail === 4126 &&
+    split.first.byteLength === 6189 &&
+    card.MINIMAL_MP3_BYTES.byteLength === 10315 &&
+    card.FASTAPI_STUB_PROGRESSIVE_TAIL_RATIO === 0.4 &&
+    card.FASTAPI_STUB_FIRST_BYTE_DELAY_MS === 100 &&
+    card.FASTAPI_STUB_PROGRESSIVE_TAIL_HOLD_MS === 2000;
 const apiUrl = 'http://127.0.0.1:9/v1/';
 const report = card.buildFastApiServerCardReport({
     browser: 'chromium', apiUrl, afterLocalDualComparison: true,
@@ -145,6 +164,7 @@ const failOmitBuild = (() => {
 })();
 console.log(JSON.stringify({
     bytes: card.MINIMAL_MP3_BYTES.length,
+    splitOk,
     before: card.BACKEND_BEFORE_CHOOSE,
     needle: card.SERVER_PLAYABLE_MP3_NEEDLE,
     ttfbNeedle: card.SERVER_FIRST_BODY_BYTE_NEEDLE,
@@ -168,6 +188,7 @@ describe('FastAPI server-card acceptance', () => {
         expect(child.stderr || '').toBe('');
         const snap = JSON.parse(child.stdout.trim());
         expect(snap.bytes).toBeGreaterThan(400);
+        expect(snap.splitOk).toBe(true);
         expect(snap.before).toBe('mediapipe');
         expect(snap.needle).toMatch(/playable MP3/i);
         expect(snap.ttfbNeedle).toMatch(/First body byte \(TTFB\) p50/i);
@@ -253,7 +274,11 @@ describe('FastAPI server-card acceptance', () => {
         expect(source).toContain('mediasourceProgressiveTtfaDisclosure');
         expect(source).toContain('assertProgressiveStreamingTtfaMeasured');
         // Playable prefix held open before final write (pre-EOF playing).
-        expect(source).toContain('setTimeout(() => res.end(rest), 250)');
+        expect(source).toContain('FASTAPI_STUB_PROGRESSIVE_TAIL_HOLD_MS');
+        expect(source).toContain('splitFastApiStubMp3ForProgressive');
+        expect(source).toContain(
+            'assertChromiumDualRequiresProgressiveTtfaMeasured');
+        expect(source).toContain('fastapi-server-card-progressive-ttfa');
         // Observed p50 raw forwarded; empty string must not become 0.
         expect(source).toContain('mediasourceProgressiveTtfaP50Raw');
         expect(source).toContain('parseObservedProgressiveTtfaP50Ms');
@@ -271,6 +296,11 @@ describe('FastAPI server-card acceptance', () => {
             'SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_MEASURED_NEEDLE');
         expect(helper).toContain('mediasourceProgressiveTtfaNotMeasured');
         expect(helper).toContain('mediasourceProgressiveTtfaP50Ms');
+        expect(helper).toContain('FASTAPI_STUB_FIRST_BYTE_DELAY_MS = 100');
+        expect(helper).toContain('FASTAPI_STUB_PROGRESSIVE_TAIL_HOLD_MS = 2000');
+        expect(helper).toContain('FASTAPI_STUB_PROGRESSIVE_TAIL_RATIO = 0.4');
+        expect(helper).toContain('splitFastApiStubMp3ForProgressive');
+        expect(helper).toContain('~2.5s');
         const dualIdx = source.indexOf(
             'await acceptTwoBackendComparison(');
         const cardIdx = source.indexOf(
@@ -317,8 +347,11 @@ describe('FastAPI server-card acceptance', () => {
         expect(source).toContain('mediasourceProgressiveTtfaP50Ms');
         expect(source).toContain('mediasource_progressive_ttfa_disclosure');
         expect(source).toContain('assert_progressive_streaming_ttfa_measured');
-        expect(source).toContain('time.sleep(0.1)');
-        expect(source).toContain('time.sleep(0.25)');
+        expect(source).toContain('first_byte_delay_s = 0.1');
+        expect(source).toContain('progressive_tail_hold_s = 2.0');
+        expect(source).toContain('progressive_tail_ratio = 0.4');
+        expect(source).toContain('time.sleep(first_byte_delay_s)');
+        expect(source).toContain('time.sleep(progressive_tail_hold_s)');
         expect(source).toContain('mediasourceProgressiveTtfaP50Raw');
         expect(source).toContain('mediasource_progressive_ttfa_p50_raw');
         expect(source).toMatch(

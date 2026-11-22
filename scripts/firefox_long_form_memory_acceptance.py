@@ -4,8 +4,9 @@ Speech/storage/visit indexes stay owned by long-form-memory-acceptance.mjs
 (Chromium). Pure bound checks are ported here so Selenium can call them
 without a Node round-trip on every sentence click.
 
-KE-52 / #57: deeper walk (36 sentences) stays memory-bound only —
-subjective quality / MOS are explicitly not measured.
+KE-52 / #57: deeper walk (36 sentences) stays memory-bound.
+Leave-open: objective waveform quality (PCM RMS / duration) measured;
+subjective MOS remains unmeasured.
 """
 import json
 import subprocess
@@ -19,6 +20,8 @@ LONG_FORM_MAX_CACHE_ENTRIES = 8
 LONG_FORM_MAX_OBJECT_URLS = 8
 LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE = (
     "deeper long-form quality/performance not measured")
+LONG_FORM_QUALITY_MEASURED_NEEDLE = (
+    "long-form objective waveform quality measured; MOS not measured")
 ALLOWED_LONG_FORM_BACKENDS = frozenset({"onnx", "mediapipe"})
 
 
@@ -37,11 +40,23 @@ def origin_long_form_memory_stage_enabled(origin_download, provider, success):
         success)
 
 
-def _invoke_long_form_esm(action, payload):
-    """Run one honesty action in the shared ESM module (stdin JSON → stdout).
+def should_sample_long_form_waveform(index, visit_indexes):
+    """Sparse WAV probes — keep in sync with shouldSampleLongFormWaveform."""
+    if not isinstance(visit_indexes, list) or not visit_indexes:
+        raise ValueError("visitIndexes required for long-form quality sampling")
+    if index == 0:
+        return True
+    if index == visit_indexes[-1]:
+        return True
+    return index > 0 and index % 6 == 0
 
-    Keeps assert/finalize logic canonical in long-form-memory-acceptance.mjs so
-    Sonar does not count a Python mirror as new-code duplication.
+
+def _invoke_long_form_esm(action, payload):
+    """Run one honesty/decode action in the shared ESM module (stdin JSON → stdout).
+
+    Keeps assert/finalize/WAV decode logic canonical in
+    long-form-memory-acceptance.mjs so Sonar does not count a Python mirror as
+    new-code duplication.
     """
     script = (
         "import { readFileSync } from 'node:fs';"
@@ -49,6 +64,7 @@ def _invoke_long_form_esm(action, payload):
         "  longFormQualityDisclosureFlags,"
         "  assertLongFormMemoryAcceptanceReport,"
         "  finalizeLongFormMemoryAcceptanceReport,"
+        "  decodeLongFormWavPcm16Metrics,"
         "} from './long-form-memory-acceptance.mjs';"
         "const action = process.argv[1];"
         "const raw = readFileSync(0, 'utf8').trim();"
@@ -57,6 +73,10 @@ def _invoke_long_form_esm(action, payload):
         "if (action === 'flags') out = longFormQualityDisclosureFlags();"
         "else if (action === 'assert') out = assertLongFormMemoryAcceptanceReport(data);"
         "else if (action === 'finalize') out = finalizeLongFormMemoryAcceptanceReport(data || {});"
+        "else if (action === 'decodeWav') {"
+        "  const bytes = Buffer.from(String(data && data.wavBase64 || ''), 'base64');"
+        "  out = decodeLongFormWavPcm16Metrics(new Uint8Array(bytes));"
+        "}"
         "else throw new Error('Unknown long-form honesty action: ' + action);"
         "process.stdout.write(JSON.stringify(out) + '\\n');"
     )
@@ -191,3 +211,8 @@ def assert_long_form_memory_acceptance_report(report):
 def finalize_long_form_memory_acceptance_report(partial=None):
     """Finalize via shared ESM — preserves measured:true fail-closed claims."""
     return _invoke_long_form_esm("finalize", dict(partial or {}))
+
+
+def decode_long_form_wav_pcm16_metrics(wav_base64):
+    """Decode RIFF/WAVE PCM16 via shared ESM (same path as Jest/Chromium)."""
+    return _invoke_long_form_esm("decodeWav", {"wavBase64": wav_base64})

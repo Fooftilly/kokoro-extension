@@ -228,6 +228,41 @@ export function assertProgressiveStreamingTtfaMeasured(report) {
 }
 
 /**
+ * Chromium dual-comparison gate: progressive MediaSource TTFA must be
+ * measured (unavailable is not accepted). Shared so Jest can reject the
+ * unavailable shape without relying on source-string wiring alone.
+ *
+ * @param {object} acceptance progressiveStreamingTtfaAcceptance block
+ * @returns {object} normalized measured block
+ */
+export function assertChromiumDualRequiresProgressiveTtfaMeasured(acceptance) {
+    if (!acceptance || typeof acceptance !== 'object') {
+        throw Error(
+            'Progressive MediaSource TTFA must be measured on ' +
+            'chromium-dual-comparison: missing acceptance block');
+    }
+    if (acceptance.assertedFromServerCard !== true ||
+        acceptance.success !== true) {
+        throw Error(
+            'Progressive MediaSource TTFA must be measured on ' +
+            'chromium-dual-comparison: ' + JSON.stringify(acceptance));
+    }
+    if (acceptance.progressiveStreamingTtfaUnavailable === true ||
+        acceptance.progressiveStreamingTtfaMeasured !== true) {
+        throw Error(
+            'Progressive MediaSource TTFA must be measured on ' +
+            'chromium-dual-comparison: ' + JSON.stringify(acceptance));
+    }
+    const block = normalizeProgressiveBlock(acceptance);
+    // Dual acceptance may omit trueMediaSourceTtfaMeasured; progressive
+    // measured with usedMediaSource implies true MediaSource TTFA.
+    if (block.trueMediaSourceTtfaMeasured == null) {
+        block.trueMediaSourceTtfaMeasured = true;
+    }
+    return assertMeasuredProgressiveBlock(block);
+}
+
+/**
  * Dual-report acceptance block for progressive MediaSource TTFA (unmeasured).
  * @param {object} [options]
  */

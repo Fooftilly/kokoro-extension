@@ -44,10 +44,12 @@ from firefox_long_form_memory_acceptance import (
     assert_bounded_audio_manager_stats,
     assert_long_form_cache_window_near,
     assert_long_form_heap_delta,
+    decode_long_form_wav_pcm16_metrics,
     finalize_long_form_memory_acceptance_report,
     load_long_form_fixture,
     origin_long_form_memory_stage_enabled,
     require_long_form_backend,
+    should_sample_long_form_waveform,
 )
 from firefox_overlay_controls_acceptance import (
     assert_overlay_paused_after_toggle,
@@ -1916,7 +1918,9 @@ def accept_measured_results_export(driver, sample_text="Hello world.", keys=None
             "Firefox measured export control not ready offline with two rows: " +
             repr(ready))
     driver.find_element(By.ID, constants["buttonId"]).click()
-    WebDriverWait(driver, 20).until(lambda d: d.execute_script("""
+    # Body-size probe (onnx + mediapipe + dict) can open large Cache entries
+    # before download completes — budget above the old 20s presence-only path.
+    WebDriverWait(driver, 90).until(lambda d: d.execute_script("""
         const needle=arguments[0];
         const payload=globalThis.__kokoroLastMeasuredExport;
         const downloadId=globalThis.__kokoroLastMeasuredExportDownloadId;
@@ -1939,7 +1943,7 @@ def accept_measured_results_export(driver, sample_text="Hello world.", keys=None
             "Firefox measured export status missing local-only confirmation: " +
             repr(status))
     # Look up by download id so Firefox auto-renames (file (1).json) still match.
-    download_hit = WebDriverWait(driver, 20).until(lambda d: d.execute_async_script("""
+    download_hit = WebDriverWait(driver, 90).until(lambda d: d.execute_async_script("""
         const downloadId=arguments[0];
         const done=arguments[arguments.length-1];
         browser.downloads.search({ id: downloadId }).then(items=>{
@@ -2042,14 +2046,24 @@ def _start_fastapi_speech_stub():
                 # Delay the first body byte so streamed TTFB is measurable.
                 # Hold a playable MP3 prefix open before the final write so
                 # progressive MediaSource can fire `playing` before EOF.
-                tail_len = min(32, max(1, len(mp3) - 1))
+                # Keep in sync with FASTAPI_STUB_* /
+                # splitFastApiStubMp3ForProgressive in
+                # fastapi-server-card-acceptance.mjs (Chromium dual requires
+                # measured progressive TTFA; Firefox may still be unavailable).
+                first_byte_delay_s = 0.1
+                progressive_tail_hold_s = 2.0
+                # 32 is a floor; shared fixture holds max(32, floor(len*0.4))
+                # bytes (~4126 of 10315) so Chromium MSE can play mid-stream.
+                progressive_tail_ratio = 0.4
+                ratio_tail = int(len(mp3) * progressive_tail_ratio)
+                tail_len = min(max(32, ratio_tail), max(1, len(mp3) - 1))
                 first_len = max(1, len(mp3) - tail_len)
                 first = mp3[:first_len]
                 rest = mp3[first_len:]
-                time.sleep(0.1)
+                time.sleep(first_byte_delay_s)
                 self.wfile.write(first)
                 self.wfile.flush()
-                time.sleep(0.25)
+                time.sleep(progressive_tail_hold_s)
                 if rest:
                     self.wfile.write(rest)
                 return
@@ -3837,32 +3851,41 @@ def _read_firefox_long_form_heap(driver):
 
 
 def _read_firefox_long_form_wav_meta(driver):
+    # Fetch WAV in-page; decode PCM16 via shared Node helper (Jest + Chromium).
     meta = driver.execute_async_script("""
         const done = arguments[arguments.length - 1];
         (async () => {
             const audio = document.getElementById('audio');
             const bytes = new Uint8Array(await (await fetch(audio.src)).arrayBuffer());
-            const wav = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-            const tag = (start, length) =>
-                String.fromCharCode(...bytes.subarray(start, start + length));
-            const audioBytes = wav.getUint32(40, true);
-            if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
-                wav.getUint32(24, true) !== 24000 || audioBytes < 2 ||
-                bytes.length !== 44 + audioBytes) {
-                throw Error('Long-form overlay WAV mismatch');
-            }
             const digest = await crypto.subtle.digest('SHA-256', bytes);
             const audioSha256 = [...new Uint8Array(digest)]
                 .map(b => b.toString(16).padStart(2, '0')).join('');
+            let binary = '';
+            const chunk = 0x8000;
+            for (let i = 0; i < bytes.length; i += chunk) {
+                binary += String.fromCharCode.apply(
+                    null, bytes.subarray(i, i + chunk));
+            }
             done({
-                audioBytes, audioSha256, paused: audio.paused,
+                wavBase64: btoa(binary),
+                audioSha256,
+                paused: audio.paused,
                 offline: navigator.onLine === false,
             });
         })().catch(e => done({ error: String(e) }));
     """)
     if meta.get("error"):
         raise RuntimeError("Firefox long-form WAV read failed: " + str(meta))
-    return meta
+    metrics = decode_long_form_wav_pcm16_metrics(meta["wavBase64"])
+    return {
+        "audioBytes": metrics["audioBytes"],
+        "sampleRateHz": metrics["sampleRateHz"],
+        "rms": metrics["rms"],
+        "durationSec": metrics["durationSec"],
+        "audioSha256": meta["audioSha256"],
+        "paused": meta["paused"],
+        "offline": meta["offline"],
+    }
 
 
 def _seed_firefox_long_form_overlay(driver, origin, storage):
@@ -3895,7 +3918,7 @@ def _walk_firefox_long_form_sentences(driver, visit_indexes):
         assert_bounded_audio_manager_stats(stats)
         max_cache = max(max_cache, stats["cacheSize"])
         max_urls = max(max_urls, stats["objectUrlCount"])
-        if index in (0, visit_indexes[-1]):
+        if should_sample_long_form_waveform(index, visit_indexes):
             samples.append({
                 "index": index,
                 **_read_firefox_long_form_wav_meta(driver),
