@@ -1307,7 +1307,44 @@ document.addEventListener('DOMContentLoaded', () => {
             browser.tabs.create({ url: 'reader.html' });
         });
     }
+
+    void refreshShortcutsCheatSheet();
 });
+
+/** Format chrome.commands shortcut strings for the cheat sheet (Alt+Comma → Alt+,). */
+function formatCommandShortcut(shortcut) {
+    if (!shortcut) return 'Not set';
+    return String(shortcut)
+        .replace(/Comma/gi, ',')
+        .replace(/Period/gi, '.')
+        .replace(/ArrowLeft/gi, '←')
+        .replace(/ArrowRight/gi, '→');
+}
+
+/**
+ * Fill #shortcutsCheatSheet from browser.commands.getAll so reassigned keys
+ * are shown instead of stale install defaults (#194 item 4).
+ */
+async function refreshShortcutsCheatSheet() {
+    const sheet = document.getElementById('shortcutsCheatSheet');
+    if (!sheet || !browser.commands || typeof browser.commands.getAll !== 'function') {
+        return;
+    }
+    let commands;
+    try {
+        commands = await browser.commands.getAll();
+    } catch (error) {
+        console.warn('Kokoro: could not read command shortcuts', error);
+        return;
+    }
+    const byName = new Map((commands || []).map((cmd) => [cmd.name, cmd]));
+    for (const item of sheet.querySelectorAll('[data-command]')) {
+        const cmd = byName.get(item.getAttribute('data-command'));
+        const kbd = item.querySelector('[data-shortcut]');
+        if (!kbd) continue;
+        kbd.textContent = formatCommandShortcut(cmd && cmd.shortcut);
+    }
+}
 
 async function checkApiConnection(url) {
     await refreshBackendStatus(url, { hideOkAfterMs: 3000 });
@@ -1334,6 +1371,8 @@ if (typeof module !== 'undefined' && module.exports) {
         syncVoiceUiForBackend,
         syncServerOnlyChrome,
         refreshLocalSetupHealth,
+        refreshShortcutsCheatSheet,
+        formatCommandShortcut,
         getStickyLocalSetupFailure: () => stickyLocalSetupFailure,
         setStickyLocalSetupFailureForTests: (value) => { stickyLocalSetupFailure = value; },
         getLocalActiveSetupIssue: () => localActiveSetupIssue,

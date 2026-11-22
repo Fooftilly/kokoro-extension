@@ -166,16 +166,21 @@
 
             <details id="shortcutsCheatSheet" class="shortcuts-sheet">
                 <summary>Keyboard shortcuts</summary>
+                <p class="note shortcuts-intro">
+                    Shows your <em>current</em> browser bindings (not only the install defaults).
+                    Reassign anytime in the extension shortcuts page.
+                </p>
                 <ul class="shortcuts-list">
-                    <li><kbd>Alt</kbd>+<kbd>A</kbd> — Read article</li>
-                    <li><kbd>Alt</kbd>+<kbd>,</kbd> — Previous sentence</li>
-                    <li><kbd>Alt</kbd>+<kbd>.</kbd> — Next sentence</li>
-                    <li><kbd>Alt</kbd>+<kbd>W</kbd> — Close overlay</li>
-                    <li><kbd>Alt</kbd>+<kbd>M</kbd> — Open Document <span class="note">(Firefox suggested default)</span></li>
+                    <li data-command="read-article"><kbd data-shortcut>Alt+A</kbd> — Read article</li>
+                    <li data-command="nav-prev"><kbd data-shortcut>Alt+,</kbd> — Previous sentence</li>
+                    <li data-command="nav-next"><kbd data-shortcut>Alt+.</kbd> — Next sentence</li>
+                    <li data-command="close-overlay"><kbd data-shortcut>Alt+W</kbd> — Close overlay</li>
+                    <li data-command="open-reader"><kbd data-shortcut>Not set</kbd> — Open Document</li>
                 </ul>
                 <p class="note shortcuts-chrome-note">
-                    Chrome does not assign a default Open Document shortcut (four suggested-key limit).
-                    Set one at <code>chrome://extensions/shortcuts</code>, or use Open Document in this popup.
+                    Chrome ships Open Document with no suggested key (four-key limit); Firefox suggests
+                    <kbd>Alt+M</kbd>. Set or change bindings at <code>chrome://extensions/shortcuts</code>
+                    (or Firefox Add-ons → Manage extension shortcuts), or use Open Document in this popup.
                 </p>
             </details>
         </div>
