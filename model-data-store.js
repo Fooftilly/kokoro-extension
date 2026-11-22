@@ -140,9 +140,11 @@ export class ModelDataStore {
         return { ready: storedBytes === totalBytes, storedBytes, totalBytes };
     }
 
-    // Sum actual Cache Storage body sizes (blob.size). Unlike status(), this is
-    // not a catalog-header presence estimate — fail closed on missing/mismatched
-    // bodies so measured exports cannot invent footprint.
+    // Sum actual Cache Storage body sizes via blob.size (length metadata — not a
+    // full decode into JS heap). Unlike status(), this is not a catalog-header
+    // presence estimate — fail closed on missing/mismatched bodies so measured
+    // exports cannot invent footprint. Dual export waits budget for open/match
+    // latency on large MediaPipe entries (see live harness timeouts).
     async measureBodyBytes(manifest) {
         const totalBytes = validateModelManifest(manifest);
         const cache = await this.cacheStorage.open(CACHE_NAME);
@@ -154,6 +156,9 @@ export class ModelDataStore {
                     ready: false, complete: false, measuredBytes: 0, totalBytes,
                 };
             }
+            // blob.size is Cache Storage body length metadata (not a full decode
+            // into JS). Never invent from x-kokoro-bytes / content-length alone —
+            // those headers can survive a truncated body rewrite.
             const blob = await existing.blob();
             if (!Number.isSafeInteger(blob?.size) || blob.size !== asset.bytes) {
                 throw new Error(
@@ -255,6 +260,7 @@ export class ModelDataStore {
                 }));
                 const headers = {
                     'content-type': 'application/octet-stream',
+                    'content-length': String(asset.bytes),
                     'x-kokoro-integrity': asset.integrity,
                     'x-kokoro-bytes': String(asset.bytes),
                 };

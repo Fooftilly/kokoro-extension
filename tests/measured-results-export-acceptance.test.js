@@ -130,6 +130,24 @@ const badOnnxDict = (() => {
         return { ok: false, message: String(error.message || error) };
     }
 })();
+// Both cached dict fields agree but disagree with englishDictionaryCatalogBytes.
+const badDictBodySize = (() => {
+    try {
+        const rows = payload.measurements.map((row, i) =>
+            i === 0 ? {
+                ...row,
+                cachedCatalogDictionaryBytes: 99,
+                measuredCacheDictionaryBytes: 99,
+                cachedCatalogEnglishPathBytes: row.cachedCatalogAssetBytes + 99,
+            } : row);
+        exp.assertMeasuredResultsExportPayload({
+            ...payload, measurements: rows,
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
 console.log(JSON.stringify({
     kind: exp.MEASURED_EXPORT_KIND,
     filename: exp.MEASURED_EXPORT_FILENAME,
@@ -143,7 +161,7 @@ console.log(JSON.stringify({
         'kokoro-measured-local-english (1).json'),
     rejectOther: exp.isAcceptableMeasuredExportFilename('notes.txt'),
     report, fail, badPayload, badHeap, badFootprint,
-    badMeasuredClaim, badOnnxDict,
+    badMeasuredClaim, badOnnxDict, badDictBodySize,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
@@ -184,6 +202,9 @@ describe('Measured results export acceptance', () => {
             /cache-body-bytes footprint source/i);
         expect(snap.badOnnxDict.ok).toBe(false);
         expect(snap.badOnnxDict.message).toMatch(/CMUdict catalog/i);
+        expect(snap.badDictBodySize.ok).toBe(false);
+        expect(snap.badDictBodySize.message).toMatch(
+            /measured CMUdict body bytes equal/i);
     });
 
     test('product page exposes local-only measured export control', () => {
@@ -192,8 +213,10 @@ describe('Measured results export acceptance', () => {
         expect(html).toContain('id="exportMeasuredResults"');
         expect(html).toContain('id="measuredExportStatus"');
         expect(html).toContain('pinned catalog model asset bytes');
-        expect(html).toContain('Cache Storage presence estimate');
-        expect(html).toContain('not measured body/disk usage');
+        expect(html).toContain('measured Cache Storage body sizes');
+        expect(html).toContain('blob.size');
+        expect(html).not.toContain('Cache Storage presence estimate');
+        expect(html).not.toContain('not measured body/disk usage');
         expect(html).toContain('runtime WASM/WebGPU heap is not measured');
         expect(source).toContain('buildMeasuredEnglishExport');
         expect(source).toContain('exportMeasuredEnglishResults');

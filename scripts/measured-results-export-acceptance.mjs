@@ -95,10 +95,11 @@ function assertOnnxStorageDisclosure(row, dictionaryBytes) {
             JSON.stringify(row));
     }
     if (!Number.isFinite(row.cachedCatalogDictionaryBytes) ||
-        row.cachedCatalogDictionaryBytes <= 0 ||
-        row.measuredCacheDictionaryBytes !== row.cachedCatalogDictionaryBytes) {
-        throw Error('ONNX row must disclose measured CMUdict body bytes: ' +
-            JSON.stringify(row));
+        row.cachedCatalogDictionaryBytes !== dictionaryBytes ||
+        row.measuredCacheDictionaryBytes !== dictionaryBytes) {
+        throw Error(
+            'ONNX row must disclose measured CMUdict body bytes equal to ' +
+            'englishDictionaryCatalogBytes: ' + JSON.stringify(row));
     }
     if (row.cachedCatalogEnglishPathBytes !==
         row.cachedCatalogAssetBytes + row.cachedCatalogDictionaryBytes) {
