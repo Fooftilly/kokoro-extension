@@ -177,9 +177,9 @@ function syncVoiceUiForBackend(backend) {
     if (mediaPipeBox) mediaPipeBox.hidden = !isMediaPipe;
     if (onnxBox) onnxBox.hidden = !isOnnx;
     if (label) {
-        if (isMediaPipe) label.textContent = 'MEDIAPIPE VOICE';
-        else if (isOnnx) label.textContent = 'ONNX VOICE';
-        else label.textContent = 'VOICE MIXER';
+        if (isMediaPipe) label.textContent = 'MediaPipe voice';
+        else if (isOnnx) label.textContent = 'ONNX voice';
+        else label.textContent = 'Voice mixer';
     }
     if (note) {
         note.hidden = !local;
@@ -1307,7 +1307,66 @@ document.addEventListener('DOMContentLoaded', () => {
             browser.tabs.create({ url: 'reader.html' });
         });
     }
+
+    void refreshShortcutsCheatSheet();
 });
+
+/** Format chrome.commands shortcut strings for the cheat sheet (Alt+Comma → Alt+,). */
+function formatCommandShortcut(shortcut) {
+    if (!shortcut) return 'Not set';
+    // Match whole key tokens only — never substring-replace inside "Command".
+    return String(shortcut).split('+').map((part) => {
+        if (/^Comma$/i.test(part)) return ',';
+        if (/^Period$/i.test(part)) return '.';
+        if (/^ArrowLeft$/i.test(part)) return '←';
+        if (/^ArrowRight$/i.test(part)) return '→';
+        return part;
+    }).join('+');
+}
+
+function markShortcutsCheatSheetFallback(sheet) {
+    if (!sheet) return;
+    sheet.setAttribute('data-shortcuts-source', 'fallback');
+    const intro = document.getElementById('shortcutsIntro');
+    if (intro) {
+        intro.textContent = 'Could not read current bindings from the browser; ' +
+            'manifest suggested defaults are shown below (Open Document Alt+M is Firefox’s ' +
+            'suggestion — Chrome often has none). Confirm in the extension shortcuts page.';
+    }
+    // Keep Open Document aligned with the Firefox suggested default + chrome note,
+    // not a bare “Not set” that contradicts the install-default framing.
+    const openReader = sheet.querySelector('[data-command="open-reader"] [data-shortcut]');
+    if (openReader) openReader.textContent = 'Alt+M';
+}
+
+/**
+ * Fill #shortcutsCheatSheet from browser.commands.getAll so reassigned keys
+ * are shown instead of stale install defaults (#194 item 4).
+ */
+async function refreshShortcutsCheatSheet() {
+    const sheet = document.getElementById('shortcutsCheatSheet');
+    if (!sheet) return;
+    if (!browser.commands || typeof browser.commands.getAll !== 'function') {
+        markShortcutsCheatSheetFallback(sheet);
+        return;
+    }
+    let commands;
+    try {
+        commands = await browser.commands.getAll();
+    } catch (error) {
+        console.warn('Kokoro: could not read command shortcuts', error);
+        markShortcutsCheatSheetFallback(sheet);
+        return;
+    }
+    sheet.setAttribute('data-shortcuts-source', 'live');
+    const byName = new Map((commands || []).map((cmd) => [cmd.name, cmd]));
+    for (const item of sheet.querySelectorAll('[data-command]')) {
+        const cmd = byName.get(item.getAttribute('data-command'));
+        const kbd = item.querySelector('[data-shortcut]');
+        if (!kbd) continue;
+        kbd.textContent = formatCommandShortcut(cmd && cmd.shortcut);
+    }
+}
 
 async function checkApiConnection(url) {
     await refreshBackendStatus(url, { hideOkAfterMs: 3000 });
@@ -1334,6 +1393,8 @@ if (typeof module !== 'undefined' && module.exports) {
         syncVoiceUiForBackend,
         syncServerOnlyChrome,
         refreshLocalSetupHealth,
+        refreshShortcutsCheatSheet,
+        formatCommandShortcut,
         getStickyLocalSetupFailure: () => stickyLocalSetupFailure,
         setStickyLocalSetupFailureForTests: (value) => { stickyLocalSetupFailure = value; },
         getLocalActiveSetupIssue: () => localActiveSetupIssue,

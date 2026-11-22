@@ -27,102 +27,107 @@
     <div class="content-wrapper">
 
         <div id="general" class="content active">
-            <div class="label-row">
-                <span class="section-heading">How you listen</span>
-                <span id="version"></span>
-            </div>
-            <fieldset class="backend-picker" aria-describedby="backendExplanation">
-                <legend>TTS backend</legend>
-                <label class="backend-card">
-                    <input type="radio" name="ttsBackend" value="fastapi" checked>
-                    <span class="backend-card-body">
-                        <span class="backend-card-title">Kokoro server (Docker / FastAPI)</span>
-                        <span class="backend-card-meta">Default · remote/LAN URL · weighted mix · MP3</span>
-                    </span>
-                </label>
-                <label class="backend-card">
-                    <input type="radio" name="ttsBackend" value="mediapipe">
-                    <span class="backend-card-body">
-                        <span class="backend-card-title">MediaPipe Kokoro (on device)</span>
-                        <span class="backend-card-meta">CPU/WASM · local WAV · single voice · GPU not offered</span>
-                    </span>
-                </label>
-                <label class="backend-card">
-                    <input type="radio" name="ttsBackend" value="onnx">
-                    <span class="backend-card-body">
-                        <span class="backend-card-title">Kokoro ONNX Runtime (on device)</span>
-                        <span class="backend-card-meta">WASM CPU · local WAV · af.bin · needs CMUdict</span>
-                    </span>
-                </label>
-                <p id="backendExplanation" class="note">Kokoro server is the default for existing users. Local modes never send speech text to FastAPI.</p>
-            </fieldset>
-            <div id="serverSettings" class="settings-section">
+            <section class="settings-block" aria-labelledby="howListenHeading">
                 <div class="label-row">
-                    <label for="apiUrl">API Base URL</label>
+                    <h2 id="howListenHeading" class="section-heading">How you listen</h2>
+                    <span id="version"></span>
                 </div>
-                <div class="url-input-container">
-                    <input type="text" id="apiUrl">
-                    <button id="saveApiUrl" title="Save URL">Save</button>
-                </div>
-                <div id="apiStatusRow" class="api-status-row" style="display: none;">
-                    <div id="apiStatus" class="note mt-2"></div>
-                    <button type="button" id="retryApi" class="retry-api-btn" title="Retry connection">Retry</button>
-                </div>
-            </div>
-            <div id="localSetupBanner" class="setup-banner" hidden>
-                <p id="localSetupMessage" class="note" role="status"></p>
-                <button type="button" id="localSetupOpenTest" class="secondary-btn">Open Test TTS backends</button>
-            </div>
-
-            <label id="voiceSectionLabel">VOICE MIXER</label>
-            <p id="localVoiceNote" class="note" hidden></p>
-            <div id="voiceMixerContainer">
-                <div id="selectedVoices"></div>
-                <div class="mt-10">
-                    <input type="text" id="voiceSearch" placeholder="Search and select voices..." autocomplete="off">
-                    <div id="voiceDropdown">
+                <fieldset class="backend-picker" aria-describedby="backendExplanation">
+                    <legend>TTS backend</legend>
+                    <label class="backend-card">
+                        <input type="radio" name="ttsBackend" value="fastapi" checked>
+                        <span class="backend-card-body">
+                            <span class="backend-card-title">Kokoro server (Docker / FastAPI)</span>
+                            <span class="backend-card-meta">Default · remote/LAN URL · weighted mix · MP3</span>
+                        </span>
+                    </label>
+                    <label class="backend-card">
+                        <input type="radio" name="ttsBackend" value="mediapipe">
+                        <span class="backend-card-body">
+                            <span class="backend-card-title">MediaPipe Kokoro (on device)</span>
+                            <span class="backend-card-meta">CPU/WASM · local WAV · single voice · GPU not offered</span>
+                        </span>
+                    </label>
+                    <label class="backend-card">
+                        <input type="radio" name="ttsBackend" value="onnx">
+                        <span class="backend-card-body">
+                            <span class="backend-card-title">Kokoro ONNX Runtime (on device)</span>
+                            <span class="backend-card-meta">WASM CPU · local WAV · af.bin · needs CMUdict</span>
+                        </span>
+                    </label>
+                    <p id="backendExplanation" class="note">Kokoro server is the default for existing users. Local modes never send speech text to FastAPI.</p>
+                </fieldset>
+                <div id="serverSettings" class="settings-section">
+                    <div class="label-row">
+                        <label for="apiUrl">API Base URL</label>
+                    </div>
+                    <div class="url-input-container">
+                        <input type="text" id="apiUrl">
+                        <button id="saveApiUrl" title="Save URL">Save</button>
+                    </div>
+                    <div id="apiStatusRow" class="api-status-row" style="display: none;">
+                        <div id="apiStatus" class="note mt-2"></div>
+                        <button type="button" id="retryApi" class="retry-api-btn" title="Retry connection">Retry</button>
                     </div>
                 </div>
-            </div>
-            <div id="mediaPipeVoiceContainer" class="local-voice-container" hidden>
-                <label for="mediaPipeVoice" class="inline-label">MediaPipe voice ID</label>
-                <input type="text" id="mediaPipeVoice" value="af_heart" autocomplete="off" spellcheck="false"
-                    pattern="[a-z]{2}_[a-z]+" title="Format: xx_name (for example af_heart)">
-            </div>
-            <div id="onnxVoiceContainer" class="local-voice-container" hidden>
-                <label for="onnxVoiceAsset" class="inline-label">ONNX voice asset</label>
-                <select id="onnxVoiceAsset" title="Catalogued ONNX voice binary for local playback">
-                    <option value="voices/af.bin">voices/af.bin (American English pack)</option>
-                    <option value="voices/af_bella.bin">voices/af_bella.bin</option>
-                </select>
-            </div>
+                <div id="localSetupBanner" class="setup-banner" hidden>
+                    <p id="localSetupMessage" class="note" role="status"></p>
+                    <button type="button" id="localSetupOpenTest" class="secondary-btn">Open Test TTS backends</button>
+                </div>
+            </section>
 
-            <div class="settings-grid">
-                <div>
-                    <label for="defaultSpeed" class="mt-0">Speed</label>
-                    <select id="defaultSpeed" class="mt-2">
-                        <option value="0.5">0.5x</option>
-                        <option value="0.75">0.75x</option>
-                        <option value="1.0">1.0x</option>
-                        <option value="1.25">1.25x</option>
-                        <option value="1.5">1.5x</option>
-                        <option value="1.75">1.75x</option>
-                        <option value="2.0">2.0x</option>
-                        <option value="2.25">2.25x</option>
-                        <option value="2.5">2.5x</option>
-                        <option value="2.7">2.7x</option>
-                        <option value="2.8">2.8x</option>
-                        <option value="3.0">3.0x</option>
+            <section class="settings-block" aria-labelledby="voiceHeading">
+                <h2 id="voiceHeading" class="section-heading">Voice</h2>
+                <label id="voiceSectionLabel" class="subsection-label">Voice mixer</label>
+                <p id="localVoiceNote" class="note" hidden></p>
+                <div id="voiceMixerContainer">
+                    <div id="selectedVoices"></div>
+                    <div class="mt-10">
+                        <input type="text" id="voiceSearch" placeholder="Search and select voices..." autocomplete="off">
+                        <div id="voiceDropdown">
+                        </div>
+                    </div>
+                </div>
+                <div id="mediaPipeVoiceContainer" class="local-voice-container" hidden>
+                    <label for="mediaPipeVoice" class="inline-label">MediaPipe voice ID</label>
+                    <input type="text" id="mediaPipeVoice" value="af_heart" autocomplete="off" spellcheck="false"
+                        pattern="[a-z]{2}_[a-z]+" title="Format: xx_name (for example af_heart)">
+                </div>
+                <div id="onnxVoiceContainer" class="local-voice-container" hidden>
+                    <label for="onnxVoiceAsset" class="inline-label">ONNX voice asset</label>
+                    <select id="onnxVoiceAsset" title="Catalogued ONNX voice binary for local playback">
+                        <option value="voices/af.bin">voices/af.bin (American English pack)</option>
+                        <option value="voices/af_bella.bin">voices/af_bella.bin</option>
                     </select>
                 </div>
-                <div>
-                    <label for="defaultVolume" class="mt-0">Volume</label>
-                    <input type="range" id="defaultVolume" min="0" max="1" step="0.1" value="1" class="mt-5 h-25">
-                </div>
-            </div>
+            </section>
 
-            <div class="settings-grid mt-5">
-                <div id="playbackModeSection" class="flex-item settings-section">
+            <section class="settings-block" aria-labelledby="playbackHeading">
+                <h2 id="playbackHeading" class="section-heading">Playback defaults</h2>
+                <div class="settings-grid">
+                    <div>
+                        <label for="defaultSpeed" class="mt-0">Speed</label>
+                        <select id="defaultSpeed" class="mt-2">
+                            <option value="0.5">0.5x</option>
+                            <option value="0.75">0.75x</option>
+                            <option value="1.0">1.0x</option>
+                            <option value="1.25">1.25x</option>
+                            <option value="1.5">1.5x</option>
+                            <option value="1.75">1.75x</option>
+                            <option value="2.0">2.0x</option>
+                            <option value="2.25">2.25x</option>
+                            <option value="2.5">2.5x</option>
+                            <option value="2.7">2.7x</option>
+                            <option value="2.8">2.8x</option>
+                            <option value="3.0">3.0x</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="defaultVolume" class="mt-0">Volume</label>
+                        <input type="range" id="defaultVolume" min="0" max="1" step="0.1" value="1" class="mt-5 h-25">
+                    </div>
+                </div>
+                <div id="playbackModeSection" class="settings-section playback-mode-row">
                     <label class="inline-label mr-10">Mode:</label>
                     <div class="flex-row gap-5 mb-0">
                         <div class="flex-item">
@@ -135,7 +140,11 @@
                         </div>
                     </div>
                 </div>
-                <div class="flex-column">
+            </section>
+
+            <section class="settings-block" aria-labelledby="pageReaderHeading">
+                <h2 id="pageReaderHeading" class="section-heading">Page &amp; reader</h2>
+                <div class="flex-column page-reader-toggles">
                     <div class="flex-item">
                         <input type="checkbox" id="showFloatingButton" class="checkbox-radio">
                         <label for="showFloatingButton" class="inline-label">Floating mic</label>
@@ -153,9 +162,31 @@
                         <label for="continuousReader" class="inline-label">Continue to next EPUB chapter</label>
                     </div>
                 </div>
-            </div>
+            </section>
 
-
+            <details id="shortcutsCheatSheet" class="shortcuts-sheet">
+                <summary>Keyboard shortcuts</summary>
+                <p id="shortcutsIntro" class="note shortcuts-intro">
+                    Shows your <em>current</em> browser bindings (not only the install defaults).
+                    Reassign anytime in the extension shortcuts page.
+                </p>
+                <ul class="shortcuts-list">
+                    <li data-command="read-article"><kbd data-shortcut>Alt+A</kbd> — Read article</li>
+                    <li data-command="nav-prev"><kbd data-shortcut>Alt+,</kbd> — Previous sentence</li>
+                    <li data-command="nav-next"><kbd data-shortcut>Alt+.</kbd> — Next sentence</li>
+                    <li data-command="close-overlay"><kbd data-shortcut>Alt+W</kbd> — Close overlay</li>
+                    <li data-command="open-reader">
+                        <kbd data-shortcut>Alt+M</kbd> — Open Document
+                        <span class="note"> (Firefox suggested default; Chrome often unset)</span>
+                    </li>
+                </ul>
+                <p class="note shortcuts-chrome-note">
+                    Chrome ships Open Document with no suggested key (four-key limit); Firefox suggests
+                    <kbd>Alt+M</kbd>. After bindings load, this row shows your live value (“Not set” when
+                    unset). Set or change bindings at <code>chrome://extensions/shortcuts</code>
+                    (or Firefox Add-ons → Manage extension shortcuts), or use Open Document in this popup.
+                </p>
+            </details>
         </div>
 
         <div id="normalization" class="content">

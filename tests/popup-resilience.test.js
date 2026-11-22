@@ -81,6 +81,9 @@ describe('popup backend-loss resilience (#4)', () => {
             tabs: {
                 create: jest.fn(),
             },
+            commands: {
+                getAll: jest.fn(async () => []),
+            },
         };
 
         global.localStorage = {
