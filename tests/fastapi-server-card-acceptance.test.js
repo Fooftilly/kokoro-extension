@@ -19,9 +19,16 @@ function loadHelperSnapshot() {
     return spawnSync(process.execPath, ['--input-type=module', '-e', `
 import * as card from ${JSON.stringify(helperUrl)};
 const split = card.splitFastApiStubMp3ForProgressive(card.MINIMAL_MP3_BYTES);
+const expectedTail = Math.min(
+    Math.max(
+        card.FASTAPI_STUB_PROGRESSIVE_TAIL_BYTES,
+        Math.floor(card.MINIMAL_MP3_BYTES.byteLength *
+            card.FASTAPI_STUB_PROGRESSIVE_TAIL_RATIO)),
+    card.MINIMAL_MP3_BYTES.byteLength - 1);
 const splitOk = split.first.byteLength + split.rest.byteLength ===
     card.MINIMAL_MP3_BYTES.byteLength &&
-    split.rest.byteLength === card.FASTAPI_STUB_PROGRESSIVE_TAIL_BYTES &&
+    split.rest.byteLength === expectedTail &&
+    card.MINIMAL_MP3_BYTES.byteLength > 8000 &&
     card.FASTAPI_STUB_FIRST_BYTE_DELAY_MS === 100 &&
     card.FASTAPI_STUB_PROGRESSIVE_TAIL_HOLD_MS === 2000;
 const apiUrl = 'http://127.0.0.1:9/v1/';
@@ -285,7 +292,9 @@ describe('FastAPI server-card acceptance', () => {
         expect(helper).toContain('mediasourceProgressiveTtfaP50Ms');
         expect(helper).toContain('FASTAPI_STUB_FIRST_BYTE_DELAY_MS = 100');
         expect(helper).toContain('FASTAPI_STUB_PROGRESSIVE_TAIL_HOLD_MS = 2000');
+        expect(helper).toContain('FASTAPI_STUB_PROGRESSIVE_TAIL_RATIO = 0.4');
         expect(helper).toContain('splitFastApiStubMp3ForProgressive');
+        expect(helper).toContain('~2.5s');
         const dualIdx = source.indexOf(
             'await acceptTwoBackendComparison(');
         const cardIdx = source.indexOf(
@@ -334,6 +343,7 @@ describe('FastAPI server-card acceptance', () => {
         expect(source).toContain('assert_progressive_streaming_ttfa_measured');
         expect(source).toContain('first_byte_delay_s = 0.1');
         expect(source).toContain('progressive_tail_hold_s = 2.0');
+        expect(source).toContain('progressive_tail_ratio = 0.4');
         expect(source).toContain('time.sleep(first_byte_delay_s)');
         expect(source).toContain('time.sleep(progressive_tail_hold_s)');
         expect(source).toContain('mediasourceProgressiveTtfaP50Raw');
