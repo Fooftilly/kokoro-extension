@@ -2052,6 +2052,8 @@ def _start_fastapi_speech_stub():
                 # measured progressive TTFA; Firefox may still be unavailable).
                 first_byte_delay_s = 0.1
                 progressive_tail_hold_s = 2.0
+                # 32 is a floor; shared fixture holds max(32, floor(len*0.4))
+                # bytes (~4126 of 10315) so Chromium MSE can play mid-stream.
                 progressive_tail_ratio = 0.4
                 ratio_tail = int(len(mp3) * progressive_tail_ratio)
                 tail_len = min(max(32, ratio_tail), max(1, len(mp3) - 1))

@@ -24,8 +24,13 @@ export const MINIMAL_MP3_BYTES = Uint8Array.from(
  */
 export const FASTAPI_STUB_FIRST_BYTE_DELAY_MS = 100;
 export const FASTAPI_STUB_PROGRESSIVE_TAIL_HOLD_MS = 2000;
+/** Floor only — shared ~10 KiB fixture uses the ratio below (~4126 bytes). */
 export const FASTAPI_STUB_PROGRESSIVE_TAIL_BYTES = 32;
-/** Hold at least this fraction of the stub so MSE can play mid-stream. */
+/**
+ * Hold at least this fraction of the stub so MSE can play mid-stream.
+ * Effective held tail = max(TAIL_BYTES, floor(len * RATIO)), capped at len-1.
+ * For MINIMAL_MP3_BYTES (10315): rest=4126, first=6189 (~1.5s decodeable).
+ */
 export const FASTAPI_STUB_PROGRESSIVE_TAIL_RATIO = 0.4;
 
 /**

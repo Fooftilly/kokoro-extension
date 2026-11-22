@@ -25,10 +25,16 @@ const expectedTail = Math.min(
         Math.floor(card.MINIMAL_MP3_BYTES.byteLength *
             card.FASTAPI_STUB_PROGRESSIVE_TAIL_RATIO)),
     card.MINIMAL_MP3_BYTES.byteLength - 1);
+// Ratio (not the 32-byte floor) must drive the shared fixture split so CI
+// Chromium gets a multi-second prefix while ~40% (~4126 bytes) stays held.
+// MediaSource playing-before-EOF is chromium-dual-only (no MSE in Jest).
 const splitOk = split.first.byteLength + split.rest.byteLength ===
     card.MINIMAL_MP3_BYTES.byteLength &&
     split.rest.byteLength === expectedTail &&
-    card.MINIMAL_MP3_BYTES.byteLength > 8000 &&
+    expectedTail === 4126 &&
+    split.first.byteLength === 6189 &&
+    card.MINIMAL_MP3_BYTES.byteLength === 10315 &&
+    card.FASTAPI_STUB_PROGRESSIVE_TAIL_RATIO === 0.4 &&
     card.FASTAPI_STUB_FIRST_BYTE_DELAY_MS === 100 &&
     card.FASTAPI_STUB_PROGRESSIVE_TAIL_HOLD_MS === 2000;
 const apiUrl = 'http://127.0.0.1:9/v1/';
