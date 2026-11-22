@@ -934,6 +934,37 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(browser.tabs.create).toHaveBeenCalledWith({ url: 'benchmark.html' });
     });
 
+    test('sticky failure stays visible after reverting to another local backend', async () => {
+        // MediaPipe already active; a failed ONNX switch must not replace the
+        // sticky error with the ok “MediaPipe is active” banner.
+        allowMediaPipeSelection({ modelReady: true });
+        browser.storage.sync.get.mockImplementation(async (defaults) => ({
+            ...defaults,
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            mode: 'stream',
+            theme: 'light',
+        }));
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('mediapipe');
+
+        const onnx = document.querySelector('input[name="ttsBackend"][value="onnx"]');
+        onnx.checked = true;
+        onnx.dispatchEvent(new Event('change'));
+        await flushAsync();
+
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('mediapipe');
+        expect(popup.getStickyLocalSetupFailure()).toMatch(/ONNX/);
+        const banner = document.getElementById('localSetupBanner');
+        expect(banner.hidden).toBe(false);
+        expect(banner.classList.contains('setup-banner-error')).toBe(true);
+        expect(document.getElementById('localSetupMessage').textContent).toMatch(/ONNX.*not ready/i);
+        expect(document.getElementById('serverSettings').hidden).toBe(true);
+    });
+
     test('saved local backend with missing models shows setup warning without reverting (#194 item 3)', async () => {
         // Approved revision remains, but cache reports the model removed.
         allowMediaPipeSelection({ modelReady: false });

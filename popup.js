@@ -99,16 +99,18 @@ function syncServerOnlyChrome(backend) {
     const mode = document.getElementById('playbackModeSection');
     if (server) server.hidden = local;
     if (mode) mode.hidden = local;
+    // Sticky failed-switch errors win over active-backend guidance, including
+    // when revert restores another local backend (e.g. ONNX fail → MediaPipe).
+    if (stickyLocalSetupFailure) {
+        setLocalSetupBanner({
+            message: stickyLocalSetupFailure,
+            showCta: true,
+            tone: 'error',
+        });
+        return;
+    }
     if (!local) {
-        if (stickyLocalSetupFailure) {
-            setLocalSetupBanner({
-                message: stickyLocalSetupFailure,
-                showCta: true,
-                tone: 'error',
-            });
-        } else {
-            hideLocalSetupBanner();
-        }
+        hideLocalSetupBanner();
         return;
     }
     if (localActiveSetupIssue) {
