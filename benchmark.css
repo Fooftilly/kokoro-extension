@@ -2,6 +2,9 @@ body { margin: 0; font: 16px/1.55 system-ui, sans-serif; color: CanvasText; back
 main { max-width: 850px; padding: 20px 26px 60px; margin: auto; }
 h1, h2 { line-height: 1.25; }
 section { border-top: 1px solid GrayText; margin-top: 28px; padding-top: 14px; }
+.simple-setup-path { border-top: none; margin-top: 0; padding-top: 0; }
+.simple-setup-path ol { margin: 8px 0 12px; padding-left: 1.4em; }
+.simple-setup-path li { margin: 4px 0; }
 table { border-collapse: collapse; width: 100%; }
 th, td { padding: 10px; border: 1px solid GrayText; text-align: left; }
 button { border: 1px solid currentColor; border-radius: 0; font: inherit; padding: 8px 15px; margin: 3px; background: Canvas; color: CanvasText; cursor: pointer; }

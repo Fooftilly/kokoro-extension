@@ -13,7 +13,10 @@
         <div class="header-top">
             <div class="drag-handle" id="dragHandle" title="Drag to move" aria-label="Drag to move player">
                 <span class="drag-grip" aria-hidden="true">⋮⋮</span>
-                <div class="title" id="pageTitle">Kokoro TTS</div>
+                <div class="title-stack">
+                    <div class="title" id="pageTitle">Kokoro TTS</div>
+                    <span id="backendBadge" class="backend-badge" hidden></span>
+                </div>
             </div>
             <div class="header-actions">
                 <button type="button" class="icon-btn" id="collapse" aria-label="Collapse player" title="Collapse">–</button>
@@ -34,19 +37,20 @@
         </div>
         <audio id="audio"></audio>
         <div class="controls">
-            <button class="control-btn" id="playPause">Pause</button>
-            <button class="control-btn" id="seekBack">Prev</button>
-            <button class="control-btn" id="seekFwd">Next</button>
+            <button class="control-btn" id="playPause" type="button" aria-label="Pause playback" title="Space">Pause</button>
+            <button class="control-btn" id="seekBack" type="button" aria-label="Previous sentence" title="Left arrow">Prev</button>
+            <button class="control-btn" id="seekFwd" type="button" aria-label="Next sentence" title="Right arrow">Next</button>
 
             <!-- Volume Control -->
             <div class="volume-container">
-                <span class="volume-label">Vol</span>
-                <input type="range" id="volumeControl" min="0" max="1" step="0.1" value="1" class="volume-slider">
+                <label class="volume-label" for="volumeControl">Vol</label>
+                <input type="range" id="volumeControl" min="0" max="1" step="0.1" value="1" class="volume-slider" aria-label="Volume">
             </div>
 
-            <button class="control-btn" id="retry">Retry</button>
-            <button class="control-btn" id="saveAudio" type="button" title="Save this sentence as MP3 or WAV">Save</button>
-            <select id="speed">
+            <button class="control-btn" id="retry" type="button" aria-label="Retry playback">Retry</button>
+            <button class="control-btn" id="saveAudio" type="button" aria-label="Save this sentence as audio" title="Save this sentence as MP3 or WAV">Save</button>
+            <label class="visually-hidden" for="speed">Playback speed</label>
+            <select id="speed" aria-label="Playback speed">
                 <option value="0.5">0.5x</option>
                 <option value="0.75">0.75x</option>
                 <option value="1.0" selected>1.0x</option>

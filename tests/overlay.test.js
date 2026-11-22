@@ -88,7 +88,10 @@ function setupDOM() {
     document.body.innerHTML = `
         <div id="dragHandle">
             <span class="drag-grip">⋮⋮</span>
-            <div id="pageTitle">Kokoro TTS</div>
+            <div class="title-stack">
+                <div id="pageTitle">Kokoro TTS</div>
+                <span id="backendBadge" class="backend-badge" hidden></span>
+            </div>
         </div>
         <button id="collapse" aria-label="Collapse player">–</button>
         <button id="close">×</button>
@@ -98,13 +101,13 @@ function setupDOM() {
         <div id="status">Ready</div>
         <div id="text-display"></div>
         <audio id="audio"></audio>
-        <button id="playPause">Pause</button>
-        <button id="seekBack">Prev</button>
-        <button id="seekFwd">Next</button>
-        <input type="range" id="volumeControl" value="1">
-        <button id="retry"></button>
-        <button id="saveAudio"></button>
-        <select id="speed">
+        <button id="playPause" aria-label="Pause playback">Pause</button>
+        <button id="seekBack" aria-label="Previous sentence">Prev</button>
+        <button id="seekFwd" aria-label="Next sentence">Next</button>
+        <input type="range" id="volumeControl" value="1" aria-label="Volume">
+        <button id="retry" aria-label="Retry playback"></button>
+        <button id="saveAudio" aria-label="Save this sentence as audio"></button>
+        <select id="speed" aria-label="Playback speed">
             <option value="1.0">1.0x</option>
         </select>
     `;
@@ -429,7 +432,7 @@ describe('overlay.js logic', () => {
             document.getElementById('seekFwd').click();
             await new Promise(resolve => setTimeout(resolve, 0));
 
-            expect(document.getElementById('status').textContent).toBe('Error playing audio.');
+            expect(document.getElementById('status').textContent).toMatch(/^Error playing audio/);
             expect(document.getElementById('playPause').textContent).toBe('Play');
             // Play must not resume the preceding sentence under the failed
             // sentence's highlight.
@@ -922,5 +925,55 @@ describe('overlay.js logic', () => {
         window.parent.postMessage.mockClear();
         document.getElementById('close').click();
         expect(window.parent.postMessage).toHaveBeenCalledWith('CLOSE_KOKORO_PLAYER', '*');
+    });
+
+    test('shows active backend badge from pendingTtsBackend (#194)', async () => {
+        await new Promise(r => setTimeout(r, 50));
+        browser.storage.local.get.mockResolvedValueOnce({
+            pendingText: 'Hello world',
+            pendingContent: [{ type: 'text', content: 'Hello world' }],
+            pendingTitle: 'Article',
+            pendingTtsBackend: 'mediapipe',
+            pendingAutoplay: false,
+        });
+        window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
+        await new Promise(r => setTimeout(r, 0));
+        const badge = document.getElementById('backendBadge');
+        expect(badge.hidden).toBe(false);
+        expect(badge.textContent).toBe('MediaPipe');
+    });
+
+    test('ArrowLeft/ArrowRight navigate when overlay is focused (#194)', async () => {
+        await new Promise(r => setTimeout(r, 100));
+        const { AudioManager } = require('../audio-manager.js');
+        const manager = AudioManager.mock.results.at(-1)?.value;
+        manager.getAudio.mockClear();
+        window.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowRight', bubbles: true }));
+        await new Promise(r => setTimeout(r, 0));
+        expect(manager.getAudio).toHaveBeenCalled();
+        manager.getAudio.mockClear();
+        window.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowLeft', bubbles: true }));
+        await new Promise(r => setTimeout(r, 0));
+        expect(manager.getAudio).toHaveBeenCalled();
+    });
+
+    test('playback errors name the backend and point to recovery (#194)', async () => {
+        await new Promise(r => setTimeout(r, 50));
+        const { AudioManager } = require('../audio-manager.js');
+        const manager = AudioManager.mock.results.at(-1)?.value;
+        manager.getAudio.mockRejectedValueOnce(new Error('model missing'));
+        browser.storage.local.get.mockResolvedValueOnce({
+            pendingText: 'Hello world',
+            pendingContent: [{ type: 'text', content: 'Hello world' }],
+            pendingTitle: 'Article',
+            pendingTtsBackend: 'onnx',
+            pendingAutoplay: true,
+        });
+        window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
+        await new Promise(r => setTimeout(r, 20));
+        expect(document.getElementById('backendBadge').textContent).toBe('ONNX');
+        expect(document.getElementById('status').textContent).toMatch(/ONNX/);
+        expect(document.getElementById('status').textContent).toMatch(/Test TTS backends/);
+        expect(document.getElementById('retry').style.display).toBe('inline-flex');
     });
 });

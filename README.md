@@ -49,11 +49,11 @@ Verified against the current source (not aspirational):
 - **Stream or download** — stream audio into the overlay player, or download a file.
 - **Voice mixer** — search voices from the API and blend multiple voices with weights.
 - **Text normalization** (toggleable) — contractions, transliteration of non-Latin scripts, dates/numbers, units, URLs, emails, phones, and related pronunciation prep in `text-processor.js`.
-- **Overlay playback** — play/pause, previous/next sentence, speed & volume, Spacebar play/pause; optional auto-scroll on the origin page with a “comfort zone” to reduce jumpiness. Compact mode is **draggable** with a persisted, viewport-clamped position, and **collapsible** (including full→floating) without stopping audio; Close still tears down the player.
+- **Overlay playback** — play/pause, previous/next sentence, speed & volume; in-player **Space** play/pause and **Left/Right** (or `,` / `.`) prev/next when the player is focused; optional auto-scroll on the origin page with a “comfort zone” to reduce jumpiness. Compact mode is **draggable** with a persisted, viewport-clamped position, and **collapsible** (including full→floating) without stopping audio; Close still tears down the player. The player shows which backend is speaking (Server / MediaPipe / ONNX).
 - **Floating mic button** — optional on-page control (can be disabled in settings).
 - **Document reader** — open EPUB, DOCX, TXT, Markdown, or HTML from the popup; optional EPUB autoplay and continuous chapter playback.
 - **Themes** — light/dark toggle in the popup.
-- **Keyboard shortcuts** — e.g. read article, next/previous sentence, close overlay; EPUB open shortcut is suggested on Firefox (Chrome has a tighter default-shortcut limit).
+- **Keyboard shortcuts** — browser commands: Alt+A read article, Alt+, / Alt+. previous/next sentence, Alt+W close overlay; Firefox also suggests Alt+M for Open Document. Chrome does not assign a default Open Document shortcut (manifest limit of four suggested keys) — set one at `chrome://extensions/shortcuts` or use the popup button.
 - **Connection status icon** — toolbar icon reflects API reachability.
 - **Three TTS backends** — Kokoro server (FastAPI), on-device MediaPipe (CPU/WASM product path), and on-device ONNX Runtime Web (WASM). Choose in the popup; install/test models on **Test TTS backends**. Local modes keep speech text on-device (no server fallback). ONNX English reading needs an opt-in CMUdict download and rejects unknown words. MediaPipe GPU is not offered until a WebGPU adapter and correct inference are verified.
 

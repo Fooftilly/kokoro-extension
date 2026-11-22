@@ -37,6 +37,15 @@ describe('extension-owned browser preflight page (#53)', () => {
         delete window.KokoroBenchmark;
     });
 
+    test('leads with a Download → Test → Use this backend quick path (#194)', () => {
+        const setup = document.getElementById('simpleSetupPath');
+        expect(setup).toBeTruthy();
+        expect(setup.textContent).toMatch(/Download/);
+        expect(setup.textContent).toMatch(/Test/);
+        expect(setup.textContent).toMatch(/Use this backend/);
+        expect(document.getElementById('simpleSetupHeading').textContent).toMatch(/Quick setup/);
+    });
+
     test('does nothing until user explicitly checks browser capabilities', async () => {
         expect(global.fetch).not.toHaveBeenCalled();
         expect(window.KokoroBenchmark.inspectCapabilities).not.toHaveBeenCalled();

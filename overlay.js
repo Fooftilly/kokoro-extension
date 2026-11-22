@@ -4,6 +4,7 @@ import { AudioManager } from './audio-manager.js';
 const statusEl = document.getElementById('status');
 const audioEl = document.getElementById('audio');
 const titleEl = document.getElementById('pageTitle');
+const backendBadgeEl = document.getElementById('backendBadge');
 const textDisplay = document.getElementById('text-display');
 const seekBackBtn = document.getElementById('seekBack');
 const seekFwdBtn = document.getElementById('seekFwd');
@@ -17,6 +18,7 @@ const saveAudioBtn = document.getElementById('saveAudio');
 
 let sentences = [];
 let currentIndex = 0;
+let activeTtsBackend = null;
 let navigationRequestId = 0; // ignores obsolete results even when an index is revisited
 let initializationRequestId = 0; // ignores stale asynchronous EPUB reloads
 let readerPauseRequested = false; // Close persists across asynchronous reader reloads
@@ -101,6 +103,51 @@ function endOverlayPointerDrag(pointerId) {
     }
     activeDragPointerId = null;
     postToHostPage({ action: 'KOKORO_DRAG_END' });
+}
+
+/** Short label for the active TTS backend (#194). */
+function backendDisplayName(backend) {
+    if (backend === 'mediapipe') return 'MediaPipe';
+    if (backend === 'onnx') return 'ONNX';
+    if (backend === 'fastapi') return 'Server';
+    return '';
+}
+
+function syncBackendBadge(backend) {
+    activeTtsBackend = backend || null;
+    if (!backendBadgeEl) return;
+    const label = backendDisplayName(backend);
+    if (!label) {
+        backendBadgeEl.hidden = true;
+        backendBadgeEl.textContent = '';
+        return;
+    }
+    backendBadgeEl.hidden = false;
+    backendBadgeEl.textContent = label;
+}
+
+function playbackErrorStatus() {
+    const label = backendDisplayName(activeTtsBackend);
+    if (label === 'MediaPipe' || label === 'ONNX') {
+        return 'Error playing audio (' + label + '). Retry, or open Test TTS backends from the popup if the model is missing.';
+    }
+    if (label === 'Server') {
+        return 'Error playing audio (Server). Retry, or check the API URL in the popup.';
+    }
+    return 'Error playing audio. Retry from the player controls.';
+}
+
+function syncPlayPauseLabel() {
+    if (!playPauseBtn) return;
+    const paused = playPauseBtn.textContent === 'Play';
+    playPauseBtn.setAttribute('aria-label', paused ? 'Play playback' : 'Pause playback');
+}
+
+function isEditableKeyboardTarget(target) {
+    if (!target || typeof target !== 'object') return false;
+    const tag = target.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+    return !!target.isContentEditable;
 }
 
 // --- Event Listeners ---
@@ -248,11 +295,23 @@ if (saveAudioBtn) {
     });
 }
 
-// Keyboard shortcuts
+// Keyboard shortcuts (in-player; does not claim Chrome extension command slots)
 window.addEventListener('keydown', (e) => {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    if (isEditableKeyboardTarget(e.target)) return;
     if (e.code === 'Space') {
         e.preventDefault(); // Prevent scrolling
         playPauseBtn.click();
+        return;
+    }
+    if (e.code === 'ArrowLeft' || e.code === 'Comma') {
+        e.preventDefault();
+        seekBackBtn.click();
+        return;
+    }
+    if (e.code === 'ArrowRight' || e.code === 'Period') {
+        e.preventDefault();
+        seekFwdBtn.click();
     }
 });
 
@@ -389,12 +448,13 @@ async function initialize() {
     audioManager.clear();
     textDisplay.textContent = '';
 
-    const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'defaultSpeed', 'defaultVolume', 'autoScroll', 'pendingCustomPronunciations', 'theme', 'pendingStartIndex', 'pendingAutoplay', 'pendingContinuousReader', 'pendingReaderReloadRevision', 'pendingAcceptanceProbe']);
+    const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'pendingTtsBackend', 'defaultSpeed', 'defaultVolume', 'autoScroll', 'pendingCustomPronunciations', 'theme', 'pendingStartIndex', 'pendingAutoplay', 'pendingContinuousReader', 'pendingReaderReloadRevision', 'pendingAcceptanceProbe']);
     // A newer chapter can finish loading while an earlier storage read is
     // still pending. Never paint or start playback from a superseded read.
     if (loadId !== initializationRequestId) return;
 
     syncAcceptanceProbe(data.pendingAcceptanceProbe);
+    syncBackendBadge(data.pendingTtsBackend);
 
     if (autoScrollChangeRevision === scrollRevisionAtStart) {
         window.kokoroAutoScroll = data.autoScroll === true;
@@ -736,6 +796,7 @@ function renderText() {
 function showBlockedPlayback() {
     isPaused = true;
     playPauseBtn.textContent = "Play";
+    syncPlayPauseLabel();
     statusEl.textContent = "Browser blocked autoplay. Click Play to start.";
 }
 
@@ -743,6 +804,7 @@ function pause() {
     isPaused = true;
     audioEl.pause();
     playPauseBtn.textContent = "Play";
+    syncPlayPauseLabel();
 }
 
 function resume() {
@@ -763,6 +825,7 @@ function resume() {
         console.warn("Resume failed", e);
     });
     playPauseBtn.textContent = "Pause";
+    syncPlayPauseLabel();
 }
 
 async function navigate(index, forcePlay = null) {
@@ -789,6 +852,7 @@ async function navigate(index, forcePlay = null) {
     // Restore our intended state (since pause() listener sets isPaused = true)
     isPaused = intendedPausedState;
     playPauseBtn.textContent = isPaused ? "Play" : "Pause";
+    syncPlayPauseLabel();
 
     // Update highlight
     if (sentences[currentIndex] && sentences[currentIndex].element) {
@@ -878,6 +942,7 @@ async function navigate(index, forcePlay = null) {
         } else {
             playPauseBtn.textContent = "Play";
         }
+        syncPlayPauseLabel();
 
         audioEl.playbackRate = parseFloat(speedSelect.value); // Re-apply speed
 
@@ -896,7 +961,8 @@ async function navigate(index, forcePlay = null) {
         audioEl.removeAttribute('src');
         audioEl.load();
         playPauseBtn.textContent = "Play";
-        statusEl.textContent = "Error playing audio.";
+        syncPlayPauseLabel();
+        statusEl.textContent = playbackErrorStatus();
         retryBtn.style.display = 'inline-flex';
     }
 }
