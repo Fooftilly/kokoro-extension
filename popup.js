@@ -787,9 +787,9 @@ function readNormalizationOptionsFromForm() {
 /** Keep FastAPI / MediaPipe / ONNX voice prefs on separate keys (#59). */
 function attachVoicePreference(settings, ttsBackend) {
     if (ttsBackend === 'mediapipe') {
-        const mediaPipeInput = document.getElementById('mediaPipeVoice');
-        settings.mediaPipeVoice = LocalVoice.normalizeLocalVoiceId(mediaPipeInput ? mediaPipeInput.value : '');
-        if (mediaPipeInput) mediaPipeInput.value = settings.mediaPipeVoice;
+        const mediaPipeSelect = document.getElementById('mediaPipeVoice');
+        settings.mediaPipeVoice = applyMediaPipeVoiceSelection(
+            mediaPipeSelect ? mediaPipeSelect.value : '');
         return;
     }
     if (ttsBackend === 'onnx') {
@@ -978,14 +978,38 @@ function applyBackendExplanation(ttsBackend) {
     backendExplanation.textContent = BackendDisclosure.backendDisclosure(ttsBackend || 'fastapi');
 }
 
+/** Keep the advanced custom MediaPipe field in sync with the curated select. */
+function syncMediaPipeCustomField(voiceId) {
+    const customInput = document.getElementById('mediaPipeVoiceCustom');
+    const advanced = document.querySelector('.media-pipe-voice-advanced');
+    if (!customInput) return;
+    const known = LocalVoice.isKnownMediaPipeVoice
+        ? LocalVoice.isKnownMediaPipeVoice(voiceId)
+        : true;
+    customInput.value = known ? '' : voiceId;
+    if (advanced && !known) advanced.open = true;
+}
+
+/** Apply a MediaPipe voice ID to the curated select (+ optional custom row). */
+function applyMediaPipeVoiceSelection(voiceId) {
+    const selectEl = document.getElementById('mediaPipeVoice');
+    if (!selectEl) return LocalVoice.DEFAULT_MEDIAPIPE_VOICE || 'af_heart';
+    const normalized = LocalVoice.normalizeLocalVoiceId(voiceId);
+    if (LocalVoice.populateMediaPipeVoiceSelect) {
+        LocalVoice.populateMediaPipeVoiceSelect(selectEl, normalized);
+    } else {
+        selectEl.value = normalized;
+    }
+    syncMediaPipeCustomField(normalized);
+    return normalized;
+}
+
 function applyVoiceFieldsFromSettings(items) {
     currentVoices = parseVoiceString(items.voice);
-    const mediaPipeInput = document.getElementById('mediaPipeVoice');
-    if (mediaPipeInput) {
-        mediaPipeInput.value = LocalVoice.mediaPipeVoiceFromSettings
-            ? LocalVoice.mediaPipeVoiceFromSettings(items)
-            : LocalVoice.normalizeLocalVoiceId(items.mediaPipeVoice || items.localVoice);
-    }
+    const mediaPipeVoice = LocalVoice.mediaPipeVoiceFromSettings
+        ? LocalVoice.mediaPipeVoiceFromSettings(items)
+        : LocalVoice.normalizeLocalVoiceId(items.mediaPipeVoice || items.localVoice);
+    applyMediaPipeVoiceSelection(mediaPipeVoice);
     const onnxInput = document.getElementById('onnxVoiceAsset');
     if (onnxInput) {
         onnxInput.value = LocalVoice.onnxVoiceAssetFromSettings
@@ -1144,7 +1168,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const inputs = document.querySelectorAll('input, select');
     inputs.forEach(input => {
         if (input.id === 'voiceSearch' || input.id === 'apiUrl' ||
-            input.id === 'mediaPipeVoice' || input.id === 'onnxVoiceAsset' ||
+            input.id === 'mediaPipeVoice' || input.id === 'mediaPipeVoiceCustom' ||
+            input.id === 'onnxVoiceAsset' ||
             input.name === 'ttsBackend') return;
 
         const eventType = (input.type === 'text' || input.type === 'number') ? 'input' : 'change';
@@ -1153,13 +1178,25 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    const mediaPipeVoiceInput = document.getElementById('mediaPipeVoice');
-    if (mediaPipeVoiceInput) {
-        mediaPipeVoiceInput.addEventListener('change', () => {
-            mediaPipeVoiceInput.value = LocalVoice.normalizeLocalVoiceId(mediaPipeVoiceInput.value);
+    const mediaPipeVoiceSelect = document.getElementById('mediaPipeVoice');
+    if (mediaPipeVoiceSelect) {
+        mediaPipeVoiceSelect.addEventListener('change', () => {
+            applyMediaPipeVoiceSelection(mediaPipeVoiceSelect.value);
             void saveOptions(false);
         });
-        mediaPipeVoiceInput.addEventListener('input', () => {
+    }
+
+    const mediaPipeVoiceCustom = document.getElementById('mediaPipeVoiceCustom');
+    if (mediaPipeVoiceCustom) {
+        mediaPipeVoiceCustom.addEventListener('change', () => {
+            applyMediaPipeVoiceSelection(mediaPipeVoiceCustom.value);
+            void saveOptions(false);
+        });
+        mediaPipeVoiceCustom.addEventListener('input', () => {
+            const raw = (mediaPipeVoiceCustom.value || '').trim().toLowerCase();
+            if (/^[a-z]{2}_[a-z]+$/.test(raw)) {
+                applyMediaPipeVoiceSelection(raw);
+            }
             void saveOptions(true);
         });
     }

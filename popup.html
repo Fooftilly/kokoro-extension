@@ -89,9 +89,16 @@
                     </div>
                 </div>
                 <div id="mediaPipeVoiceContainer" class="local-voice-container" hidden>
-                    <label for="mediaPipeVoice" class="inline-label">MediaPipe voice ID</label>
-                    <input type="text" id="mediaPipeVoice" value="af_heart" autocomplete="off" spellcheck="false"
-                        pattern="[a-z]{2}_[a-z]+" title="Format: xx_name (for example af_heart)">
+                    <label for="mediaPipeVoice" class="inline-label">MediaPipe voice</label>
+                    <select id="mediaPipeVoice" title="Kokoro-82M voice ID for MediaPipe playback">
+                        <!-- Options filled from KokoroLocalVoiceMixing.MEDIAPIPE_VOICE_GROUPS -->
+                    </select>
+                    <details class="media-pipe-voice-advanced">
+                        <summary>Advanced: custom voice ID</summary>
+                        <label for="mediaPipeVoiceCustom" class="inline-label">Custom voice ID</label>
+                        <input type="text" id="mediaPipeVoiceCustom" value="" autocomplete="off" spellcheck="false"
+                            pattern="[a-z]{2}_[a-z]+" title="Format: xx_name (for example af_heart)">
+                    </details>
                 </div>
                 <div id="onnxVoiceContainer" class="local-voice-container" hidden>
                     <label for="onnxVoiceAsset" class="inline-label">ONNX voice asset</label>

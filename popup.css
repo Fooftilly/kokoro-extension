@@ -184,7 +184,8 @@ button:hover {
     font-weight: normal;
 }
 
-.local-voice-container input:disabled {
+.local-voice-container input:disabled,
+.local-voice-container select:disabled {
     opacity: 0.85;
     cursor: not-allowed;
     color: var(--note-color);
@@ -320,9 +321,25 @@ button:hover {
     border-color: #0056b3;
 }
 
-.local-voice-container input {
+.local-voice-container input,
+.local-voice-container select {
     width: 100%;
     box-sizing: border-box;
+}
+
+.media-pipe-voice-advanced {
+    margin-top: 2px;
+    font-size: 12px;
+    color: var(--note-color);
+}
+
+.media-pipe-voice-advanced summary {
+    cursor: pointer;
+    user-select: none;
+}
+
+.media-pipe-voice-advanced[open] summary {
+    margin-bottom: 6px;
 }
 
 #voiceMixerContainer {
