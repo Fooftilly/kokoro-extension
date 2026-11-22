@@ -2046,14 +2046,19 @@ def _start_fastapi_speech_stub():
                 # Delay the first body byte so streamed TTFB is measurable.
                 # Hold a playable MP3 prefix open before the final write so
                 # progressive MediaSource can fire `playing` before EOF.
+                # Keep in sync with FASTAPI_STUB_* in
+                # fastapi-server-card-acceptance.mjs (Chromium dual requires
+                # measured progressive TTFA; Firefox may still be unavailable).
+                first_byte_delay_s = 0.1
+                progressive_tail_hold_s = 2.0
                 tail_len = min(32, max(1, len(mp3) - 1))
                 first_len = max(1, len(mp3) - tail_len)
                 first = mp3[:first_len]
                 rest = mp3[first_len:]
-                time.sleep(0.1)
+                time.sleep(first_byte_delay_s)
                 self.wfile.write(first)
                 self.wfile.flush()
-                time.sleep(0.25)
+                time.sleep(progressive_tail_hold_s)
                 if rest:
                     self.wfile.write(rest)
                 return

@@ -238,7 +238,8 @@ console.log(JSON.stringify({
         expect(chromium).toContain('progressiveStreamingTtfaP50Ms');
         expect(chromium).toContain('SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_MEASURED_NEEDLE');
         const chromiumLift = chromium.indexOf(
-            'Progressive MediaSource TTFA measured/unavailable');
+            'Progressive MediaSource TTFA must be measured on');
         expect(chromiumLift).toBeGreaterThan(0);
+        expect(chromium).toContain('FASTAPI_STUB_PROGRESSIVE_TAIL_HOLD_MS');
     });
 });

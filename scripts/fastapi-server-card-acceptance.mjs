@@ -15,6 +15,32 @@ export const MINIMAL_MP3_BASE64 =
 export const MINIMAL_MP3_BYTES = Uint8Array.from(
     Buffer.from(MINIMAL_MP3_BASE64, 'base64'));
 
+/**
+ * Dual FastAPI stub timing: delay first body byte for TTFB, then hold a
+ * playable prefix open long enough for muted MediaSource `playing` before EOF.
+ * CI Chromium needed >250ms decode headroom on the short fixture.
+ */
+export const FASTAPI_STUB_FIRST_BYTE_DELAY_MS = 100;
+export const FASTAPI_STUB_PROGRESSIVE_TAIL_HOLD_MS = 2000;
+export const FASTAPI_STUB_PROGRESSIVE_TAIL_BYTES = 32;
+
+/**
+ * Split stub MP3 into playable prefix + delayed tail for progressive TTFA.
+ * @param {Uint8Array|Buffer} body
+ * @returns {{ first: Uint8Array, rest: Uint8Array }}
+ */
+export function splitFastApiStubMp3ForProgressive(body) {
+    const bytes = body instanceof Uint8Array ? body : new Uint8Array(body);
+    const tailLen = Math.min(
+        FASTAPI_STUB_PROGRESSIVE_TAIL_BYTES,
+        Math.max(1, bytes.length - 1));
+    const firstLen = Math.max(1, bytes.length - tailLen);
+    return {
+        first: bytes.subarray(0, firstLen),
+        rest: bytes.subarray(firstLen),
+    };
+}
+
 export const SERVER_PLAYABLE_MP3_NEEDLE = 'Server returned playable MP3';
 export const SERVER_FIRST_BODY_BYTE_NEEDLE = 'First body byte (TTFB) p50';
 export const SERVER_PLAYBACK_START_NEEDLE = 'playback start p50';
