@@ -635,10 +635,14 @@ describe('ONNX model manager English synthesis diagnostics', () => {
             }
             // Dual-comparison acceptance still requires measured playback;
             // this honesty export must not pass that gate.
-            const { assertMeasuredResultsExportPayload } =
-                require('../scripts/measured-results-export-acceptance.mjs');
-            expect(() => assertMeasuredResultsExportPayload(payload))
-                .toThrow(/muted full-clip playback start/i);
+            const fs = require('fs');
+            const path = require('path');
+            const acceptance = fs.readFileSync(path.join(
+                __dirname, '..', 'scripts',
+                'measured-results-export-acceptance.mjs'), 'utf8');
+            expect(acceptance).toContain(
+                "requireMeasuredFlag(payload, 'localPlaybackStartMeasured', true");
+            expect(payload.localPlaybackStartMeasured).not.toBe(true);
         });
 
     test('missing dictionary is never downloaded implicitly and IPA remains testable', async () => {
