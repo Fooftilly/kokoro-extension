@@ -993,8 +993,11 @@ function syncMediaPipeCustomField(voiceId) {
     if (advanced && !known) advanced.open = true;
 }
 
-/** Apply a MediaPipe voice ID to the curated select (+ optional custom row). */
-function applyMediaPipeVoiceSelection(voiceId) {
+/**
+ * Push a voice ID into the curated select without touching the advanced draft.
+ * Used while typing so quiet autosave can persist without wiping mid-edit text.
+ */
+function previewMediaPipeVoiceSelection(voiceId) {
     const selectEl = document.getElementById('mediaPipeVoice');
     if (!selectEl) return LocalVoice.DEFAULT_MEDIAPIPE_VOICE || 'af_heart';
     const normalized = LocalVoice.normalizeLocalVoiceId(voiceId);
@@ -1003,6 +1006,12 @@ function applyMediaPipeVoiceSelection(voiceId) {
     } else {
         selectEl.value = normalized;
     }
+    return normalized;
+}
+
+/** Apply a MediaPipe voice ID to the curated select (+ optional custom row). */
+function applyMediaPipeVoiceSelection(voiceId) {
+    const normalized = previewMediaPipeVoiceSelection(voiceId);
     syncMediaPipeCustomField(normalized);
     return normalized;
 }
@@ -1191,8 +1200,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const mediaPipeVoiceCustom = document.getElementById('mediaPipeVoiceCustom');
     if (mediaPipeVoiceCustom) {
-        // Commit only on change/blur — mid-type prefixes may match shorter catalog
-        // IDs (e.g. zm_yunxi while typing zm_yunxia) and must not clear the draft.
+        // Preview into the select on valid drafts so quiet autosave persists the
+        // preference, but do not sync/clear the draft (shorter catalog prefixes
+        // like zm_yunxi must not wipe typing zm_yunxia). Full sync on change.
+        mediaPipeVoiceCustom.addEventListener('input', () => {
+            const raw = (mediaPipeVoiceCustom.value || '').trim().toLowerCase();
+            if (/^[a-z]{2}_[a-z]+$/.test(raw)) {
+                previewMediaPipeVoiceSelection(raw);
+            }
+            void saveOptions(true);
+        });
         mediaPipeVoiceCustom.addEventListener('change', () => {
             applyMediaPipeVoiceSelection(mediaPipeVoiceCustom.value);
             void saveOptions(false);

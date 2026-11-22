@@ -1032,13 +1032,12 @@ describe('popup backend-loss resilience (#4)', () => {
             customInput.dispatchEvent(new Event('input'));
         }
         expect(customInput.value).toBe('zm_yunxia');
-
-        customInput.dispatchEvent(new Event('change'));
-        await flushAsync();
         expect(mediaPipeSelect.value).toBe('zm_yunxia');
 
         browser.storage.sync.set.mockClear();
-        await popup.saveOptions(false);
+        customInput.dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(mediaPipeSelect.value).toBe('zm_yunxia');
         const writes = browser.storage.sync.set.mock.calls.map(([payload]) => payload);
         expect(writes.some((payload) => payload.mediaPipeVoice === 'zm_yunxia')).toBe(true);
     });
