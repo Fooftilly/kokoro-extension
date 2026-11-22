@@ -10,6 +10,9 @@ jest.mock('../model-data-store.js', () => ({
 jest.mock('../mediapipe-provider.js', () => ({ MediaPipeKokoroProvider: jest.fn() }));
 jest.mock('../onnx-provider.js', () => ({ OnnxKokoroProvider: jest.fn() }));
 jest.mock('../pcm-wav.js', () => ({ pcmToWavBlob: jest.fn(() => new Blob(['wav'])) }));
+jest.mock('../server-audio-playback-start.js', () => ({
+    waitServerAudioPlaybackStart: jest.fn(async () => {}),
+}));
 
 const audio = () => ({ samples: new Float32Array([0.2, -0.2]), sampleRateHz: 24000 });
 
@@ -81,12 +84,26 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         installImmediateModelLocks();
         global.Response = class Response {};
         global.TransformStream = class TransformStream {};
-        URL.createObjectURL = jest.fn(() => 'blob:test-audio');
+        let objectUrlSeq = 0;
+        URL.createObjectURL = jest.fn(() => 'blob:test-audio-' + (++objectUrlSeq));
         URL.revokeObjectURL = jest.fn();
         window.KokoroBenchmark = {
             summarizeRuns: jest.fn(() => ({
                 synthesisP50Ms: 12, synthesisP95Ms: 15, realTimeFactorP50: 0.2,
             })),
+            nearestRank: jest.fn((values) => Math.max(...values.map(Number), 12)),
+        };
+        // jsdom Audio must accept src assignment used by measureWarmClip.
+        global.Audio = class FakeAudio {
+            constructor() {
+                this.src = '';
+                this.muted = false;
+                this.currentTime = 0;
+            }
+            play() { return Promise.resolve(); }
+            pause() {}
+            addEventListener() {}
+            removeEventListener() {}
         };
         globalThis.KokoroBackendDisclosure = require('../backend-disclosure.js');
         engine = {
@@ -540,7 +557,10 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(window.KokoroBenchmark.summarizeRuns).toHaveBeenCalledWith(
             expect.arrayContaining([expect.objectContaining({
                 kind: 'warm', firstAudioMs: null,
+                playbackStartMs: expect.any(Number),
             })]));
+        expect(message).toContain('Full-clip muted playback start p50:');
+        expect(message).toContain('Streaming time-to-first-audio was not measured');
         expect(message).toContain('Unknown English words are not supported');
         expect(row.querySelector('audio').hidden).toBe(false);
         await waitFor(() => row.querySelector('.model-choose').disabled === false);
@@ -1145,15 +1165,20 @@ describe('ONNX model manager English synthesis diagnostics', () => {
                 saveAs: false,
                 url: expect.stringContaining('blob:'),
             }));
-        expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+        // Warm-clip muted playback already revoked its temp WAV URLs; export
+        // blob must stay alive until download completes.
+        const exportUrl = browser.downloads.download.mock.calls[0][0].url;
+        expect(URL.revokeObjectURL.mock.calls
+            .some(([url]) => url === exportUrl)).toBe(false);
         expect(document.getElementById('measuredExportStatus').textContent)
             .not.toContain('Nothing was uploaded');
+        const revokeBeforeComplete = URL.revokeObjectURL.mock.calls.length;
         globalThis.__kokoroExportOnChanged({ id: 42, state: { current: 'complete' } });
-        await waitFor(() => URL.revokeObjectURL.mock.calls.length === 1 &&
+        await waitFor(() => URL.revokeObjectURL.mock.calls.length >
+            revokeBeforeComplete &&
             document.getElementById('measuredExportStatus').textContent
                 .includes('Nothing was uploaded'));
-        expect(URL.revokeObjectURL).toHaveBeenCalledWith(
-            browser.downloads.download.mock.calls[0][0].url);
+        expect(URL.revokeObjectURL).toHaveBeenCalledWith(exportUrl);
         expect(globalThis.__kokoroLastMeasuredExportDownloadId).toBe(42);
         expect(globalThis.__kokoroLastMeasuredExport).toEqual(
             expect.objectContaining({
@@ -1164,6 +1189,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
                 measurementKind: 'warm-full-clip-synthesis',
                 coldPrepMeasured: true,
                 firstAudioMeasured: false,
+                localPlaybackStartMeasured: true,
                 storageFootprintMeasured: true,
                 storageFootprintSource: 'cache-body-bytes',
                 cachePresenceProbed: true,
@@ -1182,6 +1208,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(dictCatalog).toBeGreaterThan(0);
         for (const row of globalThis.__kokoroLastMeasuredExport.measurements) {
             expect(row.coldPrepMs).toBeGreaterThan(0);
+            expect(row.playbackStartP50Ms).toBeGreaterThanOrEqual(row.synthesisP50Ms);
             expect(row.catalogModelAssetBytes).toBeGreaterThan(0);
             // Measured Cache Storage body sizes must match catalog bytes.
             expect(row.cachedCatalogAssetBytes).toBe(row.catalogModelAssetBytes);
@@ -1226,6 +1253,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(payload.storageFootprintMeasured).toBe(false);
         expect(payload.storageFootprintSource).toBe('catalog');
         expect(payload.cachePresenceProbed).toBe(false);
+        expect(payload.localPlaybackStartMeasured).toBe(true);
         expect(payload.runtimeHeapMeasured).toBe(false);
         expect(payload.storeSigning).toEqual({
             storePackagesSigned: false,
@@ -1462,7 +1490,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(engine.synthesize).toHaveBeenCalledTimes(1);
         expect(window.KokoroBenchmark.summarizeRuns).toHaveBeenCalledTimes(1);
         expect(window.KokoroBenchmark.summarizeRuns.mock.calls[0][0]).toHaveLength(3);
-        expect(row.querySelector('audio').src).toBe('blob:test-audio');
+        expect(row.querySelector('audio').src).toMatch(/^blob:test-audio-\d+$/);
         expect(row.querySelector('.model-choose').disabled).toBe(true);
         expect(browser.storage.local.set).not.toHaveBeenCalledWith({
             'onnxValidatedRevision:q8': expect.any(String),

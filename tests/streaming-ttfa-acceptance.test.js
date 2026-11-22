@@ -3,7 +3,8 @@
  * Contract for FastAPI streamed first-body-byte (TTFB) + post-download playback
  * start (#61 / KE-34 + KE-40) and explicit MediaSource progressive TTFA honesty
  * (#61 / KE-41c). Must not claim MediaSource streaming TTFA.
- * Local export stays firstAudioMeasured:false.
+ * Local export stays firstAudioMeasured:false; localPlaybackStartMeasured is
+ * the full-clip muted HTMLAudioElement path (not streaming TTFA).
  */
 const fs = require('fs');
 const path = require('path');
@@ -154,7 +155,12 @@ describe('Streaming first-body-byte acceptance (KE-34 / KE-40)', () => {
             path.join(root, 'model-manager-page.js'), 'utf8');
         expect(exportHelper).toContain(
             "requireMeasuredFlag(payload, 'firstAudioMeasured', false");
+        expect(exportHelper).toContain(
+            "requireMeasuredFlag(payload, 'localPlaybackStartMeasured', true");
         expect(page).toContain('firstAudioMeasured: false');
+        expect(page).toContain('localPlaybackStartMeasured:');
         expect(page).toContain('firstAudioMs: null');
+        expect(page).toContain('playbackStartMs');
+        expect(page).toContain('waitServerAudioPlaybackStart');
     });
 });

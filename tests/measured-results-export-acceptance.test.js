@@ -26,6 +26,7 @@ const payload = {
     measurementKind: 'warm-full-clip-synthesis',
     coldPrepMeasured: true,
     firstAudioMeasured: false,
+    localPlaybackStartMeasured: true,
     storageFootprintMeasured: true,
     storageFootprintSource: 'cache-body-bytes',
     cachePresenceProbed: true,
@@ -39,7 +40,7 @@ const payload = {
     sampleText: 'Hello world.',
     measurements: [
         { key: 'onnx-q8', label: 'ONNX', coldPrepMs: 40, synthesisP50Ms: 12,
-            synthesisP95Ms: 15, realTimeFactorP50: 0.2,
+            synthesisP95Ms: 15, realTimeFactorP50: 0.2, playbackStartP50Ms: 14,
             catalogModelAssetBytes: 92885404,
             requiredDictionaryCatalogBytes: 3618488,
             catalogEnglishPathBytes: 92885404 + 3618488,
@@ -50,6 +51,7 @@ const payload = {
             cachedCatalogEnglishPathBytes: 92885404 + 3618488 },
         { key: 'mediapipe-cpu', label: 'MediaPipe', coldPrepMs: 55,
             synthesisP50Ms: 18, synthesisP95Ms: 22, realTimeFactorP50: 0.3,
+            playbackStartP50Ms: 20,
             catalogModelAssetBytes: 294783298,
             cachedCatalogAssetBytes: 294783298,
             measuredCacheBodyBytes: 294783298 },
@@ -220,6 +222,10 @@ describe('Measured results export acceptance', () => {
         expect(html).not.toContain('Cache Storage presence estimate');
         expect(html).not.toContain('not measured body/disk usage');
         expect(html).toContain('runtime WASM/WebGPU heap is not measured');
+        expect(html).toContain('muted HTMLAudioElement playback start');
+        expect(html).toContain('Streaming time to first audio is not measured');
+        expect(source).toContain('localPlaybackStartMeasured:');
+        expect(source).toContain('playbackStartP50Ms');
         expect(source).toContain('buildMeasuredEnglishExport');
         expect(source).toContain('exportMeasuredEnglishResults');
         expect(source).toContain('downloadPinnedMeasuredExport');

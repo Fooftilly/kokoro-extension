@@ -1,6 +1,7 @@
 /**
- * Measure HTMLAudioElement start after a full download (muted for autoplay).
- * Restores the caller's mute state so the visible preview stays audible.
+ * Measure HTMLAudioElement start after a full clip is attached (muted for
+ * autoplay). Restores the caller's mute state so the visible preview stays
+ * audible. Used for FastAPI MP3 and local WAV full-clip paths.
  * Not MediaSource / progressive streaming TTFA.
  */
 
@@ -32,7 +33,7 @@ export async function waitServerAudioPlaybackStart(audio, options = {}) {
             };
             const onPlaying = () => { finish(resolve); };
             const onError = () => {
-                finish(reject, new Error('Server MP3 failed to start playback'));
+                finish(reject, new Error('Audio element failed to start playback'));
             };
             const cleanup = () => {
                 if (timer != null) {
@@ -47,7 +48,7 @@ export async function waitServerAudioPlaybackStart(audio, options = {}) {
             if (timeoutMs > 0) {
                 timer = setTimeout(() => {
                     finish(reject, new Error(
-                        'Server MP3 playback start timed out after ' +
+                        'Audio playback start timed out after ' +
                         timeoutMs + 'ms'));
                 }, timeoutMs);
             }
