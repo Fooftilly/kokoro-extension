@@ -52,4 +52,29 @@ describe('local cancel-join measurement', () => {
         expect(Math.abs(join - (settledAt - cancelAt))).toBeLessThan(8);
         expect(join).toBeGreaterThan(10);
     });
+
+    test('AbortError settlement counts; other failures rethrow', async () => {
+        const engine = { cancel: jest.fn(async () => {}) };
+        const aborting = async () => {
+            if (typeof engine.onInferenceStarted === 'function') {
+                engine.onInferenceStarted();
+            }
+            await delay(5);
+            const err = new Error('cancelled');
+            err.name = 'AbortError';
+            throw err;
+        };
+        const joins = await measureCancelJoin(engine, aborting);
+        expect(joins).toHaveLength(3);
+
+        const failing = async () => {
+            if (typeof engine.onInferenceStarted === 'function') {
+                engine.onInferenceStarted();
+            }
+            await delay(5);
+            throw new Error('boom');
+        };
+        await expect(measureCancelJoin(engine, failing))
+            .rejects.toThrow(/boom/);
+    });
 });

@@ -37,7 +37,11 @@ export async function measureCancelJoin(engine, synthesize) {
             let settledAt = null;
             await pending.then(
                 () => { settledAt = performance.now(); },
-                () => { settledAt = performance.now(); },
+                (error) => {
+                    const name = error && error.name;
+                    if (name !== 'AbortError') throw error;
+                    settledAt = performance.now();
+                },
             );
             await cancelPromise.catch(() => {});
             const joinMs = settledAt - t0;
