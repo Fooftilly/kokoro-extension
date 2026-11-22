@@ -36,14 +36,16 @@ export async function measureCancelJoin(engine, synthesize) {
             resolveStarted();
         };
         try {
-            let pendingSettled = false;
-            const pending = Promise.resolve().then(() => synthesize());
-            // Track settlement as early as possible so the final check + cancel
-            // can run in one synchronous step.
-            pending.then(
-                () => { pendingSettled = true; },
-                () => { pendingSettled = true; },
-            );
+            // synthDone flips in finally of the synthesize call itself — not in a
+            // later wrapper .then() — so settlement is visible before cancel.
+            let synthDone = false;
+            const pending = Promise.resolve().then(async () => {
+                try {
+                    return await synthesize();
+                } finally {
+                    synthDone = true;
+                }
+            });
             const race = await Promise.race([
                 startedGate.then(() => 'started'),
                 pending.then(() => 'settled-early', () => 'settled-early'),
@@ -52,10 +54,10 @@ export async function measureCancelJoin(engine, synthesize) {
                 throw new Error(
                     'Cancel join requires in-flight inference before cancel()');
             }
-            // One microtask so a sync settle after start can flip pendingSettled.
+            // Flush one microtask so a short post-start settle can mark synthDone.
             await Promise.resolve();
             // Final in-flight check and cancel() in the same synchronous step.
-            if (pendingSettled) {
+            if (synthDone) {
                 throw new Error(
                     'Cancel join requires in-flight inference before cancel()');
             }

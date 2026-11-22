@@ -77,6 +77,23 @@ describe('local cancel-join measurement', () => {
         expect(engine.cancel).not.toHaveBeenCalled();
     });
 
+    test('rejects when synthesize finishes across a short microtask chain', async () => {
+        const engine = { cancel: jest.fn(async () => {}) };
+        const synthesize = async () => {
+            if (typeof engine.onInferenceStarted === 'function') {
+                engine.onInferenceStarted();
+            }
+            // Two post-start microtasks — settles before flush + same-step cancel
+            // when synthDone is coupled to synthesize finally (not wrapper .then).
+            await Promise.resolve();
+            await Promise.resolve();
+            return {};
+        };
+        await expect(measureCancelJoin(engine, synthesize))
+            .rejects.toThrow(/in-flight inference/i);
+        expect(engine.cancel).not.toHaveBeenCalled();
+    });
+
     test('invokes cancel() synchronously while still in flight', async () => {
         let inFlight = 0;
         let cancelWhilePending = 0;
@@ -90,7 +107,8 @@ describe('local cancel-join measurement', () => {
             if (typeof engine.onInferenceStarted === 'function') {
                 engine.onInferenceStarted();
             }
-            await delay(20);
+            // Stay pending across the helper flush without a timer.
+            for (let i = 0; i < 8; i++) await Promise.resolve();
             inFlight -= 1;
             return {};
         };
