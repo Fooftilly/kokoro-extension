@@ -3410,21 +3410,44 @@ try {
                 liveHeartbeat('onnx-long-text-done', result.longTextAcceptance);
                 stage = 'offline-onnx-voice-change';
                 liveHeartbeat(stage);
-                result.voiceChangeAcceptance = await withTimeout(page.evaluate(async () => {
-                    const { OnnxKokoroProvider } = await import('./onnx-provider.js');
+                const {
+                    ONNX_VOICE_CHANGE_ASSETS,
+                    ONNX_VOICE_CHANGE_PROBE_TEXT,
+                    assertOnnxVoiceChange,
+                    buildOnnxVoiceChangeReport,
+                    markOnnxVoiceChangeSuccess,
+                } = await import('./onnx-voice-change-acceptance.mjs');
+                // Probe only inside the extension page; assert outside so the
+                // acceptance helper need not be packaged into dist/.
+                const voiceProbe = await withTimeout(page.evaluate(async ({
+                    voicePaths, probeText,
+                }) => {
                     const {
-                        ONNX_VOICE_CHANGE_ASSETS,
-                        ONNX_VOICE_CHANGE_PROBE_TEXT,
-                        buildOnnxVoiceChangeReport,
-                        markOnnxVoiceChangeSuccess,
-                    } = await import('./onnx-voice-change-acceptance.mjs');
+                        listOnnxVoiceAssets, manifestForOnnxVoiceAsset,
+                    } = await import('./model-catalog.js');
+                    const { ModelDataStore } = await import('./model-data-store.js');
+                    const { OnnxKokoroProvider } = await import('./onnx-provider.js');
+                    const store = new ModelDataStore({
+                        origin: chrome.runtime.getURL('/'),
+                        cacheStorage: caches, fetchImpl: fetch,
+                        responseClass: Response, streamClass: TransformStream,
+                    });
+                    for (const path of voicePaths) {
+                        const entry = listOnnxVoiceAssets().find(item => item.path === path);
+                        if (!entry?.voiceVariant) continue;
+                        const voiceManifest = manifestForOnnxVoiceAsset(path);
+                        if ((await store.status(voiceManifest)).ready) continue;
+                        await store.install(voiceManifest, {
+                            onProgress() { /* live install */ },
+                        });
+                    }
                     const voices = [];
-                    for (const voiceAssetPath of ONNX_VOICE_CHANGE_ASSETS) {
+                    for (const voiceAssetPath of voicePaths) {
                         const provider = new OnnxKokoroProvider({
                             variant: 'q8', voiceAssetPath,
                         });
                         try {
-                            const synth = await provider.synthesize(ONNX_VOICE_CHANGE_PROBE_TEXT);
+                            const synth = await provider.synthesize(probeText);
                             let sumSq = 0;
                             for (let i = 0; i < synth.samples.length; i++) {
                                 sumSq += synth.samples[i] * synth.samples[i];
@@ -3447,19 +3470,24 @@ try {
                             await provider.close();
                         }
                     }
-                    const report = buildOnnxVoiceChangeReport(voices);
-                    markOnnxVoiceChangeSuccess(report);
-                    return report;
-                }), 300000, 'ONNX catalogued voice-change synthesis');
-                const {
-                    assertOnnxVoiceChange,
-                } = await import('./onnx-voice-change-acceptance.mjs');
+                    return { voices };
+                }, {
+                    voicePaths: [...ONNX_VOICE_CHANGE_ASSETS],
+                    probeText: ONNX_VOICE_CHANGE_PROBE_TEXT,
+                }), 360000, 'ONNX catalogued voice-change synthesis');
+                if (voiceProbe?.error) {
+                    throw Error('Chromium ONNX voice-change probe failed: ' +
+                        String(voiceProbe.error));
+                }
+                const voiceReport = buildOnnxVoiceChangeReport(voiceProbe?.voices);
                 try {
-                    assertOnnxVoiceChange(result.voiceChangeAcceptance);
+                    markOnnxVoiceChangeSuccess(voiceReport);
+                    assertOnnxVoiceChange(voiceReport);
                 } catch (voiceError) {
                     throw Error('Chromium ONNX voice-change failed: ' +
                         String(voiceError?.message || voiceError));
                 }
+                result.voiceChangeAcceptance = voiceReport;
                 liveHeartbeat('onnx-voice-change-done', result.voiceChangeAcceptance);
                 stage = 'offline-audio-manager-onnx-english-wav-playback';
                 onnxPlaybackAcceptance = await page.evaluate(async (oovWord) => {

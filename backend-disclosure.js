@@ -55,9 +55,10 @@
     function downloadFootprintNote(entry) {
         const source = entry && typeof entry === 'object' ? entry : {};
         if (source.provider === 'onnx') {
-            return 'Total model-data footprint includes the opt-in download (ONNX graph + voices/af.bin + ' +
-                'voices/af_bella.bin) plus packaged tokenizer/config mapping (' + PACKAGED_ONNX_TOKENIZER_LABEL +
-                ') already in the extension. English CMUdict is a separate ~3.5 MB opt-in download. ' +
+            return 'Total model-data footprint includes the opt-in download (ONNX graph + voices/af.bin) ' +
+                'plus packaged tokenizer/config mapping (' + PACKAGED_ONNX_TOKENIZER_LABEL +
+                ') already in the extension. Optional voices such as af_bella are separate downloads. ' +
+                'English CMUdict is a separate ~3.5 MB opt-in download. ' +
                 'Official ONNX Runtime JS/WASM is packaged locally — not part of model-data size.';
         }
         if (source.provider === 'mediapipe' && source.variant === 'gpu') {

@@ -2,7 +2,9 @@
 // the official, packaged onnxruntime-web engine are used; no unofficial wrapper.
 // Plain English text synthesis uses the existing strict, cached CMUdict frontend.
 // Out-of-vocabulary words fail closed; do not silently send text to FastAPI.
-import { manifestForVariant } from './model-catalog.js';
+import {
+    listOnnxVoiceAssets, manifestForOnnxVoiceAsset, manifestForVariant,
+} from './model-catalog.js';
 import { ModelDataStore } from './model-data-store.js';
 import { prepareKokoroOnnxInputs, asOnnxRuntimeFeeds, assertKokoroSpeed } from './onnx-kokoro-inputs.js';
 import { tokenizePhonemes } from './phoneme-tokenizer.js';
@@ -11,6 +13,14 @@ import { validateKokoroPcm } from './pcm-wav.js';
 
 const BYTES_PER_STYLE = 256 * Float32Array.BYTES_PER_ELEMENT;
 const DEFAULT_ONNX_VOICE_ASSET = 'voices/af.bin';
+
+function resolveVoiceCatalogEntry(voiceAssetPath) {
+    const entry = listOnnxVoiceAssets().find(item => item.path === voiceAssetPath);
+    if (!entry) {
+        throw new RangeError('ONNX voice asset is not in the pinned catalog: ' + voiceAssetPath);
+    }
+    return entry;
+}
 
 export class OnnxKokoroProvider {
     constructor({ variant = 'q8', voiceAssetPath = DEFAULT_ONNX_VOICE_ASSET,
@@ -22,10 +32,12 @@ export class OnnxKokoroProvider {
         this.variant = variant;
         this.voiceAssetPath = typeof voiceAssetPath === 'string' && voiceAssetPath.trim()
             ? voiceAssetPath.trim() : DEFAULT_ONNX_VOICE_ASSET;
-        if (!this.manifest.assets.some(asset => asset.path === this.voiceAssetPath)) {
-            throw new RangeError('ONNX voice asset is not in the pinned catalog: ' +
-                this.voiceAssetPath);
-        }
+        this.voiceCatalogEntry = resolveVoiceCatalogEntry(this.voiceAssetPath);
+        // Bundled default lives on the model variant; optional voices use their
+        // own opt-in manifest so existing installs stay ready (#60).
+        this.voiceManifest = this.voiceCatalogEntry.voiceVariant
+            ? manifestForOnnxVoiceAsset(this.voiceAssetPath)
+            : this.manifest;
         this.browserApi = browserApi;
         this.cacheStorage = cacheStorage;
         this.fetchImpl = fetchImpl;
@@ -68,8 +80,8 @@ export class OnnxKokoroProvider {
         }
     }
 
-    async loadCachedAsset(store, cache, asset) {
-        const response = await cache.match(store.key(this.manifest, asset));
+    async loadCachedAsset(store, cache, manifest, asset) {
+        const response = await cache.match(store.key(manifest, asset));
         if (!store.isCurrent(response, asset)) throw new Error('ONNX model asset missing from cache');
         const bytes = new Uint8Array(await response.arrayBuffer());
         if (bytes.byteLength !== asset.bytes) throw new Error('ONNX asset has unexpected length');
@@ -87,14 +99,18 @@ export class OnnxKokoroProvider {
         if (!(await store.status(this.manifest)).ready) {
             throw new Error('ONNX Kokoro model and voice not installed; download model assets first.');
         }
+        if (!(await store.status(this.voiceManifest)).ready) {
+            throw new Error('Selected ONNX voice is not installed; download it in the TTS model manager.');
+        }
         const cache = await this.cacheStorage.open('kokoro-model-data-v1');
         const modelAsset = this.manifest.assets.find(asset => /\.onnx$/i.test(asset.path));
-        const voiceAsset = this.manifest.assets.find(asset => asset.path === this.voiceAssetPath);
+        const voiceAsset = this.voiceManifest.assets.find(asset => asset.path === this.voiceAssetPath);
         if (!modelAsset || !voiceAsset) {
             throw new Error('ONNX catalog is missing the model or selected voice asset');
         }
-        const modelBytes = await this.loadCachedAsset(store, cache, modelAsset);
-        const voiceBytes = await this.loadCachedAsset(store, cache, voiceAsset);
+        const modelBytes = await this.loadCachedAsset(store, cache, this.manifest, modelAsset);
+        const voiceBytes = await this.loadCachedAsset(
+            store, cache, this.voiceManifest, voiceAsset);
         if (voiceBytes.byteLength % BYTES_PER_STYLE !== 0) {
             throw new TypeError('ONNX voice binary must contain complete 256-float style vectors');
         }
@@ -173,8 +189,7 @@ export class OnnxKokoroProvider {
         const dictionary = await this.englishLexicon();
         this.assertNotCancelled(generation);
         // Cap chunks from catalog voice size before loading weights (#179 order).
-        const voiceMeta = this.manifest.assets.find(asset => asset.path === this.voiceAssetPath);
-        const styleCount = voiceMeta ? voiceMeta.bytes / BYTES_PER_STYLE : 0;
+        const styleCount = this.voiceCatalogEntry.bytes / BYTES_PER_STYLE;
         const maxPhonemes = Math.min(510, Math.max(0, styleCount - 1));
         if (maxPhonemes < 1) {
             throw new RangeError('ONNX voice asset has no usable style vectors');

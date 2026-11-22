@@ -1028,6 +1028,16 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    const onnxVoiceSelect = document.getElementById('onnxVoiceAsset');
+    if (onnxVoiceSelect) {
+        onnxVoiceSelect.addEventListener('change', () => {
+            onnxVoiceSelect.value = LocalVoice.normalizeOnnxVoiceAsset
+                ? LocalVoice.normalizeOnnxVoiceAsset(onnxVoiceSelect.value)
+                : (LocalVoice.ONNX_FIXED_VOICE_ASSET || 'voices/af.bin');
+            void saveOptions(false);
+        });
+    }
+
     async function revertFailedLocalBackend(radio, explanation, isCurrentSelection, error) {
         if (!isCurrentSelection()) return;
         // Read the final persisted selection after earlier writes.

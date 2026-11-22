@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | Kokoro-FastAPI | Yes (`af_sarah(5)+af_nicole(3)+…`) | Unchanged |
 | MediaPipe Kokoro | No official blend API | Single editable `voiceId` + explicit UI |
-| ONNX Runtime Web | Style tensor is blendable; catalog offers selectable assets | Selectable catalog assets `voices/af.bin` / `voices/af_bella.bin` (#60); style-vector lerp remains available for future weighted mixes |
+| ONNX Runtime Web | Style tensor is blendable; catalog offers selectable assets | Default `voices/af.bin` with onnx-q8; optional `voices/af_bella.bin` download (#60); style-vector lerp remains available for future weighted mixes |
 
 ## MediaPipe (official API)
 

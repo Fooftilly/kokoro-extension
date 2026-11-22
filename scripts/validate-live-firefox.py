@@ -4706,23 +4706,43 @@ def main():
                 metrics["longTextAcceptance"] = long_text
 
                 result["stage"] = "offline-onnx-voice-change"
-                voice_change = driver.execute_async_script("""
+                voice_paths = subprocess.run(
+                    ["node", "--input-type=module", "-e",
+                     "import {ONNX_VOICE_CHANGE_ASSETS, ONNX_VOICE_CHANGE_PROBE_TEXT} from "
+                     "'./scripts/onnx-voice-change-acceptance.mjs';"
+                     "process.stdout.write(JSON.stringify({"
+                     "voicePaths:[...ONNX_VOICE_CHANGE_ASSETS],"
+                     "probeText:ONNX_VOICE_CHANGE_PROBE_TEXT}));"],
+                    check=True, capture_output=True, text=True,
+                ).stdout
+                voice_probe = driver.execute_async_script("""
                     const done=arguments[arguments.length-1];
+                    const opts=arguments[0];
                     (async()=>{
-                        const {OnnxKokoroProvider}=await import('./onnx-provider.js');
                         const {
-                            ONNX_VOICE_CHANGE_ASSETS,
-                            ONNX_VOICE_CHANGE_PROBE_TEXT,
-                            buildOnnxVoiceChangeReport,
-                            markOnnxVoiceChangeSuccess,
-                        }=await import('./onnx-voice-change-acceptance.mjs');
+                            listOnnxVoiceAssets, manifestForOnnxVoiceAsset,
+                        }=await import('./model-catalog.js');
+                        const {ModelDataStore}=await import('./model-data-store.js');
+                        const {OnnxKokoroProvider}=await import('./onnx-provider.js');
+                        const store=new ModelDataStore({
+                            origin:browser.runtime.getURL('/'),
+                            cacheStorage:caches, fetchImpl:fetch,
+                            responseClass:Response, streamClass:TransformStream,
+                        });
+                        for (const path of opts.voicePaths) {
+                            const entry=listOnnxVoiceAssets().find(item=>item.path===path);
+                            if (!entry?.voiceVariant) continue;
+                            const voiceManifest=manifestForOnnxVoiceAsset(path);
+                            if ((await store.status(voiceManifest)).ready) continue;
+                            await store.install(voiceManifest, {onProgress(){}});
+                        }
                         const voices=[];
-                        for (const voiceAssetPath of ONNX_VOICE_CHANGE_ASSETS) {
+                        for (const voiceAssetPath of opts.voicePaths) {
                             const provider=new OnnxKokoroProvider({
                                 variant:'q8', voiceAssetPath,
                             });
                             try {
-                                const synth=await provider.synthesize(ONNX_VOICE_CHANGE_PROBE_TEXT);
+                                const synth=await provider.synthesize(opts.probeText);
                                 let sumSq=0;
                                 for (let i=0;i<synth.samples.length;i++) {
                                     sumSq+=synth.samples[i]*synth.samples[i];
@@ -4742,30 +4762,30 @@ def main():
                                 await provider.close();
                             }
                         }
-                        const report=buildOnnxVoiceChangeReport(voices);
-                        markOnnxVoiceChangeSuccess(report);
-                        return report;
+                        return {voices};
                     })().then(done,e=>done({success:false,error:String(e),stack:String(e.stack||'')}));
-                """)
-                if voice_change.get("success") is not True:
-                    raise RuntimeError("Firefox ONNX voice-change failed: " +
-                                       json.dumps(voice_change))
+                """, json.loads(voice_paths))
+                if voice_probe.get("success") is False or voice_probe.get("error"):
+                    raise RuntimeError("Firefox ONNX voice-change probe failed: " +
+                                       json.dumps(voice_probe))
                 assert_mod = subprocess.run(
                     ["node", "--input-type=module", "-e",
-                     "import {assertOnnxVoiceChange} from "
+                     "import {assertOnnxVoiceChange, buildOnnxVoiceChangeReport, "
+                     "markOnnxVoiceChangeSuccess} from "
                      "'./scripts/onnx-voice-change-acceptance.mjs';"
-                     "const report=JSON.parse(process.argv[1]);"
+                     "const probe=JSON.parse(process.argv[1]);"
+                     "const report=buildOnnxVoiceChangeReport(probe.voices);"
+                     "markOnnxVoiceChangeSuccess(report);"
                      "assertOnnxVoiceChange(report);"
-                     "process.stdout.write('ok');",
-                     json.dumps(voice_change)],
+                     "process.stdout.write(JSON.stringify(report));",
+                     json.dumps(voice_probe)],
                     check=False, capture_output=True, text=True,
                 )
-                if assert_mod.returncode != 0 or assert_mod.stdout.strip() != "ok":
+                if assert_mod.returncode != 0:
                     raise RuntimeError(
                         "Firefox ONNX voice-change assert failed: " +
                         (assert_mod.stderr or assert_mod.stdout or "unknown"))
-                metrics["voiceChangeAcceptance"] = voice_change
-
+                metrics["voiceChangeAcceptance"] = json.loads(assert_mod.stdout)
             playback_acceptance = None
             if origin_download and provider == "onnx" and metrics.get("success"):
                 playback_acceptance = driver.execute_async_script("""

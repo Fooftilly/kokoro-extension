@@ -10,6 +10,32 @@ export const ONNX_VOICE_CHANGE_ASSETS = Object.freeze([
 
 export const ONNX_VOICE_CHANGE_PROBE_TEXT = 'Hello world.';
 
+function assertVoiceRow(row, seen) {
+    if (!row || typeof row !== 'object') {
+        throw new Error('ONNX voice-change row missing');
+    }
+    if (!ONNX_VOICE_CHANGE_ASSETS.includes(row.voiceAssetPath)) {
+        throw new Error('Unexpected ONNX voice asset: ' + row.voiceAssetPath);
+    }
+    if (seen.has(row.voiceAssetPath)) {
+        throw new Error('Duplicate ONNX voice asset: ' + row.voiceAssetPath);
+    }
+    seen.add(row.voiceAssetPath);
+    if (row.sampleRateHz !== 24000) {
+        throw new Error('ONNX voice-change sampleRateHz mismatch: ' + row.sampleRateHz);
+    }
+    if (!(row.sampleCount > 1000)) {
+        throw new Error('ONNX voice-change sampleCount too small: ' + row.sampleCount);
+    }
+    if (!(row.rms > 0.001)) {
+        throw new Error('ONNX voice-change near-silent for ' + row.voiceAssetPath);
+    }
+    if (typeof row.sha256Hex === 'string' && /^[a-f0-9]{64}$/.test(row.sha256Hex)) {
+        return row.sha256Hex;
+    }
+    return null;
+}
+
 /**
  * @param {{
  *   voices: Array<{
@@ -33,28 +59,8 @@ export function assertOnnxVoiceChange(report) {
     const seen = new Set();
     const digests = [];
     for (const row of voices) {
-        if (!row || typeof row !== 'object') {
-            throw new Error('ONNX voice-change row missing');
-        }
-        if (!ONNX_VOICE_CHANGE_ASSETS.includes(row.voiceAssetPath)) {
-            throw new Error('Unexpected ONNX voice asset: ' + row.voiceAssetPath);
-        }
-        if (seen.has(row.voiceAssetPath)) {
-            throw new Error('Duplicate ONNX voice asset: ' + row.voiceAssetPath);
-        }
-        seen.add(row.voiceAssetPath);
-        if (row.sampleRateHz !== 24000) {
-            throw new Error('ONNX voice-change sampleRateHz mismatch: ' + row.sampleRateHz);
-        }
-        if (!(row.sampleCount > 1000)) {
-            throw new Error('ONNX voice-change sampleCount too small: ' + row.sampleCount);
-        }
-        if (!(row.rms > 0.001)) {
-            throw new Error('ONNX voice-change near-silent for ' + row.voiceAssetPath);
-        }
-        if (typeof row.sha256Hex === 'string' && /^[a-f0-9]{64}$/.test(row.sha256Hex)) {
-            digests.push(row.sha256Hex);
-        }
+        const digest = assertVoiceRow(row, seen);
+        if (digest) digests.push(digest);
     }
     if (seen.size !== ONNX_VOICE_CHANGE_ASSETS.length) {
         throw new Error('ONNX voice-change missing catalogued assets');

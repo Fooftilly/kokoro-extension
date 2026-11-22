@@ -47,7 +47,10 @@ function fixture({ model = modelBytes, voice = voiceBytes } = {}) {
         browserApi: { runtime: { getURL: path => 'moz-extension://test/' + path } },
         cacheStorage, fetchImpl, loadSDK,
     });
+    // Fixture replaces the catalog manifest with tiny bytes; keep the bundled
+    // default voice on the same mutated manifest (voiceManifest === model).
     provider.manifest = manifest;
+    provider.voiceManifest = manifest;
     return { provider, manifest, cache, fetchImpl, create, loadSDK, session };
 }
 
@@ -67,8 +70,8 @@ describe('ONNX cached model and voice integrity before inference (#55)', () => {
         expect(create).toHaveBeenCalledTimes(1);
         expect(create.mock.calls[0][0]).toEqual(modelBytes);
         expect(provider.voice).toEqual(voiceBytes);
-        // Status walks all catalog assets (model + 2 voices); load reads model + selected voice.
-        expect(cache.match).toHaveBeenCalledTimes(5);
+        // Status(model) + status(voice) each walk 2 assets; load reads both.
+        expect(cache.match).toHaveBeenCalledTimes(6);
         expect(fetchImpl).not.toHaveBeenCalled();
         await provider.close();
     });
