@@ -121,7 +121,14 @@ describe('ONNX model manager English synthesis diagnostics', () => {
                 await new Promise(resolve => setTimeout(resolve, 5));
             }),
             synthesizePhonemes: jest.fn(async () => audio()),
-            synthesize: jest.fn(async () => audio()),
+            synthesize: jest.fn(async () => {
+                if (typeof engine.onInferenceStarted === 'function') {
+                    engine.onInferenceStarted();
+                }
+                await new Promise(resolve => setTimeout(resolve, 5));
+                return audio();
+            }),
+            cancel: jest.fn(async () => {}),
             close: jest.fn(async () => {}),
         };
         require('../onnx-provider.js').OnnxKokoroProvider.mockImplementation(() => engine);
@@ -555,9 +562,11 @@ describe('ONNX model manager English synthesis diagnostics', () => {
     test('verified ONNX q8 English text enables explicit selection while IPA timings stay separate', async () => {
         const { row, message } = await runProbe();
         expect(engine.synthesizePhonemes).not.toHaveBeenCalled();
-        expect(engine.synthesize).toHaveBeenCalledTimes(4); // 1 untimed warm-up + 3 timed
-        expect(engine.synthesize.mock.calls.every(([input]) => input === 'Hello world.'))
-            .toBe(true);
+        // 1 untimed warm-up + 3 timed + 3 cancel-join probes (short probe text)
+        expect(engine.synthesize).toHaveBeenCalledTimes(7);
+        const synthInputs = engine.synthesize.mock.calls.map(([input]) => input);
+        expect(synthInputs.slice(0, 4).every((t) => t === 'Hello world.')).toBe(true);
+        expect(synthInputs.slice(4).every((t) => t === 'Cancel join probe.')).toBe(true);
         expect(message).toContain('warm (3 runs, shared English text)');
         expect(message).toContain('after untimed warm-up');
         expect(message).toContain('Cold prep (init + first synth):');
@@ -964,7 +973,7 @@ try {
         expect(message).toContain('Full-clip synthesis p50');
         expect(navigator.locks.request).toHaveBeenCalledWith(
             'kokoro-model-data-v1', { mode: 'shared' }, expect.any(Function));
-        expect(engine.synthesize).toHaveBeenCalledTimes(4);
+        expect(engine.synthesize).toHaveBeenCalledTimes(7);
         expect(engine.synthesizePhonemes).not.toHaveBeenCalled();
     });
 
@@ -1240,7 +1249,8 @@ try {
         expect(status.textContent).toContain('Measured 2 local backend paths');
         expect(status.textContent).toContain('cold prep + three warm runs');
         expect(status.textContent).toContain('No ranking is inferred');
-        expect(engine.synthesize).toHaveBeenCalledTimes(8); // two untimed + six measured
+        // two backends × (1 untimed + 3 warm + 3 cancel-join)
+        expect(engine.synthesize).toHaveBeenCalledTimes(14);
         expect(global.fetch).not.toHaveBeenCalled();
         expect(global.browser.permissions.request).not.toHaveBeenCalled();
 
@@ -1279,6 +1289,9 @@ try {
                 coldPrepMeasured: true,
                 firstAudioMeasured: false,
                 localPlaybackStartMeasured: true,
+                localCancelMeasured: true,
+                nativeForceInterruptSupported: false,
+                cancelJoinProbeText: 'Cancel join probe.',
                 storageFootprintMeasured: true,
                 storageFootprintSource: 'cache-body-bytes',
                 cachePresenceProbed: true,
@@ -1301,12 +1314,14 @@ try {
             }))
             .filter(call => call.pct === 50);
         expect(playbackRankCalls.length).toBeGreaterThanOrEqual(2);
+        expect(engine.cancel).toHaveBeenCalled();
         const dictCatalog =
             globalThis.__kokoroLastMeasuredExport.englishDictionaryCatalogBytes;
         expect(dictCatalog).toBeGreaterThan(0);
         for (const row of globalThis.__kokoroLastMeasuredExport.measurements) {
             expect(row.coldPrepMs).toBeGreaterThan(0);
             expect(row.playbackStartP50Ms).toBeGreaterThanOrEqual(row.synthesisP50Ms);
+            expect(row.cancelJoinP50Ms).toBeGreaterThanOrEqual(0);
             const matching = playbackRankCalls.find(
                 call => call.result === row.playbackStartP50Ms);
             expect(matching).toBeTruthy();
@@ -1405,7 +1420,14 @@ try {
             initialize: jest.fn(async () => {
                 await new Promise(resolve => setTimeout(resolve, 5));
             }),
-            synthesize: jest.fn(async () => audio()),
+            synthesize: jest.fn(async () => {
+                if (typeof mediapipeEngine.onInferenceStarted === 'function') {
+                    mediapipeEngine.onInferenceStarted();
+                }
+                await new Promise(resolve => setTimeout(resolve, 5));
+                return audio();
+            }),
+            cancel: jest.fn(async () => {}),
             close: jest.fn(async () => {}),
         };
         require('../mediapipe-provider.js').MediaPipeKokoroProvider
@@ -1427,7 +1449,7 @@ try {
         await waitFor(() => comparison.children.length === 2 &&
             mediapipeEngine.close.mock.calls.length === 1);
         expect(mediapipeEngine.initialize).toHaveBeenCalledTimes(1);
-        expect(mediapipeEngine.synthesize).toHaveBeenCalledTimes(4);
+        expect(mediapipeEngine.synthesize).toHaveBeenCalledTimes(7);
         expect(comparison.querySelector('[data-backend="onnx-q8"]')).not.toBeNull();
         expect(comparison.querySelector('[data-backend="mediapipe-cpu"]')).not.toBeNull();
         expect(document.getElementById('sharedEnglishComparisonStatus').textContent)
@@ -1506,7 +1528,7 @@ try {
         await waitFor(() => row.querySelector('.model-status').textContent
             .includes('Full-clip synthesis p50'));
         expect(comparison.children).toHaveLength(0);
-        expect(engine.synthesize).toHaveBeenCalledTimes(4);
+        expect(engine.synthesize).toHaveBeenCalledTimes(7);
         expect(global.fetch).not.toHaveBeenCalled();
     });
 

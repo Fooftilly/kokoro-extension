@@ -868,17 +868,24 @@ async function acceptTwoBackendComparison(page, extensionId) {
     const selectedBefore = await page.evaluate(async () =>
         (await chrome.storage.sync.get({ ttsBackend: 'fastapi' })).ttsBackend);
     const measured = [];
+    liveHeartbeat('two-backend-comparison-start', { keys });
     for (const key of keys) {
+        liveHeartbeat('two-backend-provider-test-start', { key });
         await page.locator('[data-variant="' + key + '"] .model-test').click();
-        await page.waitForFunction(key => {
-            const model = document.querySelector('[data-variant="' + key + '"]');
-            return model?.querySelector('.model-test')?.disabled === false &&
-                model?.querySelector('.model-choose')?.disabled === false &&
-                model?.querySelector('.model-status')?.textContent.includes(
-                    'warm (3 runs, shared English text)') &&
-                !!document.querySelector(
-                    '#sharedEnglishComparisonRows tr[data-backend="' + key + '"]');
-        }, key, { timeout: 600000 });
+        await withProgressBeats(
+            'two-backend-provider-test-wait:' + key,
+            page.waitForFunction(key => {
+                const model = document.querySelector('[data-variant="' + key + '"]');
+                return model?.querySelector('.model-test')?.disabled === false &&
+                    model?.querySelector('.model-choose')?.disabled === false &&
+                    model?.querySelector('.model-status')?.textContent.includes(
+                        'warm (3 runs, shared English text)') &&
+                    !!document.querySelector(
+                        '#sharedEnglishComparisonRows tr[data-backend="' + key + '"]');
+            }, key, { timeout: 600000 }),
+            { key },
+        );
+        liveHeartbeat('two-backend-provider-test-done', { key });
 
         const row = await page.evaluate(key => {
             const model = document.querySelector('[data-variant="' + key + '"]');

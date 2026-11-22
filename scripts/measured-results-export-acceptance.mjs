@@ -55,6 +55,16 @@ function assertMeasuredExportDisclosure(payload) {
     // (audio-element quirks); those must not pass this dual gate.
     requireMeasuredFlag(payload, 'localPlaybackStartMeasured', true,
         'Measured export must report muted full-clip playback start');
+    requireMeasuredFlag(payload, 'localCancelMeasured', true,
+        'Measured export must report local cancel-join latency');
+    requireMeasuredFlag(payload, 'nativeForceInterruptSupported', false,
+        'Measured export must not claim native force-interrupt support');
+    // Join uses a short fixed probe distinct from sampleText (non-interruptible).
+    if (payload.cancelJoinProbeText !== 'Cancel join probe.') {
+        throw Error(
+            'Measured export must disclose cancelJoinProbeText: ' +
+            JSON.stringify(payload.cancelJoinProbeText));
+    }
     requireMeasuredFlag(payload, 'storageFootprintMeasured', true,
         'Measured export must report measured cache-body storage footprint');
     requireMeasuredFlag(payload, 'storageFootprintSource', 'cache-body-bytes',
@@ -136,6 +146,11 @@ function assertMeasuredExportRows(payload, expected = {}) {
         if (!(row.playbackStartP50Ms >= row.synthesisP50Ms)) {
             throw Error(
                 'playbackStartP50Ms must be at/after synthesisP50Ms: ' +
+                JSON.stringify(row));
+        }
+        if (!Number.isFinite(row.cancelJoinP50Ms) || row.cancelJoinP50Ms < 0) {
+            throw Error(
+                'cancelJoinP50Ms must be a finite nonnegative join latency: ' +
                 JSON.stringify(row));
         }
         assertMeasuredBodyBytes(row);

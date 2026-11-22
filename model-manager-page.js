@@ -21,6 +21,10 @@ import {
     cancelReadableStreamBody,
     readBoundedResponseText,
 } from './mediasource-progressive-ttfa.js';
+import {
+    CANCEL_JOIN_PROBE_TEXT,
+    measureCancelJoin,
+} from './local-cancel-join.js';
 
 const page = document.getElementById('modelManager');
 const dictionary = dictionaryManifest();
@@ -94,6 +98,7 @@ function snapshotMeasuredEnglishRows() {
             synthesisP95Ms: result.synthesisP95Ms,
             realTimeFactorP50: result.realTimeFactorP50,
             playbackStartP50Ms: result.playbackStartP50Ms,
+            cancelJoinP50Ms: result.cancelJoinP50Ms,
         });
     }
     return rows;
@@ -171,6 +176,7 @@ async function buildMeasuredEnglishExport() {
             synthesisP95Ms: snapped.synthesisP95Ms,
             realTimeFactorP50: snapped.realTimeFactorP50,
             playbackStartP50Ms: snapped.playbackStartP50Ms,
+            cancelJoinP50Ms: snapped.cancelJoinP50Ms,
             // Static pinned catalog asset sum (KE-38).
             catalogModelAssetBytes: entry.totalBytes,
         };
@@ -183,6 +189,9 @@ async function buildMeasuredEnglishExport() {
     const allPlaybackStartsMeasured = measurements.length > 0 &&
         measurements.every(row => Number.isFinite(row.playbackStartP50Ms) &&
             row.playbackStartP50Ms >= row.synthesisP50Ms);
+    const allCancelJoinsMeasured = measurements.length > 0 &&
+        measurements.every(row => Number.isFinite(row.cancelJoinP50Ms) &&
+            row.cancelJoinP50Ms >= 0);
     return {
         kind: 'kokoro-measured-local-english',
         localOnly: true,
@@ -194,6 +203,13 @@ async function buildMeasuredEnglishExport() {
         // Full-clip muted HTMLAudioElement start (encode WAV → playing).
         // Not streaming / MediaSource TTFA.
         localPlaybackStartMeasured: allPlaybackStartsMeasured,
+        // Cancel → synthesize settlement join (best-effort; not force-interrupt).
+        localCancelMeasured: allCancelJoinsMeasured,
+        nativeForceInterruptSupported: false,
+        // Join latency uses a short probe (not sampleText) when cancel cannot
+        // force-interrupt — disclose so dual readers do not assume sampleText.
+        cancelJoinProbeText: allCancelJoinsMeasured
+            ? CANCEL_JOIN_PROBE_TEXT : null,
         // Real Cache Storage body sizes (blob.size), not catalog-header presence.
         storageFootprintMeasured: allBodiesMeasured,
         storageFootprintSource: allBodiesMeasured
@@ -326,11 +342,16 @@ function rememberSharedEnglishResult(entry, metrics, text, epoch) {
         metrics.realTimeFactorP50].every(v => Number.isFinite(v) && v >= 0)) {
         return;
     }
-    // Playback start is optional for approval/table presence; export still
-    // fail-closes localPlaybackStartMeasured when any row lacks it.
+    // Playback start / cancel-join are optional for approval/table presence;
+    // export still fail-closes measured flags when any English row lacks them.
     if (metrics.playbackStartP50Ms != null &&
         !(Number.isFinite(metrics.playbackStartP50Ms) &&
             metrics.playbackStartP50Ms >= metrics.synthesisP50Ms)) {
+        return;
+    }
+    if (metrics.cancelJoinP50Ms != null &&
+        !(Number.isFinite(metrics.cancelJoinP50Ms) &&
+            metrics.cancelJoinP50Ms >= 0)) {
         return;
     }
     sharedEnglishResults.set(entry.key, metrics);
@@ -886,12 +907,17 @@ function formatLocalBenchmarkStatus(entry, metrics, isEnglishMeasurement, englis
             metrics.playbackStartP50Ms.toFixed(0) + ' ms.'
         : ' Full-clip muted playback start was not measured' +
             ' (synthesis still valid for backend approval).';
+    const cancelNote = Number.isFinite(metrics.cancelJoinP50Ms)
+        ? ' Cancel-join p50: ' + metrics.cancelJoinP50Ms.toFixed(0) +
+            ' ms (best-effort; native force-interrupt not supported).'
+        : ' Cancel-join was not measured.';
     return 'Real local inference, warm (3 runs, ' +
         (isEnglishMeasurement ? 'shared English text' : 'IPA-only diagnostic') +
         '). Full-clip synthesis p50: ' +
         metrics.synthesisP50Ms.toFixed(0) + ' ms, p95: ' +
         metrics.synthesisP95Ms.toFixed(0) + ' ms; RTF p50: ' +
         metrics.realTimeFactorP50.toFixed(2) + '.' + coldNote + playbackNote +
+        cancelNote +
         ' Streaming time-to-first-audio was not measured.' +
         (entry.provider === 'onnx'
             ? (isEnglishMeasurement
@@ -970,10 +996,24 @@ async function testEngine(entry, ui) {
                 playbackSamples.length === measured.runs.length
                     ? window.KokoroBenchmark.nearestRank(playbackSamples, 50)
                     : null;
+            // Cancel-join is diagnostic-only: failure must not block approval.
+            // Short probe — join tracks full synth when cancel cannot interrupt.
+            let cancelJoinP50Ms = null;
+            if (isEnglishMeasurement) {
+                try {
+                    const cancelJoins = await measureCancelJoin(
+                        engine, () => engine.synthesize(CANCEL_JOIN_PROBE_TEXT));
+                    cancelJoinP50Ms = window.KokoroBenchmark.nearestRank(
+                        cancelJoins, 50);
+                } catch (_) {
+                    cancelJoinP50Ms = null;
+                }
+            }
             const metrics = {
                 ...window.KokoroBenchmark.summarizeRuns(measured.runs),
                 coldPrepMs,
                 playbackStartP50Ms,
+                cancelJoinP50Ms,
             };
             const previous = lastAudioUrl.get(entry.key);
             if (previous) URL.revokeObjectURL(previous);
