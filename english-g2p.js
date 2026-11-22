@@ -132,7 +132,12 @@ export function phonemizeEnglish(text, dictionary) {
 // Validate the whole request before model startup, then split only at the
 // existing normalized word separators. Attached punctuation stays with its
 // word; no partial words, missing pronunciations or unknown symbols are dropped.
-export function phonemizeEnglishChunks(text, dictionary) {
+// maxPhonemes caps graph size for voice binaries with fewer style rows than
+// the tokenizer max (e.g. af_bella.bin has 510 styles → max index 509).
+export function phonemizeEnglishChunks(text, dictionary, maxPhonemes = MAX_PHONEMES) {
+    if (!Number.isSafeInteger(maxPhonemes) || maxPhonemes < 1 || maxPhonemes > MAX_PHONEMES) {
+        throw new RangeError('maxPhonemes must be an integer from 1 to ' + MAX_PHONEMES);
+    }
     const phonemes = renderEnglishPhonemes(text, dictionary);
     const chunks = [];
     let current = '';
@@ -140,10 +145,18 @@ export function phonemizeEnglishChunks(text, dictionary) {
     for (const word of phonemes.split(' ')) {
         const wordTokens = tokenizePhonemes(word);
         const nextCount = count + (current ? 1 : 0) + wordTokens.length;
-        if (nextCount > MAX_PHONEMES) {
+        if (nextCount > maxPhonemes) {
+            if (!current) {
+                throw new RangeError(
+                    'English word exceeds voice style capacity (' + maxPhonemes + ' phonemes)');
+            }
             chunks.push(current);
             current = word;
             count = wordTokens.length;
+            if (count > maxPhonemes) {
+                throw new RangeError(
+                    'English word exceeds voice style capacity (' + maxPhonemes + ' phonemes)');
+            }
         } else {
             current += (current ? ' ' : '') + word;
             count = nextCount;

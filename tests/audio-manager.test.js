@@ -54,7 +54,9 @@ describe('AudioManager', () => {
         });
         audioManager.setSentences([{ text: 'Private text' }]);
         await expect(audioManager.getAudio(0)).resolves.toBe('blob:onnx-offline');
-        expect(OnnxKokoroProvider).toHaveBeenCalledWith({ variant: 'q8' });
+        expect(OnnxKokoroProvider).toHaveBeenCalledWith({
+            variant: 'q8', voiceAssetPath: 'voices/af.bin',
+        });
         expect(synthesize).toHaveBeenCalledWith('Private text', { speed: 1 });
         expect(URL.createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
         expect(browser.runtime.sendMessage).not.toHaveBeenCalled();

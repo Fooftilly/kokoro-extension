@@ -82,8 +82,10 @@
             </div>
             <div id="onnxVoiceContainer" class="local-voice-container" hidden>
                 <label for="onnxVoiceAsset" class="inline-label">ONNX voice asset</label>
-                <input type="text" id="onnxVoiceAsset" value="voices/af.bin" readonly disabled
-                    title="Fixed catalog asset until multi-voice ONNX downloads are available">
+                <select id="onnxVoiceAsset" title="Catalogued ONNX voice binary for local playback">
+                    <option value="voices/af.bin">voices/af.bin (American English pack)</option>
+                    <option value="voices/af_bella.bin">voices/af_bella.bin</option>
+                </select>
             </div>
 
             <div class="settings-grid">

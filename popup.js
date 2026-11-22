@@ -43,10 +43,15 @@ const LocalVoice = globalThis.KokoroLocalVoiceMixing || {
     DEFAULT_MEDIAPIPE_VOICE: 'af_heart',
     DEFAULT_LOCAL_VOICE: 'af_heart',
     ONNX_FIXED_VOICE_ASSET: 'voices/af.bin',
+    ONNX_VOICE_ASSETS: ['voices/af.bin', 'voices/af_bella.bin'],
     normalizeLocalVoiceId: (value) => {
         if (typeof value !== 'string') return 'af_heart';
         const trimmed = value.trim().toLowerCase();
         return /^[a-z]{2}_[a-z]+$/.test(trimmed) ? trimmed : 'af_heart';
+    },
+    normalizeOnnxVoiceAsset: (value) => {
+        const allowed = ['voices/af.bin', 'voices/af_bella.bin'];
+        return allowed.includes(value) ? value : 'voices/af.bin';
     },
     isLocalBackend: (backend) => backend === 'mediapipe' || backend === 'onnx',
     mediaPipeVoiceFromSettings: (settings) => {
@@ -56,13 +61,14 @@ const LocalVoice = globalThis.KokoroLocalVoiceMixing || {
         }
         return LocalVoice.normalizeLocalVoiceId(source.localVoice);
     },
-    onnxVoiceAssetFromSettings: () => 'voices/af.bin',
+    onnxVoiceAssetFromSettings: (settings) => LocalVoice.normalizeOnnxVoiceAsset(
+        settings && settings.onnxVoiceAsset),
     localVoiceLimitationNote: () => '',
 };
 
 /**
  * FastAPI keeps the weighted mixer. MediaPipe shows an editable voice ID.
- * ONNX shows the fixed catalog asset (readonly) — playback ignores free-form IDs (#59).
+ * ONNX shows a catalogued voice-asset select (#60 voice-change).
  * Server mix, MediaPipe voice, and ONNX asset prefs are stored separately.
  */
 function syncVoiceUiForBackend(backend) {
@@ -667,10 +673,12 @@ function attachVoicePreference(settings, ttsBackend) {
         return;
     }
     if (ttsBackend === 'onnx') {
-        const fixedAsset = LocalVoice.ONNX_FIXED_VOICE_ASSET || 'voices/af.bin';
-        settings.onnxVoiceAsset = fixedAsset;
         const onnxInput = document.getElementById('onnxVoiceAsset');
-        if (onnxInput) onnxInput.value = fixedAsset;
+        const selected = onnxInput ? onnxInput.value : '';
+        settings.onnxVoiceAsset = LocalVoice.normalizeOnnxVoiceAsset
+            ? LocalVoice.normalizeOnnxVoiceAsset(selected)
+            : (LocalVoice.ONNX_FIXED_VOICE_ASSET || 'voices/af.bin');
+        if (onnxInput) onnxInput.value = settings.onnxVoiceAsset;
         return;
     }
     settings.voice = serializeVoiceString(currentVoices);

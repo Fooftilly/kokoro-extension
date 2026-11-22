@@ -9,13 +9,23 @@ import { tokenizePhonemes } from './phoneme-tokenizer.js';
 import { loadCachedEnglishLexicon, phonemizeEnglishChunks } from './english-g2p.js';
 import { validateKokoroPcm } from './pcm-wav.js';
 
+const BYTES_PER_STYLE = 256 * Float32Array.BYTES_PER_ELEMENT;
+const DEFAULT_ONNX_VOICE_ASSET = 'voices/af.bin';
+
 export class OnnxKokoroProvider {
-    constructor({ variant = 'q8', browserApi = globalThis.browser,
+    constructor({ variant = 'q8', voiceAssetPath = DEFAULT_ONNX_VOICE_ASSET,
+        browserApi = globalThis.browser,
         cacheStorage = globalThis.caches, fetchImpl = (...args) => globalThis.fetch(...args),
         loadSDK = () => import('./runtimes/onnx/ort.wasm.bundle.min.mjs'),
         loadDictionary = null } = {}) {
         this.manifest = manifestForVariant('onnx', variant);
         this.variant = variant;
+        this.voiceAssetPath = typeof voiceAssetPath === 'string' && voiceAssetPath.trim()
+            ? voiceAssetPath.trim() : DEFAULT_ONNX_VOICE_ASSET;
+        if (!this.manifest.assets.some(asset => asset.path === this.voiceAssetPath)) {
+            throw new RangeError('ONNX voice asset is not in the pinned catalog: ' +
+                this.voiceAssetPath);
+        }
         this.browserApi = browserApi;
         this.cacheStorage = cacheStorage;
         this.fetchImpl = fetchImpl;
@@ -23,6 +33,7 @@ export class OnnxKokoroProvider {
         this.session = null;
         this.engine = null;
         this.voice = null;
+        this.maxPhonemes = null;
         this.loading = null;
         this.dictionary = null;
         this.dictionaryLoading = null;
@@ -57,25 +68,41 @@ export class OnnxKokoroProvider {
         }
     }
 
+    async loadCachedAsset(store, cache, asset) {
+        const response = await cache.match(store.key(this.manifest, asset));
+        if (!store.isCurrent(response, asset)) throw new Error('ONNX model asset missing from cache');
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (bytes.byteLength !== asset.bytes) throw new Error('ONNX asset has unexpected length');
+        // Verify the same bytes passed to ONNX, not just the cache headers.
+        // Keep model and voice data offline and fail before SDK loading.
+        if (!await store.loadedBytesMatch(bytes, asset)) {
+            throw new Error('ONNX cached model asset failed SHA-256 integrity verification: ' +
+                asset.path + '. Use Verify cached data, then Download to repair it.');
+        }
+        return bytes;
+    }
+
     async loadEngine() {
         const store = this.store;
         if (!(await store.status(this.manifest)).ready) {
             throw new Error('ONNX Kokoro model and voice not installed; download model assets first.');
         }
         const cache = await this.cacheStorage.open('kokoro-model-data-v1');
-        const assets = [];
-        for (const asset of this.manifest.assets) {
-            const response = await cache.match(store.key(this.manifest, asset));
-            if (!store.isCurrent(response, asset)) throw new Error('ONNX model asset missing from cache');
-            const bytes = new Uint8Array(await response.arrayBuffer());
-            if (bytes.byteLength !== asset.bytes) throw new Error('ONNX asset has unexpected length');
-            // Verify the same bytes passed to ONNX, not just the cache headers.
-            // Keep both model and voice data offline and fail before SDK loading.
-            if (!await store.loadedBytesMatch(bytes, asset)) {
-                throw new Error('ONNX cached model asset failed SHA-256 integrity verification: ' +
-                    asset.path + '. Use Verify cached data, then Download to repair it.');
-            }
-            assets.push(bytes);
+        const modelAsset = this.manifest.assets.find(asset => /\.onnx$/i.test(asset.path));
+        const voiceAsset = this.manifest.assets.find(asset => asset.path === this.voiceAssetPath);
+        if (!modelAsset || !voiceAsset) {
+            throw new Error('ONNX catalog is missing the model or selected voice asset');
+        }
+        const modelBytes = await this.loadCachedAsset(store, cache, modelAsset);
+        const voiceBytes = await this.loadCachedAsset(store, cache, voiceAsset);
+        if (voiceBytes.byteLength % BYTES_PER_STYLE !== 0) {
+            throw new TypeError('ONNX voice binary must contain complete 256-float style vectors');
+        }
+        const styleCount = voiceBytes.byteLength / BYTES_PER_STYLE;
+        // styleForLength indexes by unpadded token count; need styleCount > n.
+        this.maxPhonemes = Math.min(510, styleCount - 1);
+        if (this.maxPhonemes < 1) {
+            throw new RangeError('ONNX voice binary has no usable style vectors');
         }
         const sdk = await this.loadSDK();
         if (!sdk?.env?.wasm || typeof sdk.InferenceSession?.create !== 'function') {
@@ -83,13 +110,13 @@ export class OnnxKokoroProvider {
         }
         sdk.env.wasm.wasmPaths = this.browserApi.runtime.getURL('runtimes/onnx/');
         sdk.env.wasm.numThreads = 1; // Universal Chrome/Firefox baseline; no isolation assumption.
-        const session = await sdk.InferenceSession.create(assets[0], {
+        const session = await sdk.InferenceSession.create(modelBytes, {
             executionProviders: ['wasm'],
             graphOptimizationLevel: 'all',
         });
         this.engine = sdk;
         this.session = session;
-        this.voice = assets[1];
+        this.voice = voiceBytes;
     }
 
     // The official ONNX graph consumes phoneme IDs, not words.
@@ -145,7 +172,14 @@ export class OnnxKokoroProvider {
         // sentences use bounded graphs rather than truncation or remote speech.
         const dictionary = await this.englishLexicon();
         this.assertNotCancelled(generation);
-        const chunks = phonemizeEnglishChunks(text, dictionary);
+        // Cap chunks from catalog voice size before loading weights (#179 order).
+        const voiceMeta = this.manifest.assets.find(asset => asset.path === this.voiceAssetPath);
+        const styleCount = voiceMeta ? voiceMeta.bytes / BYTES_PER_STYLE : 0;
+        const maxPhonemes = Math.min(510, Math.max(0, styleCount - 1));
+        if (maxPhonemes < 1) {
+            throw new RangeError('ONNX voice asset has no usable style vectors');
+        }
+        const chunks = phonemizeEnglishChunks(text, dictionary, maxPhonemes);
         const audio = [];
         let sampleCount = 0;
         for (const chunk of chunks) {

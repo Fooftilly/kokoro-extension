@@ -4,19 +4,26 @@ import { manifestForVariant } from '../model-catalog.js';
 import { OnnxKokoroProvider } from '../onnx-provider.js';
 
 const modelBytes = new Uint8Array([1, 2, 3, 4]);
-const voiceBytes = new Uint8Array([5, 6, 7, 8, 9, 10]);
+// Two complete 256-float style rows (provider rejects non-aligned voice bins).
+const voiceBytes = new Uint8Array(256 * Float32Array.BYTES_PER_ELEMENT * 2);
+voiceBytes.set([5, 6, 7, 8, 9, 10]);
 const sri = bytes => 'sha256-' + createHash('sha256').update(bytes).digest('base64');
+
+function bytesForAsset(asset, { model, voice }) {
+    if (/\.onnx$/i.test(asset.path)) return model;
+    return voice;
+}
 
 function fixture({ model = modelBytes, voice = voiceBytes } = {}) {
     const manifest = manifestForVariant('onnx', 'q8');
-    manifest.assets.forEach((asset, index) => {
-        const bytes = index === 0 ? modelBytes : voiceBytes;
+    manifest.assets.forEach((asset) => {
+        const bytes = bytesForAsset(asset, { model: modelBytes, voice: voiceBytes });
         asset.bytes = bytes.byteLength;
         asset.integrity = sri(bytes);
     });
     const entries = new Map();
-    manifest.assets.forEach((asset, index) => {
-        const bytes = index === 0 ? model : voice;
+    manifest.assets.forEach((asset) => {
+        const bytes = bytesForAsset(asset, { model, voice });
         const key = 'https://kokoro-model-cache.invalid/model-data/' +
             manifest.provider + '/' + manifest.revision + '/' + manifest.variant + '/' + asset.path;
         entries.set(key, new Response(bytes, { headers: {
@@ -60,21 +67,47 @@ describe('ONNX cached model and voice integrity before inference (#55)', () => {
         expect(create).toHaveBeenCalledTimes(1);
         expect(create.mock.calls[0][0]).toEqual(modelBytes);
         expect(provider.voice).toEqual(voiceBytes);
-        expect(cache.match).toHaveBeenCalledTimes(4); // Status + one read per asset.
+        // Status walks all catalog assets (model + 2 voices); load reads model + selected voice.
+        expect(cache.match).toHaveBeenCalledTimes(5);
         expect(fetchImpl).not.toHaveBeenCalled();
         await provider.close();
     });
 
-    test.each([
-        ['model', { model: new Uint8Array([1, 2, 3, 5]) }],
-        ['voice', { voice: new Uint8Array([5, 6, 7, 8, 9, 11]) }],
-    ])('rejects tampered %s with matching metadata before loading SDK', async (_name, content) => {
-        const { provider, loadSDK, create, fetchImpl, cache } = fixture(content);
+    test('rejects tampered model with matching metadata before loading SDK', async () => {
+        const { provider, loadSDK, create, fetchImpl, cache } = fixture({
+            model: new Uint8Array([1, 2, 3, 5]),
+        });
         await expect(provider.initialize()).rejects.toThrow(/failed SHA-256 integrity verification/);
         expect(loadSDK).not.toHaveBeenCalled();
         expect(create).not.toHaveBeenCalled();
         expect(fetchImpl).not.toHaveBeenCalled();
         expect(cache.delete).not.toHaveBeenCalled(); // No automatic eviction.
+        expect(provider.session).toBeNull();
+    });
+
+    test('rejects tampered selected voice with matching metadata before loading SDK', async () => {
+        const { provider, manifest, loadSDK, create, fetchImpl, cache } = fixture();
+        const voiceAsset = manifest.assets.find(asset => asset.path === 'voices/af.bin');
+        const key = 'https://kokoro-model-cache.invalid/model-data/' +
+            manifest.provider + '/' + manifest.revision + '/' + manifest.variant + '/' +
+            voiceAsset.path;
+        const tampered = new Uint8Array(voiceBytes);
+        tampered[0] ^= 0xff;
+        const priorMatch = cache.match.getMockImplementation();
+        cache.match.mockImplementation(async (request) => {
+            if (request === key) {
+                return new Response(tampered, { headers: {
+                    'x-kokoro-integrity': voiceAsset.integrity,
+                    'x-kokoro-bytes': String(voiceAsset.bytes),
+                } });
+            }
+            return priorMatch(request);
+        });
+        await expect(provider.initialize()).rejects.toThrow(/failed SHA-256 integrity verification/);
+        expect(loadSDK).not.toHaveBeenCalled();
+        expect(create).not.toHaveBeenCalled();
+        expect(fetchImpl).not.toHaveBeenCalled();
+        expect(cache.delete).not.toHaveBeenCalled();
         expect(provider.session).toBeNull();
     });
 

@@ -324,6 +324,7 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
                 pendingTtsBackend: backend,
                 pendingMediaPipeVariant: settings.mediaPipeVariant,
                 pendingLocalVoice: LocalVoice.mediaPipeVoiceFromSettings(settings),
+                pendingOnnxVoiceAsset: LocalVoice.onnxVoiceAssetFromSettings(settings),
                 pendingTitle: tab.title,
                 pendingNormalizationOptions: settings.normalizationOptions,
                 pendingCustomPronunciations: settings.customPronunciations,

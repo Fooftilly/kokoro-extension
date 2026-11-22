@@ -313,7 +313,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(row.querySelector('.model-test').disabled).toBe(true);
         other.querySelector('.model-download').click();
         expect(global.browser.permissions.request).not.toHaveBeenCalled();
-        const totalBytes = 92361116 + 524288;
+        const totalBytes = 92361116 + 524288 + 522240;
         resolveVerification({ ready: true, verifiedBytes: totalBytes, totalBytes,
             removedAssets: 0, missingAssets: 0 });
         await waitFor(() => row.querySelector('.model-status').textContent
@@ -521,8 +521,8 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(document.querySelector('[data-variant="mediapipe-gpu"]')).toBeNull();
         const cases = [
             ['mediapipe-cpu', 'litert-community/Kokoro-82M', '294.8 MB'],
-            ['onnx-q8', 'onnx-community/Kokoro-82M-v1.0-ONNX', '92.9 MB'],
-            ['onnx-q8f16', 'onnx-community/Kokoro-82M-v1.0-ONNX', '86.6 MB'],
+            ['onnx-q8', 'onnx-community/Kokoro-82M-v1.0-ONNX', '93.4 MB'],
+            ['onnx-q8f16', 'onnx-community/Kokoro-82M-v1.0-ONNX', '87.1 MB'],
             ['dictionary-english', 'cmusphinx/cmudict', '3.6 MB'],
         ];
         for (const [key, source, expectedSize] of cases) {
@@ -1561,7 +1561,7 @@ try {
 
         // Verify detects missing bytes before the mock status view catches up.
         verifyModel.mockResolvedValueOnce({
-            ready: false, verifiedBytes: 0, totalBytes: 92885404,
+            ready: false, verifiedBytes: 0, totalBytes: 93407644,
             removedAssets: 0, missingAssets: 1,
         });
         row.querySelector('.model-verify').click();

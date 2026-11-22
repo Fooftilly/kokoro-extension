@@ -30,9 +30,9 @@ describe('backend disclosure copy (#58)', () => {
         expect(note).toMatch(/3\.5 KB/);
         expect(Disclosure.PACKAGED_ONNX_TOKENIZER_BYTES).toBe(3500);
         expect(Disclosure.modelDataFootprintLabel(
-            { provider: 'onnx', totalBytes: 92885404 },
+            { provider: 'onnx', totalBytes: 93407644 },
             (n) => (n / 1000000).toFixed(1) + ' MB',
-        )).toBe('92.9 MB + ~3.5 KB packaged tokenizer/config');
+        )).toBe('93.4 MB + ~3.5 KB packaged tokenizer/config');
         expect(Disclosure.modelDataFootprintLabel(
             { provider: 'mediapipe', totalBytes: 294783298 },
             (n) => (n / 1000000).toFixed(1) + ' MB',

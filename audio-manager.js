@@ -22,6 +22,7 @@ export class AudioManager {
         this.localProvider = null;
         this.localBackend = null;
         this.localVariant = null;
+        this.localVoiceAsset = null;
         this.localProviderIdleMs = localProviderIdleMs;
         this.localIdleTimer = null;
         this.localActivityRevision = 0;
@@ -84,6 +85,7 @@ export class AudioManager {
                 this.localProvider = null;
                 this.localBackend = null;
                 this.localVariant = null;
+                this.localVoiceAsset = null;
                 await provider.close();
             });
             this.localInferenceQueue = closing.catch(error => {
@@ -224,18 +226,23 @@ export class AudioManager {
 
     // One large WASM engine at a time. Switching happens inside the serialized
     // cache-read lease, so native teardown completes before another model loads.
-    async switchLocalProvider(backend, variant, generation, isStale) {
+    async switchLocalProvider(backend, variant, generation, isStale, voiceAssetPath) {
+        const onnxVoice = voiceAssetPath || 'voices/af.bin';
         if (this.localProvider && this.localBackend === backend &&
-            this.localVariant === variant) return;
+            this.localVariant === variant &&
+            (backend !== globalThis.KokoroTtsProviders.ONNX ||
+                this.localVoiceAsset === onnxVoice)) return;
         if (this.localProvider) await this.localProvider.close();
         if (generation !== this.generation || isStale()) {
             throw new DOMException('Local generation cancelled', 'AbortError');
         }
         this.localProvider = backend === globalThis.KokoroTtsProviders.MEDIAPIPE
             ? new MediaPipeKokoroProvider({ variant })
-            : new OnnxKokoroProvider({ variant });
+            : new OnnxKokoroProvider({ variant, voiceAssetPath: onnxVoice });
         this.localBackend = backend;
         this.localVariant = variant;
+        this.localVoiceAsset = backend === globalThis.KokoroTtsProviders.ONNX
+            ? onnxVoice : null;
     }
 
     async localAudio(text, data, backend, isStale = () => false, onSynthesisStart = () => {}) {
@@ -250,6 +257,7 @@ export class AudioManager {
         // manager still permits separate diagnostic tests of q8f16.
         const variant = backend === globalThis.KokoroTtsProviders.MEDIAPIPE
             ? (data.pendingMediaPipeVariant || 'cpu') : 'q8';
+        const onnxVoiceAsset = data.pendingOnnxVoiceAsset || 'voices/af.bin';
         const synthesisOptions = backend === globalThis.KokoroTtsProviders.MEDIAPIPE
             ? { voiceId: data.pendingLocalVoice || 'af_heart' } : { speed: 1 };
         const work = this.localInferenceQueue.catch(() => {}).then(async () => {
@@ -263,7 +271,8 @@ export class AudioManager {
                 if (generation !== this.generation || isStale()) {
                     throw new DOMException('Local generation cancelled', 'AbortError');
                 }
-                await this.switchLocalProvider(backend, variant, generation, isStale);
+                await this.switchLocalProvider(
+                    backend, variant, generation, isStale, onnxVoiceAsset);
                 let result;
                 try {
                     // Mark the request only when it actually reaches the official
@@ -336,6 +345,7 @@ export class AudioManager {
         const data = await browser.storage.local.get([
             'pendingVoice', 'pendingApiUrl', 'pendingNormalizationOptions',
             'pendingTtsBackend', 'pendingMediaPipeVariant', 'pendingLocalVoice',
+            'pendingOnnxVoiceAsset',
         ]);
         if (isStale()) {
             throw new DOMException('Audio request cancelled', 'AbortError');

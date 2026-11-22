@@ -4705,6 +4705,67 @@ def main():
                                        json.dumps(long_text))
                 metrics["longTextAcceptance"] = long_text
 
+                result["stage"] = "offline-onnx-voice-change"
+                voice_change = driver.execute_async_script("""
+                    const done=arguments[arguments.length-1];
+                    (async()=>{
+                        const {OnnxKokoroProvider}=await import('./onnx-provider.js');
+                        const {
+                            ONNX_VOICE_CHANGE_ASSETS,
+                            ONNX_VOICE_CHANGE_PROBE_TEXT,
+                            buildOnnxVoiceChangeReport,
+                            markOnnxVoiceChangeSuccess,
+                        }=await import('./onnx-voice-change-acceptance.mjs');
+                        const voices=[];
+                        for (const voiceAssetPath of ONNX_VOICE_CHANGE_ASSETS) {
+                            const provider=new OnnxKokoroProvider({
+                                variant:'q8', voiceAssetPath,
+                            });
+                            try {
+                                const synth=await provider.synthesize(ONNX_VOICE_CHANGE_PROBE_TEXT);
+                                let sumSq=0;
+                                for (let i=0;i<synth.samples.length;i++) {
+                                    sumSq+=synth.samples[i]*synth.samples[i];
+                                }
+                                const rms=Math.sqrt(sumSq/synth.samples.length);
+                                const digest=await crypto.subtle.digest(
+                                    'SHA-256', synth.samples.buffer.slice(
+                                        synth.samples.byteOffset,
+                                        synth.samples.byteOffset+synth.samples.byteLength));
+                                const sha256Hex=[...new Uint8Array(digest)]
+                                    .map(b=>b.toString(16).padStart(2,'0')).join('');
+                                voices.push({
+                                    voiceAssetPath, sampleRateHz:synth.sampleRateHz,
+                                    sampleCount:synth.samples.length, rms, sha256Hex,
+                                });
+                            } finally {
+                                await provider.close();
+                            }
+                        }
+                        const report=buildOnnxVoiceChangeReport(voices);
+                        markOnnxVoiceChangeSuccess(report);
+                        return report;
+                    })().then(done,e=>done({success:false,error:String(e),stack:String(e.stack||'')}));
+                """)
+                if voice_change.get("success") is not True:
+                    raise RuntimeError("Firefox ONNX voice-change failed: " +
+                                       json.dumps(voice_change))
+                assert_mod = subprocess.run(
+                    ["node", "--input-type=module", "-e",
+                     "import {assertOnnxVoiceChange} from "
+                     "'./scripts/onnx-voice-change-acceptance.mjs';"
+                     "const report=JSON.parse(process.argv[1]);"
+                     "assertOnnxVoiceChange(report);"
+                     "process.stdout.write('ok');",
+                     json.dumps(voice_change)],
+                    check=False, capture_output=True, text=True,
+                )
+                if assert_mod.returncode != 0 or assert_mod.stdout.strip() != "ok":
+                    raise RuntimeError(
+                        "Firefox ONNX voice-change assert failed: " +
+                        (assert_mod.stderr or assert_mod.stdout or "unknown"))
+                metrics["voiceChangeAcceptance"] = voice_change
+
             playback_acceptance = None
             if origin_download and provider == "onnx" and metrics.get("success"):
                 playback_acceptance = driver.execute_async_script("""

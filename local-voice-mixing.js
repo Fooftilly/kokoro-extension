@@ -4,8 +4,10 @@
     'use strict';
 
     const DEFAULT_MEDIAPIPE_VOICE = 'af_heart';
-    /** Catalog-pinned ONNX voice binary until multi-voice downloads ship. */
+    /** Default ONNX voice binary (American English pack). */
     const ONNX_FIXED_VOICE_ASSET = 'voices/af.bin';
+    /** Catalogued selectable ONNX voice paths (#60 voice-change first slice). */
+    const ONNX_VOICE_ASSETS = Object.freeze(['voices/af.bin', 'voices/af_bella.bin']);
     const LOCAL_VOICE_ID_RE = /^[a-z]{2}_[a-z]+$/;
 
     function normalizeLocalVoiceId(value) {
@@ -36,11 +38,11 @@
                 'and are never discarded when using MediaPipe.';
         }
         if (backend === 'onnx') {
-            return 'ONNX playback uses the installed catalog voice asset (' + ONNX_FIXED_VOICE_ASSET + '). ' +
-                'That preference is fixed until multi-voice ONNX downloads are catalogued; ' +
-                'editing a voice ID here would have no effect. Weighted FastAPI mixes and the ' +
-                'MediaPipe voice ID stay saved separately. Style-vector blending is available ' +
-                'in-repo for future multi-voice assets; do not mix PCM from multiple full syntheses.';
+            return 'ONNX playback uses one catalogued voice asset at a time (' +
+                ONNX_VOICE_ASSETS.join(' or ') + '). ' +
+                'Choose the asset below; weighted FastAPI mixes and the MediaPipe voice ID stay ' +
+                'saved separately. Style-vector blending remains available in-repo for future ' +
+                'mixes; do not mix PCM from multiple full syntheses.';
         }
         return '';
     }
@@ -54,12 +56,15 @@
         return normalizeLocalVoiceId(source.localVoice);
     }
 
+    function normalizeOnnxVoiceAsset(value) {
+        if (typeof value !== 'string') return ONNX_FIXED_VOICE_ASSET;
+        const trimmed = value.trim();
+        return ONNX_VOICE_ASSETS.includes(trimmed) ? trimmed : ONNX_FIXED_VOICE_ASSET;
+    }
+
     function onnxVoiceAssetFromSettings(settings) {
         const source = settings && typeof settings === 'object' ? settings : {};
-        if (typeof source.onnxVoiceAsset === 'string' && source.onnxVoiceAsset.trim()) {
-            return source.onnxVoiceAsset.trim();
-        }
-        return ONNX_FIXED_VOICE_ASSET;
+        return normalizeOnnxVoiceAsset(source.onnxVoiceAsset);
     }
 
     function resolvePlaybackVoice(backend, settings) {
@@ -90,8 +95,10 @@
         /** @deprecated use DEFAULT_MEDIAPIPE_VOICE */
         DEFAULT_LOCAL_VOICE: DEFAULT_MEDIAPIPE_VOICE,
         ONNX_FIXED_VOICE_ASSET,
+        ONNX_VOICE_ASSETS,
         LOCAL_VOICE_ID_RE,
         normalizeLocalVoiceId,
+        normalizeOnnxVoiceAsset,
         isLocalBackend,
         weightedMixingSupported,
         localVoiceLimitationNote,

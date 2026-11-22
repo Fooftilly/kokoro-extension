@@ -47,8 +47,9 @@ describe('pinned official local Kokoro model catalog', () => {
         expect(listPinnedModelVariants().find(x => x.key === 'mediapipe-gpu').offered).toBe(false);
         expect(validateModelManifest(manifestForVariant('mediapipe', 'cpu'))).toBe(294783298);
         expect(validateModelManifest(manifestForVariant('mediapipe', 'gpu'))).toBe(294750530);
-        expect(validateModelManifest(manifestForVariant('onnx', 'q8'))).toBe(92361116 + 524288);
-        expect(validateModelManifest(manifestForVariant('onnx', 'q8f16'))).toBe(86033585 + 524288);
+        expect(validateModelManifest(manifestForVariant('onnx', 'q8'))).toBe(92361116 + 524288 + 522240);
+        expect(validateModelManifest(manifestForVariant('onnx', 'q8f16')))
+            .toBe(86033585 + 524288 + 522240);
         expect(manifestForVariant('onnx', 'q8').assets.every(a =>
             !/\\.(?:js|wasm)$/.test(a.path) && a.integrity.startsWith('sha256-'))).toBe(true);
         expect(() => manifestForVariant('fastapi', 'q8')).toThrow();

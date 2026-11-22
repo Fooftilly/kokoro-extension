@@ -809,11 +809,11 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(document.getElementById('voiceMixerContainer').hidden).toBe(true);
         expect(document.getElementById('mediaPipeVoiceContainer').hidden).toBe(true);
         expect(document.getElementById('onnxVoiceContainer').hidden).toBe(false);
-        expect(document.getElementById('onnxVoiceAsset').disabled).toBe(true);
-        expect(document.getElementById('onnxVoiceAsset').readOnly).toBe(true);
+        expect(document.getElementById('onnxVoiceAsset').disabled).toBe(false);
+        expect(document.getElementById('onnxVoiceAsset').tagName).toBe('SELECT');
         expect(document.getElementById('onnxVoiceAsset').value).toBe('voices/af.bin');
         expect(document.getElementById('localVoiceNote').textContent).toMatch(/af\.bin/i);
-        expect(document.getElementById('localVoiceNote').textContent).toMatch(/no effect/i);
+        expect(document.getElementById('localVoiceNote').textContent).toMatch(/af_bella/i);
 
         browser.storage.sync.set.mockClear();
         await popup.saveOptions(false);

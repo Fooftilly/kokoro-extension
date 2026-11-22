@@ -3408,6 +3408,59 @@ try {
                     probeOnnxLongText, { apiName: 'chrome' }),
                 240000, 'ONNX bounded long sentence and cancellation');
                 liveHeartbeat('onnx-long-text-done', result.longTextAcceptance);
+                stage = 'offline-onnx-voice-change';
+                liveHeartbeat(stage);
+                result.voiceChangeAcceptance = await withTimeout(page.evaluate(async () => {
+                    const { OnnxKokoroProvider } = await import('./onnx-provider.js');
+                    const {
+                        ONNX_VOICE_CHANGE_ASSETS,
+                        ONNX_VOICE_CHANGE_PROBE_TEXT,
+                        buildOnnxVoiceChangeReport,
+                        markOnnxVoiceChangeSuccess,
+                    } = await import('./onnx-voice-change-acceptance.mjs');
+                    const voices = [];
+                    for (const voiceAssetPath of ONNX_VOICE_CHANGE_ASSETS) {
+                        const provider = new OnnxKokoroProvider({
+                            variant: 'q8', voiceAssetPath,
+                        });
+                        try {
+                            const synth = await provider.synthesize(ONNX_VOICE_CHANGE_PROBE_TEXT);
+                            let sumSq = 0;
+                            for (let i = 0; i < synth.samples.length; i++) {
+                                sumSq += synth.samples[i] * synth.samples[i];
+                            }
+                            const rms = Math.sqrt(sumSq / synth.samples.length);
+                            const digest = await crypto.subtle.digest(
+                                'SHA-256', synth.samples.buffer.slice(
+                                    synth.samples.byteOffset,
+                                    synth.samples.byteOffset + synth.samples.byteLength));
+                            const sha256Hex = [...new Uint8Array(digest)]
+                                .map(b => b.toString(16).padStart(2, '0')).join('');
+                            voices.push({
+                                voiceAssetPath,
+                                sampleRateHz: synth.sampleRateHz,
+                                sampleCount: synth.samples.length,
+                                rms,
+                                sha256Hex,
+                            });
+                        } finally {
+                            await provider.close();
+                        }
+                    }
+                    const report = buildOnnxVoiceChangeReport(voices);
+                    markOnnxVoiceChangeSuccess(report);
+                    return report;
+                }), 300000, 'ONNX catalogued voice-change synthesis');
+                const {
+                    assertOnnxVoiceChange,
+                } = await import('./onnx-voice-change-acceptance.mjs');
+                try {
+                    assertOnnxVoiceChange(result.voiceChangeAcceptance);
+                } catch (voiceError) {
+                    throw Error('Chromium ONNX voice-change failed: ' +
+                        String(voiceError?.message || voiceError));
+                }
+                liveHeartbeat('onnx-voice-change-done', result.voiceChangeAcceptance);
                 stage = 'offline-audio-manager-onnx-english-wav-playback';
                 onnxPlaybackAcceptance = await page.evaluate(async (oovWord) => {
                     const { AudioManager } = await import('./audio-manager.js');

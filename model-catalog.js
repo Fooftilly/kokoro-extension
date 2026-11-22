@@ -82,6 +82,17 @@ export function dictionaryManifest() {
 
 const VOICE_AF = asset('onnx', 'voices/af.bin', 524288,
     'a4f11d9d055a12bfa0db2668a3e4f0ef8fd1f1ccca69494479718e44dbf9e41a');
+/** Second verified American-English voice for ONNX voice-change (#60). */
+const VOICE_AF_BELLA = asset('onnx', 'voices/af_bella.bin', 522240,
+    'f69d836209b78eb8c66e75e3cda491e26ea838a3674257e9d4e5703cbaf55c8b');
+
+/** Catalogued ONNX voice binaries offered for playback selection. */
+export function listOnnxVoiceAssets() {
+    return Object.freeze([
+        Object.freeze({ path: VOICE_AF.path, bytes: VOICE_AF.bytes, label: 'af (pack)' }),
+        Object.freeze({ path: VOICE_AF_BELLA.path, bytes: VOICE_AF_BELLA.bytes, label: 'af_bella' }),
+    ]);
+}
 
 const VARIANTS = Object.freeze({
     'mediapipe-cpu': Object.freeze({
@@ -103,10 +114,13 @@ const VARIANTS = Object.freeze({
         // The original 3.5-kB vocabulary/tokenizer mapping is incorporated as
         // data into the original extension-side tokenization implementation;
         // arbitrary text still requires a verified G2P frontend.
+        // Both voice bins ship with the opt-in download so voice-change does
+        // not require a second consent flow (#60).
         assets: Object.freeze([
             asset('onnx', 'onnx/model_quantized.onnx', 92361116,
                 'fbae9257e1e05ffc727e951ef9b9c98418e6d79f1c9b6b13bd59f5c9028a1478'),
             VOICE_AF,
+            VOICE_AF_BELLA,
         ]),
     }),
     'onnx-q8f16': Object.freeze({
@@ -115,6 +129,7 @@ const VARIANTS = Object.freeze({
             asset('onnx', 'onnx/model_q8f16.onnx', 86033585,
                 '04c658aec1b6008857c2ad10f8c589d4180d0ec427e7e6118ceb487e215c3cd0'),
             VOICE_AF,
+            VOICE_AF_BELLA,
         ]),
     }),
 });

@@ -38,8 +38,8 @@
         if (backend === 'onnx') {
             return 'ONNX Runtime Web runs on-device via packaged WASM (CPU) in Chrome and Firefox. ' +
                 'Speech text never goes to the Kokoro server and there is no server fallback. ' +
-                'Output is local WAV using the fixed catalog voice asset voices/af.bin ' +
-                '(American English style pack) — not remote MP3 or weighted mixes. ' +
+                'Output is local WAV using a catalogued voice asset (voices/af.bin or voices/af_bella.bin) ' +
+                '— not remote MP3 or weighted mixes. ' +
                 'Supported language: dictionary-backed US English only after the opt-in CMUdict download; ' +
                 'unknown words fail locally. WebGPU ONNX is not offered. Install and test on the TTS backends page.';
         }
@@ -55,8 +55,8 @@
     function downloadFootprintNote(entry) {
         const source = entry && typeof entry === 'object' ? entry : {};
         if (source.provider === 'onnx') {
-            return 'Total model-data footprint includes the opt-in download (ONNX graph + voices/af.bin) ' +
-                'plus packaged tokenizer/config mapping (' + PACKAGED_ONNX_TOKENIZER_LABEL +
+            return 'Total model-data footprint includes the opt-in download (ONNX graph + voices/af.bin + ' +
+                'voices/af_bella.bin) plus packaged tokenizer/config mapping (' + PACKAGED_ONNX_TOKENIZER_LABEL +
                 ') already in the extension. English CMUdict is a separate ~3.5 MB opt-in download. ' +
                 'Official ONNX Runtime JS/WASM is packaged locally — not part of model-data size.';
         }
