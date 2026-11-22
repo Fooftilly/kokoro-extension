@@ -1918,7 +1918,9 @@ def accept_measured_results_export(driver, sample_text="Hello world.", keys=None
             "Firefox measured export control not ready offline with two rows: " +
             repr(ready))
     driver.find_element(By.ID, constants["buttonId"]).click()
-    WebDriverWait(driver, 20).until(lambda d: d.execute_script("""
+    # Body-size probe (onnx + mediapipe + dict) can open large Cache entries
+    # before download completes — budget above the old 20s presence-only path.
+    WebDriverWait(driver, 90).until(lambda d: d.execute_script("""
         const needle=arguments[0];
         const payload=globalThis.__kokoroLastMeasuredExport;
         const downloadId=globalThis.__kokoroLastMeasuredExportDownloadId;
@@ -1941,7 +1943,7 @@ def accept_measured_results_export(driver, sample_text="Hello world.", keys=None
             "Firefox measured export status missing local-only confirmation: " +
             repr(status))
     # Look up by download id so Firefox auto-renames (file (1).json) still match.
-    download_hit = WebDriverWait(driver, 20).until(lambda d: d.execute_async_script("""
+    download_hit = WebDriverWait(driver, 90).until(lambda d: d.execute_async_script("""
         const downloadId=arguments[0];
         const done=arguments[arguments.length-1];
         browser.downloads.search({ id: downloadId }).then(items=>{

@@ -50,12 +50,12 @@ function assertMeasuredExportDisclosure(payload) {
         'Measured export must disclose cold prep separately from warm runs');
     requireMeasuredFlag(payload, 'firstAudioMeasured', false,
         'Measured export must disclose warm full-clip (not first-audio)');
-    requireMeasuredFlag(payload, 'storageFootprintMeasured', false,
-        'Measured export must not claim catalog presence as measured storage');
-    requireMeasuredFlag(payload, 'storageFootprintSource', 'cache-presence-catalog',
-        'Measured export must disclose cache-presence-catalog footprint source');
+    requireMeasuredFlag(payload, 'storageFootprintMeasured', true,
+        'Measured export must report measured cache-body storage footprint');
+    requireMeasuredFlag(payload, 'storageFootprintSource', 'cache-body-bytes',
+        'Measured export must disclose cache-body-bytes footprint source');
     requireMeasuredFlag(payload, 'cachePresenceProbed', true,
-        'Measured export must disclose that cache presence was probed');
+        'Measured export must disclose that cache bodies were probed');
     requireMeasuredFlag(payload, 'runtimeHeapMeasured', false,
         'Measured export must not invent runtime heap (WASM/WebGPU)');
     // #61 / KE-46: store / distribution signing honesty (nested block).
@@ -74,6 +74,15 @@ function requirePositiveMetricFields(row, fields) {
     }
 }
 
+function assertMeasuredBodyBytes(row) {
+    if (row.measuredCacheBodyBytes !== row.catalogModelAssetBytes ||
+        row.cachedCatalogAssetBytes !== row.catalogModelAssetBytes) {
+        throw Error(
+            'Measured cache body bytes must match catalog model bytes: ' +
+            JSON.stringify(row));
+    }
+}
+
 function assertOnnxStorageDisclosure(row, dictionaryBytes) {
     if (!String(row.key || '').startsWith('onnx-')) return;
     if (row.requiredDictionaryCatalogBytes !== dictionaryBytes) {
@@ -86,9 +95,11 @@ function assertOnnxStorageDisclosure(row, dictionaryBytes) {
             JSON.stringify(row));
     }
     if (!Number.isFinite(row.cachedCatalogDictionaryBytes) ||
-        row.cachedCatalogDictionaryBytes <= 0) {
-        throw Error('ONNX row must disclose cached catalog CMUdict bytes: ' +
-            JSON.stringify(row));
+        row.cachedCatalogDictionaryBytes !== dictionaryBytes ||
+        row.measuredCacheDictionaryBytes !== dictionaryBytes) {
+        throw Error(
+            'ONNX row must disclose measured CMUdict body bytes equal to ' +
+            'englishDictionaryCatalogBytes: ' + JSON.stringify(row));
     }
     if (row.cachedCatalogEnglishPathBytes !==
         row.cachedCatalogAssetBytes + row.cachedCatalogDictionaryBytes) {
@@ -114,7 +125,9 @@ function assertMeasuredExportRows(payload, expected = {}) {
         requirePositiveMetricFields(row, [
             'coldPrepMs', 'synthesisP50Ms', 'synthesisP95Ms', 'realTimeFactorP50',
             'catalogModelAssetBytes', 'cachedCatalogAssetBytes',
+            'measuredCacheBodyBytes',
         ]);
+        assertMeasuredBodyBytes(row);
         assertOnnxStorageDisclosure(row, dictionaryBytes);
     }
     if (expected.sampleText != null &&

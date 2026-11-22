@@ -457,6 +457,31 @@ describe('opt-in cached model data (#55)', () => {
         expect((await store.status(m)).ready).toBe(true);
     });
 
+    test('measureBodyBytes sums actual Cache Storage body sizes and rejects mismatches', async () => {
+        const { store, entries } = setup();
+        const m = manifest();
+        m.assets[0].integrity = realIntegrity;
+        await store.install(m);
+        const measured = await store.measureBodyBytes(m);
+        expect(measured).toEqual({
+            ready: true, complete: true,
+            measuredBytes: sample.byteLength, totalBytes: sample.byteLength,
+        });
+        const key = store.key(m, m.assets[0]);
+        const response = entries.get(key);
+        // Keep integrity/byte headers; shrink the body so blob.size mismatches.
+        entries.set(key, new Response(new Uint8Array([1, 2, 3]), {
+            headers: response.headers,
+        }));
+        // Headers still claim catalog bytes; body length must fail closed.
+        await expect(store.measureBodyBytes(m)).rejects.toThrow(/byte length mismatch/i);
+        entries.delete(key);
+        expect(await store.measureBodyBytes(m)).toEqual({
+            ready: false, complete: false, measuredBytes: 0,
+            totalBytes: sample.byteLength,
+        });
+    });
+
     test('user-initiated cache verification hashes the actual stored bytes without downloading', async () => {
         const { store, fetchImpl, cache } = setup();
         const m = manifest();

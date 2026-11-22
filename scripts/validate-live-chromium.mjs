@@ -1075,7 +1075,9 @@ async function acceptMeasuredResultsExport(page, expected = {}) {
             JSON.stringify(exportReady));
     }
     const [download] = await Promise.all([
-        page.waitForEvent('download', { timeout: 20000 }),
+        // Body-size probe (onnx + mediapipe + dict) can open large Cache entries
+        // before download() fires — budget above the old 20s presence-only path.
+        page.waitForEvent('download', { timeout: 90000 }),
         page.locator('#' + MEASURED_EXPORT_BUTTON_ID).click(),
     ]);
     const suggested = download.suggestedFilename() || '';

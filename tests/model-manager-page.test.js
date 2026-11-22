@@ -114,6 +114,24 @@ describe('ONNX model manager English synthesis diagnostics', () => {
                 return { ready, totalBytes, storedBytes: ready ? totalBytes :
                     partialModels.has(manifest.provider + '-' + manifest.variant) ? 4 : 0 };
             }),
+            measureBodyBytes: jest.fn(async manifest => {
+                if (failStatusFor.has(manifest.provider + '-' + manifest.variant)) {
+                    throw new Error('Cache body measure unavailable');
+                }
+                const ready = (manifest.provider === 'onnx' &&
+                    installedOnnxVariants.has(manifest.variant)) ||
+                    (manifest.provider === 'dictionary' && dictionaryReady) ||
+                    (manifest.provider === 'mediapipe' && installedModels.has(manifest.variant));
+                const totalBytes = manifest.assets.reduce((sum, a) => sum + a.bytes, 0);
+                if (!ready) {
+                    return {
+                        ready: false, complete: false, measuredBytes: 0, totalBytes,
+                    };
+                }
+                return {
+                    ready: true, complete: true, measuredBytes: totalBytes, totalBytes,
+                };
+            }),
             install: installModel,
             remove: removeModel,
             verifyAndPruneCorrupt: verifyModel,
@@ -1146,8 +1164,8 @@ describe('ONNX model manager English synthesis diagnostics', () => {
                 measurementKind: 'warm-full-clip-synthesis',
                 coldPrepMeasured: true,
                 firstAudioMeasured: false,
-                storageFootprintMeasured: false,
-                storageFootprintSource: 'cache-presence-catalog',
+                storageFootprintMeasured: true,
+                storageFootprintSource: 'cache-body-bytes',
                 cachePresenceProbed: true,
                 runtimeHeapMeasured: false,
                 storeSigning: {
@@ -1165,24 +1183,27 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         for (const row of globalThis.__kokoroLastMeasuredExport.measurements) {
             expect(row.coldPrepMs).toBeGreaterThan(0);
             expect(row.catalogModelAssetBytes).toBeGreaterThan(0);
-            // Presence estimate uses catalog bytes for header-matching entries.
+            // Measured Cache Storage body sizes must match catalog bytes.
             expect(row.cachedCatalogAssetBytes).toBe(row.catalogModelAssetBytes);
+            expect(row.measuredCacheBodyBytes).toBe(row.catalogModelAssetBytes);
             if (row.key === 'onnx-q8') {
                 expect(row.requiredDictionaryCatalogBytes).toBe(dictCatalog);
                 expect(row.catalogEnglishPathBytes).toBe(
                     row.catalogModelAssetBytes + dictCatalog);
                 expect(row.cachedCatalogDictionaryBytes).toBe(dictCatalog);
+                expect(row.measuredCacheDictionaryBytes).toBe(dictCatalog);
                 expect(row.cachedCatalogEnglishPathBytes).toBe(
                     row.cachedCatalogAssetBytes + dictCatalog);
             } else {
                 expect(row.cachedCatalogDictionaryBytes).toBeUndefined();
+                expect(row.measuredCacheDictionaryBytes).toBeUndefined();
                 expect(row.cachedCatalogEnglishPathBytes).toBeUndefined();
             }
         }
         expect(global.fetch).not.toHaveBeenCalled();
     });
 
-    test('cache presence probe failure falls back to catalog-only disclosure', async () => {
+    test('cache body probe failure falls back to catalog-only disclosure', async () => {
         await runProbe();
         installedModels.add('cpu');
         require('../mediapipe-provider.js').MediaPipeKokoroProvider
