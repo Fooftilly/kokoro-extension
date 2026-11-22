@@ -206,8 +206,20 @@ describe('overlay.js logic', () => {
 
     test('native play/pause events keep playPause aria-label in sync', async () => {
         await new Promise(r => setTimeout(r, 50));
+        // Start paused so navigate()/autoplay cannot pre-set Pause and mask the handler.
+        browser.storage.local.get.mockResolvedValueOnce({
+            pendingText: 'Hello world',
+            pendingContent: [{ type: 'text', content: 'Hello world' }],
+            pendingTitle: 'Test Title',
+            pendingAutoplay: false,
+        });
+        window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
+        await new Promise(r => setTimeout(r, 0));
+
         const audio = document.getElementById('audio');
         const playPauseBtn = document.getElementById('playPause');
+        expect(playPauseBtn.textContent).toBe('Play');
+        expect(playPauseBtn.getAttribute('aria-label')).toBe('Play playback');
 
         Object.defineProperty(audio, 'ended', { value: false, configurable: true });
         Object.defineProperty(audio, 'currentTime', { value: 1, configurable: true });
