@@ -1330,8 +1330,13 @@ function markShortcutsCheatSheetFallback(sheet) {
     const intro = document.getElementById('shortcutsIntro');
     if (intro) {
         intro.textContent = 'Could not read current bindings from the browser; ' +
-            'install defaults are shown below. Confirm or reassign in the extension shortcuts page.';
+            'manifest suggested defaults are shown below (Open Document Alt+M is Firefox’s ' +
+            'suggestion — Chrome often has none). Confirm in the extension shortcuts page.';
     }
+    // Keep Open Document aligned with the Firefox suggested default + chrome note,
+    // not a bare “Not set” that contradicts the install-default framing.
+    const openReader = sheet.querySelector('[data-command="open-reader"] [data-shortcut]');
+    if (openReader) openReader.textContent = 'Alt+M';
 }
 
 /**

@@ -150,6 +150,9 @@ describe('popup settings IA + shortcuts (#194 2+4)', () => {
         expect(sheet.getAttribute('data-shortcuts-source')).toBe('fallback');
         expect(document.getElementById('shortcutsIntro').textContent)
             .toMatch(/Could not read current bindings/i);
+        expect(document.querySelector('[data-command="open-reader"] [data-shortcut]').textContent)
+            .toBe('Alt+M');
+        expect(sheet.textContent).toMatch(/Firefox suggested/i);
     });
 
     test('cheat sheet uses live browser.commands bindings after reassignment', async () => {
