@@ -82,6 +82,35 @@ export function dictionaryManifest() {
 
 const VOICE_AF = asset('onnx', 'voices/af.bin', 524288,
     'a4f11d9d055a12bfa0db2668a3e4f0ef8fd1f1ccca69494479718e44dbf9e41a');
+/** Second verified American-English voice for ONNX voice-change (#60). */
+const VOICE_AF_BELLA = asset('onnx', 'voices/af_bella.bin', 522240,
+    'f69d836209b78eb8c66e75e3cda491e26ea838a3674257e9d4e5703cbaf55c8b');
+
+/** Catalogued ONNX voice binaries offered for playback selection. */
+export function listOnnxVoiceAssets() {
+    return Object.freeze([
+        Object.freeze({
+            path: VOICE_AF.path, bytes: VOICE_AF.bytes, label: 'af (pack)',
+            // Bundled with onnx-q8 / onnx-q8f16 — not a separate download.
+            bundledWithVariants: Object.freeze(['q8', 'q8f16']),
+        }),
+        Object.freeze({
+            path: VOICE_AF_BELLA.path, bytes: VOICE_AF_BELLA.bytes, label: 'af_bella',
+            // Optional opt-in so existing onnx-q8 installs stay ready (#60).
+            voiceVariant: 'voice-af-bella',
+        }),
+    ]);
+}
+
+/** Pinned manifest for an optional ONNX voice download (not the graph). */
+export function manifestForOnnxVoiceAsset(voicePath) {
+    const entry = listOnnxVoiceAssets().find(item => item.path === voicePath);
+    if (!entry?.voiceVariant) {
+        throw new RangeError('ONNX voice asset is not an optional catalog download: ' +
+            String(voicePath));
+    }
+    return manifestForVariant('onnx', entry.voiceVariant);
+}
 
 const VARIANTS = Object.freeze({
     'mediapipe-cpu': Object.freeze({
@@ -103,6 +132,8 @@ const VARIANTS = Object.freeze({
         // The original 3.5-kB vocabulary/tokenizer mapping is incorporated as
         // data into the original extension-side tokenization implementation;
         // arbitrary text still requires a verified G2P frontend.
+        // Default voice remains voices/af.bin only so upgrades stay ready;
+        // additional voices are separate opt-in downloads (#60).
         assets: Object.freeze([
             asset('onnx', 'onnx/model_quantized.onnx', 92361116,
                 'fbae9257e1e05ffc727e951ef9b9c98418e6d79f1c9b6b13bd59f5c9028a1478'),
@@ -116,6 +147,11 @@ const VARIANTS = Object.freeze({
                 '04c658aec1b6008857c2ad10f8c589d4180d0ec427e7e6118ceb487e215c3cd0'),
             VOICE_AF,
         ]),
+    }),
+    'onnx-voice-af-bella': Object.freeze({
+        provider: 'onnx', variant: 'voice-af-bella',
+        label: 'ONNX voice: af_bella (optional)',
+        assets: Object.freeze([VOICE_AF_BELLA]),
     }),
 });
 

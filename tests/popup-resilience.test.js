@@ -105,7 +105,7 @@ describe('popup backend-loss resilience (#4)', () => {
     }
 
     function allowOnnxSelection({ modelReady = true, dictionaryReady = true,
-        revision = null } = {}) {
+        voiceReady = true, revision = null } = {}) {
         const { manifestForVariant } = require('../model-catalog.js');
         const { ModelDataStore } = require('../model-data-store.js');
         const approved = revision ?? manifestForVariant('onnx', 'q8').revision;
@@ -117,7 +117,9 @@ describe('popup backend-loss resilience (#4)', () => {
         global.Response = class {};
         global.TransformStream = class {};
         jest.spyOn(ModelDataStore.prototype, 'status').mockImplementation(async manifest => ({
-            ready: manifest.provider === 'dictionary' ? dictionaryReady : modelReady,
+            ready: manifest.provider === 'dictionary' ? dictionaryReady
+                : String(manifest.variant || '').startsWith('voice-') ? voiceReady
+                    : modelReady,
         }));
     }
 
@@ -809,11 +811,11 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(document.getElementById('voiceMixerContainer').hidden).toBe(true);
         expect(document.getElementById('mediaPipeVoiceContainer').hidden).toBe(true);
         expect(document.getElementById('onnxVoiceContainer').hidden).toBe(false);
-        expect(document.getElementById('onnxVoiceAsset').disabled).toBe(true);
-        expect(document.getElementById('onnxVoiceAsset').readOnly).toBe(true);
+        expect(document.getElementById('onnxVoiceAsset').disabled).toBe(false);
+        expect(document.getElementById('onnxVoiceAsset').tagName).toBe('SELECT');
         expect(document.getElementById('onnxVoiceAsset').value).toBe('voices/af.bin');
         expect(document.getElementById('localVoiceNote').textContent).toMatch(/af\.bin/i);
-        expect(document.getElementById('localVoiceNote').textContent).toMatch(/no effect/i);
+        expect(document.getElementById('localVoiceNote').textContent).toMatch(/af_bella/i);
 
         browser.storage.sync.set.mockClear();
         await popup.saveOptions(false);
@@ -823,6 +825,33 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(writes.every((payload) => !Object.hasOwn(payload, 'voice'))).toBe(true);
         expect(writes.every((payload) => !Object.hasOwn(payload, 'mediaPipeVoice'))).toBe(true);
         expect(writes.every((payload) => !Object.hasOwn(payload, 'localVoice'))).toBe(true);
+    });
+
+    test('refuses to save uninstalled optional ONNX voice and reverts the select', async () => {
+        allowOnnxSelection({ voiceReady: false });
+        browser.storage.sync.get.mockImplementation(async (defaults) => ({
+            ...defaults,
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'onnx',
+            voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
+            onnxVoiceAsset: 'voices/af.bin',
+            mode: 'stream',
+            theme: 'light',
+        }));
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        document.getElementById('onnxVoiceAsset').value = 'voices/af_bella.bin';
+        browser.storage.sync.set.mockClear();
+        const result = await popup.saveOptions(false);
+
+        expect(result.backendUnavailable).toBe(true);
+        expect(document.getElementById('onnxVoiceAsset').value).toBe('voices/af.bin');
+        const writes = browser.storage.sync.set.mock.calls.map(([payload]) => payload);
+        expect(writes.every((payload) => !Object.hasOwn(payload, 'onnxVoiceAsset') ||
+            payload.onnxVoiceAsset !== 'voices/af_bella.bin')).toBe(true);
+        expect(document.getElementById('status').textContent).toMatch(/not installed/i);
     });
 
     test('MediaPipe save writes mediaPipeVoice only and keeps FastAPI mix (#59)', async () => {

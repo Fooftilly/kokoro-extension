@@ -41,5 +41,11 @@ describe('backend disclosure copy (#58)', () => {
             .toMatch(/not offered/i);
         expect(Disclosure.downloadFootprintNote({ provider: 'dictionary' }))
             .toMatch(/dictionary/i);
+        expect(Disclosure.downloadFootprintNote({
+            provider: 'onnx', variant: 'voice-af-bella',
+        })).toMatch(/voice download only/i);
+        expect(Disclosure.downloadFootprintNote({
+            provider: 'onnx', variant: 'voice-af-bella',
+        })).not.toMatch(/voices\/af\.bin/);
     });
 });

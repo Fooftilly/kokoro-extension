@@ -43,10 +43,15 @@ const LocalVoice = globalThis.KokoroLocalVoiceMixing || {
     DEFAULT_MEDIAPIPE_VOICE: 'af_heart',
     DEFAULT_LOCAL_VOICE: 'af_heart',
     ONNX_FIXED_VOICE_ASSET: 'voices/af.bin',
+    ONNX_VOICE_ASSETS: ['voices/af.bin', 'voices/af_bella.bin'],
     normalizeLocalVoiceId: (value) => {
         if (typeof value !== 'string') return 'af_heart';
         const trimmed = value.trim().toLowerCase();
         return /^[a-z]{2}_[a-z]+$/.test(trimmed) ? trimmed : 'af_heart';
+    },
+    normalizeOnnxVoiceAsset: (value) => {
+        const allowed = ['voices/af.bin', 'voices/af_bella.bin'];
+        return allowed.includes(value) ? value : 'voices/af.bin';
     },
     isLocalBackend: (backend) => backend === 'mediapipe' || backend === 'onnx',
     mediaPipeVoiceFromSettings: (settings) => {
@@ -56,13 +61,14 @@ const LocalVoice = globalThis.KokoroLocalVoiceMixing || {
         }
         return LocalVoice.normalizeLocalVoiceId(source.localVoice);
     },
-    onnxVoiceAssetFromSettings: () => 'voices/af.bin',
+    onnxVoiceAssetFromSettings: (settings) => LocalVoice.normalizeOnnxVoiceAsset(
+        settings && settings.onnxVoiceAsset),
     localVoiceLimitationNote: () => '',
 };
 
 /**
  * FastAPI keeps the weighted mixer. MediaPipe shows an editable voice ID.
- * ONNX shows the fixed catalog asset (readonly) — playback ignores free-form IDs (#59).
+ * ONNX shows a catalogued voice-asset select (#60 voice-change).
  * Server mix, MediaPipe voice, and ONNX asset prefs are stored separately.
  */
 function syncVoiceUiForBackend(backend) {
@@ -594,7 +600,10 @@ async function validateSelectedOnnx() {
     const validated = await browser.storage.local.get({ [key]: null });
     if (!validated[key]) throw new Error('Test ONNX q8 with English text first.');
 
-    const { manifestForVariant, dictionaryManifest } = await import('./model-catalog.js');
+    const {
+        listOnnxVoiceAssets, manifestForOnnxVoiceAsset, manifestForVariant,
+        dictionaryManifest,
+    } = await import('./model-catalog.js');
     const { ModelDataStore } = await import('./model-data-store.js');
     const model = manifestForVariant('onnx', 'q8');
     if (validated[key] !== model.revision) {
@@ -610,6 +619,20 @@ async function validateSelectedOnnx() {
     ]);
     if (!modelState.ready || !dictionaryState.ready) {
         throw new Error('ONNX q8 or the English dictionary is no longer installed. Repair and retest.');
+    }
+    // Optional catalog voices (e.g. af_bella) are separate downloads. Refuse to
+    // persist a selection that would fail in OnnxKokoroProvider.loadEngine.
+    const onnxInput = document.getElementById('onnxVoiceAsset');
+    const selected = LocalVoice.normalizeOnnxVoiceAsset
+        ? LocalVoice.normalizeOnnxVoiceAsset(onnxInput ? onnxInput.value : '')
+        : (LocalVoice.ONNX_FIXED_VOICE_ASSET || 'voices/af.bin');
+    const voiceEntry = listOnnxVoiceAssets().find(item => item.path === selected);
+    if (voiceEntry?.voiceVariant) {
+        const voiceState = await store.status(manifestForOnnxVoiceAsset(selected));
+        if (!voiceState.ready) {
+            throw new Error(
+                'Selected ONNX voice is not installed. Download it in the TTS model manager first.');
+        }
     }
 }
 
@@ -635,6 +658,15 @@ function persistPopupSettings(settings, requestedBackend, selectionVersion) {
             (selectionVersion !== backendSelectionVersion ||
                 selectedBackendValue() !== requestedBackend)) {
             delete current.ttsBackend;
+        }
+        // Drop a stale ONNX voice write if the select moved while validation awaited.
+        if (Object.hasOwn(current, 'onnxVoiceAsset')) {
+            const live = document.getElementById('onnxVoiceAsset');
+            const normalized = LocalVoice.normalizeOnnxVoiceAsset
+                ? LocalVoice.normalizeOnnxVoiceAsset(live ? live.value : '')
+                : (LocalVoice.ONNX_FIXED_VOICE_ASSET || 'voices/af.bin');
+            if (normalized !== current.onnxVoiceAsset) delete current.onnxVoiceAsset;
+            else current.onnxVoiceAsset = normalized;
         }
         if (Object.keys(current).length === 0) return false;
         await browser.storage.sync.set(current);
@@ -667,10 +699,12 @@ function attachVoicePreference(settings, ttsBackend) {
         return;
     }
     if (ttsBackend === 'onnx') {
-        const fixedAsset = LocalVoice.ONNX_FIXED_VOICE_ASSET || 'voices/af.bin';
-        settings.onnxVoiceAsset = fixedAsset;
         const onnxInput = document.getElementById('onnxVoiceAsset');
-        if (onnxInput) onnxInput.value = fixedAsset;
+        const selected = onnxInput ? onnxInput.value : '';
+        settings.onnxVoiceAsset = LocalVoice.normalizeOnnxVoiceAsset
+            ? LocalVoice.normalizeOnnxVoiceAsset(selected)
+            : (LocalVoice.ONNX_FIXED_VOICE_ASSET || 'voices/af.bin');
+        if (onnxInput) onnxInput.value = settings.onnxVoiceAsset;
         return;
     }
     settings.voice = serializeVoiceString(currentVoices);
@@ -765,6 +799,19 @@ const saveOptions = async (isDebounced = false, options = {}) => {
                 // An untested radio must never activate MediaPipe, but invalidated
                 // validation must not prevent saving unrelated options either.
                 delete settings.ttsBackend;
+                // Never persist an uninstalled optional ONNX voice selection.
+                if (Object.hasOwn(settings, 'onnxVoiceAsset')) {
+                    delete settings.onnxVoiceAsset;
+                    const stored = await browser.storage.sync.get({
+                        onnxVoiceAsset: POPUP_SYNC_DEFAULTS.onnxVoiceAsset,
+                    });
+                    const onnxInput = document.getElementById('onnxVoiceAsset');
+                    if (onnxInput) {
+                        onnxInput.value = LocalVoice.normalizeOnnxVoiceAsset
+                            ? LocalVoice.normalizeOnnxVoiceAsset(stored.onnxVoiceAsset)
+                            : (LocalVoice.ONNX_FIXED_VOICE_ASSET || 'voices/af.bin');
+                    }
+                }
                 localValidationError = error;
             }
         }
@@ -1017,6 +1064,16 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         mediaPipeVoiceInput.addEventListener('input', () => {
             void saveOptions(true);
+        });
+    }
+
+    const onnxVoiceSelect = document.getElementById('onnxVoiceAsset');
+    if (onnxVoiceSelect) {
+        onnxVoiceSelect.addEventListener('change', () => {
+            onnxVoiceSelect.value = LocalVoice.normalizeOnnxVoiceAsset
+                ? LocalVoice.normalizeOnnxVoiceAsset(onnxVoiceSelect.value)
+                : (LocalVoice.ONNX_FIXED_VOICE_ASSET || 'voices/af.bin');
+            void saveOptions(false);
         });
     }
 

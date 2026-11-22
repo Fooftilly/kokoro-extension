@@ -544,10 +544,11 @@ function createModelRow(entry) {
     choose.textContent = 'Use this backend';
     choose.className = 'model-choose';
     choose.disabled = true;
-    if (entry.provider === 'dictionary') {
+    if (entry.provider === 'dictionary' || isOnnxVoiceOnlyEntry(entry)) {
         test.hidden = true;
         choose.hidden = true;
         test.disabled = true;
+        choose.disabled = true;
     }
     actions.append(download, remove, verify, test, choose);
     const audio = document.createElement('audio');
@@ -569,11 +570,12 @@ function applyModelStatus(entry, ui, state, { updateMessage = true } = {}) {
     // any model or dependency is being downloaded, removed, or used in a test.
     const blocked = !!ui.busy ||
         !!(activeModelOperation && activeModelOperation.key !== entry.key);
-    ui.test.disabled = blocked || entry.provider === 'dictionary' || !state.ready;
+    ui.test.disabled = blocked || entry.provider === 'dictionary' ||
+        isOnnxVoiceOnlyEntry(entry) || !state.ready;
     ui.remove.disabled = blocked || !state.storedBytes;
     ui.verify.disabled = blocked || !state.storedBytes;
     ui.download.disabled = ui.busy === 'download' ? false : blocked || state.ready;
-    if (blocked || !state.ready) ui.choose.disabled = true;
+    if (blocked || !state.ready || isOnnxVoiceOnlyEntry(entry)) ui.choose.disabled = true;
 }
 
 async function refresh(entry, ui) {
@@ -794,7 +796,14 @@ async function doDownload(entry, ui) {
     }
 }
 
+function isOnnxVoiceOnlyEntry(entry) {
+    return entry?.provider === 'onnx' && String(entry.variant || '').startsWith('voice-');
+}
+
 function currentEngine(entry) {
+    if (isOnnxVoiceOnlyEntry(entry)) {
+        throw new Error('Optional ONNX voice rows have no synthesis engine; install ONNX q8 and select the voice in the popup.');
+    }
     if (engineByKey.has(entry.key)) return engineByKey.get(entry.key);
     const provider = entry.provider === 'mediapipe'
         ? new MediaPipeKokoroProvider({ variant: entry.variant })
@@ -921,7 +930,7 @@ function formatLocalBenchmarkStatus(entry, metrics, isEnglishMeasurement, englis
         ' Streaming time-to-first-audio was not measured.' +
         (entry.provider === 'onnx'
             ? (isEnglishMeasurement
-                ? ' Same English text as MediaPipe; voices and phonemization may differ. Local backends use a single voice (no weighted FastAPI-style mix).'
+                ? ' Same English text as MediaPipe; voices and phonemization may differ. Local backends use one catalogued voice at a time (no weighted FastAPI-style mix).'
                 : ' IPA timings are not comparable with English-text timings.') +
               (english?.message || ' This ONNX variant is IPA-only; regular English playback is not validated.') +
               ' Unknown English words are not supported and never fall back to FastAPI.'

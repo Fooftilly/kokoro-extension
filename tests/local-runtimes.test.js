@@ -39,16 +39,19 @@ function fakeCache(manifest) {
 describe('pinned official local Kokoro model catalog', () => {
     test('offers MediaPipe CPU and ONNX; GPU pin is retained but not offered until verified', () => {
         expect(listModelVariants().map(x => x.key)).toEqual([
-            'mediapipe-cpu', 'onnx-q8', 'onnx-q8f16',
+            'mediapipe-cpu', 'onnx-q8', 'onnx-q8f16', 'onnx-voice-af-bella',
         ]);
         expect(listPinnedModelVariants().map(x => x.key)).toEqual([
-            'mediapipe-cpu', 'mediapipe-gpu', 'onnx-q8', 'onnx-q8f16',
+            'mediapipe-cpu', 'mediapipe-gpu', 'onnx-q8', 'onnx-q8f16', 'onnx-voice-af-bella',
         ]);
         expect(listPinnedModelVariants().find(x => x.key === 'mediapipe-gpu').offered).toBe(false);
+        expect(validateModelManifest(manifestForVariant('onnx', 'voice-af-bella')))
+            .toBe(522240);
         expect(validateModelManifest(manifestForVariant('mediapipe', 'cpu'))).toBe(294783298);
         expect(validateModelManifest(manifestForVariant('mediapipe', 'gpu'))).toBe(294750530);
         expect(validateModelManifest(manifestForVariant('onnx', 'q8'))).toBe(92361116 + 524288);
-        expect(validateModelManifest(manifestForVariant('onnx', 'q8f16'))).toBe(86033585 + 524288);
+        expect(validateModelManifest(manifestForVariant('onnx', 'q8f16')))
+            .toBe(86033585 + 524288);
         expect(manifestForVariant('onnx', 'q8').assets.every(a =>
             !/\\.(?:js|wasm)$/.test(a.path) && a.integrity.startsWith('sha256-'))).toBe(true);
         expect(() => manifestForVariant('fastapi', 'q8')).toThrow();
@@ -193,6 +196,7 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
         const provider = new MediaPipeKokoroProvider({ browserApi: browserApi(), loadSDK,
             cacheStorage: fakeCache(manifest), fetchImpl: jest.fn() });
         provider.manifest = manifest;
+        provider.voiceManifest = manifest;
         const result = await provider.synthesize('Hello');
         expect(result.sampleRateHz).toBe(24000);
         expect(forAudioTasks).toHaveBeenCalledWith('moz-extension://test-uuid/runtimes/mediapipe/wasm');
@@ -231,6 +235,7 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
             }),
         });
         provider.manifest = manifest;
+        provider.voiceManifest = manifest;
         expect((await provider.synthesize('Hello')).sampleRateHz).toBe(24000);
         expect(response.blob).toHaveBeenCalledTimes(1);
         expect(response.arrayBuffer).not.toHaveBeenCalled();
@@ -252,6 +257,7 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
             fetchImpl: jest.fn(), loadSDK: async () => sdk,
         });
         provider.manifest = manifest;
+        provider.voiceManifest = manifest;
         await expect(provider.synthesize('Hello')).rejects.toThrow(/24-kHz/);
     });
     test('MediaPipe cannot mark an installed model as working when SDK outputs silence', async () => {
@@ -269,6 +275,7 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
             fetchImpl: jest.fn(), loadSDK: async () => sdk,
         });
         provider.manifest = manifest;
+        provider.voiceManifest = manifest;
         await expect(provider.synthesize('Hello')).rejects.toThrow(/silent/);
         expect(synthesize).toHaveBeenCalledTimes(1);
     });
@@ -305,6 +312,7 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
             }),
         });
         provider.manifest = manifest;
+        provider.voiceManifest = manifest;
         const output = await provider.synthesize('Hello world.');
         expect(output.samples.length).toBe(2);
         const expected = tokenizePhonemes('həlˈoʊ wˈɚld.');
@@ -343,6 +351,7 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
             }),
         });
         provider.manifest = manifest;
+        provider.voiceManifest = manifest;
         // The abbreviated fixture covers local inference plumbing; the real
         // SHA-256 behavior has dedicated small-fixture integrity tests.
         const verified = jest.spyOn(ModelDataStore.prototype, 'cachedBytesMatch')
@@ -378,6 +387,7 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
             fetchImpl: jest.fn(), loadSDK: async () => sdk,
         });
         provider.manifest = manifest;
+        provider.voiceManifest = manifest;
         await expect(provider.synthesizePhonemes('a b')).rejects.toThrow(/finite/);
         expect(session.run).toHaveBeenCalledTimes(1);
     });
@@ -394,6 +404,7 @@ describe('official packaged backend adapters — SDK mocks, no fake inference cl
         const provider = new OnnxKokoroProvider({ browserApi: browserApi(),
             cacheStorage: fakeCache(manifest), fetchImpl: jest.fn(), loadSDK: async () => sdk });
         provider.manifest = manifest;
+        provider.voiceManifest = manifest;
         const result = await provider.synthesizePhonemes('a b');
         expect(result.sampleRateHz).toBe(24000);
         expect(sdk.env.wasm.numThreads).toBe(1);

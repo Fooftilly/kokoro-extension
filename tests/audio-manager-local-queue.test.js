@@ -202,7 +202,9 @@ describe('local Kokoro synthesis is serialized across reading-session resets (#5
 
         releaseOld.resolve();
         await expect(newer).resolves.toBe('blob:next');
-        expect(OnnxKokoroProvider).toHaveBeenCalledWith({ variant: 'q8' });
+        expect(OnnxKokoroProvider).toHaveBeenCalledWith({
+            variant: 'q8', voiceAssetPath: 'voices/af.bin',
+        });
         expect(MediaPipeKokoroProvider).toHaveBeenCalledWith({ variant: 'cpu' });
         expect(provider.synthesize).toHaveBeenCalledWith('New MediaPipe sentence',
             { voiceId: 'af_heart' });

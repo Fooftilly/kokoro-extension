@@ -196,7 +196,8 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         await waitFor(() => pruneModels.mock.calls.length === 1);
         const retained = pruneModels.mock.calls[0][0];
         expect(retained.map(m => m.provider + '-' + m.variant).sort()).toEqual([
-            'dictionary-english', 'mediapipe-cpu', 'mediapipe-gpu', 'onnx-q8', 'onnx-q8f16',
+            'dictionary-english', 'mediapipe-cpu', 'mediapipe-gpu',
+            'onnx-q8', 'onnx-q8f16', 'onnx-voice-af-bella',
         ]);
         expect(document.querySelector('[data-variant="mediapipe-gpu"]')).toBeNull();
         expect(cleanup.disabled).toBe(true);
@@ -224,6 +225,21 @@ describe('ONNX model manager English synthesis diagnostics', () => {
             .toBe(false);
         expect(document.getElementById('cleanOutdatedModels').disabled).toBe(false);
         confirm.mockRestore();
+    });
+
+    test('optional ONNX voice rows hide synthesis Test and Use-this-backend', async () => {
+        installedOnnxVariants.add('voice-af-bella');
+        document.getElementById('refreshModelCache').click();
+        await waitFor(() => document.querySelector(
+            '[data-variant="onnx-voice-af-bella"] .model-download').disabled === true);
+        const row = document.querySelector('[data-variant="onnx-voice-af-bella"]');
+        expect(row).toBeTruthy();
+        expect(row.querySelector('.model-test').hidden).toBe(true);
+        expect(row.querySelector('.model-choose').hidden).toBe(true);
+        expect(row.querySelector('.model-footprint-note').textContent)
+            .toMatch(/voice download only/i);
+        expect(row.querySelector('.model-footprint-note').textContent)
+            .not.toMatch(/voices\/af\.bin/);
     });
 
     async function runProbe() {

@@ -49,12 +49,15 @@ describe('local voice mixing policy (#59)', () => {
     test('onnxVoiceAsset defaults to the catalog-fixed af.bin path', () => {
         expect(LocalVoice.onnxVoiceAssetFromSettings({})).toBe('voices/af.bin');
         expect(LocalVoice.ONNX_FIXED_VOICE_ASSET).toBe('voices/af.bin');
+        expect(LocalVoice.normalizeOnnxVoiceAsset('voices/af_bella.bin')).toBe('voices/af_bella.bin');
+        expect(LocalVoice.normalizeOnnxVoiceAsset('voices/nope.bin')).toBe('voices/af.bin');
+        expect(LocalVoice.ONNX_VOICE_ASSETS).toEqual(['voices/af.bin', 'voices/af_bella.bin']);
     });
 
     test('limitation notes disclose single-voice local behavior', () => {
         expect(LocalVoice.localVoiceLimitationNote('mediapipe')).toMatch(/SynthesisOptions\.voiceId/);
         expect(LocalVoice.localVoiceLimitationNote('onnx')).toMatch(/af\.bin/);
-        expect(LocalVoice.localVoiceLimitationNote('onnx')).toMatch(/no effect/i);
+        expect(LocalVoice.localVoiceLimitationNote('onnx')).toMatch(/af_bella/);
         expect(LocalVoice.localVoiceLimitationNote('fastapi')).toBe('');
     });
 });

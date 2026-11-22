@@ -4439,6 +4439,127 @@ def main():
                 """, manifests, server.server_port, token)
                 if not cache_result.get("success"):
                     raise RuntimeError("Firefox extension cache preload failed: " + str(cache_result))
+            # Optional catalogued voices (af_bella) are not part of onnx-q8.
+            # Install them via the real model-manager UI while online, with the
+            # pinned-fetch allowlist widened to those voice URLs only.
+            if origin_download and provider == "onnx":
+                result["stage"] = "online-optional-onnx-voice-install"
+                optional_voices = driver.execute_async_script("""
+                    const done=arguments[arguments.length-1];
+                    (async()=>{
+                        const {
+                            listOnnxVoiceAssets, manifestForOnnxVoiceAsset,
+                        }=await import('./model-catalog.js');
+                        return listOnnxVoiceAssets()
+                            .filter(entry=>entry?.voiceVariant)
+                            .map(entry=>{
+                                const voiceManifest=manifestForOnnxVoiceAsset(entry.path);
+                                return {
+                                    path:entry.path,
+                                    variant:entry.voiceVariant,
+                                    key:'onnx-'+entry.voiceVariant,
+                                    urls:voiceManifest.assets.map(asset=>asset.url),
+                                };
+                            });
+                    })().then(done,e=>done({success:false,error:String(e)}));
+                """)
+                if isinstance(optional_voices, dict) and optional_voices.get("success") is False:
+                    raise RuntimeError(
+                        "Firefox optional ONNX voice catalog probe failed: " +
+                        json.dumps(optional_voices))
+                installed_voices = []
+                for voice in optional_voices:
+                    row = f'[data-variant="{voice["key"]}"]'
+                    ready = driver.execute_async_script("""
+                        const [variant,done]=arguments;
+                        (async()=>{
+                            const {ModelDataStore}=await import('./model-data-store.js');
+                            const {manifestForVariant}=await import('./model-catalog.js');
+                            const store=new ModelDataStore({
+                                origin:browser.runtime.getURL('/'),
+                                cacheStorage:caches,
+                                fetchImpl:()=>{throw Error('Unexpected fetch during optional voice status')},
+                                responseClass:Response, streamClass:TransformStream});
+                            return (await store.status(manifestForVariant('onnx', variant))).ready;
+                        })().then(done,e=>done({success:false,error:String(e)}));
+                    """, voice["variant"])
+                    if ready is True:
+                        installed_voices.append({
+                            "path": voice["path"], "alreadyReady": True,
+                        })
+                        continue
+                    if isinstance(ready, dict) and ready.get("success") is False:
+                        raise RuntimeError(
+                            "Firefox optional ONNX voice status failed: " +
+                            json.dumps(ready))
+                    driver.execute_script("""
+                        const page=window.wrappedJSObject||window;
+                        const expected=new Set(arguments[0]);
+                        const original=page.__originModelOriginalFetch;
+                        if(typeof original!=='function')
+                            throw Error('Pinned fetch original missing before optional voice install');
+                        const stats={requests:[],bytesByUrl:{},completed:[],unexpected:[]};
+                        const snapshot=()=>JSON.stringify(stats);
+                        if(typeof exportFunction==='function')
+                            exportFunction(snapshot,page,{defineAs:'__originOptionalVoiceStatsJson'});
+                        else page.__originOptionalVoiceStatsJson=snapshot;
+                        const counted=async(input,options)=>{
+                            const url=String(input?.url||input);
+                            if(/^https?:/i.test(url)&&!expected.has(url)){
+                                stats.unexpected.push(url);
+                                throw Error('Unpinned HTTP(S) model fetch: '+url);
+                            }
+                            if(!expected.has(url))return original.apply(page,[input,options]);
+                            stats.requests.push(url);
+                            const response=await original.apply(page,[input,options]);
+                            if(!response.ok||!response.body)return response;
+                            stats.bytesByUrl[url]=0;
+                            const body=response.body.pipeThrough(new page.TransformStream({
+                                transform(chunk,controller){
+                                    stats.bytesByUrl[url]+=chunk.byteLength;
+                                    controller.enqueue(chunk);
+                                },
+                                flush(){stats.completed.push(url)}
+                            }));
+                            return new page.Response(body,{status:response.status,
+                                statusText:response.statusText,headers:response.headers});
+                        };
+                        if(typeof exportFunction==='function')
+                            exportFunction(counted,page,{defineAs:'fetch'});
+                        else page.fetch=counted;
+                    """, voice["urls"])
+                    WebDriverWait(driver, 30).until(
+                        lambda d, selector=row: d.find_element(
+                            By.CSS_SELECTOR, selector + " .model-download").is_enabled()
+                    )
+                    driver.find_element(
+                        By.CSS_SELECTOR, row + " .model-download").click()
+                    WebDriverWait(driver, 360).until(
+                        lambda d, selector=row: (
+                            ("Installed" in d.find_element(
+                                By.CSS_SELECTOR, selector + " .model-status").text
+                             and d.find_element(
+                                By.CSS_SELECTOR,
+                                selector + " .model-download-progress").get_attribute(
+                                    "value") == "100")
+                            or any(word in d.find_element(
+                                By.CSS_SELECTOR, selector + " .model-status").text.lower()
+                                for word in ("permission was denied", "permission failed",
+                                             "cannot request", "download failed"))
+                        )
+                    )
+                    voice_ui = driver.find_element(
+                        By.CSS_SELECTOR, row + " .model-status").text
+                    if "Installed" not in voice_ui:
+                        raise RuntimeError(
+                            "Firefox optional ONNX voice UI install failed for " +
+                            voice["path"] + ": " + voice_ui)
+                    installed_voices.append({
+                        "path": voice["path"], "alreadyReady": False, "uiStatus": voice_ui,
+                    })
+                result["optionalOnnxVoiceInstall"] = {
+                    "success": True, "installed": installed_voices,
+                }
             # Require the actual packaged Firefox extension to load cached
             # executable assets, weights, and dictionary while Firefox is
             # offline. Geckodriver commands remain local browser automation.
@@ -4705,6 +4826,89 @@ def main():
                                        json.dumps(long_text))
                 metrics["longTextAcceptance"] = long_text
 
+                result["stage"] = "offline-onnx-voice-change"
+                voice_paths = subprocess.run(
+                    ["node", "--input-type=module", "-e",
+                     "import {ONNX_VOICE_CHANGE_ASSETS, ONNX_VOICE_CHANGE_PROBE_TEXT} from "
+                     "'./scripts/onnx-voice-change-acceptance.mjs';"
+                     "process.stdout.write(JSON.stringify({"
+                     "voicePaths:[...ONNX_VOICE_CHANGE_ASSETS],"
+                     "probeText:ONNX_VOICE_CHANGE_PROBE_TEXT}));"],
+                    check=True, capture_output=True, text=True,
+                ).stdout
+                voice_probe = driver.execute_async_script("""
+                    const done=arguments[arguments.length-1];
+                    const opts=arguments[0];
+                    (async()=>{
+                        const {
+                            listOnnxVoiceAssets, manifestForOnnxVoiceAsset,
+                        }=await import('./model-catalog.js');
+                        const {ModelDataStore}=await import('./model-data-store.js');
+                        const {OnnxKokoroProvider}=await import('./onnx-provider.js');
+                        const store=new ModelDataStore({
+                            origin:browser.runtime.getURL('/'),
+                            cacheStorage:caches, fetchImpl:fetch,
+                            responseClass:Response, streamClass:TransformStream,
+                        });
+                        // Voices must already be cached from the online install stage.
+                        for (const path of opts.voicePaths) {
+                            const entry=listOnnxVoiceAssets().find(item=>item.path===path);
+                            if (!entry?.voiceVariant) continue;
+                            const voiceManifest=manifestForOnnxVoiceAsset(path);
+                            if (!(await store.status(voiceManifest)).ready) {
+                                throw Error('Optional ONNX voice missing offline: '+path);
+                            }
+                        }
+                        const voices=[];
+                        for (const voiceAssetPath of opts.voicePaths) {
+                            const provider=new OnnxKokoroProvider({
+                                variant:'q8', voiceAssetPath,
+                            });
+                            try {
+                                const synth=await provider.synthesize(opts.probeText);
+                                let sumSq=0;
+                                for (let i=0;i<synth.samples.length;i++) {
+                                    sumSq+=synth.samples[i]*synth.samples[i];
+                                }
+                                const rms=Math.sqrt(sumSq/synth.samples.length);
+                                const digest=await crypto.subtle.digest(
+                                    'SHA-256', synth.samples.buffer.slice(
+                                        synth.samples.byteOffset,
+                                        synth.samples.byteOffset+synth.samples.byteLength));
+                                const sha256Hex=[...new Uint8Array(digest)]
+                                    .map(b=>b.toString(16).padStart(2,'0')).join('');
+                                voices.push({
+                                    voiceAssetPath, sampleRateHz:synth.sampleRateHz,
+                                    sampleCount:synth.samples.length, rms, sha256Hex,
+                                });
+                            } finally {
+                                await provider.close();
+                            }
+                        }
+                        return {voices};
+                    })().then(done,e=>done({success:false,error:String(e),stack:String(e.stack||'')}));
+                """, json.loads(voice_paths))
+                if voice_probe.get("success") is False or voice_probe.get("error"):
+                    raise RuntimeError("Firefox ONNX voice-change probe failed: " +
+                                       json.dumps(voice_probe))
+                assert_mod = subprocess.run(
+                    ["node", "--input-type=module", "-e",
+                     "import {assertOnnxVoiceChange, buildOnnxVoiceChangeReport, "
+                     "markOnnxVoiceChangeSuccess} from "
+                     "'./scripts/onnx-voice-change-acceptance.mjs';"
+                     "const probe=JSON.parse(process.argv[1]);"
+                     "const report=buildOnnxVoiceChangeReport(probe.voices);"
+                     "markOnnxVoiceChangeSuccess(report);"
+                     "assertOnnxVoiceChange(report);"
+                     "process.stdout.write(JSON.stringify(report));",
+                     json.dumps(voice_probe)],
+                    check=False, capture_output=True, text=True,
+                )
+                if assert_mod.returncode != 0:
+                    raise RuntimeError(
+                        "Firefox ONNX voice-change assert failed: " +
+                        (assert_mod.stderr or assert_mod.stdout or "unknown"))
+                metrics["voiceChangeAcceptance"] = json.loads(assert_mod.stdout)
             playback_acceptance = None
             if origin_download and provider == "onnx" and metrics.get("success"):
                 playback_acceptance = driver.execute_async_script("""
