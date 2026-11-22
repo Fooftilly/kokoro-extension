@@ -18,18 +18,17 @@ export async function probeLocalProviderIdleRelease({ backend, apiName }) {
     // Join latency is native close() wall time — not idle-timer arithmetic.
     // AudioManager may arm the idle timer before WAV readback finishes, so
     // subtracting configuredIdleMs from a late waitStarted understates teardown.
+    // Only mark success after nativeClose fulfills. AudioManager swallows
+    // close rejections on its queue; cleared model refs alone must not pass.
     const instrumentCloseJoin = (provider) => {
         let closed = false;
         let joinMs = null;
         const nativeClose = provider.close.bind(provider);
         provider.close = async () => {
             const startedAt = performance.now();
-            try {
-                await nativeClose();
-            } finally {
-                joinMs = performance.now() - startedAt;
-                closed = true;
-            }
+            await nativeClose();
+            joinMs = performance.now() - startedAt;
+            closed = true;
         };
         return {
             get closed() { return closed; },

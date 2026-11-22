@@ -27,6 +27,30 @@ export function measureCloseJoinMs(startedAt, endedAt) {
 }
 
 /**
+ * Wrap a native close() so join is recorded only after fulfillment.
+ * Rejects leave closed=false / joinMs=null (fail closed).
+ * @param {() => Promise<unknown>} nativeClose
+ */
+export function createCloseJoinInstrument(nativeClose) {
+    if (typeof nativeClose !== 'function') {
+        throw new TypeError('nativeClose() required for idle-release join');
+    }
+    let closed = false;
+    let joinMs = null;
+    const close = async () => {
+        const startedAt = performance.now();
+        await nativeClose();
+        joinMs = measureCloseJoinMs(startedAt, performance.now());
+        closed = true;
+    };
+    return {
+        close,
+        get closed() { return closed; },
+        get joinMs() { return joinMs; },
+    };
+}
+
+/**
  * Assert one backend idle-release probe result from probeLocalProviderIdleRelease.
  * @param {object} probe
  * @param {string} [expectedBackend]

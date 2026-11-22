@@ -91,6 +91,34 @@ const lateWaitWouldUnderstate = (() => {
     const closeJoin = idle.measureCloseJoinMs(closeStarted, closeEnded);
     return { understated, closeJoin };
 })();
+const rejectedNativeClose = await (async () => {
+    // Cleared refs + rejected native teardown must not mark closed.
+    let refsCleared = false;
+    const instrument = idle.createCloseJoinInstrument(async () => {
+        refsCleared = true;
+        throw new Error('Native release failed');
+    });
+    let rejected = false;
+    try {
+        await instrument.close();
+    } catch (error) {
+        rejected = String(error.message || error).includes('Native release failed');
+    }
+    return {
+        refsCleared,
+        rejected,
+        closed: instrument.closed,
+        joinMs: instrument.joinMs,
+    };
+})();
+const fulfilledNativeClose = await (async () => {
+    const instrument = idle.createCloseJoinInstrument(async () => {});
+    await instrument.close();
+    return {
+        closed: instrument.closed,
+        joinFinite: Number.isFinite(instrument.joinMs) && instrument.joinMs >= 0,
+    };
+})();
 console.log(JSON.stringify({
     needle: idle.LOCAL_IDLE_RELEASE_MEASURED_NEEDLE,
     backends: idle.DUAL_IDLE_RELEASE_BACKENDS,
@@ -101,6 +129,8 @@ console.log(JSON.stringify({
     failUnmeasured,
     failCloseJoin,
     lateWaitWouldUnderstate,
+    rejectedNativeClose,
+    fulfilledNativeClose,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
@@ -125,6 +155,14 @@ describe('local idle-release dual acceptance', () => {
         expect(snap.failCloseJoin.ok).toBe(false);
         expect(snap.lateWaitWouldUnderstate.understated).toBe(0);
         expect(snap.lateWaitWouldUnderstate.closeJoin).toBe(80);
+        expect(snap.rejectedNativeClose).toEqual({
+            refsCleared: true,
+            rejected: true,
+            closed: false,
+            joinMs: null,
+        });
+        expect(snap.fulfilledNativeClose.closed).toBe(true);
+        expect(snap.fulfilledNativeClose.joinFinite).toBe(true);
     });
 
     test('live harnesses gate dual idle release for both browsers', () => {
@@ -157,5 +195,9 @@ describe('local idle-release dual acceptance', () => {
         expect(probe).not.toContain(
             'Math.max(0, observedMs - configuredIdleMs)');
         expect(probe).toContain('performance.now() - startedAt');
+        // Failed native teardown must not mark closed in finally.
+        expect(probe).not.toMatch(
+            /await nativeClose\(\);\s*\}\s*finally\s*\{[^}]*closed = true/);
+        expect(probe).toContain('await nativeClose();\n            joinMs =');
     });
 });
