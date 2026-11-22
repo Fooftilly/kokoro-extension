@@ -31,6 +31,8 @@ import {
     longFormStorageConfig,
     originLongFormMemoryStageEnabled,
     requireLongFormBackend,
+    shouldSampleLongFormWaveform,
+    decodeLongFormWavPcm16Metrics,
 } from './long-form-memory-acceptance.mjs';
 import { buildCurrentProviderSnapshot } from './live-chromium-report.mjs';
 import { probeLocalProviderIdleRelease } from './local-provider-idle-probe.mjs';
@@ -1073,7 +1075,9 @@ async function acceptMeasuredResultsExport(page, expected = {}) {
             JSON.stringify(exportReady));
     }
     const [download] = await Promise.all([
-        page.waitForEvent('download', { timeout: 20000 }),
+        // Body-size probe (onnx + mediapipe + dict) can open large Cache entries
+        // before download() fires — budget above the old 20s presence-only path.
+        page.waitForEvent('download', { timeout: 90000 }),
         page.locator('#' + MEASURED_EXPORT_BUTTON_ID).click(),
     ]);
     const suggested = download.suggestedFilename() || '';
@@ -1136,8 +1140,12 @@ async function acceptMeasuredResultsExport(page, expected = {}) {
  * and preference-honor reading paths (online).
  */
 async function startFastApiSpeechStub() {
-    const { MINIMAL_MP3_BYTES } = await import(
-        './fastapi-server-card-acceptance.mjs');
+    const {
+        MINIMAL_MP3_BYTES,
+        FASTAPI_STUB_FIRST_BYTE_DELAY_MS,
+        FASTAPI_STUB_PROGRESSIVE_TAIL_HOLD_MS,
+        splitFastApiStubMp3ForProgressive,
+    } = await import('./fastapi-server-card-acceptance.mjs');
     const body = Buffer.from(MINIMAL_MP3_BYTES);
     let speechHits = 0;
     const server = createServer((req, res) => {
@@ -1167,14 +1175,13 @@ async function startFastApiSpeechStub() {
                 });
                 // Hold a playable MP3 prefix open before the final write so
                 // progressive MediaSource can fire `playing` before EOF.
-                const tailLen = Math.min(32, Math.max(1, body.length - 1));
-                const firstLen = Math.max(1, body.length - tailLen);
-                const first = body.subarray(0, firstLen);
-                const rest = body.subarray(firstLen);
+                const { first, rest } = splitFastApiStubMp3ForProgressive(body);
                 setTimeout(() => {
                     res.write(first);
-                    setTimeout(() => res.end(rest), 250);
-                }, 100);
+                    setTimeout(
+                        () => res.end(rest),
+                        FASTAPI_STUB_PROGRESSIVE_TAIL_HOLD_MS);
+                }, FASTAPI_STUB_FIRST_BYTE_DELAY_MS);
             });
             return;
         }
@@ -2510,27 +2517,39 @@ function readLongFormHeap(page) {
     });
 }
 
-function readLongFormWavMeta(page) {
-    return page.evaluate(async () => {
+async function readLongFormWavMeta(page) {
+    // Fetch WAV bytes in-page; decode PCM16 metrics in Node via shared helper
+    // so Jest + live share one fail-closed decoder path.
+    const payload = await page.evaluate(async () => {
         const audio = document.getElementById('audio');
         const bytes = new Uint8Array(await (await fetch(audio.src)).arrayBuffer());
-        const wav = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        const tag = (start, length) =>
-            String.fromCharCode(...bytes.subarray(start, start + length));
-        const audioBytes = wav.getUint32(40, true);
-        if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
-            wav.getUint32(24, true) !== 24000 || audioBytes < 2 ||
-            bytes.length !== 44 + audioBytes) {
-            throw Error('Long-form overlay WAV mismatch');
-        }
         const digest = await crypto.subtle.digest('SHA-256', bytes);
         const audioSha256 = [...new Uint8Array(digest)]
             .map(b => b.toString(16).padStart(2, '0')).join('');
+        let binary = '';
+        const chunk = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunk) {
+            binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+        }
         return {
-            audioBytes, audioSha256, paused: audio.paused,
+            wavBase64: btoa(binary),
+            audioSha256,
+            paused: audio.paused,
             offline: navigator.onLine === false,
         };
     });
+    const wavBytes = Uint8Array.from(
+        atob(payload.wavBase64), (c) => c.charCodeAt(0));
+    const metrics = decodeLongFormWavPcm16Metrics(wavBytes);
+    return {
+        audioBytes: metrics.audioBytes,
+        sampleRateHz: metrics.sampleRateHz,
+        rms: metrics.rms,
+        durationSec: metrics.durationSec,
+        audioSha256: payload.audioSha256,
+        paused: payload.paused,
+        offline: payload.offline,
+    };
 }
 
 async function walkLongFormSentences(page, visitIndexes) {
@@ -2550,7 +2569,7 @@ async function walkLongFormSentences(page, visitIndexes) {
         assertBoundedAudioManagerStats(stats);
         maxCacheSize = Math.max(maxCacheSize, stats.cacheSize);
         maxObjectUrlCount = Math.max(maxObjectUrlCount, stats.objectUrlCount);
-        if (index === 0 || index === visitIndexes[visitIndexes.length - 1]) {
+        if (shouldSampleLongFormWaveform(index, visitIndexes)) {
             samples.push({ index, ...(await readLongFormWavMeta(page)), ...stats });
         }
         // Sparse visit indexes can leave several slow MediaPipe syntheses
@@ -3791,27 +3810,35 @@ try {
                 progressiveStreamingTtfaAcceptance =
                     fastapiServerCardAcceptance
                         ?.progressiveStreamingTtfaAcceptance || null;
-                const progressiveMeasured =
-                    progressiveStreamingTtfaAcceptance
-                        ?.progressiveStreamingTtfaMeasured === true &&
-                    Number.isFinite(progressiveStreamingTtfaAcceptance
-                        ?.progressiveStreamingTtfaP50Ms) &&
-                    progressiveStreamingTtfaAcceptance?.usedMediaSource === true;
-                const progressiveUnavailable =
-                    progressiveStreamingTtfaAcceptance
-                        ?.progressiveStreamingTtfaUnavailable === true &&
-                    progressiveStreamingTtfaAcceptance
-                        ?.progressiveStreamingTtfaMeasured === false &&
-                    !Number.isFinite(progressiveStreamingTtfaAcceptance
-                        ?.progressiveStreamingTtfaP50Ms);
-                if (progressiveStreamingTtfaAcceptance?.assertedFromServerCard !==
-                        true ||
-                    progressiveStreamingTtfaAcceptance?.success !== true ||
-                    !(progressiveMeasured || progressiveUnavailable)) {
-                    throw Error(
-                        'Progressive MediaSource TTFA measured/unavailable ' +
-                        'acceptance missing verified server-card evidence: ' +
-                        JSON.stringify(progressiveStreamingTtfaAcceptance));
+                // Chromium dual must measure progressive MediaSource TTFA
+                // (stub holds the MP3 tail open). Firefox may still be
+                // unavailable when MSE progressive mime is missing.
+                try {
+                    const {
+                        assertChromiumDualRequiresProgressiveTtfaMeasured,
+                    } = await import(
+                        './mediasource-progressive-ttfa-acceptance.mjs');
+                    assertChromiumDualRequiresProgressiveTtfaMeasured(
+                        progressiveStreamingTtfaAcceptance);
+                } catch (progressiveError) {
+                    // Attribute to the server-card stage — preference honor
+                    // never ran. Do not leave card success:true in the report.
+                    const message = String(
+                        progressiveError?.message || progressiveError);
+                    progressiveStreamingTtfaAcceptance = {
+                        ...(progressiveStreamingTtfaAcceptance || {}),
+                        success: false,
+                        progressiveStreamingTtfaMeasured: false,
+                        error: message,
+                    };
+                    fastapiServerCardAcceptance = {
+                        ...(fastapiServerCardAcceptance || {}),
+                        success: false,
+                        stage: 'fastapi-server-card-progressive-ttfa',
+                        error: message,
+                        progressiveStreamingTtfaAcceptance,
+                    };
+                    throw progressiveError;
                 }
                 liveHeartbeat('fastapi-server-card-done', {
                     success: fastapiServerCardAcceptance?.success === true,
@@ -3846,9 +3873,13 @@ try {
                     error: String(error) };
             } else if (!fastapiServerCardAcceptance ||
                 fastapiServerCardAcceptance.success !== true) {
-                fastapiServerCardAcceptance = { success: false,
-                    stage: 'fastapi-server-card',
-                    error: String(error) };
+                fastapiServerCardAcceptance = {
+                    ...(fastapiServerCardAcceptance || {}),
+                    success: false,
+                    stage: fastapiServerCardAcceptance?.stage ||
+                        'fastapi-server-card',
+                    error: String(error),
+                };
             } else if (!fastapiPreferenceHonorAcceptance ||
                 fastapiPreferenceHonorAcceptance.success !== true) {
                 fastapiPreferenceHonorAcceptance = { success: false,

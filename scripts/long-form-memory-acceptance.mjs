@@ -3,8 +3,9 @@
  * Firefox origin; onnx + mediapipe). Speech tokens are short English number
  * words (CMUdict-friendly for ONNX q8; plain text for MediaPipe CPU).
  *
- * KE-52 / #57: deeper walk (36 sentences) stays memory-bound only —
- * subjective quality / MOS are explicitly not measured.
+ * KE-52 / #57: deeper walk (36 sentences) stays memory-bound.
+ * Leave-open after #183: objective waveform quality (PCM RMS / duration) is
+ * measured on sampled long-form clips; subjective MOS remains unmeasured.
  */
 
 export const LONG_FORM_SENTENCE_COUNT = 36;
@@ -14,6 +15,14 @@ export const LONG_FORM_SENTENCE_COUNT = 36;
 export const LONG_FORM_MAX_CACHE_ENTRIES = 8;
 export const LONG_FORM_MAX_OBJECT_URLS = 8;
 
+/** Minimum distinct WAV probes with finite non-silent RMS for quality gate. */
+export const LONG_FORM_MIN_QUALITY_SAMPLES = 4;
+
+/** Align with pcm-wav.js near-silence floor. */
+export const LONG_FORM_MIN_RMS = 0.0001;
+export const LONG_FORM_MIN_DURATION_SEC = 0.05;
+export const LONG_FORM_MAX_DURATION_SEC = 30;
+
 export const LONG_FORM_NUMBER_WORDS = Object.freeze([
     'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
     'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen',
@@ -22,9 +31,13 @@ export const LONG_FORM_NUMBER_WORDS = Object.freeze([
     'million', 'billion', 'trillion', 'zero', 'dozen', 'score', 'pair',
 ]);
 
-/** Honesty needle — deeper quality/performance beyond memory bounds is unmeasured. */
+/** Legacy KE-52 honesty needle (superseded by measured objective quality). */
 export const LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE =
     'deeper long-form quality/performance not measured';
+
+/** Disclosure when objective PCM quality was measured; MOS still unmeasured. */
+export const LONG_FORM_QUALITY_MEASURED_NEEDLE =
+    'long-form objective waveform quality measured; MOS not measured';
 
 export const ALLOWED_LONG_FORM_BACKENDS = Object.freeze(['onnx', 'mediapipe']);
 
@@ -81,6 +94,19 @@ export function longFormStorageConfig(backend) {
 export function buildLongFormVisitIndexes(sentenceCount = LONG_FORM_SENTENCE_COUNT) {
     return Array.from({ length: sentenceCount }, (_, i) => i)
         .filter((i) => i < 8 || (i % 3 === 0 && i < sentenceCount - 1));
+}
+
+/**
+ * Sparse WAV probes during the walk: first, last visit, and every 6th index.
+ * Jump path adds return-to-0 + distant-last separately.
+ */
+export function shouldSampleLongFormWaveform(index, visitIndexes) {
+    if (!Array.isArray(visitIndexes) || visitIndexes.length === 0) {
+        throw new Error('visitIndexes required for long-form quality sampling');
+    }
+    if (index === 0) return true;
+    if (index === visitIndexes[visitIndexes.length - 1]) return true;
+    return index > 0 && index % 6 === 0;
 }
 
 export function assertLongFormCacheWindowNear(stats, center, options = {}) {
@@ -140,8 +166,216 @@ export function assertLongFormHeapDelta(beforeBytes, afterBytes, options = {}) {
 }
 
 /**
- * Honesty flags for deeper long-form quality/MOS — always false until a
- * dedicated measurement lands. Fail-closed if a report claims measured.
+ * Fixture sample for Jest — mirrors live WAV meta after PCM16 RMS decode.
+ * Default 48_000 PCM bytes = 24_000 mono PCM16 samples = 1.0 s at 24 kHz.
+ */
+export function buildLongFormQualitySampleFixture(overrides = {}) {
+    return {
+        index: 0,
+        audioBytes: 48000,
+        sampleRateHz: 24000,
+        durationSec: 1,
+        rms: 0.04,
+        audioSha256: 'fixture-sha256',
+        ...overrides,
+    };
+}
+
+/**
+ * Build a minimal 24 kHz mono PCM16 RIFF/WAVE for Jest decode coverage.
+ * amplitude 0 → near-silent; default produces non-silent 440 Hz tone.
+ *
+ * @param {number} sampleCount
+ * @param {{ amplitude?: number }} [options]
+ * @returns {Uint8Array}
+ */
+export function buildLongFormTestWavPcm16(sampleCount = 24000, options = {}) {
+    const amplitude = options.amplitude ?? 0.25;
+    if (!Number.isInteger(sampleCount) || sampleCount < 1) {
+        throw new Error('sampleCount must be a positive integer');
+    }
+    const audioBytes = sampleCount * 2;
+    const bytes = new Uint8Array(44 + audioBytes);
+    const view = new DataView(bytes.buffer);
+    const text = (offset, value) => {
+        for (let i = 0; i < value.length; i++) {
+            view.setUint8(offset + i, value.charCodeAt(i));
+        }
+    };
+    text(0, 'RIFF');
+    view.setUint32(4, 36 + audioBytes, true);
+    text(8, 'WAVE');
+    text(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, 24000, true);
+    view.setUint32(28, 48000, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    text(36, 'data');
+    view.setUint32(40, audioBytes, true);
+    for (let i = 0; i < sampleCount; i++) {
+        const s = amplitude * Math.sin((2 * Math.PI * 440 * i) / 24000);
+        const clamped = Math.max(-1, Math.min(1, s));
+        view.setInt16(
+            44 + i * 2,
+            Math.round(clamped * (clamped < 0 ? 32768 : 32767)),
+            true);
+    }
+    return bytes;
+}
+
+/**
+ * Decode a RIFF/WAVE 24 kHz mono PCM16 buffer into quality metrics.
+ * Shared by Jest + Chromium/Firefox live (after transferring WAV bytes out of
+ * the page). Fail closed on header mismatch / non-finite samples — never invent.
+ *
+ * @param {Uint8Array|ArrayBuffer} wavBytes
+ * @returns {{ audioBytes, sampleRateHz, rms, durationSec, sampleCount }}
+ */
+export function decodeLongFormWavPcm16Metrics(wavBytes) {
+    const bytes = wavBytes instanceof Uint8Array
+        ? wavBytes
+        : new Uint8Array(wavBytes);
+    if (bytes.byteLength < 44) {
+        throw new Error('Long-form WAV too short for header: ' + bytes.byteLength);
+    }
+    const wav = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const tag = (start, length) =>
+        String.fromCharCode(...bytes.subarray(start, start + length));
+    // Match encodePcm16Wav / buildLongFormTestWavPcm16 fixed 44-byte layout.
+    const riffSize = wav.getUint32(4, true);
+    const fmtChunkSize = wav.getUint32(16, true);
+    const audioFormat = wav.getUint16(20, true);
+    const numChannels = wav.getUint16(22, true);
+    const sampleRateHz = wav.getUint32(24, true);
+    const byteRate = wav.getUint32(28, true);
+    const blockAlign = wav.getUint16(32, true);
+    const bitsPerSample = wav.getUint16(34, true);
+    const audioBytes = wav.getUint32(40, true);
+    if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
+        tag(12, 4) !== 'fmt ' || tag(36, 4) !== 'data' ||
+        fmtChunkSize !== 16 || audioFormat !== 1 || numChannels !== 1 ||
+        bitsPerSample !== 16 || blockAlign !== 2 ||
+        sampleRateHz !== 24000 || byteRate !== sampleRateHz * 2 ||
+        audioBytes < 2 || audioBytes % 2 !== 0 ||
+        bytes.length !== 44 + audioBytes ||
+        riffSize !== 36 + audioBytes) {
+        throw new Error('Long-form overlay WAV mismatch');
+    }
+    const sampleCount = audioBytes / 2;
+    let squares = 0;
+    for (let i = 0; i < sampleCount; i++) {
+        const s = wav.getInt16(44 + i * 2, true) / 32768;
+        if (!Number.isFinite(s)) {
+            throw new Error('Long-form WAV sample not finite at ' + i);
+        }
+        squares += s * s;
+    }
+    const rms = Math.sqrt(squares / sampleCount);
+    const durationSec = sampleCount / sampleRateHz;
+    return { audioBytes, sampleRateHz, rms, durationSec, sampleCount };
+}
+
+/**
+ * Assert one long-form WAV probe has finite non-silent 24 kHz PCM metrics.
+ * Fail closed on missing/silent/out-of-bounds — never invent RMS.
+ */
+export function assertLongFormWaveformSample(sample) {
+    if (!sample || typeof sample !== 'object') {
+        throw new Error('Long-form quality sample missing: ' + String(sample));
+    }
+    if (!Number.isInteger(sample.index) || sample.index < 0) {
+        throw new Error(
+            'Long-form quality sample requires non-negative integer index: ' +
+            JSON.stringify(sample));
+    }
+    if (sample.sampleRateHz !== 24000) {
+        throw new Error(
+            'Long-form quality sample must be 24 kHz: ' + JSON.stringify(sample));
+    }
+    if (!Number.isFinite(sample.rms) || sample.rms <= LONG_FORM_MIN_RMS) {
+        throw new Error(
+            'Long-form quality sample silent or missing RMS: ' +
+            JSON.stringify(sample));
+    }
+    if (!Number.isFinite(sample.durationSec) ||
+        sample.durationSec < LONG_FORM_MIN_DURATION_SEC ||
+        sample.durationSec > LONG_FORM_MAX_DURATION_SEC) {
+        throw new Error(
+            'Long-form quality sample duration out of bounds: ' +
+            JSON.stringify(sample));
+    }
+    if (!Number.isInteger(sample.audioBytes) || sample.audioBytes < 2 ||
+        sample.audioBytes % 2 !== 0) {
+        throw new Error(
+            'Long-form quality sample audioBytes invalid: ' +
+            JSON.stringify(sample));
+    }
+    const expectedDuration = (sample.audioBytes / 2) / sample.sampleRateHz;
+    if (Math.abs(sample.durationSec - expectedDuration) > 1e-9) {
+        throw new Error(
+            'Long-form quality sample duration must match audioBytes/rate: ' +
+            JSON.stringify({
+                durationSec: sample.durationSec, expectedDuration,
+                audioBytes: sample.audioBytes,
+            }));
+    }
+    return {
+        index: sample.index,
+        rms: sample.rms,
+        durationSec: sample.durationSec,
+        sampleRateHz: sample.sampleRateHz,
+        audioBytes: sample.audioBytes,
+    };
+}
+
+/**
+ * Assert objective waveform quality across sampled long-form clips.
+ * Distinct sentence indexes gate the minimum coverage count (revisits cannot
+ * pad). RMS/duration extrema use every validated probe, including revisits.
+ * @returns {{ qualitySampleCount, distinctSentenceIndexes, validatedProbeCount,
+ *   minRms, maxRms, minDurationSec, maxDurationSec }}
+ */
+export function assertLongFormWaveformQuality(samples, options = {}) {
+    const minSamples = options.minSamples ?? LONG_FORM_MIN_QUALITY_SAMPLES;
+    if (!Array.isArray(samples)) {
+        throw new Error(
+            'Long-form quality requires a samples array; got ' +
+            JSON.stringify(samples));
+    }
+    const byIndex = new Map();
+    const validated = [];
+    for (const sample of samples) {
+        const checked = assertLongFormWaveformSample(sample);
+        validated.push(checked);
+        if (!byIndex.has(checked.index)) {
+            byIndex.set(checked.index, checked);
+        }
+    }
+    if (byIndex.size < minSamples) {
+        throw new Error(
+            'Long-form quality requires >= ' + minSamples +
+            ' distinct sentence positions; got ' + byIndex.size +
+            ' (raw probes: ' + samples.length + ')');
+    }
+    const rmsValues = validated.map((s) => s.rms);
+    const durations = validated.map((s) => s.durationSec);
+    return {
+        qualitySampleCount: byIndex.size,
+        distinctSentenceIndexes: [...byIndex.keys()].sort((a, b) => a - b),
+        validatedProbeCount: validated.length,
+        minRms: Math.min(...rmsValues),
+        maxRms: Math.max(...rmsValues),
+        minDurationSec: Math.min(...durations),
+        maxDurationSec: Math.max(...durations),
+    };
+}
+
+/**
+ * MOS stays unmeasured; objective quality flags are set by finalize after
+ * waveform asserts — do not invent measured:true without samples.
  */
 export function longFormQualityDisclosureFlags() {
     return {
@@ -151,10 +385,27 @@ export function longFormQualityDisclosureFlags() {
     };
 }
 
+function assertMosUnmeasured(report) {
+    if (report.longFormMosMeasured !== false) {
+        throw new Error(
+            'Long-form MOS must not be reported as measured: ' +
+            JSON.stringify(report.longFormMosMeasured));
+    }
+}
+
+function assertMeasuredQualityDisclosure(report) {
+    const disclosure = String(report.longFormQualityDisclosure || '').toLowerCase();
+    if (!disclosure.includes('long-form objective waveform quality measured') ||
+        !disclosure.includes('mos not measured')) {
+        throw new Error(
+            'Long-form quality measured disclosure needle missing: ' +
+            JSON.stringify(report.longFormQualityDisclosure));
+    }
+}
+
 /**
- * Assert memory-bound long-form report + honesty that quality/MOS were not
- * measured. Fail closed if quality or MOS is claimed measured, sentence count
- * is below the deeper walk, or the disclosure needle is missing.
+ * Assert memory-bound long-form report + objective waveform quality measured
+ * (fail closed). MOS remains explicitly unmeasured.
  */
 export function assertLongFormMemoryAcceptanceReport(report) {
     if (!report || typeof report !== 'object') {
@@ -170,54 +421,52 @@ export function assertLongFormMemoryAcceptanceReport(report) {
             'Long-form report sentenceCount must be >= ' +
             LONG_FORM_SENTENCE_COUNT + ': ' + JSON.stringify(report.sentenceCount));
     }
-    if (report.longFormQualityMeasured !== false) {
+    assertMosUnmeasured(report);
+    if (report.longFormQualityMeasured !== true) {
         throw new Error(
-            'Deeper long-form quality must not be reported as measured: ' +
+            'Long-form objective waveform quality must be reported as measured: ' +
             JSON.stringify(report.longFormQualityMeasured));
     }
-    if (report.longFormMosMeasured !== false) {
-        throw new Error(
-            'Long-form MOS must not be reported as measured: ' +
-            JSON.stringify(report.longFormMosMeasured));
-    }
-    const disclosure = String(report.longFormQualityDisclosure || '').toLowerCase();
-    if (!disclosure.includes(LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE)) {
-        throw new Error(
-            'Long-form quality disclosure needle missing: ' +
-            JSON.stringify(report.longFormQualityDisclosure));
-    }
+    const quality = assertLongFormWaveformQuality(report.samples);
+    assertMeasuredQualityDisclosure(report);
     return {
         success: true,
         sentenceCount: report.sentenceCount,
-        longFormQualityMeasured: false,
+        longFormQualityMeasured: true,
         longFormMosMeasured: false,
-        longFormQualityDisclosure: LONG_FORM_QUALITY_NOT_MEASURED_NEEDLE,
+        longFormQualityDisclosure: LONG_FORM_QUALITY_MEASURED_NEEDLE,
+        ...quality,
     };
 }
 
 /**
- * Finalize a live long-form report: attach honesty flags, assert fail-closed.
- * Keeps Chromium/Firefox validate-live diffs to a one-liner wrap.
- *
- * Honesty defaults fill only missing fields (setdefault). Callers that claim
- * longFormQualityMeasured / longFormMosMeasured true must fail closed — do
- * not overwrite those claims before assertLongFormMemoryAcceptanceReport.
+ * Finalize a live long-form report: measure objective waveform quality from
+ * samples, keep MOS unmeasured, fail closed if samples missing/silent or MOS
+ * claimed. Does not invent RMS numbers.
  */
 export function finalizeLongFormMemoryAcceptanceReport(partial = {}) {
-    const defaults = longFormQualityDisclosureFlags();
     const report = {
         ...partial,
         sentenceCount: partial.sentenceCount ?? LONG_FORM_SENTENCE_COUNT,
     };
-    if (report.longFormQualityMeasured === undefined) {
-        report.longFormQualityMeasured = defaults.longFormQualityMeasured;
-    }
     if (report.longFormMosMeasured === undefined) {
-        report.longFormMosMeasured = defaults.longFormMosMeasured;
+        report.longFormMosMeasured = false;
     }
-    if (report.longFormQualityDisclosure === undefined) {
-        report.longFormQualityDisclosure = defaults.longFormQualityDisclosure;
-    }
+    // Fail closed before overwriting: MOS claim true must reject.
+    assertMosUnmeasured(report);
+
+    const quality = assertLongFormWaveformQuality(report.samples);
+    report.longFormQualityMeasured = true;
+    report.longFormMosMeasured = false;
+    report.longFormQualityDisclosure = LONG_FORM_QUALITY_MEASURED_NEEDLE;
+    report.qualitySampleCount = quality.qualitySampleCount;
+    report.validatedProbeCount = quality.validatedProbeCount;
+    report.distinctSentenceIndexes = quality.distinctSentenceIndexes;
+    report.minRms = quality.minRms;
+    report.maxRms = quality.maxRms;
+    report.minDurationSec = quality.minDurationSec;
+    report.maxDurationSec = quality.maxDurationSec;
+
     assertLongFormMemoryAcceptanceReport(report);
     return report;
 }

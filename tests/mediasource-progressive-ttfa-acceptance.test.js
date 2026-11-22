@@ -71,10 +71,36 @@ const report = mse.buildProgressiveStreamingTtfaMeasuredReport({
     ttfaP50Ms: 180,
     usedMediaSource: true,
 });
+const chromiumDualOk = mse.assertChromiumDualRequiresProgressiveTtfaMeasured({
+    success: true,
+    assertedFromServerCard: true,
+    progressiveStreamingTtfaMeasured: true,
+    progressiveStreamingTtfaUnavailable: false,
+    progressiveStreamingTtfaP50Ms: 240,
+    usedMediaSource: true,
+    disclosureNeedle: mse.PROGRESSIVE_MEDIASOURCE_TTFA_MEASURED_NEEDLE,
+});
+const failChromiumDualUnavailable = (() => {
+    try {
+        mse.assertChromiumDualRequiresProgressiveTtfaMeasured({
+            success: true,
+            assertedFromServerCard: true,
+            progressiveStreamingTtfaMeasured: false,
+            progressiveStreamingTtfaUnavailable: true,
+            progressiveStreamingTtfaP50Ms: null,
+            usedMediaSource: true,
+            disclosureNeedle: mse.PROGRESSIVE_MEDIASOURCE_TTFA_UNAVAILABLE_NEEDLE,
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
 console.log(JSON.stringify({
     measuredNeedle: mse.PROGRESSIVE_MEDIASOURCE_TTFA_MEASURED_NEEDLE,
     unavailableNeedle: mse.PROGRESSIVE_MEDIASOURCE_TTFA_UNAVAILABLE_NEEDLE,
     unmeasured, measured, unavailable, failInvented, failMissingP50, report,
+    chromiumDualOk, failChromiumDualUnavailable,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
@@ -93,6 +119,15 @@ describe('progressive MediaSource TTFA measured acceptance', () => {
             success: true,
             progressiveStreamingTtfaMeasured: false,
         }));
+        expect(snap.chromiumDualOk).toEqual(expect.objectContaining({
+            success: true,
+            progressiveStreamingTtfaMeasured: true,
+            progressiveStreamingTtfaP50Ms: 240,
+            usedMediaSource: true,
+        }));
+        expect(snap.failChromiumDualUnavailable.ok).toBe(false);
+        expect(snap.failChromiumDualUnavailable.message).toMatch(
+            /must be measured on chromium-dual-comparison/i);
         expect(snap.measured).toEqual(expect.objectContaining({
             success: true,
             progressiveStreamingTtfaMeasured: true,
@@ -237,8 +272,11 @@ console.log(JSON.stringify({
         expect(chromium).toContain('assertProgressiveStreamingTtfaMeasured');
         expect(chromium).toContain('progressiveStreamingTtfaP50Ms');
         expect(chromium).toContain('SERVER_MEDIASOURCE_PROGRESSIVE_TTFA_MEASURED_NEEDLE');
-        const chromiumLift = chromium.indexOf(
-            'Progressive MediaSource TTFA measured/unavailable');
-        expect(chromiumLift).toBeGreaterThan(0);
+        expect(chromium).toContain(
+            'assertChromiumDualRequiresProgressiveTtfaMeasured');
+        expect(chromium).toContain('fastapi-server-card-progressive-ttfa');
+        expect(chromium).toContain('FASTAPI_STUB_PROGRESSIVE_TAIL_HOLD_MS');
+        expect(helper).toContain(
+            'assertChromiumDualRequiresProgressiveTtfaMeasured');
     });
 });
