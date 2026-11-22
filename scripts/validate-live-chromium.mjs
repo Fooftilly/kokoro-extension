@@ -3822,9 +3822,17 @@ try {
             // #57 / #61: dual previously skipped AudioManager idle teardown.
             // Require both local backends offline with measured join latency.
             liveHeartbeat('local-idle-release-dual-start');
+            // Mark in-progress before asserts so a rejected dual report cannot
+            // leave success:true and mis-attribute failure to FastAPI card.
+            localIdleReleaseAcceptance = {
+                success: false,
+                localIdleReleaseMeasured: false,
+                stage: 'local-idle-release-dual',
+            };
             {
                 const {
                     assertLocalIdleReleaseDual,
+                    assertLocalIdleReleaseProbe,
                     buildLocalIdleReleaseDualReport,
                     DUAL_IDLE_RELEASE_BACKENDS,
                 } = await import('./local-idle-release-acceptance.mjs');
@@ -3835,6 +3843,7 @@ try {
                         probeLocalProviderIdleRelease,
                         { backend, apiName: 'chrome' }),
                     180000, 'dual local idle release ' + backend);
+                    assertLocalIdleReleaseProbe(probe, backend);
                     idleProbes.push(probe);
                     liveHeartbeat('local-idle-release-dual-backend-done', {
                         backend,
@@ -3842,12 +3851,15 @@ try {
                         idleReleaseJoinMs: probe?.idleReleaseJoinMs,
                     });
                 }
-                localIdleReleaseAcceptance = buildLocalIdleReleaseDualReport({
+                // Assert before promoting success:true so catch attributes
+                // rejections to idle-release, not the FastAPI card.
+                const idleReport = buildLocalIdleReleaseDualReport({
                     browser: 'chromium',
                     backends: idleProbes,
                     assertedFromDual: true,
                 });
-                assertLocalIdleReleaseDual(localIdleReleaseAcceptance);
+                assertLocalIdleReleaseDual(idleReport);
+                localIdleReleaseAcceptance = idleReport;
                 liveHeartbeat('local-idle-release-dual-done', {
                     success: localIdleReleaseAcceptance?.success === true,
                     localIdleReleaseMeasured:

@@ -10,18 +10,42 @@ export async function probeLocalProviderIdleRelease({ backend, apiName }) {
     const manager = new AudioManager({ localProviderIdleMs: configuredIdleMs });
     manager.setSentences([{ text: 'Hello world.' }, { text: 'Hello again.' }]);
     const unpin = manager.pinAudio(0);
+
+    const nativeRefsReleased = (provider) => backend === 'mediapipe'
+        ? provider.engine === null && provider.modelUrl === null
+        : provider.session === null && provider.voice === null;
+
+    // Join latency is native close() wall time — not idle-timer arithmetic.
+    // AudioManager may arm the idle timer before WAV readback finishes, so
+    // subtracting configuredIdleMs from a late waitStarted understates teardown.
+    const instrumentCloseJoin = (provider) => {
+        let closed = false;
+        let joinMs = null;
+        const nativeClose = provider.close.bind(provider);
+        provider.close = async () => {
+            const startedAt = performance.now();
+            try {
+                await nativeClose();
+            } finally {
+                joinMs = performance.now() - startedAt;
+                closed = true;
+            }
+        };
+        return {
+            get closed() { return closed; },
+            get joinMs() { return joinMs; },
+        };
+    };
+
     const waitForRelease = async () => {
-        const waitStarted = performance.now();
         const deadline = Date.now() + 30000;
         while (manager.localProvider !== null) {
             if (Date.now() > deadline) throw Error('Local engine did not become idle');
             await new Promise(resolve => setTimeout(resolve, 25));
         }
         await manager.localInferenceQueue; // Native close must have finished too.
-        const observedMs = performance.now() - waitStarted;
-        // Join after the configured idle timer — never invent negative latency.
-        return Math.max(0, observedMs - configuredIdleMs);
     };
+
     const readWav = async url => {
         if (!url.startsWith('blob:')) throw Error('Expected locally generated Blob URL');
         const response = await fetch(url);
@@ -37,19 +61,26 @@ export async function probeLocalProviderIdleRelease({ backend, apiName }) {
         }
         return bytes;
     };
+
+    const requireMeasuredJoin = (instrument, label) => {
+        if (!instrument.closed) throw Error(label + ' did not complete idle teardown');
+        if (!Number.isFinite(instrument.joinMs) || instrument.joinMs < 0) {
+            throw Error(label + ' idleReleaseJoinMs invalid: ' + instrument.joinMs);
+        }
+        return instrument.joinMs;
+    };
+
     try {
         const firstUrl = await manager.getAudio(0);
         const firstProvider = manager.localProvider;
         if (!firstProvider) throw Error('Initial synthesis did not create a local provider');
-        let closed = false;
-        const nativeClose = firstProvider.close.bind(firstProvider);
-        firstProvider.close = async () => { await nativeClose(); closed = true; };
+        const firstClose = instrumentCloseJoin(firstProvider);
         const before = await readWav(firstUrl);
-        const idleReleaseJoinMs = await waitForRelease();
-        const nativeReleased = backend === 'mediapipe'
-            ? firstProvider.engine === null && firstProvider.modelUrl === null
-            : firstProvider.session === null && firstProvider.voice === null;
-        if (!closed || !nativeReleased) throw Error('Idle native close did not complete successfully');
+        await waitForRelease();
+        const idleReleaseJoinMs = requireMeasuredJoin(firstClose, 'First idle close');
+        if (!nativeRefsReleased(firstProvider)) {
+            throw Error('Idle native close did not clear model references');
+        }
         const cachedUrl = await manager.getAudio(0);
         const after = await readWav(cachedUrl);
         if (cachedUrl !== firstUrl || before.length !== after.length ||
@@ -60,14 +91,16 @@ export async function probeLocalProviderIdleRelease({ backend, apiName }) {
         if (!manager.localProvider || manager.localProvider === firstProvider) {
             throw Error('New synthesis did not reconstruct the released provider');
         }
-        let closedAgain = false;
         const secondProvider = manager.localProvider;
-        const secondClose = secondProvider.close.bind(secondProvider);
-        secondProvider.close = async () => { await secondClose(); closedAgain = true; };
+        const secondClose = instrumentCloseJoin(secondProvider);
         await readWav(secondUrl);
         if (navigator.onLine !== false) throw Error('Idle recovery was not offline');
-        const repeatedIdleReleaseJoinMs = await waitForRelease();
-        if (!closedAgain) throw Error('Recreated provider did not complete idle teardown');
+        await waitForRelease();
+        const repeatedIdleReleaseJoinMs = requireMeasuredJoin(
+            secondClose, 'Repeated idle close');
+        if (!nativeRefsReleased(secondProvider)) {
+            throw Error('Repeated idle close did not clear model references');
+        }
         return {
             success: true, backend, configuredIdleMs,
             idleReleaseJoinMs, repeatedIdleReleaseJoinMs,

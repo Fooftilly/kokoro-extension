@@ -39,6 +39,7 @@ const report = idle.buildLocalIdleReleaseDualReport({
     backends: [validProbe('onnx'), validProbe('mediapipe')],
 });
 idle.assertLocalIdleReleaseDual(report);
+const joinOk = idle.measureCloseJoinMs(1000, 1080.5);
 const failMissing = (() => {
     try {
         idle.assertLocalIdleReleaseDual(idle.buildLocalIdleReleaseDualReport({
@@ -70,13 +71,36 @@ const failUnmeasured = (() => {
         return { ok: false, message: String(error.message || error) };
     }
 })();
+const failCloseJoin = (() => {
+    try {
+        idle.measureCloseJoinMs(50, 40);
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
+const lateWaitWouldUnderstate = (() => {
+    // Codex/Devin: idle-timer arithmetic after a late waitStarted understates
+    // teardown. close()-boundary join keeps the full native close duration.
+    const closeStarted = 200;
+    const closeEnded = 280;
+    const configuredIdleMs = 100;
+    const lateWaitStarted = 290; // after 90ms of pre-wait work past arm
+    const observedFromLateWait = 380 - lateWaitStarted; // 90
+    const understated = Math.max(0, observedFromLateWait - configuredIdleMs);
+    const closeJoin = idle.measureCloseJoinMs(closeStarted, closeEnded);
+    return { understated, closeJoin };
+})();
 console.log(JSON.stringify({
     needle: idle.LOCAL_IDLE_RELEASE_MEASURED_NEEDLE,
     backends: idle.DUAL_IDLE_RELEASE_BACKENDS,
     report,
+    joinOk,
     failMissing,
     failJoin,
     failUnmeasured,
+    failCloseJoin,
+    lateWaitWouldUnderstate,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
@@ -91,12 +115,16 @@ describe('local idle-release dual acceptance', () => {
         expect(snap.backends).toEqual(['onnx', 'mediapipe']);
         expect(snap.report.localIdleReleaseMeasured).toBe(true);
         expect(snap.report.success).toBe(true);
+        expect(snap.joinOk).toBe(80.5);
         expect(snap.failMissing.ok).toBe(false);
         expect(snap.failMissing.message).toMatch(/onnx \+ mediapipe/);
         expect(snap.failJoin.ok).toBe(false);
         expect(snap.failJoin.message).toMatch(/idleReleaseJoinMs/);
         expect(snap.failUnmeasured.ok).toBe(false);
         expect(snap.failUnmeasured.message).toMatch(/localIdleReleaseMeasured/);
+        expect(snap.failCloseJoin.ok).toBe(false);
+        expect(snap.lateWaitWouldUnderstate.understated).toBe(0);
+        expect(snap.lateWaitWouldUnderstate.closeJoin).toBe(80);
     });
 
     test('live harnesses gate dual idle release for both browsers', () => {
@@ -107,6 +135,9 @@ describe('local idle-release dual acceptance', () => {
         expect(chromium).toContain('local-idle-release-dual');
         expect(chromium).toContain(
             'Chromium local provider idle release failed');
+        // Failure attribution: mark success:false before asserts.
+        expect(chromium).toContain("stage: 'local-idle-release-dual'");
+        expect(chromium).toContain('assertLocalIdleReleaseProbe(probe, backend)');
 
         const firefox = fs.readFileSync(firefoxLive, 'utf8');
         expect(firefox).toContain('local-idle-release-acceptance.mjs');
@@ -115,11 +146,16 @@ describe('local idle-release dual acceptance', () => {
         expect(firefox).toContain('local-idle-release-dual');
     });
 
-    test('probe returns measured join latencies after configured idle', () => {
+    test('probe measures native close() join and checks both teardowns', () => {
         const probe = fs.readFileSync(probeSource, 'utf8');
+        expect(probe).toContain('instrumentCloseJoin');
         expect(probe).toContain('idleReleaseJoinMs');
         expect(probe).toContain('repeatedIdleReleaseJoinMs');
-        expect(probe).toContain('configuredIdleMs');
-        expect(probe).toContain('Math.max(0, observedMs - configuredIdleMs)');
+        expect(probe).toContain('nativeRefsReleased');
+        expect(probe).toContain('Repeated idle close did not clear model references');
+        // Must not subtract configuredIdleMs from a late waitStarted clock.
+        expect(probe).not.toContain(
+            'Math.max(0, observedMs - configuredIdleMs)');
+        expect(probe).toContain('performance.now() - startedAt');
     });
 });

@@ -11,6 +11,22 @@ export const LOCAL_IDLE_RELEASE_MEASURED_NEEDLE =
 export const DUAL_IDLE_RELEASE_BACKENDS = Object.freeze(['onnx', 'mediapipe']);
 
 /**
+ * Native close() wall-time join (ms). Fail closed on non-finite / negative.
+ * @param {number} startedAt
+ * @param {number} endedAt
+ * @returns {number}
+ */
+export function measureCloseJoinMs(startedAt, endedAt) {
+    const joinMs = endedAt - startedAt;
+    if (!Number.isFinite(joinMs) || joinMs < 0) {
+        throw Error(
+            'idleReleaseJoinMs must be finite nonnegative join latency: ' +
+            JSON.stringify(joinMs));
+    }
+    return joinMs;
+}
+
+/**
  * Assert one backend idle-release probe result from probeLocalProviderIdleRelease.
  * @param {object} probe
  * @param {string} [expectedBackend]
