@@ -140,6 +140,36 @@ export class ModelDataStore {
         return { ready: storedBytes === totalBytes, storedBytes, totalBytes };
     }
 
+    // Sum actual Cache Storage body sizes (blob.size). Unlike status(), this is
+    // not a catalog-header presence estimate — fail closed on missing/mismatched
+    // bodies so measured exports cannot invent footprint.
+    async measureBodyBytes(manifest) {
+        const totalBytes = validateModelManifest(manifest);
+        const cache = await this.cacheStorage.open(CACHE_NAME);
+        let measuredBytes = 0;
+        for (const asset of manifest.assets) {
+            const existing = await cache.match(this.key(manifest, asset));
+            if (!this.isCurrent(existing, asset)) {
+                return {
+                    ready: false, complete: false, measuredBytes: 0, totalBytes,
+                };
+            }
+            const blob = await existing.blob();
+            if (!Number.isSafeInteger(blob?.size) || blob.size !== asset.bytes) {
+                throw new Error(
+                    'Cached body byte length mismatch for ' + asset.path +
+                    ': expected ' + asset.bytes + ', got ' + blob?.size);
+            }
+            measuredBytes += blob.size;
+        }
+        return {
+            ready: measuredBytes === totalBytes,
+            complete: true,
+            measuredBytes,
+            totalBytes,
+        };
+    }
+
     isCurrent(response, asset) {
         return !!response && response.headers.get('x-kokoro-integrity') === asset.integrity &&
             response.headers.get('x-kokoro-bytes') === String(asset.bytes);

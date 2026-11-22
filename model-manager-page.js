@@ -98,52 +98,55 @@ function snapshotMeasuredEnglishRows() {
     return rows;
 }
 
-// status().storedBytes sums pinned catalog asset.bytes for header-matching
-// cache entries — a presence estimate, not measured body/disk usage.
-async function probeCachedCatalogPresence(snappedRows) {
+// Probe real Cache Storage body sizes (blob.size) under a shared lock.
+// Falls back to empty maps on failure so export stays catalog-only / unmeasured.
+async function probeCachedBodyBytes(snappedRows) {
     let cacheByKey = new Map();
-    let dictionaryStoredBytes = null;
+    let dictionaryMeasuredBytes = null;
     try {
         await withModelDataLock(async () => {
             const store = cacheStore();
             const pairs = await Promise.all(snappedRows.map(async ({ entry }) => {
-                const state = await store.status(entryManifest(entry));
+                const state = await store.measureBodyBytes(entryManifest(entry));
                 return [entry.key, state];
             }));
             cacheByKey = new Map(pairs);
             if (snappedRows.some(({ entry }) => entry.provider === 'onnx')) {
-                const dictState = await store.status(dictionaryManifest());
-                dictionaryStoredBytes = dictState.storedBytes;
+                const dictState = await store.measureBodyBytes(dictionaryManifest());
+                dictionaryMeasuredBytes = dictState.complete
+                    ? dictState.measuredBytes : null;
             }
         }, { mode: 'shared' });
     } catch (_) {
-        // Failed presence probe keeps catalog fields only.
-        return { cacheByKey: new Map(), dictionaryStoredBytes: null };
+        return { cacheByKey: new Map(), dictionaryMeasuredBytes: null };
     }
-    return { cacheByKey, dictionaryStoredBytes };
+    return { cacheByKey, dictionaryMeasuredBytes };
 }
 
-function attachCachedCatalogPresenceFields(row, entry, cacheByKey,
-    dictionaryStoredBytes, englishDictionaryCatalogBytes) {
-    let presenceOk = true;
-    // Catalog bytes for header-matching cache entries — not measured disk use.
-    const present = cacheByKey.get(entry.key)?.storedBytes;
-    if (Number.isFinite(present) && present > 0) {
-        row.cachedCatalogAssetBytes = present;
+function attachMeasuredCacheBodyFields(row, entry, cacheByKey,
+    dictionaryMeasuredBytes, englishDictionaryCatalogBytes) {
+    let measuredOk = true;
+    const state = cacheByKey.get(entry.key);
+    const measured = state?.complete === true ? state.measuredBytes : null;
+    if (Number.isFinite(measured) && measured > 0 &&
+        measured === entry.totalBytes) {
+        row.cachedCatalogAssetBytes = measured;
+        row.measuredCacheBodyBytes = measured;
     } else {
-        presenceOk = false;
+        measuredOk = false;
     }
-    if (entry.provider !== 'onnx') return presenceOk;
+    if (entry.provider !== 'onnx') return measuredOk;
     row.requiredDictionaryCatalogBytes = englishDictionaryCatalogBytes;
     row.catalogEnglishPathBytes = entry.totalBytes + englishDictionaryCatalogBytes;
-    if (Number.isFinite(dictionaryStoredBytes) && dictionaryStoredBytes > 0 &&
-        Number.isFinite(present) && present > 0) {
-        row.cachedCatalogDictionaryBytes = dictionaryStoredBytes;
-        row.cachedCatalogEnglishPathBytes = present + dictionaryStoredBytes;
+    if (Number.isFinite(dictionaryMeasuredBytes) && dictionaryMeasuredBytes > 0 &&
+        Number.isFinite(measured) && measured > 0) {
+        row.cachedCatalogDictionaryBytes = dictionaryMeasuredBytes;
+        row.measuredCacheDictionaryBytes = dictionaryMeasuredBytes;
+        row.cachedCatalogEnglishPathBytes = measured + dictionaryMeasuredBytes;
     } else {
-        presenceOk = false;
+        measuredOk = false;
     }
-    return presenceOk;
+    return measuredOk;
 }
 
 // #61: optional local-only JSON export of measured English rows (no telemetry).
@@ -153,10 +156,10 @@ async function buildMeasuredEnglishExport() {
     const englishDictionaryCatalogBytes = dictionary.assets.reduce(
         (sum, asset) => sum + asset.bytes, 0);
     const snappedRows = snapshotMeasuredEnglishRows();
-    const { cacheByKey, dictionaryStoredBytes } =
-        await probeCachedCatalogPresence(snappedRows);
+    const { cacheByKey, dictionaryMeasuredBytes } =
+        await probeCachedBodyBytes(snappedRows);
     const measurements = [];
-    let allCachePresent = snappedRows.length > 0;
+    let allBodiesMeasured = snappedRows.length > 0;
     for (const snapped of snappedRows) {
         const { entry } = snapped;
         const row = {
@@ -169,9 +172,9 @@ async function buildMeasuredEnglishExport() {
             // Static pinned catalog asset sum (KE-38).
             catalogModelAssetBytes: entry.totalBytes,
         };
-        if (!attachCachedCatalogPresenceFields(row, entry, cacheByKey,
-            dictionaryStoredBytes, englishDictionaryCatalogBytes)) {
-            allCachePresent = false;
+        if (!attachMeasuredCacheBodyFields(row, entry, cacheByKey,
+            dictionaryMeasuredBytes, englishDictionaryCatalogBytes)) {
+            allBodiesMeasured = false;
         }
         measurements.push(row);
     }
@@ -183,11 +186,11 @@ async function buildMeasuredEnglishExport() {
         measurementKind: 'warm-full-clip-synthesis',
         coldPrepMeasured: true,
         firstAudioMeasured: false,
-        // Presence estimate only — status() never reads cached body lengths.
-        storageFootprintMeasured: false,
-        storageFootprintSource: allCachePresent
-            ? 'cache-presence-catalog' : 'catalog',
-        cachePresenceProbed: allCachePresent,
+        // Real Cache Storage body sizes (blob.size), not catalog-header presence.
+        storageFootprintMeasured: allBodiesMeasured,
+        storageFootprintSource: allBodiesMeasured
+            ? 'cache-body-bytes' : 'catalog',
+        cachePresenceProbed: allBodiesMeasured,
         englishDictionaryCatalogBytes,
         // Do not invent runtime heap; Chrome performance.memory is optional
         // and not comparable across engines.

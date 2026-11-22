@@ -26,8 +26,8 @@ const payload = {
     measurementKind: 'warm-full-clip-synthesis',
     coldPrepMeasured: true,
     firstAudioMeasured: false,
-    storageFootprintMeasured: false,
-    storageFootprintSource: 'cache-presence-catalog',
+    storageFootprintMeasured: true,
+    storageFootprintSource: 'cache-body-bytes',
     cachePresenceProbed: true,
     englishDictionaryCatalogBytes: 3618488,
     runtimeHeapMeasured: false,
@@ -44,12 +44,15 @@ const payload = {
             requiredDictionaryCatalogBytes: 3618488,
             catalogEnglishPathBytes: 92885404 + 3618488,
             cachedCatalogAssetBytes: 92885404,
+            measuredCacheBodyBytes: 92885404,
             cachedCatalogDictionaryBytes: 3618488,
+            measuredCacheDictionaryBytes: 3618488,
             cachedCatalogEnglishPathBytes: 92885404 + 3618488 },
         { key: 'mediapipe-cpu', label: 'MediaPipe', coldPrepMs: 55,
             synthesisP50Ms: 18, synthesisP95Ms: 22, realTimeFactorP50: 0.3,
             catalogModelAssetBytes: 294783298,
-            cachedCatalogAssetBytes: 294783298 },
+            cachedCatalogAssetBytes: 294783298,
+            measuredCacheBodyBytes: 294783298 },
     ],
 };
 exp.assertMeasuredResultsExportPayload(payload, {
@@ -178,7 +181,7 @@ describe('Measured results export acceptance', () => {
         expect(snap.badFootprint.message).toMatch(/Invalid measured export metric/i);
         expect(snap.badMeasuredClaim.ok).toBe(false);
         expect(snap.badMeasuredClaim.message).toMatch(
-            /catalog presence as measured storage/i);
+            /cache-body-bytes footprint source/i);
         expect(snap.badOnnxDict.ok).toBe(false);
         expect(snap.badOnnxDict.message).toMatch(/CMUdict catalog/i);
     });
@@ -210,26 +213,30 @@ describe('Measured results export acceptance', () => {
         expect(source).toContain('cachedCatalogDictionaryBytes');
         expect(source).toContain('cachedCatalogEnglishPathBytes');
         expect(source).toContain('snapshotMeasuredEnglishRows');
-        expect(source).toContain('probeCachedCatalogPresence');
-        expect(source).toContain('attachCachedCatalogPresenceFields');
-        expect(source).toContain('storageFootprintMeasured: false');
-        expect(source).toContain("? 'cache-presence-catalog' : 'catalog'");
+        expect(source).toContain('probeCachedBodyBytes');
+        expect(source).toContain('attachMeasuredCacheBodyFields');
+        expect(source).toContain('measureBodyBytes');
+        expect(source).toContain('storageFootprintMeasured: allBodiesMeasured');
+        expect(source).toContain("? 'cache-body-bytes' : 'catalog'");
         expect(source).toContain('cachePresenceProbed');
         expect(source).toContain('englishDictionaryCatalogBytes');
         expect(source).toContain('requiredDictionaryCatalogBytes');
         expect(source).toContain('catalogEnglishPathBytes');
+        expect(source).toContain('measuredCacheBodyBytes');
         expect(source).toContain('runtimeHeapMeasured: false');
         expect(source).toContain('storeSigning: discloseStoreSigning()');
         expect(source).toContain('await buildMeasuredEnglishExport()');
         expect(source).not.toContain('storageFootprintBytes');
         expect(source).not.toContain('cacheStorageStoredBytes');
         expect(source).not.toContain("storageFootprintSource: 'cache-storage'");
+        expect(source).not.toContain('cache-presence-catalog');
         const helper = fs.readFileSync(path.join(
             root, 'scripts', 'measured-results-export-acceptance.mjs'), 'utf8');
         expect(helper).toContain('requirePositiveMetricFields');
         expect(helper).toContain('assertOnnxStorageDisclosure');
-        expect(helper).toContain('storageFootprintMeasured\', false');
-        expect(helper).toContain('cache-presence-catalog');
+        expect(helper).toContain('assertMeasuredBodyBytes');
+        expect(helper).toContain('storageFootprintMeasured\', true');
+        expect(helper).toContain('cache-body-bytes');
         expect(html).toContain('Cold prep');
         expect(source).toContain('Nothing was uploaded');
         expect(source).not.toContain('navigator.sendBeacon');
