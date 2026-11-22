@@ -947,14 +947,17 @@ describe('overlay.js logic', () => {
         await new Promise(r => setTimeout(r, 100));
         const { AudioManager } = require('../audio-manager.js');
         const manager = AudioManager.mock.results.at(-1)?.value;
+        // Initial navigate lands on sentence 0; Right must advance, Left must retreat.
         manager.getAudio.mockClear();
         window.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowRight', bubbles: true }));
         await new Promise(r => setTimeout(r, 0));
-        expect(manager.getAudio).toHaveBeenCalled();
+        expect(manager.getAudio).toHaveBeenCalledWith(1);
+        expect(document.getElementById('status').textContent).toMatch(/sentence 2\//);
         manager.getAudio.mockClear();
         window.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowLeft', bubbles: true }));
         await new Promise(r => setTimeout(r, 0));
-        expect(manager.getAudio).toHaveBeenCalled();
+        expect(manager.getAudio).toHaveBeenCalledWith(0);
+        expect(document.getElementById('status').textContent).toMatch(/sentence 1\//);
     });
 
     test('playback errors name the backend and point to recovery (#194)', async () => {
