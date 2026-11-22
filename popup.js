@@ -177,9 +177,9 @@ function syncVoiceUiForBackend(backend) {
     if (mediaPipeBox) mediaPipeBox.hidden = !isMediaPipe;
     if (onnxBox) onnxBox.hidden = !isOnnx;
     if (label) {
-        if (isMediaPipe) label.textContent = 'MEDIAPIPE VOICE';
-        else if (isOnnx) label.textContent = 'ONNX VOICE';
-        else label.textContent = 'VOICE MIXER';
+        if (isMediaPipe) label.textContent = 'MediaPipe voice';
+        else if (isOnnx) label.textContent = 'ONNX voice';
+        else label.textContent = 'Voice mixer';
     }
     if (note) {
         note.hidden = !local;

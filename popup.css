@@ -205,11 +205,83 @@ button:hover {
 }
 
 .section-heading {
+    margin: 0;
     font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.02em;
     text-transform: uppercase;
     color: var(--note-color);
+}
+
+.settings-block {
+    margin-bottom: 14px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--row-border);
+}
+
+.settings-block:last-of-type {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.subsection-label {
+    display: block;
+    margin-top: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-color);
+}
+
+.playback-mode-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+}
+
+.page-reader-toggles {
+    margin-top: 6px;
+}
+
+.shortcuts-sheet {
+    margin: 4px 0 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--mixer-bg);
+}
+
+.shortcuts-sheet > summary {
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-color);
+    list-style-position: outside;
+}
+
+.shortcuts-list {
+    margin: 8px 0 6px;
+    padding-left: 1.2em;
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.shortcuts-list kbd {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    padding: 1px 4px;
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    background: var(--input-bg);
+}
+
+.shortcuts-chrome-note {
+    margin: 0 0 2px;
+}
+
+.shortcuts-chrome-note code {
+    font-size: 11px;
 }
 
 .setup-banner {
