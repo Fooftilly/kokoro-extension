@@ -402,6 +402,7 @@ audioEl.addEventListener('ended', () => {
 audioEl.addEventListener('play', () => {
     isPaused = false;
     playPauseBtn.textContent = "Pause";
+    syncPlayPauseLabel();
 });
 
 audioEl.addEventListener('pause', () => {
@@ -418,6 +419,7 @@ audioEl.addEventListener('pause', () => {
 
     isPaused = true;
     playPauseBtn.textContent = "Play";
+    syncPlayPauseLabel();
 });
 
 // --- Logic ---

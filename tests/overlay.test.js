@@ -204,6 +204,24 @@ describe('overlay.js logic', () => {
         expect(audio.play).toHaveBeenCalled();
     });
 
+    test('native play/pause events keep playPause aria-label in sync', async () => {
+        await new Promise(r => setTimeout(r, 50));
+        const audio = document.getElementById('audio');
+        const playPauseBtn = document.getElementById('playPause');
+
+        Object.defineProperty(audio, 'ended', { value: false, configurable: true });
+        Object.defineProperty(audio, 'currentTime', { value: 1, configurable: true });
+        Object.defineProperty(audio, 'duration', { value: 10, configurable: true });
+
+        audio.dispatchEvent(new Event('play'));
+        expect(playPauseBtn.textContent).toBe('Pause');
+        expect(playPauseBtn.getAttribute('aria-label')).toBe('Pause playback');
+
+        audio.dispatchEvent(new Event('pause'));
+        expect(playPauseBtn.textContent).toBe('Play');
+        expect(playPauseBtn.getAttribute('aria-label')).toBe('Play playback');
+    });
+
     test('blocked EPUB autoplay explains the required Play gesture and recovers after Play', async () => {
         await new Promise(resolve => setTimeout(resolve, 0));
         const previousUrl = window.location.pathname + window.location.search;
