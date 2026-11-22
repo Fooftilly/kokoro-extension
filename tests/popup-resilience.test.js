@@ -152,6 +152,35 @@ describe('popup backend-loss resilience (#4)', () => {
         return store;
     }
 
+    /**
+     * Saved MediaPipe → failed ONNX switch. Asserts selection + store stay MediaPipe
+     * and no onnx persist. Returns banner text after the sticky failure is set.
+     */
+    async function failOnnxSwitchFromSavedMediaPipe({ modelReady }) {
+        allowMediaPipeSelection({ modelReady });
+        const store = useWritableSyncStore({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            mode: 'stream',
+            theme: 'light',
+        });
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('mediapipe');
+        browser.storage.sync.set.mockClear();
+        const onnx = document.querySelector('input[name="ttsBackend"][value="onnx"]');
+        onnx.checked = true;
+        onnx.dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('mediapipe');
+        expect(store.ttsBackend).toBe('mediapipe');
+        expect(browser.storage.sync.set.mock.calls.some(([v]) => v.ttsBackend === 'onnx'))
+            .toBe(false);
+        expect(popup.getStickyLocalSetupFailure()).toMatch(/ONNX/);
+        return document.getElementById('localSetupMessage').textContent;
+    }
+
     test('popup renders and settings remain editable when backend is down', async () => {
         document.dispatchEvent(new Event('DOMContentLoaded'));
         await flushAsync();
@@ -950,67 +979,18 @@ describe('popup backend-loss resilience (#4)', () => {
     test('sticky failure stays visible after reverting to another local backend', async () => {
         // MediaPipe already active; a failed ONNX switch must not replace the
         // sticky error with the ok “MediaPipe is active” banner.
-        allowMediaPipeSelection({ modelReady: true });
-        const store = useWritableSyncStore({
-            apiUrl: 'http://127.0.0.1:8880/v1/',
-            ttsBackend: 'mediapipe',
-            mediaPipeVariant: 'cpu',
-            mode: 'stream',
-            theme: 'light',
-        });
-
-        document.dispatchEvent(new Event('DOMContentLoaded'));
-        await flushAsync();
-        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('mediapipe');
-
-        browser.storage.sync.set.mockClear();
-        const onnx = document.querySelector('input[name="ttsBackend"][value="onnx"]');
-        onnx.checked = true;
-        onnx.dispatchEvent(new Event('change'));
-        await flushAsync();
-
-        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('mediapipe');
-        expect(store.ttsBackend).toBe('mediapipe');
-        expect(browser.storage.sync.set.mock.calls.some(([v]) => v.ttsBackend === 'onnx'))
-            .toBe(false);
-        expect(popup.getStickyLocalSetupFailure()).toMatch(/ONNX/);
+        const text = await failOnnxSwitchFromSavedMediaPipe({ modelReady: true });
         const banner = document.getElementById('localSetupBanner');
         expect(banner.hidden).toBe(false);
         expect(banner.classList.contains('setup-banner-error')).toBe(true);
-        expect(document.getElementById('localSetupMessage').textContent).toMatch(/ONNX.*not ready/i);
+        expect(text).toMatch(/ONNX.*not ready/i);
         expect(document.getElementById('serverSettings').hidden).toBe(true);
     });
 
     test('failed local→local switch keeps sticky and restored setup warning', async () => {
-        // MediaPipe selected but models missing (soft probe → localActiveSetupIssue).
-        // A failed ONNX switch must keep both the sticky ONNX error and that warning.
-        allowMediaPipeSelection({ modelReady: false });
-        const store = useWritableSyncStore({
-            apiUrl: 'http://127.0.0.1:8880/v1/',
-            ttsBackend: 'mediapipe',
-            mediaPipeVariant: 'cpu',
-            mode: 'stream',
-            theme: 'light',
-        });
-
-        document.dispatchEvent(new Event('DOMContentLoaded'));
-        await flushAsync();
-        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('mediapipe');
+        // MediaPipe missing models → soft probe warning; failed ONNX keeps both.
+        const text = await failOnnxSwitchFromSavedMediaPipe({ modelReady: false });
         expect(popup.getLocalActiveSetupIssue()).toMatch(/MediaPipe needs setup/);
-
-        browser.storage.sync.set.mockClear();
-        const onnx = document.querySelector('input[name="ttsBackend"][value="onnx"]');
-        onnx.checked = true;
-        onnx.dispatchEvent(new Event('change'));
-        await flushAsync();
-
-        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('mediapipe');
-        expect(store.ttsBackend).toBe('mediapipe');
-        expect(browser.storage.sync.set.mock.calls.some(([v]) => v.ttsBackend === 'onnx'))
-            .toBe(false);
-        expect(popup.getStickyLocalSetupFailure()).toMatch(/ONNX/);
-        expect(popup.getLocalActiveSetupIssue()).toMatch(/MediaPipe needs setup/);
-        const text = document.getElementById('localSetupMessage').textContent;
         expect(text).toMatch(/ONNX.*not ready/i);
         expect(text).toMatch(/MediaPipe needs setup/);
         expect(document.getElementById('localSetupBanner').classList.contains('setup-banner-error'))
