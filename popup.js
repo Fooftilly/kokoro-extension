@@ -68,6 +68,8 @@ const LocalVoice = globalThis.KokoroLocalVoiceMixing || {
 
 /** Sticky banner after a failed local-backend switch (#194 item 3). */
 let stickyLocalSetupFailure = null;
+/** Soft warning when a saved local backend is selected but models are missing. */
+let localActiveSetupIssue = null;
 
 function setLocalSetupBanner({ message, showCta, tone }) {
     const banner = document.getElementById('localSetupBanner');
@@ -107,12 +109,39 @@ function syncServerOnlyChrome(backend) {
         }
         return;
     }
+    if (localActiveSetupIssue) {
+        setLocalSetupBanner({
+            message: localActiveSetupIssue,
+            showCta: true,
+            tone: 'error',
+        });
+        return;
+    }
     setLocalSetupBanner({
         message: (backend === 'onnx' ? 'ONNX' : 'MediaPipe') +
             ' is active on-device. Download, repair, or compare models on Test TTS backends.',
         showCta: true,
         tone: 'ok',
     });
+}
+
+/**
+ * Soft empty-state probe for an already-selected local backend (does not revert).
+ */
+async function refreshLocalSetupHealth(backend) {
+    if (!LocalVoice.isLocalBackend(backend)) {
+        localActiveSetupIssue = null;
+        return;
+    }
+    try {
+        await validateSelectedLocalBackend(backend);
+        localActiveSetupIssue = null;
+    } catch (error) {
+        const label = backend === 'onnx' ? 'ONNX' : 'MediaPipe';
+        localActiveSetupIssue = label + ' needs setup: ' + String(error.message || error) +
+            ' Open Test TTS backends to download, repair, and retest.';
+    }
+    syncServerOnlyChrome(backend);
 }
 
 /**
@@ -999,6 +1028,9 @@ const restoreOptions = async () => {
             void refreshBackendStatus(items.apiUrl).catch(error => {
                 console.warn('Kokoro: server availability probe failed', error);
             });
+        } else if (LocalVoice.isLocalBackend(items.ttsBackend)) {
+            // Soft empty state if models were removed after activation (#194 item 3).
+            void refreshLocalSetupHealth(items.ttsBackend);
         }
 
         applyGeneralFormFields(items);
@@ -1159,6 +1191,7 @@ document.addEventListener('DOMContentLoaded', () => {
         refreshGeneration++;
         if (activeRefreshAbort) activeRefreshAbort.abort();
         stickyLocalSetupFailure = null;
+        localActiveSetupIssue = null;
         syncVoiceUiForBackend(radio.value);
         const status = document.getElementById('apiStatusRow');
         if (status) status.style.display = 'none';
@@ -1278,8 +1311,11 @@ if (typeof module !== 'undefined' && module.exports) {
         beginHostPermissionRequest,
         syncVoiceUiForBackend,
         syncServerOnlyChrome,
+        refreshLocalSetupHealth,
         getStickyLocalSetupFailure: () => stickyLocalSetupFailure,
         setStickyLocalSetupFailureForTests: (value) => { stickyLocalSetupFailure = value; },
+        getLocalActiveSetupIssue: () => localActiveSetupIssue,
+        setLocalActiveSetupIssueForTests: (value) => { localActiveSetupIssue = value; },
         getConnectionStatus: () => connectionStatus,
         getAvailableVoices: () => availableVoices,
         getVoiceFetchStatus: () => voiceFetchStatus,

@@ -933,4 +933,26 @@ describe('popup backend-loss resilience (#4)', () => {
         document.getElementById('localSetupOpenTest').click();
         expect(browser.tabs.create).toHaveBeenCalledWith({ url: 'benchmark.html' });
     });
+
+    test('saved local backend with missing models shows setup warning without reverting (#194 item 3)', async () => {
+        browser.storage.sync.get.mockImplementation(async (defaults) => ({
+            ...defaults,
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            mode: 'stream',
+            theme: 'light',
+        }));
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('mediapipe');
+        expect(document.getElementById('serverSettings').hidden).toBe(true);
+        const banner = document.getElementById('localSetupBanner');
+        expect(banner.hidden).toBe(false);
+        expect(banner.classList.contains('setup-banner-error')).toBe(true);
+        expect(document.getElementById('localSetupMessage').textContent).toMatch(/needs setup|Test TTS/i);
+        expect(popup.getLocalActiveSetupIssue()).toMatch(/MediaPipe/);
+    });
 });
