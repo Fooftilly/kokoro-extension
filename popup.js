@@ -101,9 +101,13 @@ function syncServerOnlyChrome(backend) {
     if (mode) mode.hidden = local;
     // Sticky failed-switch errors win over active-backend guidance, including
     // when revert restores another local backend (e.g. ONNX fail → MediaPipe).
+    // If the restored local backend also needs setup, keep that warning too.
     if (stickyLocalSetupFailure) {
+        const message = (local && localActiveSetupIssue)
+            ? stickyLocalSetupFailure + ' ' + localActiveSetupIssue
+            : stickyLocalSetupFailure;
         setLocalSetupBanner({
-            message: stickyLocalSetupFailure,
+            message,
             showCta: true,
             tone: 'error',
         });

@@ -965,6 +965,20 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(document.getElementById('serverSettings').hidden).toBe(true);
     });
 
+    test('sticky failed switch also keeps restored local setup warning', () => {
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        popup.setStickyLocalSetupFailureForTests(
+            'ONNX is not ready: Test ONNX q8 with English text first.');
+        popup.setLocalActiveSetupIssueForTests(
+            'MediaPipe needs setup: The tested model is no longer installed.');
+        popup.syncServerOnlyChrome('mediapipe');
+        const text = document.getElementById('localSetupMessage').textContent;
+        expect(text).toMatch(/ONNX is not ready/);
+        expect(text).toMatch(/MediaPipe needs setup/);
+        expect(document.getElementById('localSetupBanner').classList.contains('setup-banner-error'))
+            .toBe(true);
+    });
+
     test('saved local backend with missing models shows setup warning without reverting (#194 item 3)', async () => {
         // Approved revision remains, but cache reports the model removed.
         allowMediaPipeSelection({ modelReady: false });
