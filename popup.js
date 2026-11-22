@@ -70,6 +70,8 @@ const LocalVoice = globalThis.KokoroLocalVoiceMixing || {
 let stickyLocalSetupFailure = null;
 /** Soft warning when a saved local backend is selected but models are missing. */
 let localActiveSetupIssue = null;
+/** Invalidates in-flight soft probes when the user switches backends. */
+let localSetupHealthVersion = 0;
 
 function setLocalSetupBanner({ message, showCta, tone }) {
     const banner = document.getElementById('localSetupBanner');
@@ -127,20 +129,27 @@ function syncServerOnlyChrome(backend) {
 
 /**
  * Soft empty-state probe for an already-selected local backend (does not revert).
+ * Ignores results if the user switched backends while validation awaited.
  */
 async function refreshLocalSetupHealth(backend) {
+    const version = ++localSetupHealthVersion;
+    const stillCurrent = () => version === localSetupHealthVersion &&
+        selectedBackendValue() === backend;
     if (!LocalVoice.isLocalBackend(backend)) {
         localActiveSetupIssue = null;
         return;
     }
     try {
         await validateSelectedLocalBackend(backend);
+        if (!stillCurrent()) return;
         localActiveSetupIssue = null;
     } catch (error) {
+        if (!stillCurrent()) return;
         const label = backend === 'onnx' ? 'ONNX' : 'MediaPipe';
         localActiveSetupIssue = label + ' needs setup: ' + String(error.message || error) +
             ' Open Test TTS backends to download, repair, and retest.';
     }
+    if (!stillCurrent()) return;
     syncServerOnlyChrome(backend);
 }
 
@@ -1155,7 +1164,11 @@ document.addEventListener('DOMContentLoaded', () => {
             onnxVoiceSelect.value = LocalVoice.normalizeOnnxVoiceAsset
                 ? LocalVoice.normalizeOnnxVoiceAsset(onnxVoiceSelect.value)
                 : (LocalVoice.ONNX_FIXED_VOICE_ASSET || 'voices/af.bin');
-            void saveOptions(false);
+            void saveOptions(false).then(() => {
+                if (selectedBackendValue() === 'onnx') {
+                    return refreshLocalSetupHealth('onnx');
+                }
+            });
         });
     }
 
@@ -1183,6 +1196,8 @@ document.addEventListener('DOMContentLoaded', () => {
         explanation.textContent = BackendDisclosure.backendDisclosure(radio.value);
         if (radio.value === 'fastapi') {
             stickyLocalSetupFailure = null;
+            localActiveSetupIssue = null;
+            localSetupHealthVersion++;
             syncVoiceUiForBackend('fastapi');
             await refreshBackendStatus(document.getElementById('apiUrl').value);
             return;
@@ -1192,6 +1207,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (activeRefreshAbort) activeRefreshAbort.abort();
         stickyLocalSetupFailure = null;
         localActiveSetupIssue = null;
+        localSetupHealthVersion++;
         syncVoiceUiForBackend(radio.value);
         const status = document.getElementById('apiStatusRow');
         if (status) status.style.display = 'none';

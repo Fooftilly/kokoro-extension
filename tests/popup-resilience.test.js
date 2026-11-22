@@ -935,6 +935,8 @@ describe('popup backend-loss resilience (#4)', () => {
     });
 
     test('saved local backend with missing models shows setup warning without reverting (#194 item 3)', async () => {
+        // Approved revision remains, but cache reports the model removed.
+        allowMediaPipeSelection({ modelReady: false });
         browser.storage.sync.get.mockImplementation(async (defaults) => ({
             ...defaults,
             apiUrl: 'http://127.0.0.1:8880/v1/',
@@ -952,7 +954,44 @@ describe('popup backend-loss resilience (#4)', () => {
         const banner = document.getElementById('localSetupBanner');
         expect(banner.hidden).toBe(false);
         expect(banner.classList.contains('setup-banner-error')).toBe(true);
-        expect(document.getElementById('localSetupMessage').textContent).toMatch(/needs setup|Test TTS/i);
+        expect(document.getElementById('localSetupMessage').textContent)
+            .toMatch(/no longer installed|needs setup/i);
         expect(popup.getLocalActiveSetupIssue()).toMatch(/MediaPipe/);
+    });
+
+    test('late local setup probe does not hide FastAPI chrome after a switch', async () => {
+        allowMediaPipeSelection({ modelReady: false });
+        let releaseStatus;
+        const blocked = new Promise((resolve) => { releaseStatus = resolve; });
+        const { ModelDataStore } = require('../model-data-store.js');
+        ModelDataStore.prototype.status.mockImplementation(async () => {
+            await blocked;
+            return { ready: false };
+        });
+
+        browser.storage.sync.get.mockImplementation(async (defaults) => ({
+            ...defaults,
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            mode: 'stream',
+            theme: 'light',
+        }));
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        // Switch to FastAPI while the startup probe is still awaiting cache status.
+        const fastapi = document.querySelector('input[name="ttsBackend"][value="fastapi"]');
+        fastapi.checked = true;
+        fastapi.dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(document.getElementById('serverSettings').hidden).toBe(false);
+
+        releaseStatus();
+        await flushAsync();
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('fastapi');
+        expect(document.getElementById('serverSettings').hidden).toBe(false);
+        expect(document.getElementById('playbackModeSection').hidden).toBe(false);
     });
 });
