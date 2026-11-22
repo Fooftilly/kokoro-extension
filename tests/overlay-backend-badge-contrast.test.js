@@ -7,8 +7,10 @@ const path = require('path');
 
 function expandHex(hex) {
     const h = hex.replace('#', '');
+    // Opaque sRGB only — reject #RRGGBBAA (incl. fully transparent).
     if (h.length === 3) return h.split('').map((c) => c + c).join('');
-    return h;
+    if (h.length === 6) return h;
+    throw new Error('Expected opaque #RGB or #RRGGBB, got ' + hex);
 }
 
 function relativeLuminance(hex) {
@@ -28,7 +30,8 @@ function contrastRatio(fg, bg) {
 function cssVar(css, selector, name) {
     const block = css.match(new RegExp(selector.replace('.', '\\.') + '\\s*\\{([\\s\\S]*?)\\}'));
     expect(block).toBeTruthy();
-    const match = block[1].match(new RegExp('--' + name + '\\s*:\\s*(#[0-9a-fA-F]{3,8})'));
+    // Match 3- or 6-digit hex only (not 8-digit with alpha).
+    const match = block[1].match(new RegExp('--' + name + '\\s*:\\s*(#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?)(?![0-9a-fA-F])'));
     expect(match).toBeTruthy();
     return match[1];
 }
@@ -45,5 +48,10 @@ describe('overlay backend badge contrast (#194 / #210 review)', () => {
         expect(contrastRatio(lightFg, lightBg)).toBeGreaterThanOrEqual(4.5);
         expect(contrastRatio(darkFg, darkBg)).toBeGreaterThanOrEqual(4.5);
         expect(css).toMatch(/\.backend-badge\s*\{[\s\S]*color:\s*var\(--backend-badge-text\)/);
+    });
+
+    test('rejects transparent eight-digit hex instead of treating it as opaque', () => {
+        expect(() => contrastRatio('#bbbbbb00', '#2d2d2d')).toThrow(/opaque/);
+        expect(() => expandHex('#bbbbbb00')).toThrow(/opaque/);
     });
 });
