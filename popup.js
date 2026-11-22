@@ -66,6 +66,55 @@ const LocalVoice = globalThis.KokoroLocalVoiceMixing || {
     localVoiceLimitationNote: () => '',
 };
 
+/** Sticky banner after a failed local-backend switch (#194 item 3). */
+let stickyLocalSetupFailure = null;
+
+function setLocalSetupBanner({ message, showCta, tone }) {
+    const banner = document.getElementById('localSetupBanner');
+    const msg = document.getElementById('localSetupMessage');
+    const cta = document.getElementById('localSetupOpenTest');
+    if (!banner || !msg) return;
+    banner.hidden = false;
+    banner.classList.toggle('setup-banner-error', tone === 'error');
+    banner.classList.toggle('setup-banner-ok', tone === 'ok');
+    msg.textContent = message || '';
+    if (cta) cta.hidden = !showCta;
+}
+
+function hideLocalSetupBanner() {
+    const banner = document.getElementById('localSetupBanner');
+    if (banner) banner.hidden = true;
+}
+
+/**
+ * Hide FastAPI-only chrome for local backends and drive empty-state banner (#194 1+3).
+ */
+function syncServerOnlyChrome(backend) {
+    const local = LocalVoice.isLocalBackend(backend);
+    const server = document.getElementById('serverSettings');
+    const mode = document.getElementById('playbackModeSection');
+    if (server) server.hidden = local;
+    if (mode) mode.hidden = local;
+    if (!local) {
+        if (stickyLocalSetupFailure) {
+            setLocalSetupBanner({
+                message: stickyLocalSetupFailure,
+                showCta: true,
+                tone: 'error',
+            });
+        } else {
+            hideLocalSetupBanner();
+        }
+        return;
+    }
+    setLocalSetupBanner({
+        message: (backend === 'onnx' ? 'ONNX' : 'MediaPipe') +
+            ' is active on-device. Download, repair, or compare models on Test TTS backends.',
+        showCta: true,
+        tone: 'ok',
+    });
+}
+
 /**
  * FastAPI keeps the weighted mixer. MediaPipe shows an editable voice ID.
  * ONNX shows a catalogued voice-asset select (#60 voice-change).
@@ -92,6 +141,7 @@ function syncVoiceUiForBackend(backend) {
         note.hidden = !local;
         note.textContent = local ? LocalVoice.localVoiceLimitationNote(backend) : '';
     }
+    syncServerOnlyChrome(backend);
 }
 
 /**
@@ -1088,14 +1138,19 @@ document.addEventListener('DOMContentLoaded', () => {
         for (const item of document.querySelectorAll('input[name="ttsBackend"]')) {
             item.checked = item.value === saved;
         }
-        explanation.textContent = (radio.value === 'onnx' ? 'ONNX' : 'MediaPipe') +
-            ' unavailable: ' + String(error.message || error) +
+        const label = radio.value === 'onnx' ? 'ONNX' : 'MediaPipe';
+        const detail = String(error.message || error);
+        explanation.textContent = label + ' unavailable: ' + detail +
             ' Use the TTS test page to install and validate it.';
+        stickyLocalSetupFailure = label + ' is not ready: ' + detail +
+            ' Download and test it on Test TTS backends, then select it again.';
+        syncVoiceUiForBackend(saved || 'fastapi');
     }
 
     async function applySelectedBackendUi(radio, explanation) {
         explanation.textContent = BackendDisclosure.backendDisclosure(radio.value);
         if (radio.value === 'fastapi') {
+            stickyLocalSetupFailure = null;
             syncVoiceUiForBackend('fastapi');
             await refreshBackendStatus(document.getElementById('apiUrl').value);
             return;
@@ -1103,6 +1158,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Cancel any in-flight remote status/voice fetch when switching to local.
         refreshGeneration++;
         if (activeRefreshAbort) activeRefreshAbort.abort();
+        stickyLocalSetupFailure = null;
         syncVoiceUiForBackend(radio.value);
         const status = document.getElementById('apiStatusRow');
         if (status) status.style.display = 'none';
@@ -1172,12 +1228,17 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    function openTestTtsPage() {
+        browser.tabs.create({ url: 'benchmark.html' });
+    }
     const openBenchmarkBtn = document.getElementById('openBenchmarkBtn');
     if (openBenchmarkBtn) {
         openBenchmarkBtn.textContent = BackendDisclosure.CTA_LABEL || 'Test TTS backends';
-        openBenchmarkBtn.addEventListener('click', () => {
-            browser.tabs.create({ url: 'benchmark.html' });
-        });
+        openBenchmarkBtn.addEventListener('click', openTestTtsPage);
+    }
+    const localSetupOpenTest = document.getElementById('localSetupOpenTest');
+    if (localSetupOpenTest) {
+        localSetupOpenTest.addEventListener('click', openTestTtsPage);
     }
     const openBenchmarkHint = document.getElementById('openBenchmarkHint');
     if (openBenchmarkHint && BackendDisclosure.CTA_HINT) {
@@ -1216,6 +1277,9 @@ if (typeof module !== 'undefined' && module.exports) {
         normalizeApiUrl,
         beginHostPermissionRequest,
         syncVoiceUiForBackend,
+        syncServerOnlyChrome,
+        getStickyLocalSetupFailure: () => stickyLocalSetupFailure,
+        setStickyLocalSetupFailureForTests: (value) => { stickyLocalSetupFailure = value; },
         getConnectionStatus: () => connectionStatus,
         getAvailableVoices: () => availableVoices,
         getVoiceFetchStatus: () => voiceFetchStatus,

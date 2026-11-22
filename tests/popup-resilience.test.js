@@ -885,4 +885,52 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(writes.every((payload) => !Object.hasOwn(payload, 'voice'))).toBe(true);
         expect(writes.every((payload) => !Object.hasOwn(payload, 'onnxVoiceAsset'))).toBe(true);
     });
+
+    test('hides FastAPI-only chrome for local backends (#194 item 1)', async () => {
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        const server = document.getElementById('serverSettings');
+        const mode = document.getElementById('playbackModeSection');
+        expect(server.hidden).toBe(false);
+        expect(mode.hidden).toBe(false);
+
+        popup.syncVoiceUiForBackend('mediapipe');
+        expect(server.hidden).toBe(true);
+        expect(mode.hidden).toBe(true);
+        expect(document.getElementById('localSetupBanner').hidden).toBe(false);
+        expect(document.getElementById('localSetupMessage').textContent).toMatch(/MediaPipe/);
+        expect(document.getElementById('localSetupOpenTest').hidden).toBe(false);
+
+        popup.syncVoiceUiForBackend('onnx');
+        expect(server.hidden).toBe(true);
+        expect(mode.hidden).toBe(true);
+        expect(document.getElementById('localSetupMessage').textContent).toMatch(/ONNX/);
+
+        popup.syncVoiceUiForBackend('fastapi');
+        expect(server.hidden).toBe(false);
+        expect(mode.hidden).toBe(false);
+        expect(document.getElementById('localSetupBanner').hidden).toBe(true);
+    });
+
+    test('failed local switch keeps a setup banner with Test TTS CTA (#194 item 3)', async () => {
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+
+        const radio = document.querySelector('input[name="ttsBackend"][value="mediapipe"]');
+        radio.checked = true;
+        radio.dispatchEvent(new Event('change'));
+        await flushAsync();
+
+        expect(document.querySelector('input[name="ttsBackend"]:checked').value).toBe('fastapi');
+        const banner = document.getElementById('localSetupBanner');
+        expect(banner.hidden).toBe(false);
+        expect(banner.classList.contains('setup-banner-error')).toBe(true);
+        expect(document.getElementById('localSetupMessage').textContent).toMatch(/not ready|Test TTS/i);
+        expect(document.getElementById('serverSettings').hidden).toBe(false);
+
+        browser.tabs.create.mockClear();
+        document.getElementById('localSetupOpenTest').click();
+        expect(browser.tabs.create).toHaveBeenCalledWith({ url: 'benchmark.html' });
+    });
 });

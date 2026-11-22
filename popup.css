@@ -198,8 +198,47 @@ button:hover {
 }
 
 /* Author `display: flex` beats the UA `[hidden] { display: none }` rule. */
-.local-voice-container[hidden] {
+.local-voice-container[hidden],
+.settings-section[hidden],
+.setup-banner[hidden] {
     display: none;
+}
+
+.section-heading {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--note-color);
+}
+
+.setup-banner {
+    margin: 8px 0 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--mixer-bg);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.setup-banner-error {
+    border-color: var(--status-error, #c62828);
+}
+
+.setup-banner-ok {
+    border-color: var(--border-color);
+}
+
+.secondary-btn {
+    font: inherit;
+    cursor: pointer;
+    padding: 6px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-color, transparent);
+    color: inherit;
 }
 
 .local-voice-container input {

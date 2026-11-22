@@ -27,6 +27,10 @@
     <div class="content-wrapper">
 
         <div id="general" class="content active">
+            <div class="label-row">
+                <span class="section-heading">How you listen</span>
+                <span id="version"></span>
+            </div>
             <fieldset class="backend-picker" aria-describedby="backendExplanation">
                 <legend>TTS backend</legend>
                 <label class="backend-card">
@@ -52,17 +56,22 @@
                 </label>
                 <p id="backendExplanation" class="note">Kokoro server is the default for existing users. Local modes never send speech text to FastAPI.</p>
             </fieldset>
-            <div class="label-row">
-                <label for="apiUrl">API Base URL</label>
-                <span id="version"></span>
+            <div id="serverSettings" class="settings-section">
+                <div class="label-row">
+                    <label for="apiUrl">API Base URL</label>
+                </div>
+                <div class="url-input-container">
+                    <input type="text" id="apiUrl">
+                    <button id="saveApiUrl" title="Save URL">Save</button>
+                </div>
+                <div id="apiStatusRow" class="api-status-row" style="display: none;">
+                    <div id="apiStatus" class="note mt-2"></div>
+                    <button type="button" id="retryApi" class="retry-api-btn" title="Retry connection">Retry</button>
+                </div>
             </div>
-            <div class="url-input-container">
-                <input type="text" id="apiUrl">
-                <button id="saveApiUrl" title="Save URL">Save</button>
-            </div>
-            <div id="apiStatusRow" class="api-status-row" style="display: none;">
-                <div id="apiStatus" class="note mt-2"></div>
-                <button type="button" id="retryApi" class="retry-api-btn" title="Retry connection">Retry</button>
+            <div id="localSetupBanner" class="setup-banner" hidden>
+                <p id="localSetupMessage" class="note" role="status"></p>
+                <button type="button" id="localSetupOpenTest" class="secondary-btn">Open Test TTS backends</button>
             </div>
 
             <label id="voiceSectionLabel">VOICE MIXER</label>
@@ -113,7 +122,7 @@
             </div>
 
             <div class="settings-grid mt-5">
-                <div class="flex-item">
+                <div id="playbackModeSection" class="flex-item settings-section">
                     <label class="inline-label mr-10">Mode:</label>
                     <div class="flex-row gap-5 mb-0">
                         <div class="flex-item">
