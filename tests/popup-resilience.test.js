@@ -142,6 +142,24 @@ describe('popup backend-loss resilience (#4)', () => {
         }));
     }
 
+    /** Load popup with MediaPipe selected and a given mediaPipeVoice (#194 item 6). */
+    async function loadMediaPipePopupWithVoice(mediaPipeVoice = 'af_heart') {
+        allowMediaPipeSelection();
+        browser.storage.sync.get.mockImplementation(async (defaults) => ({
+            ...defaults,
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
+            mediaPipeVoice,
+            onnxVoiceAsset: 'voices/af.bin',
+            mode: 'stream',
+            theme: 'light',
+        }));
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+    }
+
     /** Sync get/set that honors writes so rollback tests cannot mask a bad persist. */
     function useWritableSyncStore(initial) {
         const store = { ...initial };
@@ -900,21 +918,7 @@ describe('popup backend-loss resilience (#4)', () => {
     });
 
     test('MediaPipe save writes mediaPipeVoice only and keeps FastAPI mix (#59)', async () => {
-        allowMediaPipeSelection();
-        browser.storage.sync.get.mockImplementation(async (defaults) => ({
-            ...defaults,
-            apiUrl: 'http://127.0.0.1:8880/v1/',
-            ttsBackend: 'mediapipe',
-            mediaPipeVariant: 'cpu',
-            voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
-            mediaPipeVoice: 'af_heart',
-            onnxVoiceAsset: 'voices/af.bin',
-            mode: 'stream',
-            theme: 'light',
-        }));
-
-        document.dispatchEvent(new Event('DOMContentLoaded'));
-        await flushAsync();
+        await loadMediaPipePopupWithVoice('af_heart');
 
         expect(document.getElementById('voiceMixerContainer').hidden).toBe(true);
         expect(document.getElementById('mediaPipeVoiceContainer').hidden).toBe(false);
@@ -938,21 +942,7 @@ describe('popup backend-loss resilience (#4)', () => {
     });
 
     test('MediaPipe curated select + advanced custom ID (#194 item 6)', async () => {
-        allowMediaPipeSelection();
-        browser.storage.sync.get.mockImplementation(async (defaults) => ({
-            ...defaults,
-            apiUrl: 'http://127.0.0.1:8880/v1/',
-            ttsBackend: 'mediapipe',
-            mediaPipeVariant: 'cpu',
-            voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
-            mediaPipeVoice: 'xx_custom',
-            onnxVoiceAsset: 'voices/af.bin',
-            mode: 'stream',
-            theme: 'light',
-        }));
-
-        document.dispatchEvent(new Event('DOMContentLoaded'));
-        await flushAsync();
+        await loadMediaPipePopupWithVoice('xx_custom');
 
         const mediaPipeSelect = document.getElementById('mediaPipeVoice');
         const customInput = document.getElementById('mediaPipeVoiceCustom');
@@ -981,21 +971,7 @@ describe('popup backend-loss resilience (#4)', () => {
     });
 
     test('MediaPipe custom voice draft survives quiet autosave (#194 item 6)', async () => {
-        allowMediaPipeSelection();
-        browser.storage.sync.get.mockImplementation(async (defaults) => ({
-            ...defaults,
-            apiUrl: 'http://127.0.0.1:8880/v1/',
-            ttsBackend: 'mediapipe',
-            mediaPipeVariant: 'cpu',
-            voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
-            mediaPipeVoice: 'af_heart',
-            onnxVoiceAsset: 'voices/af.bin',
-            mode: 'stream',
-            theme: 'light',
-        }));
-
-        document.dispatchEvent(new Event('DOMContentLoaded'));
-        await flushAsync();
+        await loadMediaPipePopupWithVoice('af_heart');
 
         const customInput = document.getElementById('mediaPipeVoiceCustom');
         customInput.value = 'xx_';
@@ -1007,21 +983,7 @@ describe('popup backend-loss resilience (#4)', () => {
     });
 
     test('MediaPipe discarded custom draft restores baseline voice', async () => {
-        allowMediaPipeSelection();
-        browser.storage.sync.get.mockImplementation(async (defaults) => ({
-            ...defaults,
-            apiUrl: 'http://127.0.0.1:8880/v1/',
-            ttsBackend: 'mediapipe',
-            mediaPipeVariant: 'cpu',
-            voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
-            mediaPipeVoice: 'af_sarah',
-            onnxVoiceAsset: 'voices/af.bin',
-            mode: 'stream',
-            theme: 'light',
-        }));
-
-        document.dispatchEvent(new Event('DOMContentLoaded'));
-        await flushAsync();
+        await loadMediaPipePopupWithVoice('af_sarah');
 
         const customInput = document.getElementById('mediaPipeVoiceCustom');
         const mediaPipeSelect = document.getElementById('mediaPipeVoice');
@@ -1045,21 +1007,7 @@ describe('popup backend-loss resilience (#4)', () => {
     });
 
     test('MediaPipe custom typing keeps longer IDs whose prefixes are catalogued', async () => {
-        allowMediaPipeSelection();
-        browser.storage.sync.get.mockImplementation(async (defaults) => ({
-            ...defaults,
-            apiUrl: 'http://127.0.0.1:8880/v1/',
-            ttsBackend: 'mediapipe',
-            mediaPipeVariant: 'cpu',
-            voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
-            mediaPipeVoice: 'af_heart',
-            onnxVoiceAsset: 'voices/af.bin',
-            mode: 'stream',
-            theme: 'light',
-        }));
-
-        document.dispatchEvent(new Event('DOMContentLoaded'));
-        await flushAsync();
+        await loadMediaPipePopupWithVoice('af_heart');
 
         const customInput = document.getElementById('mediaPipeVoiceCustom');
         const mediaPipeSelect = document.getElementById('mediaPipeVoice');

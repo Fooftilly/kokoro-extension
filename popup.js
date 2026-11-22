@@ -1218,11 +1218,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         mediaPipeVoiceCustom.addEventListener('change', () => {
             const raw = (mediaPipeVoiceCustom.value || '').trim();
-            if (!raw) {
-                applyMediaPipeVoiceSelection(mediaPipeVoiceBaseline);
-            } else {
-                applyMediaPipeVoiceSelection(raw);
-            }
+            applyMediaPipeVoiceSelection(raw || mediaPipeVoiceBaseline);
             void saveOptions(false);
         });
     }
