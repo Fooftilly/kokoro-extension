@@ -50,6 +50,11 @@ function assertMeasuredExportDisclosure(payload) {
         'Measured export must disclose cold prep separately from warm runs');
     requireMeasuredFlag(payload, 'firstAudioMeasured', false,
         'Measured export must disclose warm full-clip (not first-audio)');
+    // Dual-comparison live requires muted full-clip playback start measured.
+    // Synthesis-only honesty exports may set localPlaybackStartMeasured:false
+    // (audio-element quirks); those must not pass this dual gate.
+    requireMeasuredFlag(payload, 'localPlaybackStartMeasured', true,
+        'Measured export must report muted full-clip playback start');
     requireMeasuredFlag(payload, 'storageFootprintMeasured', true,
         'Measured export must report measured cache-body storage footprint');
     requireMeasuredFlag(payload, 'storageFootprintSource', 'cache-body-bytes',
@@ -124,9 +129,15 @@ function assertMeasuredExportRows(payload, expected = {}) {
     for (const row of payload.measurements) {
         requirePositiveMetricFields(row, [
             'coldPrepMs', 'synthesisP50Ms', 'synthesisP95Ms', 'realTimeFactorP50',
+            'playbackStartP50Ms',
             'catalogModelAssetBytes', 'cachedCatalogAssetBytes',
             'measuredCacheBodyBytes',
         ]);
+        if (!(row.playbackStartP50Ms >= row.synthesisP50Ms)) {
+            throw Error(
+                'playbackStartP50Ms must be at/after synthesisP50Ms: ' +
+                JSON.stringify(row));
+        }
         assertMeasuredBodyBytes(row);
         assertOnnxStorageDisclosure(row, dictionaryBytes);
     }

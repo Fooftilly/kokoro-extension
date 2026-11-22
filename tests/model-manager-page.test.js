@@ -10,6 +10,12 @@ jest.mock('../model-data-store.js', () => ({
 jest.mock('../mediapipe-provider.js', () => ({ MediaPipeKokoroProvider: jest.fn() }));
 jest.mock('../onnx-provider.js', () => ({ OnnxKokoroProvider: jest.fn() }));
 jest.mock('../pcm-wav.js', () => ({ pcmToWavBlob: jest.fn(() => new Blob(['wav'])) }));
+jest.mock('../server-audio-playback-start.js', () => ({
+    // Absolute playing timestamp after synth; offset > mocked synthesisP50Ms (12)
+    // so rememberSharedEnglishResult accepts playbackStartP50Ms >= synthesisP50.
+    waitServerAudioPlaybackStart: jest.fn(async () => performance.now() + 20),
+}));
+const { nearestRank: realNearestRank } = require('../benchmark-capabilities.js');
 
 const audio = () => ({ samples: new Float32Array([0.2, -0.2]), sampleRateHz: 24000 });
 
@@ -25,6 +31,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
     let pruneModels;
     let delayedCpuStatus;
     let failStatusFor;
+    let waitPlaybackStartMock;
     beforeEach(async () => {
         jest.resetModules();
         dictionaryReady = true;
@@ -81,12 +88,31 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         installImmediateModelLocks();
         global.Response = class Response {};
         global.TransformStream = class TransformStream {};
-        URL.createObjectURL = jest.fn(() => 'blob:test-audio');
+        let objectUrlSeq = 0;
+        URL.createObjectURL = jest.fn(() => 'blob:test-audio-' + (++objectUrlSeq));
         URL.revokeObjectURL = jest.fn();
         window.KokoroBenchmark = {
             summarizeRuns: jest.fn(() => ({
                 synthesisP50Ms: 12, synthesisP95Ms: 15, realTimeFactorP50: 0.2,
             })),
+            nearestRank: jest.fn((values, pct) => realNearestRank(values, pct)),
+        };
+        waitPlaybackStartMock = require('../server-audio-playback-start.js')
+            .waitServerAudioPlaybackStart;
+        waitPlaybackStartMock.mockReset();
+        waitPlaybackStartMock.mockImplementation(
+            async () => performance.now() + 20);
+        // jsdom Audio must accept src assignment used by measureWarmClip.
+        global.Audio = class FakeAudio {
+            constructor() {
+                this.src = '';
+                this.muted = false;
+                this.currentTime = 0;
+            }
+            play() { return Promise.resolve(); }
+            pause() {}
+            addEventListener() {}
+            removeEventListener() {}
         };
         globalThis.KokoroBackendDisclosure = require('../backend-disclosure.js');
         engine = {
@@ -540,9 +566,19 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(window.KokoroBenchmark.summarizeRuns).toHaveBeenCalledWith(
             expect.arrayContaining([expect.objectContaining({
                 kind: 'warm', firstAudioMs: null,
+                playbackStartMs: expect.any(Number),
             })]));
+        expect(message).toContain('Full-clip muted playback start p50:');
+        expect(message).toContain('Streaming time-to-first-audio was not measured');
         expect(message).toContain('Unknown English words are not supported');
         expect(row.querySelector('audio').hidden).toBe(false);
+        // Exact p50 from the three warm playbackStartMs values (not a floor max).
+        const warmRuns = window.KokoroBenchmark.summarizeRuns.mock.calls[0][0];
+        const playbackSamples = warmRuns.map(r => r.playbackStartMs);
+        expect(playbackSamples).toHaveLength(3);
+        expect(playbackSamples.every(Number.isFinite)).toBe(true);
+        expect(window.KokoroBenchmark.nearestRank).toHaveBeenCalledWith(
+            playbackSamples, 50);
         await waitFor(() => row.querySelector('.model-choose').disabled === false);
         expect(browser.storage.local.set).toHaveBeenCalledWith({
             'onnxValidatedRevision:q8': expect.any(String),
@@ -553,6 +589,79 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(row.querySelector('.model-status').textContent).toContain('dictionary-supported English reading');
         expect(global.fetch).not.toHaveBeenCalled();
     });
+
+    test('muted playback failure still approves backend after successful synthesis',
+        async () => {
+            waitPlaybackStartMock.mockRejectedValue(new Error('NotAllowedError'));
+            const { row, message } = await runProbe();
+            expect(engine.synthesize).toHaveBeenCalled();
+            expect(message).toContain(
+                'Full-clip muted playback start was not measured');
+            expect(message).toContain(
+                'synthesis still valid for backend approval');
+            await waitFor(() =>
+                row.querySelector('.model-choose').disabled === false);
+            expect(browser.storage.local.set).toHaveBeenCalledWith({
+                'onnxValidatedRevision:q8': expect.any(String),
+            });
+
+            // Synthesis-only rows stay exportable; do not claim playback measured.
+            installedModels.add('cpu');
+            require('../mediapipe-provider.js').MediaPipeKokoroProvider
+                .mockImplementation(() => engine);
+            document.getElementById('refreshModelCache').click();
+            await waitFor(() => document.querySelector(
+                '[data-variant="mediapipe-cpu"] .model-test').disabled === false);
+            document.querySelector('[data-variant="mediapipe-cpu"] .model-test')
+                .click();
+            await waitFor(() => document.getElementById(
+                'sharedEnglishComparisonRows').children.length === 2);
+            const exportButton = document.getElementById('exportMeasuredResults');
+            expect(exportButton.disabled).toBe(false);
+            exportButton.click();
+            await waitFor(() => browser.downloads.download.mock.calls.length === 1);
+            globalThis.__kokoroExportOnChanged({
+                id: 42, state: { current: 'complete' },
+            });
+            await waitFor(() => document.getElementById('measuredExportStatus')
+                .textContent.includes('Nothing was uploaded'));
+            const payload = globalThis.__kokoroLastMeasuredExport;
+            expect(payload.measurements).toHaveLength(2);
+            expect(payload.localPlaybackStartMeasured).toBe(false);
+            expect(payload.firstAudioMeasured).toBe(false);
+            for (const exported of payload.measurements) {
+                expect(exported.synthesisP50Ms).toBeGreaterThan(0);
+                expect(exported.playbackStartP50Ms == null).toBe(true);
+            }
+            // Dual-comparison acceptance still requires measured playback;
+            // invoke the real gate (not a source-string match).
+            const { spawnSync } = require('child_process');
+            const { pathToFileURL } = require('url');
+            const path = require('path');
+            const helperUrl = pathToFileURL(path.join(
+                __dirname, '..', 'scripts',
+                'measured-results-export-acceptance.mjs')).href;
+            const child = spawnSync(process.execPath, [
+                '--input-type=module', '-e', `
+import { assertMeasuredResultsExportPayload } from ${JSON.stringify(helperUrl)};
+const payload = ${JSON.stringify(payload)};
+try {
+    assertMeasuredResultsExportPayload(payload);
+    console.log(JSON.stringify({ ok: true }));
+} catch (error) {
+    console.log(JSON.stringify({
+        ok: false,
+        message: String(error.message || error),
+    }));
+}
+`,
+            ], { encoding: 'utf8' });
+            expect(child.status).toBe(0);
+            expect(child.stderr || '').toBe('');
+            const gate = JSON.parse(child.stdout.trim());
+            expect(gate.ok).toBe(false);
+            expect(gate.message).toMatch(/muted full-clip playback start/i);
+        });
 
     test('missing dictionary is never downloaded implicitly and IPA remains testable', async () => {
         dictionaryReady = false;
@@ -1145,15 +1254,20 @@ describe('ONNX model manager English synthesis diagnostics', () => {
                 saveAs: false,
                 url: expect.stringContaining('blob:'),
             }));
-        expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+        // Warm-clip muted playback already revoked its temp WAV URLs; export
+        // blob must stay alive until download completes.
+        const exportUrl = browser.downloads.download.mock.calls[0][0].url;
+        expect(URL.revokeObjectURL.mock.calls
+            .some(([url]) => url === exportUrl)).toBe(false);
         expect(document.getElementById('measuredExportStatus').textContent)
             .not.toContain('Nothing was uploaded');
+        const revokeBeforeComplete = URL.revokeObjectURL.mock.calls.length;
         globalThis.__kokoroExportOnChanged({ id: 42, state: { current: 'complete' } });
-        await waitFor(() => URL.revokeObjectURL.mock.calls.length === 1 &&
+        await waitFor(() => URL.revokeObjectURL.mock.calls.length >
+            revokeBeforeComplete &&
             document.getElementById('measuredExportStatus').textContent
                 .includes('Nothing was uploaded'));
-        expect(URL.revokeObjectURL).toHaveBeenCalledWith(
-            browser.downloads.download.mock.calls[0][0].url);
+        expect(URL.revokeObjectURL).toHaveBeenCalledWith(exportUrl);
         expect(globalThis.__kokoroLastMeasuredExportDownloadId).toBe(42);
         expect(globalThis.__kokoroLastMeasuredExport).toEqual(
             expect.objectContaining({
@@ -1164,6 +1278,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
                 measurementKind: 'warm-full-clip-synthesis',
                 coldPrepMeasured: true,
                 firstAudioMeasured: false,
+                localPlaybackStartMeasured: true,
                 storageFootprintMeasured: true,
                 storageFootprintSource: 'cache-body-bytes',
                 cachePresenceProbed: true,
@@ -1177,11 +1292,26 @@ describe('ONNX model manager English synthesis diagnostics', () => {
             }));
         expect(globalThis.__kokoroLastMeasuredExport.measurements.map(r => r.key)
             .sort()).toEqual(['mediapipe-cpu', 'onnx-q8']);
+        // nearestRank was called with real warm samples; export p50 matches it.
+        const playbackRankCalls = window.KokoroBenchmark.nearestRank.mock.calls
+            .map((args, i) => ({
+                samples: args[0],
+                pct: args[1],
+                result: window.KokoroBenchmark.nearestRank.mock.results[i].value,
+            }))
+            .filter(call => call.pct === 50);
+        expect(playbackRankCalls.length).toBeGreaterThanOrEqual(2);
         const dictCatalog =
             globalThis.__kokoroLastMeasuredExport.englishDictionaryCatalogBytes;
         expect(dictCatalog).toBeGreaterThan(0);
         for (const row of globalThis.__kokoroLastMeasuredExport.measurements) {
             expect(row.coldPrepMs).toBeGreaterThan(0);
+            expect(row.playbackStartP50Ms).toBeGreaterThanOrEqual(row.synthesisP50Ms);
+            const matching = playbackRankCalls.find(
+                call => call.result === row.playbackStartP50Ms);
+            expect(matching).toBeTruthy();
+            expect(row.playbackStartP50Ms).toBe(
+                realNearestRank(matching.samples, 50));
             expect(row.catalogModelAssetBytes).toBeGreaterThan(0);
             // Measured Cache Storage body sizes must match catalog bytes.
             expect(row.cachedCatalogAssetBytes).toBe(row.catalogModelAssetBytes);
@@ -1226,6 +1356,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(payload.storageFootprintMeasured).toBe(false);
         expect(payload.storageFootprintSource).toBe('catalog');
         expect(payload.cachePresenceProbed).toBe(false);
+        expect(payload.localPlaybackStartMeasured).toBe(true);
         expect(payload.runtimeHeapMeasured).toBe(false);
         expect(payload.storeSigning).toEqual({
             storePackagesSigned: false,
@@ -1462,7 +1593,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(engine.synthesize).toHaveBeenCalledTimes(1);
         expect(window.KokoroBenchmark.summarizeRuns).toHaveBeenCalledTimes(1);
         expect(window.KokoroBenchmark.summarizeRuns.mock.calls[0][0]).toHaveLength(3);
-        expect(row.querySelector('audio').src).toBe('blob:test-audio');
+        expect(row.querySelector('audio').src).toMatch(/^blob:test-audio-\d+$/);
         expect(row.querySelector('.model-choose').disabled).toBe(true);
         expect(browser.storage.local.set).not.toHaveBeenCalledWith({
             'onnxValidatedRevision:q8': expect.any(String),

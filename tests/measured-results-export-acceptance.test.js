@@ -26,6 +26,7 @@ const payload = {
     measurementKind: 'warm-full-clip-synthesis',
     coldPrepMeasured: true,
     firstAudioMeasured: false,
+    localPlaybackStartMeasured: true,
     storageFootprintMeasured: true,
     storageFootprintSource: 'cache-body-bytes',
     cachePresenceProbed: true,
@@ -39,7 +40,7 @@ const payload = {
     sampleText: 'Hello world.',
     measurements: [
         { key: 'onnx-q8', label: 'ONNX', coldPrepMs: 40, synthesisP50Ms: 12,
-            synthesisP95Ms: 15, realTimeFactorP50: 0.2,
+            synthesisP95Ms: 15, realTimeFactorP50: 0.2, playbackStartP50Ms: 14,
             catalogModelAssetBytes: 92885404,
             requiredDictionaryCatalogBytes: 3618488,
             catalogEnglishPathBytes: 92885404 + 3618488,
@@ -50,6 +51,7 @@ const payload = {
             cachedCatalogEnglishPathBytes: 92885404 + 3618488 },
         { key: 'mediapipe-cpu', label: 'MediaPipe', coldPrepMs: 55,
             synthesisP50Ms: 18, synthesisP95Ms: 22, realTimeFactorP50: 0.3,
+            playbackStartP50Ms: 20,
             catalogModelAssetBytes: 294783298,
             cachedCatalogAssetBytes: 294783298,
             measuredCacheBodyBytes: 294783298 },
@@ -148,6 +150,16 @@ const badDictBodySize = (() => {
         return { ok: false, message: String(error.message || error) };
     }
 })();
+const badPlaybackMeasured = (() => {
+    try {
+        exp.assertMeasuredResultsExportPayload({
+            ...payload, localPlaybackStartMeasured: false,
+        });
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error.message || error) };
+    }
+})();
 console.log(JSON.stringify({
     kind: exp.MEASURED_EXPORT_KIND,
     filename: exp.MEASURED_EXPORT_FILENAME,
@@ -161,7 +173,7 @@ console.log(JSON.stringify({
         'kokoro-measured-local-english (1).json'),
     rejectOther: exp.isAcceptableMeasuredExportFilename('notes.txt'),
     report, fail, badPayload, badHeap, badFootprint,
-    badMeasuredClaim, badOnnxDict, badDictBodySize,
+    badMeasuredClaim, badOnnxDict, badDictBodySize, badPlaybackMeasured,
 }));
 `], { encoding: 'utf8', cwd: root });
 }
@@ -205,6 +217,9 @@ describe('Measured results export acceptance', () => {
         expect(snap.badDictBodySize.ok).toBe(false);
         expect(snap.badDictBodySize.message).toMatch(
             /measured CMUdict body bytes equal/i);
+        expect(snap.badPlaybackMeasured.ok).toBe(false);
+        expect(snap.badPlaybackMeasured.message).toMatch(
+            /muted full-clip playback start/i);
     });
 
     test('product page exposes local-only measured export control', () => {
@@ -220,6 +235,10 @@ describe('Measured results export acceptance', () => {
         expect(html).not.toContain('Cache Storage presence estimate');
         expect(html).not.toContain('not measured body/disk usage');
         expect(html).toContain('runtime WASM/WebGPU heap is not measured');
+        expect(html).toContain('muted HTMLAudioElement playback start');
+        expect(html).toContain('Streaming time to first audio is not measured');
+        expect(source).toContain('localPlaybackStartMeasured:');
+        expect(source).toContain('playbackStartP50Ms');
         expect(source).toContain('buildMeasuredEnglishExport');
         expect(source).toContain('exportMeasuredEnglishResults');
         expect(source).toContain('downloadPinnedMeasuredExport');

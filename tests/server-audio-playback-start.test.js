@@ -33,7 +33,8 @@ function fakeAudio({ playImpl, initiallyMuted = false } = {}) {
 describe('waitServerAudioPlaybackStart', () => {
     test('waits for playing, pauses, and restores unmuted state', async () => {
         const audio = fakeAudio({ initiallyMuted: false });
-        await waitServerAudioPlaybackStart(audio);
+        const playingAtMs = await waitServerAudioPlaybackStart(audio);
+        expect(Number.isFinite(playingAtMs)).toBe(true);
         expect(audio.play).toHaveBeenCalled();
         expect(audio.pause).toHaveBeenCalled();
         expect(audio.currentTime).toBe(0);
@@ -45,6 +46,33 @@ describe('waitServerAudioPlaybackStart', () => {
         expect(audio._listeners.get('playing') || []).toHaveLength(0);
         expect(audio._listeners.get('error') || []).toHaveLength(0);
     });
+
+    test('returned playing timestamp ignores post-start cleanup delay',
+        async () => {
+            let now = 1000;
+            const spy = jest.spyOn(performance, 'now')
+                .mockImplementation(() => now);
+            const audio = fakeAudio({
+                initiallyMuted: false,
+                playImpl: () => {
+                    queueMicrotask(() => {
+                        now = 1100;
+                        const handlers = audio._listeners.get('playing') || [];
+                        for (const handler of handlers.slice()) handler();
+                    });
+                    return Promise.resolve();
+                },
+            });
+            audio.pause = jest.fn(() => {
+                // Cleanup after `playing` must not move the returned stamp.
+                now = 1500;
+            });
+            const playingAtMs = await waitServerAudioPlaybackStart(audio);
+            expect(playingAtMs).toBe(1100);
+            expect(audio.pause).toHaveBeenCalled();
+            expect(now).toBe(1500);
+            spy.mockRestore();
+        });
 
     test('restores originally muted state after success', async () => {
         const audio = fakeAudio({ initiallyMuted: true });
