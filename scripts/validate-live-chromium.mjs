@@ -31,6 +31,8 @@ import {
     longFormStorageConfig,
     originLongFormMemoryStageEnabled,
     requireLongFormBackend,
+    shouldSampleLongFormWaveform,
+    decodeLongFormWavPcm16Metrics,
 } from './long-form-memory-acceptance.mjs';
 import { buildCurrentProviderSnapshot } from './live-chromium-report.mjs';
 import { probeLocalProviderIdleRelease } from './local-provider-idle-probe.mjs';
@@ -2510,27 +2512,39 @@ function readLongFormHeap(page) {
     });
 }
 
-function readLongFormWavMeta(page) {
-    return page.evaluate(async () => {
+async function readLongFormWavMeta(page) {
+    // Fetch WAV bytes in-page; decode PCM16 metrics in Node via shared helper
+    // so Jest + live share one fail-closed decoder path.
+    const payload = await page.evaluate(async () => {
         const audio = document.getElementById('audio');
         const bytes = new Uint8Array(await (await fetch(audio.src)).arrayBuffer());
-        const wav = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        const tag = (start, length) =>
-            String.fromCharCode(...bytes.subarray(start, start + length));
-        const audioBytes = wav.getUint32(40, true);
-        if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
-            wav.getUint32(24, true) !== 24000 || audioBytes < 2 ||
-            bytes.length !== 44 + audioBytes) {
-            throw Error('Long-form overlay WAV mismatch');
-        }
         const digest = await crypto.subtle.digest('SHA-256', bytes);
         const audioSha256 = [...new Uint8Array(digest)]
             .map(b => b.toString(16).padStart(2, '0')).join('');
+        let binary = '';
+        const chunk = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunk) {
+            binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+        }
         return {
-            audioBytes, audioSha256, paused: audio.paused,
+            wavBase64: btoa(binary),
+            audioSha256,
+            paused: audio.paused,
             offline: navigator.onLine === false,
         };
     });
+    const wavBytes = Uint8Array.from(
+        atob(payload.wavBase64), (c) => c.charCodeAt(0));
+    const metrics = decodeLongFormWavPcm16Metrics(wavBytes);
+    return {
+        audioBytes: metrics.audioBytes,
+        sampleRateHz: metrics.sampleRateHz,
+        rms: metrics.rms,
+        durationSec: metrics.durationSec,
+        audioSha256: payload.audioSha256,
+        paused: payload.paused,
+        offline: payload.offline,
+    };
 }
 
 async function walkLongFormSentences(page, visitIndexes) {
@@ -2550,7 +2564,7 @@ async function walkLongFormSentences(page, visitIndexes) {
         assertBoundedAudioManagerStats(stats);
         maxCacheSize = Math.max(maxCacheSize, stats.cacheSize);
         maxObjectUrlCount = Math.max(maxObjectUrlCount, stats.objectUrlCount);
-        if (index === 0 || index === visitIndexes[visitIndexes.length - 1]) {
+        if (shouldSampleLongFormWaveform(index, visitIndexes)) {
             samples.push({ index, ...(await readLongFormWavMeta(page)), ...stats });
         }
         // Sparse visit indexes can leave several slow MediaPipe syntheses

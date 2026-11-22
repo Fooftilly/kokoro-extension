@@ -44,10 +44,12 @@ from firefox_long_form_memory_acceptance import (
     assert_bounded_audio_manager_stats,
     assert_long_form_cache_window_near,
     assert_long_form_heap_delta,
+    decode_long_form_wav_pcm16_metrics,
     finalize_long_form_memory_acceptance_report,
     load_long_form_fixture,
     origin_long_form_memory_stage_enabled,
     require_long_form_backend,
+    should_sample_long_form_waveform,
 )
 from firefox_overlay_controls_acceptance import (
     assert_overlay_paused_after_toggle,
@@ -3837,32 +3839,41 @@ def _read_firefox_long_form_heap(driver):
 
 
 def _read_firefox_long_form_wav_meta(driver):
+    # Fetch WAV in-page; decode PCM16 via shared Node helper (Jest + Chromium).
     meta = driver.execute_async_script("""
         const done = arguments[arguments.length - 1];
         (async () => {
             const audio = document.getElementById('audio');
             const bytes = new Uint8Array(await (await fetch(audio.src)).arrayBuffer());
-            const wav = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-            const tag = (start, length) =>
-                String.fromCharCode(...bytes.subarray(start, start + length));
-            const audioBytes = wav.getUint32(40, true);
-            if (tag(0, 4) !== 'RIFF' || tag(8, 4) !== 'WAVE' ||
-                wav.getUint32(24, true) !== 24000 || audioBytes < 2 ||
-                bytes.length !== 44 + audioBytes) {
-                throw Error('Long-form overlay WAV mismatch');
-            }
             const digest = await crypto.subtle.digest('SHA-256', bytes);
             const audioSha256 = [...new Uint8Array(digest)]
                 .map(b => b.toString(16).padStart(2, '0')).join('');
+            let binary = '';
+            const chunk = 0x8000;
+            for (let i = 0; i < bytes.length; i += chunk) {
+                binary += String.fromCharCode.apply(
+                    null, bytes.subarray(i, i + chunk));
+            }
             done({
-                audioBytes, audioSha256, paused: audio.paused,
+                wavBase64: btoa(binary),
+                audioSha256,
+                paused: audio.paused,
                 offline: navigator.onLine === false,
             });
         })().catch(e => done({ error: String(e) }));
     """)
     if meta.get("error"):
         raise RuntimeError("Firefox long-form WAV read failed: " + str(meta))
-    return meta
+    metrics = decode_long_form_wav_pcm16_metrics(meta["wavBase64"])
+    return {
+        "audioBytes": metrics["audioBytes"],
+        "sampleRateHz": metrics["sampleRateHz"],
+        "rms": metrics["rms"],
+        "durationSec": metrics["durationSec"],
+        "audioSha256": meta["audioSha256"],
+        "paused": meta["paused"],
+        "offline": meta["offline"],
+    }
 
 
 def _seed_firefox_long_form_overlay(driver, origin, storage):
@@ -3895,7 +3906,7 @@ def _walk_firefox_long_form_sentences(driver, visit_indexes):
         assert_bounded_audio_manager_stats(stats)
         max_cache = max(max_cache, stats["cacheSize"])
         max_urls = max(max_urls, stats["objectUrlCount"])
-        if index in (0, visit_indexes[-1]):
+        if should_sample_long_form_waveform(index, visit_indexes):
             samples.append({
                 "index": index,
                 **_read_firefox_long_form_wav_meta(driver),
