@@ -238,7 +238,14 @@ button:hover {
     border: 1px solid var(--border-color);
     border-radius: 4px;
     background: var(--bg-color, transparent);
-    color: inherit;
+    color: var(--text-color);
+}
+
+/* Outrank generic `button:hover` (#0056b3 bg + inherited #333 text = 1.79:1). */
+.secondary-btn:hover {
+    background: #0056b3;
+    color: #fff;
+    border-color: #0056b3;
 }
 
 .local-voice-container input {
