@@ -5,8 +5,14 @@
 const fs = require('fs');
 const path = require('path');
 
-function relativeLuminance(hex) {
+function expandHex(hex) {
     const h = hex.replace('#', '');
+    if (h.length === 3) return h.split('').map((c) => c + c).join('');
+    return h;
+}
+
+function relativeLuminance(hex) {
+    const h = expandHex(hex);
     const channels = [0, 2, 4].map((i) => {
         const c = parseInt(h.slice(i, i + 2), 16) / 255;
         return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
