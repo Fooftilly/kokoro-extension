@@ -25,6 +25,11 @@ function readerDOM() {
             <button id="startOverReading" type="button"></button>
             <button id="clearReadingProgress" type="button"></button>
         </div>
+        <div id="bookmarksPanel" hidden>
+            <button id="addBookmark" type="button"></button>
+            <ul id="bookmarkList"></ul>
+            <button id="clearBookmarks" type="button" hidden></button>
+        </div>
         <div id="errorMsg"></div>
         <div id="chapterError" role="alert" hidden></div>
         <div id="loadingStatus"></div>

@@ -472,7 +472,9 @@ async function initialize() {
     // entry; ordinary webpage overlays never emit chapter-advance messages.
     continuousReaderEnabled = urlParams.get('waitForData') === 'true' &&
         data.pendingContinuousReader === true;
-    activeReaderRevision = continuousReaderEnabled &&
+    // Track the published chapter revision for every reader iframe reload so
+    // progress events can be provenance-checked (not only continuous handoff).
+    activeReaderRevision = urlParams.get('waitForData') === 'true' &&
         Number.isSafeInteger(data.pendingReaderReloadRevision) &&
         data.pendingReaderReloadRevision > 0
         ? data.pendingReaderReloadRevision : null;
@@ -529,18 +531,11 @@ async function initialize() {
 
     renderText();
 
-    const startSentenceIndex = sentences.findIndex(s => s.blockIndex === (data.pendingStartIndex || 0));
-    const initialIndex = startSentenceIndex !== -1 ? startSentenceIndex : 0;
-
-    // Default to true for regular websites (where pendingAutoplay is missing), 
-    // but respect the EPUB reader's preference if provided.
-    const shouldAutoplay = data.pendingAutoplay !== false && !readerPauseRequested;
-    navigate(initialIndex, shouldAutoplay);
-
     postToHostPage('KOKORO_PLAYER_READY');
     // Reader owns previous-book archive URLs. A RELOAD_DATA post is not a
     // render-completion signal; acknowledge the specific chapter revision
-    // only after its content has replaced the previous reader DOM.
+    // only after its content has replaced the previous reader DOM — and
+    // *before* the initial navigate() progress event so the reader can accept it.
     if (urlParams.get('waitForData') === 'true' &&
         Number.isSafeInteger(data.pendingReaderReloadRevision) &&
         data.pendingReaderReloadRevision > 0) {
@@ -549,6 +544,14 @@ async function initialize() {
             revision: data.pendingReaderReloadRevision,
         });
     }
+
+    const startSentenceIndex = sentences.findIndex(s => s.blockIndex === (data.pendingStartIndex || 0));
+    const initialIndex = startSentenceIndex !== -1 ? startSentenceIndex : 0;
+
+    // Default to true for regular websites (where pendingAutoplay is missing),
+    // but respect the EPUB reader's preference if provided.
+    const shouldAutoplay = data.pendingAutoplay !== false && !readerPauseRequested;
+    navigate(initialIndex, shouldAutoplay);
 }
 
 function appendOverlayImageBlock(block) {
@@ -880,13 +883,18 @@ async function navigate(index, forcePlay = null) {
         });
     }
 
-    // Emit progress event for parent (reader.js)
+    // Emit progress event for parent (reader.js), tagged with the chapter
+    // revision so late events from a previous reload cannot fence bookmarks.
     const blockIndex = sentences[currentIndex].blockIndex;
     if (window.parent) {
-        postToHostPage({
+        const progress = {
             type: 'KOKORO_READING_PROGRESS',
-            blockIndex: blockIndex
-        });
+            blockIndex,
+        };
+        if (Number.isSafeInteger(activeReaderRevision) && activeReaderRevision > 0) {
+            progress.revision = activeReaderRevision;
+        }
+        postToHostPage(progress);
     }
 
     // Update Progress

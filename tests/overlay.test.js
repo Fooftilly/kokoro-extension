@@ -68,9 +68,9 @@ jest.mock('../audio-manager.js', () => ({
 }));
 
 const mockSentences = [
-    { index: 0, text: 'Hello', html: 'Hello',
+    { index: 0, text: 'Hello', html: 'Hello', blockIndex: 0,
         sourceText: 'Original 5 kg.', sourceBlockText: 'Original 5 kg. Context.' },
-    { index: 1, text: 'Next sentence', html: 'Next sentence',
+    { index: 1, text: 'Next sentence', html: 'Next sentence', blockIndex: 1,
         sourceText: 'Next original sentence.', sourceBlockText: 'Next original sentence.' },
 ];
 jest.mock('../text-processor.js', () => ({
@@ -163,6 +163,7 @@ describe('overlay.js logic', () => {
                 pendingContent: [{ type: 'text', content: 'Fresh EPUB chapter' }],
                 pendingTitle: 'Book B',
                 pendingAutoplay: false,
+                pendingStartIndex: 1,
                 pendingReaderReloadRevision: 42,
             });
             window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
@@ -172,6 +173,22 @@ describe('overlay.js logic', () => {
             expect(window.parent.postMessage.mock.calls.some(([message]) =>
                 message?.type === 'KOKORO_READER_RELOAD_READY' &&
                 message.revision === 42)).toBe(true);
+            const readyAt = window.parent.postMessage.mock.calls.findIndex(([message]) =>
+                message?.type === 'KOKORO_READER_RELOAD_READY' &&
+                message.revision === 42);
+            expect(readyAt).toBeGreaterThanOrEqual(0);
+            // No progress for this revision may precede READY (including other blocks).
+            const progressBeforeReady = window.parent.postMessage.mock.calls
+                .slice(0, readyAt)
+                .some(([message]) =>
+                    message?.type === 'KOKORO_READING_PROGRESS' &&
+                    message.revision === 42);
+            expect(progressBeforeReady).toBe(false);
+            const progressAt = window.parent.postMessage.mock.calls.findIndex(([message]) =>
+                message?.type === 'KOKORO_READING_PROGRESS' &&
+                message.revision === 42 &&
+                message.blockIndex === 1);
+            expect(progressAt).toBeGreaterThan(readyAt);
 
             // Invalid revisions are never acknowledged as a successful read.
             window.parent.postMessage.mockClear();

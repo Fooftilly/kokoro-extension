@@ -378,3 +378,290 @@ export function shouldOfferResumeChoice(target, firstChapterHref) {
     if (target.blockIndex > 0) return true;
     return Boolean(target.chapterHref) && target.chapterHref !== firstChapterHref;
 }
+
+// --- Bookmarks (same document identity / local-only storage as progress) ---
+
+export const BOOKMARK_STORAGE_KEY_PREFIX = 'readerBookmarks:';
+export const MAX_BOOKMARKS_PER_DOCUMENT = 40;
+
+export function bookmarkStorageKey(documentId) {
+    return BOOKMARK_STORAGE_KEY_PREFIX + String(documentId || '');
+}
+
+function isBookmarkRecord(value) {
+    return value && typeof value === 'object' &&
+        typeof value.id === 'string' &&
+        typeof value.documentId === 'string' &&
+        Number.isInteger(value.blockIndex) && value.blockIndex >= 0;
+}
+
+export function buildBookmarkRecord({
+    id,
+    documentId,
+    label,
+    chapterHref,
+    blockIndex,
+    chapterFingerprint,
+    createdAt,
+}) {
+    const docId = String(documentId || '');
+    if (!docId.startsWith('sha256:') || !DIGEST_RE.test(docId.slice(7))) {
+        throw new TypeError('Bookmark requires a sha256 document id');
+    }
+    const index = Number(blockIndex);
+    if (!Number.isInteger(index) || index < 0) {
+        throw new TypeError('Bookmark requires a non-negative blockIndex');
+    }
+    const bookmarkId = String(id || '').trim();
+    if (!bookmarkId) {
+        throw new TypeError('Bookmark requires an id');
+    }
+    return {
+        id: bookmarkId.slice(0, 80),
+        documentId: docId,
+        label: String(label || 'Bookmark').slice(0, 120),
+        chapterHref: chapterHref == null ? null : String(chapterHref),
+        blockIndex: index,
+        chapterFingerprint: String(chapterFingerprint || ''),
+        createdAt: Number(createdAt) || Date.now(),
+    };
+}
+
+export function readBookmarks(store, documentId) {
+    if (!store || typeof store !== 'object' || !documentId) return [];
+    const raw = store[bookmarkStorageKey(documentId)];
+    if (!Array.isArray(raw)) return [];
+    return raw
+        .filter(isBookmarkRecord)
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+        .slice(0, MAX_BOOKMARKS_PER_DOCUMENT);
+}
+
+/** Spine path without fragment — stable across publisher vs heading-scan hrefs. */
+export function bookmarkSpinePath(href) {
+    return href == null ? '' : String(href).split('#')[0];
+}
+
+/** Same reading position even when TOC mode rewrites the chapter fragment. */
+export function isSameBookmarkPosition(a, b) {
+    if (!a || !b) return false;
+    return a.blockIndex === b.blockIndex &&
+        a.chapterFingerprint === b.chapterFingerprint &&
+        bookmarkSpinePath(a.chapterHref) === bookmarkSpinePath(b.chapterHref);
+}
+
+/** Add or replace a same-position bookmark; newest first; bounded. */
+export function planBookmarkAdd(store, bookmark) {
+    const key = bookmarkStorageKey(bookmark.documentId);
+    const list = readBookmarks(store, bookmark.documentId)
+        .filter((entry) => !isSameBookmarkPosition(entry, bookmark));
+    const next = [bookmark, ...list].slice(0, MAX_BOOKMARKS_PER_DOCUMENT);
+    return { set: { [key]: next }, remove: [] };
+}
+
+export function planBookmarkRemove(store, documentId, bookmarkId) {
+    const key = bookmarkStorageKey(documentId);
+    const next = readBookmarks(store, documentId)
+        .filter((entry) => entry.id !== bookmarkId);
+    if (next.length === 0) return { set: {}, remove: [key] };
+    return { set: { [key]: next }, remove: [] };
+}
+
+export function planBookmarkClear(store, documentId) {
+    void store;
+    return { set: {}, remove: [bookmarkStorageKey(documentId)] };
+}
+
+/** Validate a bookmark against the current chapter the same way as resume. */
+export function resolveBookmarkTarget(args) {
+    return resolveResumeTarget({
+        record: args?.bookmark,
+        flatToc: args?.flatToc,
+        chapterFingerprint: args?.chapterFingerprint,
+        chapterBlockCount: args?.chapterBlockCount,
+    });
+}
+
+/**
+ * Resolve which TOC entry a bookmark should open. Exact href first; if the
+ * chapter list mode changed (heading scan vs publisher TOC), fall back to the
+ * same spine path without the fragment.
+ */
+export function findBookmarkTocItem(flatToc, chapterHref) {
+    const toc = Array.isArray(flatToc) ? flatToc : [];
+    if (!toc.length) return null;
+    if (chapterHref == null) return toc[0];
+    const exact = toc.find((entry) => entry?.href === chapterHref);
+    if (exact) return exact;
+    const base = String(chapterHref).split('#')[0];
+    const byBase = toc.filter((entry) => String(entry?.href || '').split('#')[0] === base);
+    if (!byBase.length) return null;
+    return byBase.find((entry) => !String(entry.href || '').includes('#')) || byBase[0];
+}
+
+/**
+ * Pair a bookmark with the active TOC entry, rewriting chapterHref when the
+ * spine-path fallback selected a different TOC href so fingerprint/block
+ * validation does not fail with chapter-missing.
+ */
+export function prepareBookmarkForCurrentToc(bookmark, flatToc) {
+    if (!bookmark) return { item: null, record: null };
+    const item = findBookmarkTocItem(flatToc, bookmark.chapterHref);
+    if (!item) return { item: null, record: null };
+    if (bookmark.chapterHref === item.href) {
+        return { item, record: bookmark };
+    }
+    return { item, record: { ...bookmark, chapterHref: item.href } };
+}
+
+function decodeTocFragment(fragment) {
+    try {
+        return decodeURIComponent(fragment);
+    } catch {
+        return fragment;
+    }
+}
+
+function sameFileTocEntries(flatToc, base) {
+    return (Array.isArray(flatToc) ? flatToc : [])
+        .filter((entry) => String(entry?.href || '').split('#')[0] === base);
+}
+
+/** Block index where a TOC heading starts within loaded chapter blocks. */
+function headingStartIndex(entry, blocks) {
+    const frag = String(entry?.href || '').split('#')[1];
+    if (!frag) return 0;
+    const id = decodeTocFragment(frag);
+    return blocks.findIndex((block) => block.ids?.includes(id));
+}
+
+function collectHeadingStarts(sameFile, blocks) {
+    const starts = [];
+    for (const entry of sameFile) {
+        const start = headingStartIndex(entry, blocks);
+        if (start !== -1) starts.push({ entry, start });
+    }
+    starts.sort((a, b) => a.start - b.start ||
+        sameFile.indexOf(a.entry) - sameFile.indexOf(b.entry));
+    return starts;
+}
+
+function pickHeadingOwningBlock(starts, blockIndex, fallbackItem) {
+    let best = fallbackItem;
+    for (const { entry, start } of starts) {
+        if (start <= blockIndex) best = entry;
+        else break;
+    }
+    return best;
+}
+
+/**
+ * After a same-file TOC fallback, pick the heading entry that owns the saved
+ * block so continuous handoff advances past that section instead of replaying it.
+ */
+export function resolveBookmarkHeadingForBlock({
+    flatToc,
+    blocks,
+    blockIndex,
+    fallbackItem,
+}) {
+    if (!fallbackItem || !Array.isArray(blocks) || !Number.isInteger(blockIndex)) {
+        return fallbackItem || null;
+    }
+    if (blockIndex < 0 || blockIndex >= blocks.length) return fallbackItem;
+    const sameFile = sameFileTocEntries(flatToc, bookmarkSpinePath(fallbackItem.href));
+    if (sameFile.length <= 1) return fallbackItem;
+    const starts = collectHeadingStarts(sameFile, blocks);
+    if (!starts.length) return fallbackItem;
+    return pickHeadingOwningBlock(starts, blockIndex, fallbackItem);
+}
+
+/**
+ * Accept iframe progress only for the chapter the reader has already
+ * acknowledged — prevents a late prior-chapter event from fencing bookmarks
+ * (or saving progress) against the newly selected chapter.
+ */
+export function shouldAcceptReadingProgress({
+    messageRevision,
+    renderedChapterRevision,
+    renderedChapterRequestId,
+    chapterRequestId,
+}) {
+    return Number.isSafeInteger(messageRevision) &&
+        messageRevision > 0 &&
+        messageRevision === renderedChapterRevision &&
+        Number.isSafeInteger(renderedChapterRequestId) &&
+        renderedChapterRequestId === chapterRequestId;
+}
+
+/** Playback seek for a validated bookmark — never autoplays. */
+export function resolveBookmarkPlayback({
+    bookmark,
+    flatToc,
+    chapterFingerprint,
+    chapterBlockCount,
+}) {
+    const target = resolveBookmarkTarget({
+        bookmark,
+        flatToc,
+        chapterFingerprint,
+        chapterBlockCount,
+    });
+    if (target.ok) {
+        return {
+            startIndex: target.blockIndex,
+            suppressAutoplay: true,
+            outdated: false,
+            label: target.label,
+        };
+    }
+    return { startIndex: 0, suppressAutoplay: true, outdated: true, label: null };
+}
+
+/**
+ * Full bookmark jump: TOC align + validate + remap to the heading that owns
+ * the saved block (heading-scan reopen of a publisher-list bookmark).
+ */
+export function resolveBookmarkJump({
+    bookmark,
+    flatToc,
+    blocks,
+    chapterFingerprint,
+}) {
+    const prepared = prepareBookmarkForCurrentToc(bookmark, flatToc);
+    if (!prepared.item || !prepared.record) {
+        return {
+            startIndex: 0,
+            suppressAutoplay: true,
+            outdated: true,
+            label: null,
+            item: null,
+            record: null,
+        };
+    }
+    const fingerprint = chapterFingerprint ?? fingerprintChapterBlocks(blocks || []);
+    const playback = resolveBookmarkPlayback({
+        bookmark: prepared.record,
+        flatToc,
+        chapterFingerprint: fingerprint,
+        chapterBlockCount: Array.isArray(blocks) ? blocks.length : 0,
+    });
+    if (playback.outdated) {
+        return { ...playback, item: prepared.item, record: prepared.record };
+    }
+    const item = resolveBookmarkHeadingForBlock({
+        flatToc,
+        blocks,
+        blockIndex: playback.startIndex,
+        fallbackItem: prepared.item,
+    });
+    const record = item && item.href !== prepared.record.chapterHref
+        ? { ...prepared.record, chapterHref: item.href }
+        : prepared.record;
+    return {
+        ...playback,
+        label: item?.label || playback.label,
+        item: item || prepared.item,
+        record,
+    };
+}
