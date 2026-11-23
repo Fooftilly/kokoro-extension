@@ -289,6 +289,22 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(global.fetch).not.toHaveBeenCalled();
     });
 
+    test('removing an installed model bumps localModelCacheEpoch for toolbar (#208)', async () => {
+        const row = document.querySelector('[data-variant="onnx-q8"]');
+        installedModels.add('q8');
+        document.getElementById('refreshModelCache').click();
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('Installed'));
+        browser.storage.local.set.mockClear();
+        row.querySelector('.model-remove').click();
+        await waitFor(() => removeModel.mock.calls.length >= 1);
+        await waitFor(() => browser.storage.local.set.mock.calls.some(
+            (call) => call[0] && Object.prototype.hasOwnProperty.call(call[0], 'localModelCacheEpoch')
+        ));
+        expect(browser.storage.local.set).toHaveBeenCalledWith(
+            expect.objectContaining({ localModelCacheEpoch: expect.any(Number) })
+        );
+    });
+
     test('corrupt cached MediaPipe data is evicted, validation revoked and repair requires opt-in', async () => {
         const row = document.querySelector('[data-variant="mediapipe-cpu"]');
         const recheck = document.getElementById('refreshModelCache');

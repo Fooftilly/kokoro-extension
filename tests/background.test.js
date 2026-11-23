@@ -663,12 +663,28 @@ describe('background.js logic', () => {
         expect(lastIcon48()).toMatch(/icon-48-green/);
     });
 
-    test('minute alarm is cleared for local backends (#208)', async () => {
-        stubToolbarSync({ ttsBackend: 'mediapipe', mediaPipeVariant: 'cpu' });
+    test('minute alarm clears via storage backend switch lifecycle (#208)', async () => {
+        stubToolbarSync({ ttsBackend: 'fastapi' });
+        fetch.mockResolvedValue({
+            ok: true,
+            json: async () => ({ status: 'ok' }),
+        });
         jest.resetModules();
-        const bg = require('../background.js');
+        require('../background.js');
         await flushToolbarCheck();
-        await bg.syncToolbarAlarm();
+        expect(browser.alarms.create).toHaveBeenCalledWith(
+            'api-check',
+            expect.objectContaining({ periodInMinutes: 1 })
+        );
+        browser.storage.sync.get.mockResolvedValue({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+        });
+        const listener = browser.storage.onChanged.addListener.mock.calls.at(-1)[0];
+        browser.alarms.clear.mockClear();
+        await listener({ ttsBackend: { newValue: 'mediapipe' } }, 'sync');
+        await flushToolbarCheck();
         expect(browser.alarms.clear).toHaveBeenCalledWith('api-check');
     });
 
@@ -679,9 +695,8 @@ describe('background.js logic', () => {
             json: async () => ({ status: 'ok' }),
         });
         jest.resetModules();
-        const bg = require('../background.js');
+        require('../background.js');
         await flushToolbarCheck();
-        await bg.syncToolbarAlarm();
         expect(browser.alarms.create).toHaveBeenCalledWith(
             'api-check',
             expect.objectContaining({ periodInMinutes: 1 })
@@ -790,6 +805,70 @@ describe('background.js logic', () => {
         expect(lastIcon48()).toMatch(/icon-48-green/);
         expect(lastIcon48()).not.toMatch(/red/);
         expect(lastTitle()).toMatch(/MediaPipe ready/i);
+        statusSpy.mockRestore();
+    });
+
+    test('late FastAPI /models success does not overwrite local toolbar (#208)', async () => {
+        let resolveModels;
+        const modelsGate = new Promise((resolve) => { resolveModels = resolve; });
+        browser.storage.sync.get.mockResolvedValue({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'fastapi',
+            mediaPipeVariant: 'cpu',
+            voice: 'af_sarah',
+            mode: 'stream',
+            normalizationOptions: {},
+        });
+        fetch.mockImplementation((url) => {
+            if (String(url).includes('/models')) {
+                return modelsGate.then(() => ({
+                    ok: true,
+                    json: async () => ({ data: [] }),
+                }));
+            }
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({ status: 'ok' }),
+            });
+        });
+        jest.resetModules();
+        const { ModelDataStore } = require('../model-data-store.js');
+        const statusSpy = jest.spyOn(ModelDataStore.prototype, 'status').mockResolvedValue({
+            ready: false, storedBytes: 0, totalBytes: 1,
+        });
+        require('../background.js');
+        await flushToolbarCheck();
+
+        const onClicked = browser.contextMenus.onClicked.addListener.mock.calls.at(-1)[0];
+        const pendingAction = onClicked(
+            { menuItemId: 'send-to-kokoro', selectionText: 'Hello mid-switch' },
+            { id: 55, title: 'Page' }
+        );
+        await flushToolbarCheck();
+
+        // Switch to unready MediaPipe while /models is still in flight.
+        browser.storage.sync.get.mockResolvedValue({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            voice: 'af_sarah',
+            mode: 'stream',
+            normalizationOptions: {},
+        });
+        const storageListener = browser.storage.onChanged.addListener.mock.calls.at(-1)[0];
+        await storageListener({ ttsBackend: { newValue: 'mediapipe' } }, 'sync');
+        await flushToolbarCheck();
+
+        browser.action.setIcon.mockClear();
+        browser.action.setTitle.mockClear();
+        resolveModels();
+        await pendingAction;
+        await flushToolbarCheck();
+        await flushToolbarCheck();
+
+        expect(lastIcon48()).not.toMatch(/green/);
+        expect(lastTitle()).toMatch(/model not installed|MediaPipe/i);
+        expect(lastTitle()).not.toMatch(/server reachable/i);
         statusSpy.mockRestore();
     });
 });

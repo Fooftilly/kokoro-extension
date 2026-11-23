@@ -69,14 +69,6 @@ function applyToolbarStatus(status) {
     return { kind, title, backend: status?.backend || null };
 }
 
-/** @deprecated Prefer applyToolbarStatus — kept for a few FastAPI call sites. */
-const setIconStatus = (isConnected) => {
-    applyToolbarStatus({
-        kind: isConnected ? ToolbarStatus.KIND.READY : ToolbarStatus.KIND.UNREACHABLE,
-        backend: TtsProviders.FASTAPI,
-    });
-};
-
 /**
  * Read-only local readiness from validated-revision keys + Cache Storage metadata.
  * Never probes FastAPI and never initializes a heavy TTS runtime.
@@ -402,17 +394,18 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
     }
 
     // Network connectivity matters only for the explicitly selected server backend.
+    // Toolbar paint stays with checkApiStatus so a mid-flight backend switch cannot
+    // be overwritten by a late /models success (#208).
     if (backend === TtsProviders.FASTAPI) {
         try {
             const statusUrl = new URL('models', apiUrl).href;
             const statusResp = await fetch(statusUrl);
             if (!statusResp.ok) {
                 console.warn("Status check returned " + statusResp.status);
-            } else {
-                setIconStatus(true);
             }
+            void checkApiStatus();
         } catch (e) {
-            checkApiStatus();
+            void checkApiStatus();
             notify("Kokoro TTS Error", `Could not connect to Kokoro API at ${apiUrl}. Is it running?`);
             return;
         }
