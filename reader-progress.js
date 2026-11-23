@@ -253,9 +253,12 @@ export function reconcileProgressRemoves(plannedRemove, store, record) {
 export const PROGRESS_STORAGE_LOCK = 'kokoro-reader-progress';
 
 /**
- * Serialize progress storage mutations across reader tabs.
- * Falls back to running `task` immediately when Web Locks are unavailable
- * (older browsers / jsdom without a LockManager).
+ * Serialize progress storage mutations across reader tabs via Web Locks.
+ * Supported reader contexts already expose LockManager: Firefox requires
+ * gecko `strict_min_version` 142+ (Web Locks since 96), and Chrome MV3
+ * extension pages include `navigator.locks`. The no-lock fallback exists
+ * only for jsdom / hosts without LockManager — production reader tabs
+ * should not hit it.
  */
 export async function runExclusiveProgressMutation(task, {
     locks = globalThis.navigator?.locks,
@@ -265,6 +268,38 @@ export async function runExclusiveProgressMutation(task, {
         return task();
     }
     return locks.request(lockName, { mode: 'exclusive' }, () => task());
+}
+
+/**
+ * get→plan→set→reconcile→remove under the exclusive progress lock.
+ * Injectable storage hooks keep the path unit-testable without reader DOM.
+ */
+export async function applyProgressUpsertMutation({
+    record,
+    getStore,
+    setStore,
+    removeKeys,
+    locks = globalThis.navigator?.locks,
+    isCurrent = () => true,
+}) {
+    return runExclusiveProgressMutation(async () => {
+        if (!isCurrent()) return;
+        const stored = await getStore();
+        if (!isCurrent()) return;
+        const plan = planProgressUpsert(stored || {}, record);
+        if (plan.set && Object.keys(plan.set).length) {
+            if (!isCurrent()) return;
+            await setStore(plan.set);
+        }
+        if (!plan.remove.length) return;
+        if (!isCurrent()) return;
+        const afterSet = await getStore();
+        if (!isCurrent()) return;
+        const safeRemove = reconcileProgressRemoves(
+            plan.remove, afterSet || {}, record,
+        );
+        if (safeRemove.length) await removeKeys(safeRemove);
+    }, { locks });
 }
 
 /** Test helper: apply an upsert into an in-memory store snapshot. */

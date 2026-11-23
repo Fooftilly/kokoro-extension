@@ -14,9 +14,8 @@ import {
     shouldPersistProgressUpdate,
     shouldOfferResumeChoice,
     resolveResumeTarget,
-    planProgressUpsert,
     planProgressRemove,
-    reconcileProgressRemoves,
+    applyProgressUpsertMutation,
     runExclusiveProgressMutation,
     isResumeLookupStillCurrent,
     readProgressRecord,
@@ -185,26 +184,12 @@ function progressWriteStillCurrent(write) {
 async function flushProgressSave(write, record) {
     if (!progressWriteStillCurrent(write)) return;
     try {
-        await runExclusiveProgressMutation(async () => {
-            if (!progressWriteStillCurrent(write)) return;
-            const stored = await browser.storage.local.get(null);
-            if (!progressWriteStillCurrent(write)) return;
-            const plan = planProgressUpsert(stored || {}, record);
-            // Set migrated/kept keys before removing the legacy map.
-            if (plan.set && Object.keys(plan.set).length) {
-                if (!progressWriteStillCurrent(write)) return;
-                await browser.storage.local.set(plan.set);
-            }
-            if (!plan.remove.length) return;
-            // Re-rank under the same exclusive lock so peer tabs cannot
-            // interleave a newer upsert between this read and remove.
-            if (!progressWriteStillCurrent(write)) return;
-            const afterSet = await browser.storage.local.get(null);
-            if (!progressWriteStillCurrent(write)) return;
-            const safeRemove = reconcileProgressRemoves(
-                plan.remove, afterSet || {}, record,
-            );
-            if (safeRemove.length) await browser.storage.local.remove(safeRemove);
+        await applyProgressUpsertMutation({
+            record,
+            getStore: () => browser.storage.local.get(null),
+            setStore: (patch) => browser.storage.local.set(patch),
+            removeKeys: (keys) => browser.storage.local.remove(keys),
+            isCurrent: () => progressWriteStillCurrent(write),
         });
     } catch (error) {
         console.warn('Cannot persist reader progress', error);

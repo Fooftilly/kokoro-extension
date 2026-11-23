@@ -18,6 +18,7 @@ import {
     planProgressRemove,
     reconcileProgressRemoves,
     runExclusiveProgressMutation,
+    applyProgressUpsertMutation,
     isResumeLookupStillCurrent,
     progressStorageKey,
     upsertProgress,
@@ -495,6 +496,84 @@ describe('reader-progress helpers (#196)', () => {
     test('runExclusiveProgressMutation runs immediately without LockManager', async () => {
         const result = await runExclusiveProgressMutation(async () => 42, { locks: null });
         expect(result).toBe(42);
+    });
+
+    test('peer upsert after retention fresh-read waits for eviction under the lock', async () => {
+        const locks = createSerialLockManager();
+        const base = {
+            name: 'n.epub', size: 1, format: 'epub',
+            chapterHref: 'a.xhtml', blockIndex: 0,
+            chapterFingerprint: 'fp', revision: 1,
+        };
+        const records = [];
+        let store = {};
+        for (let i = 0; i < MAX_STORED_DOCUMENTS + 1; i++) {
+            const hex = i.toString(16).padStart(64, '0');
+            const record = buildProgressRecord({
+                ...base,
+                documentId: documentIdFromDigest(hex),
+                updatedAt: i + 1,
+                revision: i + 1,
+            });
+            records.push(record);
+            store[progressStorageKey(record.documentId)] = record;
+        }
+        const newest = records[records.length - 1];
+        const oldest = records[0];
+        const refreshedOldest = buildProgressRecord({
+            ...oldest, blockIndex: 9, updatedAt: newest.updatedAt + 50, revision: 2,
+        });
+
+        let releaseFreshRead;
+        const freshReadGate = new Promise((resolve) => { releaseFreshRead = resolve; });
+        let atFreshRead = false;
+        let getCount = 0;
+        const storage = {
+            getStore: async () => {
+                getCount += 1;
+                const snap = { ...store };
+                // Second get is the post-set retention re-read.
+                if (getCount === 2) {
+                    atFreshRead = true;
+                    await freshReadGate;
+                }
+                return snap;
+            },
+            setStore: async (patch) => { Object.assign(store, patch); },
+            removeKeys: async (keys) => {
+                for (const key of keys) delete store[key];
+            },
+        };
+
+        const eviction = applyProgressUpsertMutation({
+            record: newest,
+            locks,
+            ...storage,
+        });
+        for (let i = 0; i < 40 && !atFreshRead; i++) await Promise.resolve();
+        expect(atFreshRead).toBe(true);
+
+        let peerDone = false;
+        const peer = applyProgressUpsertMutation({
+            record: refreshedOldest,
+            locks,
+            getStore: async () => ({ ...store }),
+            setStore: async (patch) => { Object.assign(store, patch); },
+            removeKeys: async (keys) => {
+                for (const key of keys) delete store[key];
+            },
+        }).then(() => { peerDone = true; });
+
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(peerDone).toBe(false);
+
+        releaseFreshRead();
+        await eviction;
+        await peer;
+        expect(peerDone).toBe(true);
+        expect(readProgressRecord(store, oldest.documentId).blockIndex).toBe(9);
+        expect(readProgressRecord(store, newest.documentId)).toEqual(newest);
     });
 
     test('removeProgress and clearAllProgress drop records', () => {
