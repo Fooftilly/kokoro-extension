@@ -16,6 +16,7 @@ import {
     resolveResumeTarget,
     planProgressUpsert,
     planProgressRemove,
+    reconcileProgressRemoves,
     progressStorageKey,
     upsertProgress,
     removeProgress,
@@ -321,6 +322,43 @@ describe('reader-progress helpers (#196)', () => {
         expect(plan.set[progressStorageKey(idB)]).toEqual(recordB);
         expect(plan.set[progressStorageKey(idA)]).toBeUndefined();
         expect(readProgressRecord(plan.set, idB).blockIndex).toBe(2);
+    });
+
+    test('reconcileProgressRemoves drops eviction when a peer record was refreshed', () => {
+        const store = {};
+        const base = {
+            name: 'n.epub', size: 1, format: 'epub',
+            chapterHref: 'a.xhtml', blockIndex: 0,
+            chapterFingerprint: 'fp', revision: 1,
+        };
+        const records = [];
+        for (let i = 0; i < MAX_STORED_DOCUMENTS + 1; i++) {
+            const hex = i.toString(16).padStart(64, '0');
+            const record = buildProgressRecord({
+                ...base,
+                documentId: documentIdFromDigest(hex),
+                updatedAt: i + 1,
+                revision: i + 1,
+            });
+            records.push(record);
+            store[progressStorageKey(record.documentId)] = record;
+        }
+        const newest = records[records.length - 1];
+        const oldest = records[0];
+        const plan = planProgressUpsert(store, newest);
+        expect(plan.remove).toContain(progressStorageKey(oldest.documentId));
+
+        // Peer tab refreshes the would-be-evicted document before remove applies.
+        const refreshedOldest = buildProgressRecord({
+            ...oldest, blockIndex: 3, updatedAt: newest.updatedAt + 10, revision: 2,
+        });
+        const afterPeer = {
+            ...store,
+            [progressStorageKey(newest.documentId)]: newest,
+            [progressStorageKey(oldest.documentId)]: refreshedOldest,
+        };
+        const safe = reconcileProgressRemoves(plan.remove, afterPeer, newest);
+        expect(safe).not.toContain(progressStorageKey(oldest.documentId));
     });
 
     test('removeProgress and clearAllProgress drop records', () => {

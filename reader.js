@@ -16,6 +16,7 @@ import {
     resolveResumeTarget,
     planProgressUpsert,
     planProgressRemove,
+    reconcileProgressRemoves,
     readProgressRecord,
 } from './reader-progress.js';
 import './tts-providers.js';
@@ -187,9 +188,17 @@ async function flushProgressSave(write, record) {
         const plan = planProgressUpsert(stored || {}, record);
         // Set migrated/kept keys before removing the legacy map.
         if (plan.set && Object.keys(plan.set).length) {
+            if (!progressWriteStillCurrent(write)) return;
             await browser.storage.local.set(plan.set);
         }
-        if (plan.remove.length) await browser.storage.local.remove(plan.remove);
+        if (!plan.remove.length) return;
+        // Re-rank against post-set storage so a peer tab's newer upsert is not
+        // deleted by the pre-set eviction list (CodeRabbit: eviction race).
+        if (!progressWriteStillCurrent(write)) return;
+        const afterSet = await browser.storage.local.get(null);
+        if (!progressWriteStillCurrent(write)) return;
+        const safeRemove = reconcileProgressRemoves(plan.remove, afterSet || {}, record);
+        if (safeRemove.length) await browser.storage.local.remove(safeRemove);
     } catch (error) {
         console.warn('Cannot persist reader progress', error);
     }
@@ -253,6 +262,14 @@ async function clearCurrentDocumentProgress() {
     const id = currentDocumentMeta?.documentId;
     hideResumeBanner();
     if (!id) return;
+    // Bump revision so an in-flight flush that already passed clearTimeout
+    // fails progressWriteStillCurrent and cannot restore the cleared record.
+    if (currentDocumentMeta) {
+        currentDocumentMeta = {
+            ...currentDocumentMeta,
+            progressRevision: (currentDocumentMeta.progressRevision || 0) + 1,
+        };
+    }
     try {
         const stored = await browser.storage.local.get(null);
         const plan = planProgressRemove(stored || {}, id);
@@ -275,17 +292,22 @@ function activateFirstPlayableChapter(continuePlaying = false, forcedStartIndex 
 async function offerResumeOrStart() {
     hideResumeBanner();
     const meta = currentDocumentMeta;
-    if (!meta?.documentId || flatToc.length === 0) {
+    const documentId = meta?.documentId;
+    if (!documentId || flatToc.length === 0) {
         activateFirstPlayableChapter();
         return;
     }
     let record = null;
     try {
         const stored = await browser.storage.local.get(null);
-        record = readProgressRecord(stored || {}, meta.documentId);
+        // Another document may have committed during the await — leave that
+        // document's own offerResumeOrStart to drive activation.
+        if (currentDocumentMeta?.documentId !== documentId) return;
+        record = readProgressRecord(stored || {}, documentId);
     } catch (error) {
         console.warn('Cannot read saved reader progress', error);
     }
+    if (currentDocumentMeta?.documentId !== documentId) return;
     if (!record) {
         activateFirstPlayableChapter();
         return;

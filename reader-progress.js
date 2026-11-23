@@ -221,6 +221,19 @@ export function planProgressUpsert(store, record) {
     return { set, remove: [...new Set(remove)] };
 }
 
+/**
+ * After applying `plan.set`, re-rank against a fresh store snapshot and keep
+ * only removals both the original plan and the fresh plan agree on. Prevents
+ * a concurrent peer upsert from being deleted by a stale eviction list.
+ */
+export function reconcileProgressRemoves(plannedRemove, store, record) {
+    const planned = Array.isArray(plannedRemove) ? plannedRemove : [];
+    if (!planned.length) return [];
+    const fresh = planProgressUpsert(store, record);
+    const freshRemove = new Set(fresh.remove);
+    return planned.filter((key) => freshRemove.has(key));
+}
+
 /** Test helper: apply an upsert into an in-memory store snapshot. */
 export function upsertProgress(store, record) {
     const plan = planProgressUpsert(store, record);
