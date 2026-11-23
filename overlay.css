@@ -117,8 +117,10 @@ body.mode-full .drag-grip {
 }
 
 .title {
+    margin: 0;
     font-weight: 600;
     font-size: 14px;
+    line-height: 1.3;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

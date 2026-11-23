@@ -51,7 +51,11 @@ body {
 
 .sidebar-header h2 {
     margin: 0;
-    font-size: 1.2rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--text-color);
 }
 
 #chapterList {
