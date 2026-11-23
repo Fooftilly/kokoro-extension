@@ -164,4 +164,41 @@ describe('popup tab a11y + hierarchy (#194 9+10)', () => {
         expect(document.getElementById('status').textContent).toBe('Settings saved.');
         expect(document.getElementById('status').style.display).toBe('block');
     });
+
+    test('missing backend save error announces via live region', async () => {
+        document.getElementById('modeStream').checked = true;
+        document.querySelectorAll('input[name="ttsBackend"]').forEach((el) => {
+            el.checked = false;
+        });
+        const result = await popup.saveOptions(false);
+        expect(result).toEqual({ ok: false, error: true });
+        expect(document.getElementById('statusLive').textContent).toMatch(
+            /Choose a valid TTS backend/i
+        );
+        expect(document.getElementById('status').textContent).toMatch(
+            /Choose a valid TTS backend/i
+        );
+    });
+
+    test('storage write failure announces via live region', async () => {
+        document.getElementById('modeStream').checked = true;
+        document.querySelector('input[name="ttsBackend"][value="fastapi"]').checked = true;
+        global.LocalVoice = {
+            normalizeLocalVoiceId: (id) => id || 'af_heart',
+            normalizeOnnxVoiceAsset: (v) => v || 'voices/af.bin',
+            ONNX_FIXED_VOICE_ASSET: 'voices/af.bin',
+        };
+        jest.spyOn(console, 'error').mockImplementation(() => {});
+        browser.storage.sync.set.mockRejectedValueOnce(
+            new Error('QUOTA_BYTES_PER_ITEM quota exceeded')
+        );
+        const result = await popup.saveOptions(false);
+        expect(result).toEqual({ ok: false, error: true });
+        expect(document.getElementById('statusLive').textContent).toMatch(
+            /QUOTA_BYTES_PER_ITEM/i
+        );
+        expect(document.getElementById('status').textContent).toMatch(
+            /QUOTA_BYTES_PER_ITEM/i
+        );
+    });
 });

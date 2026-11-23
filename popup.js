@@ -924,10 +924,9 @@ const saveOptions = async (isDebounced = false, options = {}) => {
     if (!ttsBackend) {
         // An unknown persisted backend leaves no checked radio. Do not silently
         // reset the backend or reject an autosave without an explanation.
-        const status = document.getElementById('status');
-        status.textContent = 'Error: Choose a valid TTS backend before saving.';
-        status.style.color = 'var(--status-error)';
-        status.style.display = 'block';
+        announceStatusToast('Error: Choose a valid TTS backend before saving.', {
+            color: 'var(--status-error)',
+        });
         return { ok: false, error: true };
     }
     const defaultSpeed = document.getElementById('defaultSpeed').value;
@@ -988,10 +987,9 @@ const saveOptions = async (isDebounced = false, options = {}) => {
         return { ok: true, permissionDenied: false, backendUnavailable: !!localValidationError };
     } catch (e) {
         console.error("Error saving options", e);
-        const status = document.getElementById('status');
-        status.textContent = "Error: " + e.message;
-        status.style.color = "var(--status-error)";
-        status.style.display = 'block';
+        announceStatusToast('Error: ' + e.message, {
+            color: 'var(--status-error)',
+        });
         return { ok: false, error: true };
     }
 };
