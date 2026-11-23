@@ -1161,11 +1161,12 @@ async function verifyCachedData(entry, ui) {
             } catch (error) {
                 message += ' Could not reset the cached engine: ' + String(error.message || error);
             }
-            try {
-                await notifyLocalModelCacheChanged();
-            } catch (error) {
-                message += ' Could not refresh toolbar status: ' + String(error.message || error);
-            }
+        }
+        // Always refresh toolbar after verify completes (clean success or prune).
+        try {
+            await notifyLocalModelCacheChanged();
+        } catch (error) {
+            message += ' Could not refresh toolbar status: ' + String(error.message || error);
         }
         let state = null;
         try {
