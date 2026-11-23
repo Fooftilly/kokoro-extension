@@ -155,6 +155,17 @@ function commitDocumentIdentity(candidate, priorRevision = 0) {
     return true;
 }
 
+/** Open without durable resume when hashing fails; reject superseded hashes. */
+function commitOrSkipDocumentIdentity(identity, priorRevision, identityGeneration) {
+    if (identity && commitDocumentIdentity(identity, priorRevision)) return true;
+    if (identityGeneration !== documentIdentityGeneration) return false;
+    // Hash unavailable — keep the document usable without a progress identity.
+    clearTimeout(progressSaveTimer);
+    progressSaveTimer = null;
+    currentDocumentMeta = null;
+    return true;
+}
+
 function progressWriteStillCurrent(write) {
     return shouldPersistProgressUpdate({
         resumeDecisionPending: Boolean(pendingResumeTarget),
@@ -184,16 +195,22 @@ async function flushProgressSave(write, record) {
 function scheduleProgressSave(blockIndex) {
     // Overlay init emits progress at block 0 while the resume banner is up.
     // Persisting that would clobber the saved position before the user chooses.
+    // Explicit Play dismisses the banner via KOKORO_READER_RESUMED so later
+    // progress is saved again.
     if (!shouldPersistProgressUpdate({ resumeDecisionPending: Boolean(pendingResumeTarget) })) {
         return;
     }
     const meta = currentDocumentMeta;
     if (!meta?.documentId) return;
-    const chapterHref = renderedChapterHref || currentActiveHref;
     const playbackBlocks = currentChapterBlocks;
     const fingerprintBlocks = currentChapterCanonicalBlocks.length > 0
         ? currentChapterCanonicalBlocks
         : playbackBlocks;
+    // Prefer the href for the in-flight or acknowledged reload — never the
+    // previous subsection's href while a new continuous chapter is publishing.
+    const chapterHref = lastPublishedReload?.chapterHref
+        || renderedChapterHref
+        || currentActiveHref;
     const write = {
         writeRevision: meta.progressRevision,
         writeChapterRequestId: chapterRequestId,
@@ -504,6 +521,43 @@ async function readDocumentBuffer(file) {
     }
 }
 
+async function resolveEpubToc(candidate, requestId) {
+    const publisherToc = candidate.navigation?.toc || [];
+    // The EPUB's own navigation is authoritative. Heading scanning is an
+    // opt-in alternative, except for books without a publisher TOC.
+    const scan = scanDocumentHeadings.checked || publisherToc.length === 0;
+    if (scan) loadingStatus.textContent = 'Scanning for chapters...';
+    const discovered = scan
+        ? await getEnrichedToc(candidate, () => requestId === fileRequestId)
+        : publisherToc;
+    if (requestId !== fileRequestId) return null;
+    // Heading-scan links come from Section.href and are already relative
+    // to the OPF. Do not resolve them against the nav document again:
+    // same-name chapters in different directories would be conflated.
+    // If no headings were found, the scanner returns the original
+    // publisher array by identity; those raw links still need resolving.
+    const toc = scan && discovered !== publisherToc
+        ? discovered
+        : normalizePublisherToc(discovered, candidate);
+    if (!hasPlayableTocEntry(toc)) throw new Error('EPUB contains no readable chapters');
+    return toc;
+}
+
+function commitOpenedEpub(candidate, toc) {
+    const oldBook = book;
+    chapterRequestId++;
+    book = candidate;
+    textDocument = null;
+    deferredChapterEndRevision = null;
+    if (oldBook) retiringBooks.add(oldBook);
+    currentChapterBlocks = [];
+    currentChapterCanonicalBlocks = [];
+    currentActiveHref = null;
+    currentToc = toc;
+    resumeAutoplayForNewDocument();
+    renderChapterList(toc, { autoActivate: false });
+}
+
 async function loadEpub(file, requestId) {
     const bookData = await readDocumentBuffer(file);
     if (requestId !== fileRequestId) return;
@@ -533,44 +587,16 @@ async function loadEpub(file, requestId) {
         await candidate.ready;
         if (requestId !== fileRequestId) return;
 
-        const publisherToc = candidate.navigation?.toc || [];
-        // The EPUB's own navigation is authoritative. Heading scanning is an
-        // opt-in alternative, except for books without a publisher TOC.
-        const scan = scanDocumentHeadings.checked || publisherToc.length === 0;
-        if (scan) loadingStatus.textContent = 'Scanning for chapters...';
-        const discovered = scan
-            ? await getEnrichedToc(candidate, () => requestId === fileRequestId)
-            : publisherToc;
-        if (requestId !== fileRequestId) return;
-        // Heading-scan links come from Section.href and are already relative
-        // to the OPF. Do not resolve them against the nav document again:
-        // same-name chapters in different directories would be conflated.
-        // If no headings were found, the scanner returns the original
-        // publisher array by identity; those raw links still need resolving.
-        const toc = scan && discovered !== publisherToc
-            ? discovered
-            : normalizePublisherToc(discovered, candidate);
-        if (!hasPlayableTocEntry(toc)) throw new Error('EPUB contains no readable chapters');
+        const toc = await resolveEpubToc(candidate, requestId);
+        if (!toc || requestId !== fileRequestId) return;
 
         const identity = await identityPromise;
         if (requestId !== fileRequestId) return;
-        if (!commitDocumentIdentity(identity, priorProgressRevision)) return;
+        if (!commitOrSkipDocumentIdentity(
+            identity, priorProgressRevision, identityGeneration)) return;
 
-        // Retain the old book until the new chapter reaches the player:
-        // current audio/image blob URLs may still refer to its archive.
-        const oldBook = book;
-        chapterRequestId++;
-        book = candidate;
-        textDocument = null;
-        deferredChapterEndRevision = null;
+        commitOpenedEpub(candidate, toc);
         committed = true;
-        if (oldBook) retiringBooks.add(oldBook);
-        currentChapterBlocks = [];
-        currentChapterCanonicalBlocks = [];
-        currentActiveHref = null;
-        currentToc = toc;
-        resumeAutoplayForNewDocument();
-        renderChapterList(toc, { autoActivate: false });
         await offerResumeOrStart();
     } finally {
         // A failed/superseded candidate must not retain its ZIP and section
@@ -603,7 +629,8 @@ async function loadTextDocument(file, format, requestId) {
     if (requestId !== fileRequestId) return;
     const identity = await identityPromise;
     if (requestId !== fileRequestId) return;
-    if (!commitDocumentIdentity(identity, priorProgressRevision)) return;
+    if (!commitOrSkipDocumentIdentity(
+        identity, priorProgressRevision, identityGeneration)) return;
 
     // Preserve the existing EPUB if reading/parsing fails, and hand its image
     // URLs over only after the text chapter has rendered in the iframe.
@@ -1489,6 +1516,9 @@ window.addEventListener('message', (event) => {
         renderedChapterRequestId === chapterRequestId &&
         hasOpenDocument() && filePickerOverlay.style.display === 'none') {
         readerPausedForPicker = false;
+        // Play without clicking Resume still counts as committing to the
+        // current preview chapter — resume saving from here forward.
+        hideResumeBanner();
     }
     // The reader owns its embedded player: Close returns to the document
     // picker without discarding the current book or leaving audio playing.
