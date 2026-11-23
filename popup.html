@@ -8,11 +8,13 @@
 </head>
 
 <body>
-    <div class="tabs" role="tablist" aria-label="Settings sections">
-        <button type="button" class="tab active" role="tab" id="tab-general" data-tab="general"
-            aria-controls="general" aria-selected="true" tabindex="0">General</button>
-        <button type="button" class="tab" role="tab" id="tab-normalization" data-tab="normalization"
-            aria-controls="normalization" aria-selected="false" tabindex="-1">Normalization</button>
+    <div class="popup-header">
+        <div class="tabs" role="tablist" aria-label="Settings sections">
+            <button type="button" class="tab active" role="tab" id="tab-general" data-tab="general"
+                aria-controls="general" aria-selected="true" tabindex="0">General</button>
+            <button type="button" class="tab" role="tab" id="tab-normalization" data-tab="normalization"
+                aria-controls="normalization" aria-selected="false" tabindex="-1">Normalization</button>
+        </div>
         <button type="button" id="theme-toggle" title="Toggle Theme" aria-label="Switch to dark theme">
             <!-- Sun icon (shown in light mode) -->
             <svg class="sun-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -85,8 +87,8 @@
                 <div id="voiceMixerContainer">
                     <div id="selectedVoices"></div>
                     <div class="mt-10">
-                        <label for="voiceSearch" class="visually-hidden">Search and select voices</label>
-                        <input type="text" id="voiceSearch" placeholder="Search and select voices..." autocomplete="off">
+                        <input type="text" id="voiceSearch" placeholder="Search and select voices..." autocomplete="off"
+                            aria-label="Search and select voices">
                         <div id="voiceDropdown">
                         </div>
                     </div>
@@ -247,7 +249,8 @@
         <p id="openBenchmarkHint" class="note footer-hint">Download models, compare backends, and confirm with Use this backend. Preference changes only on your action.</p>
         <button id="openDocumentBtn" class="primary-btn" style="width: 100%; margin-top: 0; margin-bottom: 10px;">Open
             Document (EPUB)</button>
-        <div id="status" role="status" aria-live="polite">Saving...</div>
+        <div id="statusLive" class="status-live" role="status" aria-live="polite" aria-atomic="true"></div>
+        <div id="status" aria-hidden="true">Saving...</div>
     </div>
 
     <script src="api-client.js"></script>

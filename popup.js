@@ -849,29 +849,44 @@ function attachVoicePreference(settings, ttsBackend) {
     settings.voice = serializeVoiceString(currentVoices);
 }
 
-function showPermissionDeniedToast() {
+/** Announce into the always-present live region, then mirror the visible toast. */
+function announceStatusToast(message, { color, hideAfterMs } = {}) {
+    const live = document.getElementById('statusLive');
     const status = document.getElementById('status');
-    status.textContent = 'Permission denied for this URL.';
-    status.style.color = 'var(--status-error)';
+    if (live) {
+        // Clear first so identical consecutive messages still fire an update.
+        live.textContent = '';
+        live.textContent = message;
+    }
+    if (!status) return;
+    status.textContent = message;
+    if (color) status.style.color = color;
     status.style.display = 'block';
+    if (hideAfterMs) {
+        setTimeout(() => {
+            status.style.display = 'none';
+            status.style.color = 'var(--status-success)';
+        }, hideAfterMs);
+    }
+}
+
+function showPermissionDeniedToast() {
+    announceStatusToast('Permission denied for this URL.', {
+        color: 'var(--status-error)',
+        hideAfterMs: 3000,
+    });
     applyPermissionDeniedUI();
-    setTimeout(() => {
-        status.style.display = 'none';
-        status.style.color = 'var(--status-success)';
-    }, 3000);
 }
 
 function showSaveStatusToast(localValidationError, ttsBackend) {
-    const status = document.getElementById('status');
-    status.textContent = localValidationError
+    const message = localValidationError
         ? 'Other settings saved, but ' + (ttsBackend === 'onnx' ? 'ONNX' : 'MediaPipe') +
             ' was not activated: ' + String(localValidationError.message || localValidationError)
         : 'Settings saved.';
-    status.style.color = localValidationError ? 'var(--status-error)' : 'var(--status-success)';
-    status.style.display = 'block';
-    if (!localValidationError) {
-        setTimeout(() => { status.style.display = 'none'; }, 1500);
-    }
+    announceStatusToast(message, {
+        color: localValidationError ? 'var(--status-error)' : 'var(--status-success)',
+        hideAfterMs: localValidationError ? 0 : 1500,
+    });
 }
 
 async function resolveHostPermissionGranted(apiUrl, ttsBackend, permissionRequestPromise) {
@@ -1506,6 +1521,8 @@ if (typeof module !== 'undefined' && module.exports) {
         formatCommandShortcut,
         activatePopupTab,
         syncThemeToggleLabel,
+        showSaveStatusToast,
+        announceStatusToast,
         getStickyLocalSetupFailure: () => stickyLocalSetupFailure,
         setStickyLocalSetupFailureForTests: (value) => { stickyLocalSetupFailure = value; },
         getLocalActiveSetupIssue: () => localActiveSetupIssue,

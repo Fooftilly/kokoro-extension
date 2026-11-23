@@ -6,6 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { contrastRatio, cssVar } = require('./contrast-helpers.js');
 
 function loadPopupDom() {
     const html = fs.readFileSync(path.join(__dirname, '../popup.html'), 'utf8');
@@ -88,12 +89,14 @@ describe('popup tab a11y + hierarchy (#194 9+10)', () => {
     test('settings tabs expose tablist / tab / tabpanel roles', () => {
         const list = document.querySelector('[role="tablist"]');
         const tabs = [...document.querySelectorAll('[role="tab"]')];
+        const theme = document.getElementById('theme-toggle');
         const general = document.getElementById('general');
         const normalization = document.getElementById('normalization');
 
         expect(list).toBeTruthy();
         expect(list.getAttribute('aria-label')).toMatch(/settings/i);
         expect(tabs).toHaveLength(2);
+        expect(list.contains(theme)).toBe(false);
         expect(tabs[0].getAttribute('aria-selected')).toBe('true');
         expect(tabs[0].tabIndex).toBe(0);
         expect(tabs[1].getAttribute('aria-selected')).toBe('false');
@@ -102,17 +105,19 @@ describe('popup tab a11y + hierarchy (#194 9+10)', () => {
         expect(general.hidden).toBe(false);
         expect(normalization.getAttribute('role')).toBe('tabpanel');
         expect(normalization.hidden).toBe(true);
-        expect(document.querySelector('label[for="voiceSearch"]')).toBeTruthy();
-        expect(document.getElementById('status').getAttribute('role')).toBe('status');
+        expect(document.getElementById('voiceSearch').getAttribute('aria-label')).toMatch(/search/i);
+        expect(document.getElementById('statusLive').getAttribute('role')).toBe('status');
+        expect(document.getElementById('status').getAttribute('aria-hidden')).toBe('true');
     });
 
-    test('arrow keys move between tabs and update panels', () => {
+    test('arrow keys move focus and selection between tabs', () => {
         const [generalTab, normTab] = document.querySelectorAll('[role="tab"]');
         generalTab.focus();
         generalTab.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'ArrowRight', bubbles: true, cancelable: true,
         }));
 
+        expect(document.activeElement).toBe(normTab);
         expect(normTab.getAttribute('aria-selected')).toBe('true');
         expect(normTab.tabIndex).toBe(0);
         expect(generalTab.getAttribute('aria-selected')).toBe('false');
@@ -123,6 +128,7 @@ describe('popup tab a11y + hierarchy (#194 9+10)', () => {
         normTab.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Home', bubbles: true, cancelable: true,
         }));
+        expect(document.activeElement).toBe(generalTab);
         expect(generalTab.getAttribute('aria-selected')).toBe('true');
         expect(document.getElementById('general').hidden).toBe(false);
     });
@@ -142,41 +148,20 @@ describe('popup tab a11y + hierarchy (#194 9+10)', () => {
         expect(css).toMatch(/\.tab:hover:not\(\.active\)\s*\{[^}]*background-color:\s*var\(--tab-hover-bg\)/s);
         expect(css).toMatch(/\.tab:hover:not\(\.active\)\s*\{[^}]*color:\s*var\(--tab-hover-text\)/s);
 
-        function parsePair(block) {
-            const bg = block.match(/--tab-hover-bg:\s*(#[0-9a-fA-F]{3,8})/);
-            const fg = block.match(/--tab-hover-text:\s*(#[0-9a-fA-F]{3,8})/);
-            expect(bg).toBeTruthy();
-            expect(fg).toBeTruthy();
-            return { bg: bg[1], fg: fg[1] };
-        }
+        const lightFg = cssVar(css, ':root', 'tab-hover-text');
+        const lightBg = cssVar(css, ':root', 'tab-hover-bg');
+        const darkFg = cssVar(css, '.dark-theme', 'tab-hover-text');
+        const darkBg = cssVar(css, '.dark-theme', 'tab-hover-bg');
+        expect(contrastRatio(lightFg, lightBg)).toBeGreaterThanOrEqual(4.5);
+        expect(contrastRatio(darkFg, darkBg)).toBeGreaterThanOrEqual(4.5);
+    });
 
-        function hexToRgb(hex) {
-            const h = hex.length === 4
-                ? `#${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}`
-                : hex;
-            return [
-                parseInt(h.slice(1, 3), 16) / 255,
-                parseInt(h.slice(3, 5), 16) / 255,
-                parseInt(h.slice(5, 7), 16) / 255,
-            ];
-        }
-
-        function luminance([r, g, b]) {
-            const lin = [r, g, b].map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
-            return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
-        }
-
-        function contrast(fg, bg) {
-            const L1 = luminance(hexToRgb(fg));
-            const L2 = luminance(hexToRgb(bg));
-            const lighter = Math.max(L1, L2);
-            const darker = Math.min(L1, L2);
-            return (lighter + 0.05) / (darker + 0.05);
-        }
-
-        const root = parsePair(css.match(/:root\s*\{([\s\S]*?)\n\}/)[1]);
-        const dark = parsePair(css.match(/\.dark-theme\s*\{([\s\S]*?)\n\}/)[1]);
-        expect(contrast(root.fg, root.bg)).toBeGreaterThanOrEqual(4.5);
-        expect(contrast(dark.fg, dark.bg)).toBeGreaterThanOrEqual(4.5);
+    test('save toast announces via always-present live region', () => {
+        const live = document.getElementById('statusLive');
+        expect(live.textContent).toBe('');
+        popup.showSaveStatusToast(null, 'fastapi');
+        expect(live.textContent).toBe('Settings saved.');
+        expect(document.getElementById('status').textContent).toBe('Settings saved.');
+        expect(document.getElementById('status').style.display).toBe('block');
     });
 });
