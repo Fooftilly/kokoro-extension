@@ -391,32 +391,59 @@ describe('reader-progress helpers (#196)', () => {
 
     test('isResumeLookupStillCurrent fences same-file recommit and failed selects', () => {
         const id = documentIdFromDigest('a'.repeat(64));
-        const meta = { documentId: id, progressRevision: 3 };
+        const meta = { documentId: id, openGeneration: 3, progressRevision: 1 };
         expect(isResumeLookupStillCurrent({
             capturedDocumentId: id,
-            capturedProgressRevision: 3,
+            capturedOpenGeneration: 3,
             currentMeta: meta,
         })).toBe(true);
-        // Same file replaced — commit bumps progressRevision.
+        // Same file replaced — commit bumps openGeneration.
         expect(isResumeLookupStillCurrent({
             capturedDocumentId: id,
-            capturedProgressRevision: 3,
-            currentMeta: { documentId: id, progressRevision: 4 },
+            capturedOpenGeneration: 3,
+            currentMeta: { documentId: id, openGeneration: 4, progressRevision: 2 },
         })).toBe(false);
         // Different document committed.
         expect(isResumeLookupStillCurrent({
             capturedDocumentId: id,
-            capturedProgressRevision: 3,
+            capturedOpenGeneration: 3,
             currentMeta: {
                 documentId: documentIdFromDigest('b'.repeat(64)),
+                openGeneration: 5,
                 progressRevision: 1,
             },
         })).toBe(false);
-        // Failed/cancelled selection never commits — revision unchanged.
+        // Failed/cancelled selection never commits — openGeneration unchanged.
         expect(isResumeLookupStillCurrent({
             capturedDocumentId: id,
-            capturedProgressRevision: 3,
+            capturedOpenGeneration: 3,
             currentMeta: meta,
+        })).toBe(true);
+    });
+
+    test('isResumeLookupStillCurrent rejects reuse after hash-failure then recommit', () => {
+        const id = documentIdFromDigest('a'.repeat(64));
+        // First successful open captured generation 1 / progressRevision 1.
+        const firstLookup = {
+            capturedDocumentId: id,
+            capturedOpenGeneration: 1,
+        };
+        // Hash-failure clear advances the open counter without a meta commit;
+        // the next successful open may restart progressRevision at 1 but must
+        // use a new openGeneration.
+        const afterHashFailThenRecommit = {
+            documentId: id,
+            openGeneration: 3,
+            progressRevision: 1,
+        };
+        expect(isResumeLookupStillCurrent({
+            ...firstLookup,
+            currentMeta: afterHashFailThenRecommit,
+        })).toBe(false);
+        expect(isResumeLookupStillCurrent({
+            capturedDocumentId: id,
+            capturedOpenGeneration: 3,
+            currentMeta: afterHashFailThenRecommit,
         })).toBe(true);
     });
 

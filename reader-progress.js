@@ -223,15 +223,20 @@ export function planProgressUpsert(store, record) {
     return { set, remove: [...new Set(remove)] };
 }
 
-/** True when the resume lookup still belongs to the committed document open. */
+/**
+ * True when the resume lookup still belongs to the committed document open.
+ * Uses monotonic `openGeneration` (not progressRevision) so a hash-failure
+ * clear followed by a later successful commit cannot reuse an earlier token.
+ */
 export function isResumeLookupStillCurrent({
     capturedDocumentId,
-    capturedProgressRevision,
+    capturedOpenGeneration,
     currentMeta,
 }) {
     return Boolean(capturedDocumentId) &&
+        Number.isInteger(capturedOpenGeneration) &&
         currentMeta?.documentId === capturedDocumentId &&
-        currentMeta?.progressRevision === capturedProgressRevision;
+        currentMeta?.openGeneration === capturedOpenGeneration;
 }
 
 /**

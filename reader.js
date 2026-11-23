@@ -64,7 +64,7 @@ let renderedChapterContinuous = false;
 let lastContinuedRevision = null; // an ended chapter may advance only once
 let deferredChapterEndRevision = null; // do not advance behind the open file picker
 let readerPausedForPicker = false; // Close must suppress pending chapter autoplay
-/** @type {{ documentId: string, name: string, size: number, format: string, progressRevision: number } | null} */
+/** @type {{ documentId: string, name: string, size: number, format: string, progressRevision: number, openGeneration: number } | null} */
 let currentDocumentMeta = null;
 let progressSaveTimer = null;
 /** Validated resume target waiting on explicit Resume (never autoplays). */
@@ -73,6 +73,8 @@ let pendingResumeTarget = null;
 let currentChapterCanonicalBlocks = [];
 /** Monotonic identity generation so stale hash completions cannot replace a newer commit. */
 let documentIdentityGeneration = 0;
+/** Monotonic open token for resume-lookup fencing across hash-failure clears. */
+let documentOpenGeneration = 0;
 
 const prevChapterBtn = document.getElementById('prevChapter');
 const nextChapterBtn = document.getElementById('nextChapter');
@@ -153,6 +155,7 @@ function commitDocumentIdentity(candidate, priorRevision = 0) {
         size: candidate.size,
         format: candidate.format,
         progressRevision: priorRevision + 1,
+        openGeneration: ++documentOpenGeneration,
     };
     return true;
 }
@@ -162,9 +165,12 @@ function commitOrSkipDocumentIdentity(identity, priorRevision, identityGeneratio
     if (identity && commitDocumentIdentity(identity, priorRevision)) return true;
     if (identityGeneration !== documentIdentityGeneration) return false;
     // Hash unavailable — keep the document usable without a progress identity.
+    // Advance openGeneration so a later successful commit cannot reuse the
+    // progressRevision/open token an in-flight resume lookup captured earlier.
     clearTimeout(progressSaveTimer);
     progressSaveTimer = null;
     currentDocumentMeta = null;
+    ++documentOpenGeneration;
     return true;
 }
 
@@ -287,7 +293,7 @@ async function offerResumeOrStart() {
     hideResumeBanner();
     const meta = currentDocumentMeta;
     const documentId = meta?.documentId;
-    const progressRevision = meta?.progressRevision;
+    const openGeneration = meta?.openGeneration;
     if (!documentId || flatToc.length === 0) {
         activateFirstPlayableChapter();
         return;
@@ -295,13 +301,13 @@ async function offerResumeOrStart() {
     let record = null;
     try {
         const stored = await browser.storage.local.get(null);
-        // Same-file re-open bumps progressRevision; a different file changes
-        // documentId. Either way, leave the newer commit's offerResumeOrStart
-        // to drive activation. Failed/cancelled selections never commit, so
-        // revision stays put and this lookup may still proceed.
+        // Same-file re-open and hash-failure clears bump openGeneration; a
+        // different file changes documentId. Leave the newer commit's
+        // offerResumeOrStart to drive activation. Failed/cancelled selections
+        // never commit, so openGeneration stays put and this lookup proceeds.
         if (!isResumeLookupStillCurrent({
             capturedDocumentId: documentId,
-            capturedProgressRevision: progressRevision,
+            capturedOpenGeneration: openGeneration,
             currentMeta: currentDocumentMeta,
         })) return;
         record = readProgressRecord(stored || {}, documentId);
@@ -310,7 +316,7 @@ async function offerResumeOrStart() {
     }
     if (!isResumeLookupStillCurrent({
         capturedDocumentId: documentId,
-        capturedProgressRevision: progressRevision,
+        capturedOpenGeneration: openGeneration,
         currentMeta: currentDocumentMeta,
     })) return;
     if (!record) {
