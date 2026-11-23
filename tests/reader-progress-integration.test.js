@@ -16,6 +16,8 @@ import {
     shouldPersistProgressUpdate,
     resolveResumeTarget,
     upsertProgress,
+    planProgressRemove,
+    progressStorageKey,
     removeProgress,
     readProgressRecord,
 } from '../reader-progress.js';
@@ -131,6 +133,7 @@ describe('reader progress persistence integration (#196)', () => {
         store = removeProgress(store, idDrop);
         expect(readProgressRecord(store, idKeep)).toBeTruthy();
         expect(readProgressRecord(store, idDrop)).toBeNull();
-        expect(store[STORAGE_KEY][idDrop]).toBeUndefined();
+        const plan = planProgressRemove(store, idDrop);
+        expect(plan.remove).toContain(progressStorageKey(idDrop));
     });
 });

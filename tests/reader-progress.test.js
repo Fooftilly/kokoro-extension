@@ -12,7 +12,10 @@ import {
     buildProgressRecord,
     shouldAcceptProgressWrite,
     shouldPersistProgressUpdate,
+    shouldOfferResumeChoice,
     resolveResumeTarget,
+    planProgressUpsert,
+    progressStorageKey,
     upsertProgress,
     removeProgress,
     clearAllProgress,
@@ -208,13 +211,38 @@ describe('reader-progress helpers (#196)', () => {
                 revision: i + 1,
             }));
         }
-        expect(Object.keys(store[STORAGE_KEY] || store).length <= MAX_STORED_DOCUMENTS ||
-            Object.keys(store).length <= MAX_STORED_DOCUMENTS).toBe(true);
-        // Prefer inspecting via helpers: last upserts remain; oldest dropped.
-        const map = store[STORAGE_KEY] || store;
+        const map = store[STORAGE_KEY] || {};
         expect(Object.keys(map).length).toBe(MAX_STORED_DOCUMENTS);
         const oldestHex = (0).toString(16).padStart(64, '0');
         expect(map[documentIdFromDigest(oldestHex)]).toBeUndefined();
+    });
+
+    test('planProgressUpsert writes per-document keys without rewriting peers', () => {
+        const idA = documentIdFromDigest('a'.repeat(64));
+        const idB = documentIdFromDigest('b'.repeat(64));
+        const recordA = buildProgressRecord({
+            documentId: idA, name: 'a.epub', size: 1, format: 'epub',
+            chapterHref: 'a.xhtml', blockIndex: 1, chapterFingerprint: 'fp',
+            revision: 1, updatedAt: 1,
+        });
+        const recordB = buildProgressRecord({
+            documentId: idB, name: 'b.epub', size: 1, format: 'epub',
+            chapterHref: 'b.xhtml', blockIndex: 2, chapterFingerprint: 'fp',
+            revision: 1, updatedAt: 2,
+        });
+        const store = {
+            [progressStorageKey(idA)]: recordA,
+            otherKey: { keep: true },
+        };
+        const plan = planProgressUpsert(store, recordB);
+        expect(plan.set).toEqual({ [progressStorageKey(idB)]: recordB });
+        expect(plan.set[progressStorageKey(idA)]).toBeUndefined();
+        expect(shouldOfferResumeChoice({
+            ok: true, blockIndex: 0, chapterHref: 'b.xhtml',
+        }, 'a.xhtml')).toBe(true);
+        expect(shouldOfferResumeChoice({
+            ok: true, blockIndex: 0, chapterHref: 'a.xhtml',
+        }, 'a.xhtml')).toBe(false);
     });
 
     test('removeProgress and clearAllProgress drop records', () => {

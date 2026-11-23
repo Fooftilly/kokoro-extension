@@ -4,8 +4,15 @@
  * and never stores full document source or pendingText as a bookmark key.
  */
 
+/** Legacy single-map key (migrated on read; new writes use per-document keys). */
 export const STORAGE_KEY = 'readerProgressByDocumentId';
+/** Per-document keys avoid multi-tab read-modify-write clobbering other files. */
+export const STORAGE_KEY_PREFIX = 'readerProgress:';
 export const MAX_STORED_DOCUMENTS = 24;
+
+export function progressStorageKey(documentId) {
+    return STORAGE_KEY_PREFIX + String(documentId || '');
+}
 
 const DIGEST_RE = /^[a-f0-9]{64}$/;
 
@@ -146,22 +153,80 @@ export function resolveResumeTarget({
     };
 }
 
-function progressMap(store) {
-    const raw = store && typeof store === 'object' ? store[STORAGE_KEY] : null;
-    return raw && typeof raw === 'object' ? { ...raw } : {};
+function isProgressRecord(value) {
+    return value && typeof value === 'object' && typeof value.documentId === 'string';
 }
 
-export function upsertProgress(store, record) {
-    const map = progressMap(store);
+/** Collect records from per-document keys plus the legacy map. */
+export function collectProgressRecords(store) {
+    const out = {};
+    if (!store || typeof store !== 'object') return out;
+    const legacy = store[STORAGE_KEY];
+    if (legacy && typeof legacy === 'object') {
+        for (const [id, record] of Object.entries(legacy)) {
+            if (isProgressRecord(record)) out[id] = record;
+        }
+    }
+    for (const [key, value] of Object.entries(store)) {
+        if (!key.startsWith(STORAGE_KEY_PREFIX) || !isProgressRecord(value)) continue;
+        out[value.documentId] = value;
+    }
+    return out;
+}
+
+/**
+ * Write one document key and prune older entries without rewriting unrelated
+ * documents' values (multi-tab safe for distinct files).
+ * Returns { set, remove } payloads for browser.storage.local.
+ */
+export function planProgressUpsert(store, record) {
+    const map = collectProgressRecords(store);
     map[record.documentId] = record;
-    const entries = Object.entries(map)
-        .sort((a, b) => (b[1].updatedAt || 0) - (a[1].updatedAt || 0));
-    const trimmed = entries.slice(0, MAX_STORED_DOCUMENTS);
-    return { [STORAGE_KEY]: Object.fromEntries(trimmed) };
+    const ranked = Object.values(map)
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    const keep = ranked.slice(0, MAX_STORED_DOCUMENTS);
+    const keepIds = new Set(keep.map((entry) => entry.documentId));
+    const set = { [progressStorageKey(record.documentId)]: record };
+    const remove = [];
+    if (store[STORAGE_KEY]) remove.push(STORAGE_KEY);
+    for (const id of Object.keys(map)) {
+        if (keepIds.has(id)) continue;
+        remove.push(progressStorageKey(id));
+    }
+    for (const [key, value] of Object.entries(store || {})) {
+        if (!key.startsWith(STORAGE_KEY_PREFIX) || !isProgressRecord(value)) continue;
+        if (!keepIds.has(value.documentId)) remove.push(key);
+    }
+    return { set, remove: [...new Set(remove)] };
+}
+
+/** Test helper: apply an upsert into an in-memory store snapshot. */
+export function upsertProgress(store, record) {
+    const plan = planProgressUpsert(store, record);
+    const next = { ...(store || {}) };
+    for (const key of plan.remove) delete next[key];
+    Object.assign(next, plan.set);
+    const kept = collectProgressRecords(next);
+    kept[record.documentId] = record;
+    const ranked = Object.values(kept)
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+        .slice(0, MAX_STORED_DOCUMENTS);
+    const map = Object.fromEntries(ranked.map((entry) => [entry.documentId, entry]));
+    const out = { [STORAGE_KEY]: map };
+    for (const entry of ranked) {
+        out[progressStorageKey(entry.documentId)] = entry;
+    }
+    return out;
+}
+
+export function planProgressRemove(store, documentId) {
+    const remove = [progressStorageKey(documentId)];
+    if (store?.[STORAGE_KEY]) remove.push(STORAGE_KEY);
+    return { remove: [...new Set(remove)] };
 }
 
 export function removeProgress(store, documentId) {
-    const map = progressMap(store);
+    const map = collectProgressRecords(store);
     delete map[documentId];
     return { [STORAGE_KEY]: map };
 }
@@ -172,6 +237,15 @@ export function clearAllProgress(store) {
 }
 
 export function readProgressRecord(store, documentId) {
-    const map = progressMap(store);
+    if (!store || typeof store !== 'object') return null;
+    const keyed = store[progressStorageKey(documentId)];
+    if (isProgressRecord(keyed)) return keyed;
+    const map = collectProgressRecords(store);
     return map[documentId] || null;
+}
+
+export function shouldOfferResumeChoice(target, firstChapterHref) {
+    if (!target?.ok || !Number.isInteger(target.blockIndex)) return false;
+    if (target.blockIndex > 0) return true;
+    return Boolean(target.chapterHref) && target.chapterHref !== firstChapterHref;
 }

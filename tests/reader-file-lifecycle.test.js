@@ -147,8 +147,11 @@ describe('EPUB file read/parse lifecycle', () => {
     });
 
     function acknowledgeCurrentChapter({ revision, source } = {}) {
-        const writes = browser.storage.local.set.mock.calls;
-        const latestRevision = writes[writes.length - 1]?.[0]?.pendingReaderReloadRevision;
+        // Progress upserts share storage.local.set; find the latest player reload.
+        const writes = browser.storage.local.set.mock.calls
+            .map(([value]) => value)
+            .filter(value => Number.isSafeInteger(value?.pendingReaderReloadRevision));
+        const latestRevision = writes[writes.length - 1]?.pendingReaderReloadRevision;
         expect(Number.isSafeInteger(latestRevision)).toBe(true);
         const frame = document.getElementById('playerFrame');
         window.dispatchEvent(new MessageEvent('message', {
@@ -1379,6 +1382,8 @@ describe('EPUB file read/parse lifecycle', () => {
 
         window.dispatchEvent(new MessageEvent('message', {
             data: { type: 'KOKORO_READING_PROGRESS', blockIndex: 1 },
+            source: document.getElementById('playerFrame').contentWindow,
+            origin: window.location.origin,
         }));
 
         expect(document.querySelector('.playable-chapter.active')).toBe(next);
@@ -1407,6 +1412,8 @@ describe('EPUB file read/parse lifecycle', () => {
 
         window.dispatchEvent(new MessageEvent('message', {
             data: { type: 'KOKORO_READING_PROGRESS', blockIndex: 1 },
+            source: document.getElementById('playerFrame').contentWindow,
+            origin: window.location.origin,
         }));
 
         expect(document.querySelector('.playable-chapter.active')).toBe(validItem);

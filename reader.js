@@ -6,16 +6,16 @@ import {
 } from './document-formats.js';
 import { MAX_DOCX_ARCHIVE_BYTES, parseDocxDocument } from './docx-reader.js';
 import {
-    STORAGE_KEY,
     documentIdFromDigest,
     hexDigestFromBuffer,
     fingerprintChapterBlocks,
     buildProgressRecord,
     shouldAcceptProgressWrite,
     shouldPersistProgressUpdate,
+    shouldOfferResumeChoice,
     resolveResumeTarget,
-    upsertProgress,
-    removeProgress,
+    planProgressUpsert,
+    planProgressRemove,
     readProgressRecord,
 } from './reader-progress.js';
 import './tts-providers.js';
@@ -155,6 +155,32 @@ function commitDocumentIdentity(candidate, priorRevision = 0) {
     return true;
 }
 
+function progressWriteStillCurrent(write) {
+    return shouldPersistProgressUpdate({
+        resumeDecisionPending: Boolean(pendingResumeTarget),
+    }) && shouldAcceptProgressWrite({
+        writeRevision: write.writeRevision,
+        currentRevision: currentDocumentMeta?.progressRevision,
+        writeChapterRequestId: write.writeChapterRequestId,
+        currentChapterRequestId: chapterRequestId,
+        writeDocumentId: write.writeDocumentId,
+        currentDocumentId: currentDocumentMeta?.documentId,
+    });
+}
+
+async function flushProgressSave(write, record) {
+    if (!progressWriteStillCurrent(write)) return;
+    try {
+        const stored = await browser.storage.local.get(null);
+        if (!progressWriteStillCurrent(write)) return;
+        const plan = planProgressUpsert(stored || {}, record);
+        if (plan.remove.length) await browser.storage.local.remove(plan.remove);
+        await browser.storage.local.set(plan.set);
+    } catch (error) {
+        console.warn('Cannot persist reader progress', error);
+    }
+}
+
 function scheduleProgressSave(blockIndex) {
     // Overlay init emits progress at block 0 while the resume banner is up.
     // Persisting that would clobber the saved position before the user chooses.
@@ -168,78 +194,49 @@ function scheduleProgressSave(blockIndex) {
     const fingerprintBlocks = currentChapterCanonicalBlocks.length > 0
         ? currentChapterCanonicalBlocks
         : playbackBlocks;
-    const writeRevision = meta.progressRevision;
-    const writeChapterRequestId = chapterRequestId;
-    const writeDocumentId = meta.documentId;
+    const write = {
+        writeRevision: meta.progressRevision,
+        writeChapterRequestId: chapterRequestId,
+        writeDocumentId: meta.documentId,
+    };
+    if (!Array.isArray(playbackBlocks) || playbackBlocks.length === 0) return;
+    if (!Number.isInteger(blockIndex) || blockIndex < 0 ||
+        blockIndex >= playbackBlocks.length) {
+        return;
+    }
+    let record;
+    try {
+        record = buildProgressRecord({
+            documentId: write.writeDocumentId,
+            name: meta.name,
+            size: meta.size,
+            format: meta.format,
+            chapterHref,
+            blockIndex,
+            chapterFingerprint: fingerprintChapterBlocks(fingerprintBlocks),
+            revision: write.writeRevision,
+            updatedAt: Date.now(),
+        });
+    } catch (error) {
+        console.warn('Skipping invalid reader progress record', error);
+        return;
+    }
     clearTimeout(progressSaveTimer);
     progressSaveTimer = setTimeout(() => {
-        void (async () => {
-            if (!shouldPersistProgressUpdate({
-                resumeDecisionPending: Boolean(pendingResumeTarget),
-            })) return;
-            if (!shouldAcceptProgressWrite({
-                writeRevision,
-                currentRevision: currentDocumentMeta?.progressRevision,
-                writeChapterRequestId,
-                currentChapterRequestId: chapterRequestId,
-                writeDocumentId,
-                currentDocumentId: currentDocumentMeta?.documentId,
-            })) return;
-            if (!Array.isArray(playbackBlocks) || playbackBlocks.length === 0) return;
-            if (!Number.isInteger(blockIndex) || blockIndex < 0 ||
-                blockIndex >= playbackBlocks.length) {
-                return;
-            }
-            let record;
-            try {
-                record = buildProgressRecord({
-                    documentId: writeDocumentId,
-                    name: meta.name,
-                    size: meta.size,
-                    format: meta.format,
-                    chapterHref,
-                    blockIndex,
-                    chapterFingerprint: fingerprintChapterBlocks(fingerprintBlocks),
-                    revision: writeRevision,
-                    updatedAt: Date.now(),
-                });
-            } catch (error) {
-                console.warn('Skipping invalid reader progress record', error);
-                return;
-            }
-            if (!shouldAcceptProgressWrite({
-                writeRevision,
-                currentRevision: currentDocumentMeta?.progressRevision,
-                writeChapterRequestId,
-                currentChapterRequestId: chapterRequestId,
-                writeDocumentId,
-                currentDocumentId: currentDocumentMeta?.documentId,
-            })) return;
-            try {
-                const stored = await browser.storage.local.get({ [STORAGE_KEY]: {} });
-                if (!shouldAcceptProgressWrite({
-                    writeRevision,
-                    currentRevision: currentDocumentMeta?.progressRevision,
-                    writeChapterRequestId,
-                    currentChapterRequestId: chapterRequestId,
-                    writeDocumentId,
-                    currentDocumentId: currentDocumentMeta?.documentId,
-                })) return;
-                await browser.storage.local.set(upsertProgress(stored, record));
-            } catch (error) {
-                console.warn('Cannot persist reader progress', error);
-            }
-        })();
+        void flushProgressSave(write, record);
     }, 400);
 }
 
 async function clearCurrentDocumentProgress() {
+    clearTimeout(progressSaveTimer);
+    progressSaveTimer = null;
     const id = currentDocumentMeta?.documentId;
     hideResumeBanner();
     if (!id) return;
     try {
-        const stored = await browser.storage.local.get({ [STORAGE_KEY]: {} });
-        await browser.storage.local.set(removeProgress(stored, id));
+        const stored = await browser.storage.local.get(null);
+        const plan = planProgressRemove(stored || {}, id);
+        if (plan.remove.length) await browser.storage.local.remove(plan.remove);
     } catch (error) {
         console.warn('Cannot clear reader progress', error);
     }
@@ -261,8 +258,8 @@ async function offerResumeOrStart() {
     }
     let record = null;
     try {
-        const stored = await browser.storage.local.get({ [STORAGE_KEY]: {} });
-        record = readProgressRecord(stored, meta.documentId);
+        const stored = await browser.storage.local.get(null);
+        record = readProgressRecord(stored || {}, meta.documentId);
     } catch (error) {
         console.warn('Cannot read saved reader progress', error);
     }
@@ -644,7 +641,7 @@ async function startTextChapterLoad(title, forcedStartIndex = null, resumeCandid
                 chapterFingerprint: fingerprintChapterBlocks(source.blocks),
                 chapterBlockCount: source.blocks.length,
             });
-            if (target.ok && target.blockIndex > 0) {
+            if (shouldOfferResumeChoice(target, flatToc[0]?.href)) {
                 showResumeBanner(target);
                 startIndex = 0;
             } else if (!target.ok) {
@@ -1136,7 +1133,7 @@ async function loadEpubChapter(href, title, continuePlaying = false, forcedStart
             chapterFingerprint: fingerprintChapterBlocks(mergedBlocks),
             chapterBlockCount: mergedBlocks.length,
         });
-        if (target.ok && target.blockIndex > 0) {
+        if (shouldOfferResumeChoice(target, flatToc[0]?.href)) {
             showResumeBanner(target);
             startIndex = 0;
             suppressAutoplay = true;
@@ -1248,11 +1245,14 @@ async function extractBlocks(section, bodyElement, sourceBook = book) {
 // --- Bi-directional Sync ---
 
 window.addEventListener('message', (event) => {
-    if (event.data && event.data.type === 'KOKORO_READING_PROGRESS') {
-        const blockIndex = event.data.blockIndex;
-        updateActiveChapter(blockIndex);
-        scheduleProgressSave(blockIndex);
+    if (event.source !== playerFrame.contentWindow ||
+        event.origin !== window.location.origin ||
+        event.data?.type !== 'KOKORO_READING_PROGRESS') {
+        return;
     }
+    const blockIndex = event.data.blockIndex;
+    updateActiveChapter(blockIndex);
+    scheduleProgressSave(blockIndex);
 });
 
 resumeReadingButton?.addEventListener('click', () => {
