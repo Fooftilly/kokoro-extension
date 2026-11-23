@@ -378,3 +378,96 @@ export function shouldOfferResumeChoice(target, firstChapterHref) {
     if (target.blockIndex > 0) return true;
     return Boolean(target.chapterHref) && target.chapterHref !== firstChapterHref;
 }
+
+// --- Bookmarks (same document identity / local-only storage as progress) ---
+
+export const BOOKMARK_STORAGE_KEY_PREFIX = 'readerBookmarks:';
+export const MAX_BOOKMARKS_PER_DOCUMENT = 40;
+
+export function bookmarkStorageKey(documentId) {
+    return BOOKMARK_STORAGE_KEY_PREFIX + String(documentId || '');
+}
+
+function isBookmarkRecord(value) {
+    return value && typeof value === 'object' &&
+        typeof value.id === 'string' &&
+        typeof value.documentId === 'string' &&
+        Number.isInteger(value.blockIndex) && value.blockIndex >= 0;
+}
+
+export function buildBookmarkRecord({
+    id,
+    documentId,
+    label,
+    chapterHref,
+    blockIndex,
+    chapterFingerprint,
+    createdAt,
+}) {
+    const docId = String(documentId || '');
+    if (!docId.startsWith('sha256:') || !DIGEST_RE.test(docId.slice(7))) {
+        throw new TypeError('Bookmark requires a sha256 document id');
+    }
+    const index = Number(blockIndex);
+    if (!Number.isInteger(index) || index < 0) {
+        throw new TypeError('Bookmark requires a non-negative blockIndex');
+    }
+    const bookmarkId = String(id || '').trim();
+    if (!bookmarkId) {
+        throw new TypeError('Bookmark requires an id');
+    }
+    return {
+        id: bookmarkId.slice(0, 80),
+        documentId: docId,
+        label: String(label || 'Bookmark').slice(0, 120),
+        chapterHref: chapterHref == null ? null : String(chapterHref),
+        blockIndex: index,
+        chapterFingerprint: String(chapterFingerprint || ''),
+        createdAt: Number(createdAt) || Date.now(),
+    };
+}
+
+export function readBookmarks(store, documentId) {
+    if (!store || typeof store !== 'object' || !documentId) return [];
+    const raw = store[bookmarkStorageKey(documentId)];
+    if (!Array.isArray(raw)) return [];
+    return raw
+        .filter(isBookmarkRecord)
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+        .slice(0, MAX_BOOKMARKS_PER_DOCUMENT);
+}
+
+/** Add or replace a same-position bookmark; newest first; bounded. */
+export function planBookmarkAdd(store, bookmark) {
+    const key = bookmarkStorageKey(bookmark.documentId);
+    const list = readBookmarks(store, bookmark.documentId)
+        .filter((entry) => !(
+            entry.chapterHref === bookmark.chapterHref &&
+            entry.blockIndex === bookmark.blockIndex
+        ));
+    const next = [bookmark, ...list].slice(0, MAX_BOOKMARKS_PER_DOCUMENT);
+    return { set: { [key]: next }, remove: [] };
+}
+
+export function planBookmarkRemove(store, documentId, bookmarkId) {
+    const key = bookmarkStorageKey(documentId);
+    const next = readBookmarks(store, documentId)
+        .filter((entry) => entry.id !== bookmarkId);
+    if (next.length === 0) return { set: {}, remove: [key] };
+    return { set: { [key]: next }, remove: [] };
+}
+
+export function planBookmarkClear(store, documentId) {
+    void store;
+    return { set: {}, remove: [bookmarkStorageKey(documentId)] };
+}
+
+/** Validate a bookmark against the current chapter the same way as resume. */
+export function resolveBookmarkTarget(args) {
+    return resolveResumeTarget({
+        record: args?.bookmark,
+        flatToc: args?.flatToc,
+        chapterFingerprint: args?.chapterFingerprint,
+        chapterBlockCount: args?.chapterBlockCount,
+    });
+}

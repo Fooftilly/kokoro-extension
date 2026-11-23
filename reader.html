@@ -51,6 +51,15 @@
                 </div>
                 <p class="resume-storage-note">Saved positions stay in this browser only (local storage). Re-select the file to restore; source bytes are not stored.</p>
             </div>
+            <div id="bookmarksPanel" class="bookmarks-panel" hidden>
+                <div class="bookmarks-header">
+                    <h3>Bookmarks</h3>
+                    <button id="addBookmark" type="button" class="nav-btn">Add bookmark</button>
+                </div>
+                <ul id="bookmarkList" class="bookmark-list" aria-label="Bookmarks"></ul>
+                <button id="clearBookmarks" type="button" class="nav-btn bookmarks-clear" hidden>Clear all bookmarks</button>
+                <p class="resume-storage-note">Bookmarks stay in this browser only. They are not synced and do not store file bytes.</p>
+            </div>
             <div class="nav-controls">
                 <button id="prevChapter" class="nav-btn" disabled>Prev</button>
                 <button id="nextChapter" class="nav-btn" disabled>Next</button>

@@ -19,6 +19,12 @@ import {
     runExclusiveProgressMutation,
     isResumeLookupStillCurrent,
     readProgressRecord,
+    buildBookmarkRecord,
+    readBookmarks,
+    planBookmarkAdd,
+    planBookmarkRemove,
+    planBookmarkClear,
+    resolveBookmarkTarget,
 } from './reader-progress.js';
 import './tts-providers.js';
 import './local-voice-mixing.js';
@@ -40,6 +46,10 @@ const resumeBannerText = document.getElementById('resumeBannerText');
 const resumeReadingButton = document.getElementById('resumeReading');
 const startOverReadingButton = document.getElementById('startOverReading');
 const clearReadingProgressButton = document.getElementById('clearReadingProgress');
+const bookmarksPanel = document.getElementById('bookmarksPanel');
+const bookmarkListEl = document.getElementById('bookmarkList');
+const addBookmarkButton = document.getElementById('addBookmark');
+const clearBookmarksButton = document.getElementById('clearBookmarks');
 
 let book = null; // EPUB object
 let textDocument = null; // parsed TXT/Markdown/HTML document, not an EPUB archive
@@ -75,6 +85,8 @@ let currentChapterCanonicalBlocks = [];
 let documentIdentityGeneration = 0;
 /** Monotonic open token for resume-lookup fencing across hash-failure clears. */
 let documentOpenGeneration = 0;
+/** Last playback block index for Add bookmark (from player progress events). */
+let lastKnownBlockIndex = 0;
 
 const prevChapterBtn = document.getElementById('prevChapter');
 const nextChapterBtn = document.getElementById('nextChapter');
@@ -287,6 +299,165 @@ function activateFirstPlayableChapter(continuePlaying = false, forcedStartIndex 
     if (firstItem && flatToc[0]) {
         activateChapter(flatToc[0], firstItem, continuePlaying, forcedStartIndex);
     }
+}
+
+function hideBookmarksPanel() {
+    if (bookmarksPanel) bookmarksPanel.hidden = true;
+    if (bookmarkListEl) bookmarkListEl.innerHTML = '';
+    if (clearBookmarksButton) clearBookmarksButton.hidden = true;
+}
+
+function currentBookmarkChapterHref() {
+    return lastPublishedReload?.chapterHref
+        || renderedChapterHref
+        || currentActiveHref
+        || flatToc[0]?.href
+        || null;
+}
+
+function currentBookmarkFingerprint() {
+    const blocks = currentChapterCanonicalBlocks.length > 0
+        ? currentChapterCanonicalBlocks
+        : currentChapterBlocks;
+    return fingerprintChapterBlocks(blocks);
+}
+
+async function refreshBookmarksPanel() {
+    const documentId = currentDocumentMeta?.documentId;
+    if (!documentId || !bookmarksPanel || !bookmarkListEl) {
+        hideBookmarksPanel();
+        return;
+    }
+    bookmarksPanel.hidden = false;
+    let bookmarks = [];
+    try {
+        const stored = await browser.storage.local.get(null);
+        if (currentDocumentMeta?.documentId !== documentId) return;
+        bookmarks = readBookmarks(stored || {}, documentId);
+    } catch (error) {
+        console.warn('Cannot read reader bookmarks', error);
+    }
+    bookmarkListEl.innerHTML = '';
+    for (const bookmark of bookmarks) {
+        const li = document.createElement('li');
+        const go = document.createElement('button');
+        go.type = 'button';
+        go.className = 'nav-btn bookmark-go';
+        go.textContent = bookmark.label || 'Bookmark';
+        go.title = `${bookmark.chapterHref || 'chapter'} · block ${bookmark.blockIndex + 1}`;
+        go.addEventListener('click', () => {
+            void goToBookmark(bookmark);
+        });
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'nav-btn bookmark-remove';
+        remove.setAttribute('aria-label', 'Remove bookmark');
+        remove.textContent = '×';
+        remove.addEventListener('click', () => {
+            void removeBookmark(bookmark.id);
+        });
+        li.append(go, remove);
+        bookmarkListEl.appendChild(li);
+    }
+    if (clearBookmarksButton) {
+        clearBookmarksButton.hidden = bookmarks.length === 0;
+    }
+}
+
+async function persistBookmarkPlan(plan) {
+    if (plan.set && Object.keys(plan.set).length) {
+        await browser.storage.local.set(plan.set);
+    }
+    if (plan.remove.length) await browser.storage.local.remove(plan.remove);
+}
+
+async function addBookmarkAtCurrentPosition() {
+    const meta = currentDocumentMeta;
+    if (!meta?.documentId) return;
+    const chapterHref = currentBookmarkChapterHref();
+    const blocks = currentChapterCanonicalBlocks.length > 0
+        ? currentChapterCanonicalBlocks
+        : currentChapterBlocks;
+    if (!Array.isArray(blocks) || blocks.length === 0) return;
+    const blockIndex = Number.isInteger(lastKnownBlockIndex)
+        ? Math.min(Math.max(0, lastKnownBlockIndex), blocks.length - 1)
+        : 0;
+    const chapterLabel = flatToc.find((entry) => entry.href === chapterHref)?.label
+        || 'Chapter';
+    let bookmark;
+    try {
+        bookmark = buildBookmarkRecord({
+            id: `bm_${Date.now().toString(36)}_${blockIndex}`,
+            documentId: meta.documentId,
+            label: `${chapterLabel} · ${blockIndex + 1}`,
+            chapterHref,
+            blockIndex,
+            chapterFingerprint: currentBookmarkFingerprint(),
+            createdAt: Date.now(),
+        });
+    } catch (error) {
+        console.warn('Skipping invalid reader bookmark', error);
+        return;
+    }
+    try {
+        await runExclusiveProgressMutation(async () => {
+            const stored = await browser.storage.local.get(null);
+            const plan = planBookmarkAdd(stored || {}, bookmark);
+            await persistBookmarkPlan(plan);
+        });
+    } catch (error) {
+        console.warn('Cannot save reader bookmark', error);
+        return;
+    }
+    await refreshBookmarksPanel();
+}
+
+async function removeBookmark(bookmarkId) {
+    const documentId = currentDocumentMeta?.documentId;
+    if (!documentId || !bookmarkId) return;
+    try {
+        await runExclusiveProgressMutation(async () => {
+            const stored = await browser.storage.local.get(null);
+            const plan = planBookmarkRemove(stored || {}, documentId, bookmarkId);
+            await persistBookmarkPlan(plan);
+        });
+    } catch (error) {
+        console.warn('Cannot remove reader bookmark', error);
+        return;
+    }
+    await refreshBookmarksPanel();
+}
+
+async function clearAllBookmarksForDocument() {
+    const documentId = currentDocumentMeta?.documentId;
+    if (!documentId) return;
+    try {
+        await runExclusiveProgressMutation(async () => {
+            const plan = planBookmarkClear({}, documentId);
+            await persistBookmarkPlan(plan);
+        });
+    } catch (error) {
+        console.warn('Cannot clear reader bookmarks', error);
+        return;
+    }
+    await refreshBookmarksPanel();
+}
+
+function goToBookmark(bookmark) {
+    if (!bookmark || flatToc.length === 0) return;
+    hideResumeBanner();
+    const href = bookmark.chapterHref || flatToc[0]?.href;
+    const item = flatToc.find((entry) => entry.href === href);
+    if (!item) {
+        chapterErrorMsg.textContent =
+            'That bookmark chapter is no longer in this document.';
+        chapterErrorMsg.hidden = false;
+        return;
+    }
+    const itemEl = [...chapterList.querySelectorAll('.playable-chapter')]
+        .find((el) => el.dataset.href === item.href);
+    // Validate fingerprint after blocks load; never autoplay.
+    activateChapter(item, itemEl || null, false, null, { bookmarkJump: bookmark });
 }
 
 async function offerResumeOrStart() {
@@ -636,7 +807,9 @@ async function loadEpub(file, requestId) {
 
         commitOpenedEpub(candidate, toc);
         committed = true;
+        lastKnownBlockIndex = 0;
         await offerResumeOrStart();
+        await refreshBookmarksPanel();
     } finally {
         // A failed/superseded candidate must not retain its ZIP and section
         // documents. Only the successfully committed book remains owned here.
@@ -685,14 +858,17 @@ async function loadTextDocument(file, format, requestId) {
     currentToc = [{ href: 'document:0', label: file.name }];
     resumeAutoplayForNewDocument();
     renderChapterList(currentToc, { autoActivate: false });
+    lastKnownBlockIndex = 0;
     await offerResumeOrStart();
+    await refreshBookmarksPanel();
     // Parsing and rendering the chapter list commit the replacement. The
     // async player write must *not* keep Cancel visible after this point.
     // Subsequent storage failures are reported by startTextChapterLoad() in
     // the reader's visible alert, without rolling back a committed document.
 }
 
-async function startTextChapterLoad(title, forcedStartIndex = null, resumeCandidate = null) {
+async function startTextChapterLoad(title, forcedStartIndex = null, resumeCandidate = null,
+    bookmarkJump = null) {
     const source = textDocument;
     const requestId = ++chapterRequestId;
     chapterErrorMsg.hidden = true;
@@ -700,7 +876,9 @@ async function startTextChapterLoad(title, forcedStartIndex = null, resumeCandid
     if (!source) return;
     try {
         let startIndex = Number.isInteger(forcedStartIndex) ? forcedStartIndex : 0;
-        if (resumeCandidate && forcedStartIndex === 0) {
+        let suppressAutoplay = Boolean(resumeCandidate) ||
+            Number.isInteger(forcedStartIndex) || Boolean(bookmarkJump);
+        if (resumeCandidate && forcedStartIndex === 0 && !bookmarkJump) {
             const target = resolveResumeTarget({
                 record: resumeCandidate,
                 flatToc,
@@ -714,10 +892,27 @@ async function startTextChapterLoad(title, forcedStartIndex = null, resumeCandid
                 void clearCurrentDocumentProgress();
             }
         }
+        if (bookmarkJump) {
+            const target = resolveBookmarkTarget({
+                bookmark: bookmarkJump,
+                flatToc,
+                chapterFingerprint: fingerprintChapterBlocks(source.blocks),
+                chapterBlockCount: source.blocks.length,
+            });
+            if (target.ok) {
+                startIndex = target.blockIndex;
+            } else {
+                startIndex = 0;
+                chapterErrorMsg.textContent =
+                    'Bookmark is outdated for this document; starting at the beginning.';
+                chapterErrorMsg.hidden = false;
+            }
+            suppressAutoplay = true;
+        }
         await sendToPlayer(source.blocks, title || source.title,
             source.blocks.map(entry => entry.content).join(' ').slice(0, 100),
             startIndex, requestId, null, false, currentToc[0]?.href || 'document:0',
-            { suppressAutoplay: Boolean(resumeCandidate) || Number.isInteger(forcedStartIndex) });
+            { suppressAutoplay });
     } catch (error) {
         if (source !== textDocument || requestId !== chapterRequestId) return;
         chapterErrorMsg.textContent = 'Failed to load document: ' + String(error.message || error);
@@ -974,7 +1169,8 @@ function activateChapter(item, itemEl, continuePlaying = false, forcedStartIndex
         startChapterLoad(item.href, item.label, continuePlaying, forcedStartIndex, options);
     } else if (textDocument) {
         activeTextChapterWrite = startTextChapterLoad(
-            item.label, forcedStartIndex, options.resumeCandidate || null);
+            item.label, forcedStartIndex, options.resumeCandidate || null,
+            options.bookmarkJump || null);
         // The reader alert carries errors; avoid unhandled rejections.
         void activeTextChapterWrite.catch(() => {});
     }
@@ -1192,7 +1388,7 @@ async function loadEpubChapter(href, title, continuePlaying = false, forcedStart
         }
     }
 
-    if (options.resumeCandidate) {
+    if (options.resumeCandidate && !options.bookmarkJump) {
         const target = resolveResumeTarget({
             record: options.resumeCandidate,
             flatToc,
@@ -1206,6 +1402,24 @@ async function loadEpubChapter(href, title, continuePlaying = false, forcedStart
         } else if (!target.ok) {
             void clearCurrentDocumentProgress();
         }
+    }
+
+    if (options.bookmarkJump) {
+        const target = resolveBookmarkTarget({
+            bookmark: options.bookmarkJump,
+            flatToc,
+            chapterFingerprint: fingerprintChapterBlocks(mergedBlocks),
+            chapterBlockCount: mergedBlocks.length,
+        });
+        if (target.ok) {
+            startIndex = target.blockIndex;
+        } else {
+            startIndex = 0;
+            chapterErrorMsg.textContent =
+                'Bookmark is outdated for this chapter; starting at the beginning.';
+            chapterErrorMsg.hidden = false;
+        }
+        suppressAutoplay = true;
     }
 
     const fullText = mergedBlocks.map(b => b.content).join(' ');
@@ -1317,8 +1531,19 @@ window.addEventListener('message', (event) => {
         return;
     }
     const blockIndex = event.data.blockIndex;
+    if (Number.isInteger(blockIndex) && blockIndex >= 0) {
+        lastKnownBlockIndex = blockIndex;
+    }
     updateActiveChapter(blockIndex);
     scheduleProgressSave(blockIndex);
+});
+
+addBookmarkButton?.addEventListener('click', () => {
+    void addBookmarkAtCurrentPosition();
+});
+
+clearBookmarksButton?.addEventListener('click', () => {
+    void clearAllBookmarksForDocument();
 });
 
 resumeReadingButton?.addEventListener('click', () => {
