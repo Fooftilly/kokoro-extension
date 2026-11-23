@@ -12,6 +12,7 @@ import {
     fingerprintChapterBlocks,
     buildProgressRecord,
     shouldAcceptProgressWrite,
+    shouldPersistProgressUpdate,
     resolveResumeTarget,
     upsertProgress,
     removeProgress,
@@ -66,6 +67,10 @@ let currentDocumentMeta = null;
 let progressSaveTimer = null;
 /** Validated resume target waiting on explicit Resume (never autoplays). */
 let pendingResumeTarget = null;
+/** Full chapter blocks for fingerprinting (independent of continuous-reader truncation). */
+let currentChapterCanonicalBlocks = [];
+/** Monotonic identity generation so stale hash completions cannot replace a newer commit. */
+let documentIdentityGeneration = 0;
 
 const prevChapterBtn = document.getElementById('prevChapter');
 const nextChapterBtn = document.getElementById('nextChapter');
@@ -122,30 +127,56 @@ function showResumeBanner(target) {
     resumeBanner.hidden = false;
 }
 
-async function rememberDocumentIdentity(file, format, buffer) {
-    clearTimeout(progressSaveTimer);
-    progressSaveTimer = null;
+async function hashDocumentIdentity(file, format, buffer, identityGeneration) {
     const hex = await hexDigestFromBuffer(buffer);
-    currentDocumentMeta = {
+    if (identityGeneration !== documentIdentityGeneration) return null;
+    return {
         documentId: documentIdFromDigest(hex),
         name: file.name,
         size: Number.isFinite(file.size) ? file.size : 0,
         format,
-        progressRevision: (currentDocumentMeta?.progressRevision || 0) + 1,
+        identityGeneration,
     };
 }
 
+function commitDocumentIdentity(candidate, priorRevision = 0) {
+    if (!candidate || candidate.identityGeneration !== documentIdentityGeneration) {
+        return false;
+    }
+    clearTimeout(progressSaveTimer);
+    progressSaveTimer = null;
+    currentDocumentMeta = {
+        documentId: candidate.documentId,
+        name: candidate.name,
+        size: candidate.size,
+        format: candidate.format,
+        progressRevision: priorRevision + 1,
+    };
+    return true;
+}
+
 function scheduleProgressSave(blockIndex) {
+    // Overlay init emits progress at block 0 while the resume banner is up.
+    // Persisting that would clobber the saved position before the user chooses.
+    if (!shouldPersistProgressUpdate({ resumeDecisionPending: Boolean(pendingResumeTarget) })) {
+        return;
+    }
     const meta = currentDocumentMeta;
     if (!meta?.documentId) return;
     const chapterHref = renderedChapterHref || currentActiveHref;
-    const blocks = currentChapterBlocks;
+    const playbackBlocks = currentChapterBlocks;
+    const fingerprintBlocks = currentChapterCanonicalBlocks.length > 0
+        ? currentChapterCanonicalBlocks
+        : playbackBlocks;
     const writeRevision = meta.progressRevision;
     const writeChapterRequestId = chapterRequestId;
     const writeDocumentId = meta.documentId;
     clearTimeout(progressSaveTimer);
     progressSaveTimer = setTimeout(() => {
         void (async () => {
+            if (!shouldPersistProgressUpdate({
+                resumeDecisionPending: Boolean(pendingResumeTarget),
+            })) return;
             if (!shouldAcceptProgressWrite({
                 writeRevision,
                 currentRevision: currentDocumentMeta?.progressRevision,
@@ -154,8 +185,9 @@ function scheduleProgressSave(blockIndex) {
                 writeDocumentId,
                 currentDocumentId: currentDocumentMeta?.documentId,
             })) return;
-            if (!Array.isArray(blocks) || blocks.length === 0) return;
-            if (!Number.isInteger(blockIndex) || blockIndex < 0 || blockIndex >= blocks.length) {
+            if (!Array.isArray(playbackBlocks) || playbackBlocks.length === 0) return;
+            if (!Number.isInteger(blockIndex) || blockIndex < 0 ||
+                blockIndex >= playbackBlocks.length) {
                 return;
             }
             let record;
@@ -167,7 +199,7 @@ function scheduleProgressSave(blockIndex) {
                     format: meta.format,
                     chapterHref,
                     blockIndex,
-                    chapterFingerprint: fingerprintChapterBlocks(blocks),
+                    chapterFingerprint: fingerprintChapterBlocks(fingerprintBlocks),
                     revision: writeRevision,
                     updatedAt: Date.now(),
                 });
@@ -276,6 +308,7 @@ function cancelDocumentPicker() {
     // Cancel an in-flight file read or EPUB open/TOC scan without altering
     // the already committed chapter/player, even if old promises settle later.
     ++fileRequestId;
+    ++documentIdentityGeneration;
     if (activeFileReader && activeFileReader.readyState === FileReader.LOADING &&
         typeof activeFileReader.abort === 'function') {
         activeFileReader.abort();
@@ -482,7 +515,14 @@ async function loadEpub(file, requestId) {
     }
     // Hash in parallel with open/TOC so identity is ready for resume without
     // delaying EPUB.js construction (and without changing first-tick open race tests).
-    const identityPromise = rememberDocumentIdentity(file, 'epub', bookData);
+    // Do not assign currentDocumentMeta until the candidate is committed.
+    const identityGeneration = ++documentIdentityGeneration;
+    const priorProgressRevision = currentDocumentMeta?.progressRevision || 0;
+    const identityPromise = hashDocumentIdentity(
+        file, 'epub', bookData, identityGeneration).catch((error) => {
+        console.warn('Cannot hash document for reader progress', error);
+        return null;
+    });
 
     // Keep the existing book and player intact until the replacement has
     // parsed successfully. Failed selections must not destroy a working book.
@@ -515,8 +555,9 @@ async function loadEpub(file, requestId) {
             : normalizePublisherToc(discovered, candidate);
         if (!hasPlayableTocEntry(toc)) throw new Error('EPUB contains no readable chapters');
 
-        await identityPromise;
+        const identity = await identityPromise;
         if (requestId !== fileRequestId) return;
+        if (!commitDocumentIdentity(identity, priorProgressRevision)) return;
 
         // Retain the old book until the new chapter reaches the player:
         // current audio/image blob URLs may still refer to its archive.
@@ -528,6 +569,7 @@ async function loadEpub(file, requestId) {
         committed = true;
         if (oldBook) retiringBooks.add(oldBook);
         currentChapterBlocks = [];
+        currentChapterCanonicalBlocks = [];
         currentActiveHref = null;
         currentToc = toc;
         resumeAutoplayForNewDocument();
@@ -551,13 +593,20 @@ async function loadTextDocument(file, format, requestId) {
     }
     const bytes = await readDocumentBuffer(file);
     if (requestId !== fileRequestId) return;
-    const identityPromise = rememberDocumentIdentity(file, format, bytes);
+    const identityGeneration = ++documentIdentityGeneration;
+    const priorProgressRevision = currentDocumentMeta?.progressRevision || 0;
+    const identityPromise = hashDocumentIdentity(
+        file, format, bytes, identityGeneration).catch((error) => {
+        console.warn('Cannot hash document for reader progress', error);
+        return null;
+    });
     const blocks = format === 'docx'
         ? await parseDocxDocument(bytes)
         : parseTextDocument(format, decodeTextDocument(bytes));
     if (requestId !== fileRequestId) return;
-    await identityPromise;
+    const identity = await identityPromise;
     if (requestId !== fileRequestId) return;
+    if (!commitDocumentIdentity(identity, priorProgressRevision)) return;
 
     // Preserve the existing EPUB if reading/parsing fails, and hand its image
     // URLs over only after the text chapter has rendered in the iframe.
@@ -568,6 +617,7 @@ async function loadTextDocument(file, format, requestId) {
     deferredChapterEndRevision = null;
     if (oldBook) retiringBooks.add(oldBook);
     currentChapterBlocks = blocks;
+    currentChapterCanonicalBlocks = blocks;
     currentActiveHref = null;
     currentToc = [{ href: 'document:0', label: file.name }];
     resumeAutoplayForNewDocument();
@@ -1052,6 +1102,9 @@ async function loadEpubChapter(href, title, continuePlaying = false, forcedStart
 
     if (requestId !== chapterRequestId || book !== requestedBook) return;
     currentChapterBlocks = mergedBlocks;
+    // Fingerprint the full section set so continuous-reader truncation cannot
+    // invalidate an otherwise valid saved position for the same file.
+    currentChapterCanonicalBlocks = mergedBlocks;
 
     // baseHref and fragment are already defined at the start of the function
     let startIndex = 0;

@@ -107,6 +107,11 @@ export function shouldAcceptProgressWrite({
         Boolean(writeDocumentId);
 }
 
+/** Overlay init must not clobber a saved position while Resume/Start over is open. */
+export function shouldPersistProgressUpdate({ resumeDecisionPending }) {
+    return !resumeDecisionPending;
+}
+
 export function resolveResumeTarget({
     record,
     flatToc,

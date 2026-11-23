@@ -11,6 +11,7 @@ import {
     hexDigestFromBuffer,
     buildProgressRecord,
     shouldAcceptProgressWrite,
+    shouldPersistProgressUpdate,
     resolveResumeTarget,
     upsertProgress,
     removeProgress,
@@ -83,6 +84,23 @@ describe('reader-progress helpers (#196)', () => {
             updatedAt: 1000,
         }));
         expect(JSON.stringify(record)).not.toMatch(/Hello|pendingText|content/);
+    });
+
+    test('shouldPersistProgressUpdate blocks overlay init while resume is pending', () => {
+        expect(shouldPersistProgressUpdate({ resumeDecisionPending: true })).toBe(false);
+        expect(shouldPersistProgressUpdate({ resumeDecisionPending: false })).toBe(true);
+    });
+
+    test('fingerprint ignores continuous-reader playback truncation when using canonical blocks', () => {
+        const full = [
+            { content: 'A.', ids: ['a'] },
+            { content: 'B.', ids: ['b'] },
+            { content: 'C.', ids: ['c'] },
+        ];
+        const truncated = full.slice(0, 2);
+        expect(fingerprintChapterBlocks(truncated)).not.toBe(fingerprintChapterBlocks(full));
+        // Save/restore must both use the canonical (full) set.
+        expect(fingerprintChapterBlocks(full)).toBe(fingerprintChapterBlocks(full.slice()));
     });
 
     test('shouldAcceptProgressWrite fences stale document and chapter revisions', () => {

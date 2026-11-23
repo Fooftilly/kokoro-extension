@@ -13,6 +13,7 @@ import {
     fingerprintChapterBlocks,
     buildProgressRecord,
     shouldAcceptProgressWrite,
+    shouldPersistProgressUpdate,
     resolveResumeTarget,
     upsertProgress,
     removeProgress,
@@ -78,6 +79,39 @@ describe('reader progress persistence integration (#196)', () => {
             writeDocumentId: 'sha256:' + 'a'.repeat(64),
             currentDocumentId: 'sha256:' + 'a'.repeat(64),
         })).toBe(false);
+    });
+
+    test('resume decision pending prevents progress overwrite with block 0', () => {
+        expect(shouldPersistProgressUpdate({ resumeDecisionPending: true })).toBe(false);
+        const id = documentIdFromDigest('b'.repeat(64));
+        const blocks = [
+            { content: 'One.', ids: [] },
+            { content: 'Two.', ids: [] },
+            { content: 'Three.', ids: [] },
+        ];
+        const saved = buildProgressRecord({
+            documentId: id,
+            name: 'book.epub',
+            size: 10,
+            format: 'epub',
+            chapterHref: 'ch.xhtml',
+            blockIndex: 2,
+            chapterFingerprint: fingerprintChapterBlocks(blocks),
+            revision: 1,
+            updatedAt: 5,
+        });
+        // Simulated overlay init at block 0 must not replace the saved record
+        // while the resume banner is showing.
+        if (shouldPersistProgressUpdate({ resumeDecisionPending: true })) {
+            throw new Error('must not persist during resume decision');
+        }
+        expect(saved.blockIndex).toBe(2);
+        expect(resolveResumeTarget({
+            record: saved,
+            flatToc: [{ href: 'ch.xhtml', label: 'Ch' }],
+            chapterFingerprint: fingerprintChapterBlocks(blocks),
+            chapterBlockCount: blocks.length,
+        }).ok).toBe(true);
     });
 
     test('clear removes only the selected document progress', async () => {
