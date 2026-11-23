@@ -75,8 +75,12 @@ describe('popup settings IA + shortcuts (#194 2+4)', () => {
         expect(text).toMatch(/current.*browser bindings/i);
         expect(text).toMatch(/Chrome ships Open Document with no suggested key/i);
         expect(text).toMatch(/chrome:\/\/extensions\/shortcuts/);
+        expect(text).toMatch(/Firefox Add-ons → Manage extension shortcuts/);
         expect(sheet.querySelector('[data-command="read-article"]')).toBeTruthy();
         expect(sheet.querySelector('[data-command="open-reader"]')).toBeTruthy();
+        const openHint = document.getElementById('openDocumentShortcutHint');
+        expect(openHint.textContent).toMatch(/Firefox suggests/i);
+        expect(openHint.textContent).toMatch(/Chrome often has none/i);
     });
 
     test('formatCommandShortcut normalizes API shortcut names', () => {
@@ -95,6 +99,8 @@ describe('popup settings IA + shortcuts (#194 2+4)', () => {
         expect(sheet.getAttribute('data-shortcuts-source')).toBe('fallback');
         expect(document.getElementById('shortcutsIntro').textContent)
             .toMatch(/Could not read current bindings/i);
+        expect(document.getElementById('shortcutsIntro').textContent)
+            .toMatch(/Firefox Add-ons → Manage extension shortcuts/);
         expect(document.querySelector('[data-command="open-reader"] [data-shortcut]').textContent)
             .toBe('Alt+M');
         expect(sheet.textContent).toMatch(/Firefox suggested/i);

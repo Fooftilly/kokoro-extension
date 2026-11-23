@@ -180,7 +180,8 @@
                 <summary>Keyboard shortcuts</summary>
                 <p id="shortcutsIntro" class="note shortcuts-intro">
                     Shows your <em>current</em> browser bindings (not only the install defaults).
-                    Reassign anytime in the extension shortcuts page.
+                    Reassign anytime at <code>chrome://extensions/shortcuts</code>
+                    or Firefox Add-ons → Manage extension shortcuts.
                 </p>
                 <ul class="shortcuts-list">
                     <li data-command="read-article"><kbd data-shortcut>Alt+A</kbd> — Read article</li>
@@ -247,8 +248,12 @@
     <div class="footer">
         <button id="openBenchmarkBtn" class="primary-btn" style="width: 100%; margin-top: 0; margin-bottom: 4px;">Test TTS backends</button>
         <p id="openBenchmarkHint" class="note footer-hint">Download models, compare backends, and confirm with Use this backend. Preference changes only on your action.</p>
-        <button id="openDocumentBtn" class="primary-btn" style="width: 100%; margin-top: 0; margin-bottom: 10px;">Open
+        <button id="openDocumentBtn" class="primary-btn" style="width: 100%; margin-top: 0; margin-bottom: 4px;">Open
             Document (EPUB)</button>
+        <p id="openDocumentShortcutHint" class="note footer-hint">
+            Shortcut: Firefox suggests <kbd>Alt+M</kbd>; Chrome often has none (four-key limit).
+            Set one under extension shortcuts, or use this button.
+        </p>
         <div id="statusLive" class="status-live" role="status" aria-live="polite" aria-atomic="true"></div>
         <div id="status" aria-hidden="true">Saving...</div>
     </div>
