@@ -982,6 +982,25 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(document.getElementById('mediaPipeVoice').value).toBe('af_heart');
     });
 
+    test('MediaPipe incomplete custom draft on blur keeps baseline (#194 item 6)', async () => {
+        await loadMediaPipePopupWithVoice('af_sarah');
+
+        const customInput = document.getElementById('mediaPipeVoiceCustom');
+        const mediaPipeSelect = document.getElementById('mediaPipeVoice');
+        customInput.value = 'xx_';
+        customInput.dispatchEvent(new Event('input'));
+        expect(mediaPipeSelect.value).toBe('af_sarah');
+
+        browser.storage.sync.set.mockClear();
+        customInput.dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(mediaPipeSelect.value).toBe('af_sarah');
+        const writes = browser.storage.sync.set.mock.calls.map(([payload]) => payload);
+        expect(writes.some((payload) => payload.mediaPipeVoice === 'af_sarah')).toBe(true);
+        expect(writes.every((payload) => !Object.hasOwn(payload, 'mediaPipeVoice') ||
+            payload.mediaPipeVoice === 'af_sarah')).toBe(true);
+    });
+
     test('MediaPipe discarded custom draft restores baseline voice', async () => {
         await loadMediaPipePopupWithVoice('af_sarah');
 

@@ -1217,8 +1217,11 @@ document.addEventListener('DOMContentLoaded', () => {
             void saveOptions(true);
         });
         mediaPipeVoiceCustom.addEventListener('change', () => {
-            const raw = (mediaPipeVoiceCustom.value || '').trim();
-            applyMediaPipeVoiceSelection(raw || mediaPipeVoiceBaseline);
+            const raw = (mediaPipeVoiceCustom.value || '').trim().toLowerCase();
+            const normalized = LocalVoice.normalizeLocalVoiceId(raw);
+            // Incomplete drafts like "xx_" are truthy but invalid — keep baseline.
+            const committed = (raw && normalized === raw) ? raw : mediaPipeVoiceBaseline;
+            applyMediaPipeVoiceSelection(committed);
             void saveOptions(false);
         });
     }
