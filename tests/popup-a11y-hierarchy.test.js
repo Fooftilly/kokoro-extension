@@ -7,36 +7,18 @@
 const fs = require('fs');
 const path = require('path');
 const { contrastRatio, cssVar } = require('./contrast-helpers.js');
-
-function loadPopupDom() {
-    const html = fs.readFileSync(path.join(__dirname, '../popup.html'), 'utf8');
-    const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
-    document.body.innerHTML = bodyMatch ? bodyMatch[1] : html;
-    document.body.querySelectorAll('script').forEach((s) => s.remove());
-}
+const {
+    loadPopupDom,
+    createPopupModuleLoader,
+    installDefaultPopupGlobals,
+} = require('./popup-test-harness.js');
 
 describe('popup tab a11y + hierarchy (#194 9+10)', () => {
     let popup;
-    let documentListeners = [];
-
-    function loadPopupModule() {
-        const addListener = document.addEventListener;
-        document.addEventListener = function (type, handler, options) {
-            documentListeners.push({ type, handler, options });
-            return addListener.call(this, type, handler, options);
-        };
-        try {
-            return require('../popup.js');
-        } finally {
-            document.addEventListener = addListener;
-        }
-    }
+    let harness;
 
     afterEach(() => {
-        for (const { type, handler, options } of documentListeners) {
-            document.removeEventListener(type, handler, options);
-        }
-        documentListeners = [];
+        harness.detachDocumentListeners();
     });
 
     beforeEach(() => {
@@ -44,46 +26,9 @@ describe('popup tab a11y + hierarchy (#194 9+10)', () => {
         jest.clearAllMocks();
         loadPopupDom();
         document.documentElement.classList.remove('dark-theme');
-
-        global.browser = {
-            storage: {
-                sync: {
-                    get: jest.fn(async (defaults) => ({
-                        ...defaults,
-                        apiUrl: 'http://127.0.0.1:8880/v1/',
-                        voice: 'af_sarah',
-                        mode: 'stream',
-                        theme: 'light',
-                    })),
-                    set: jest.fn(async () => {}),
-                },
-                local: {
-                    set: jest.fn(async () => {}),
-                    get: jest.fn(async (defaults) => defaults),
-                },
-            },
-            permissions: {
-                contains: jest.fn(async () => true),
-                request: jest.fn(async () => true),
-            },
-            runtime: {
-                getManifest: jest.fn(() => ({ version: '1.4.0' })),
-            },
-            tabs: { create: jest.fn() },
-            commands: {
-                getAll: jest.fn(async () => []),
-            },
-        };
-        global.localStorage = {
-            getItem: jest.fn(),
-            setItem: jest.fn(),
-            removeItem: jest.fn(),
-        };
-        global.fetch = jest.fn(() => Promise.reject(new TypeError('Failed to fetch')));
-        Object.assign(global, require('../api-client.js'));
-        Object.assign(global, { KokoroLocalVoiceMixing: require('../local-voice-mixing.js') });
-        Object.assign(global, { KokoroBackendDisclosure: require('../backend-disclosure.js') });
-        popup = loadPopupModule();
+        installDefaultPopupGlobals();
+        harness = createPopupModuleLoader();
+        popup = harness.loadPopupModule();
     });
 
     test('settings tabs expose tablist / tab / tabpanel roles', () => {
