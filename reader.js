@@ -185,8 +185,11 @@ async function flushProgressSave(write, record) {
         const stored = await browser.storage.local.get(null);
         if (!progressWriteStillCurrent(write)) return;
         const plan = planProgressUpsert(stored || {}, record);
+        // Set migrated/kept keys before removing the legacy map.
+        if (plan.set && Object.keys(plan.set).length) {
+            await browser.storage.local.set(plan.set);
+        }
         if (plan.remove.length) await browser.storage.local.remove(plan.remove);
-        await browser.storage.local.set(plan.set);
     } catch (error) {
         console.warn('Cannot persist reader progress', error);
     }
@@ -253,6 +256,9 @@ async function clearCurrentDocumentProgress() {
     try {
         const stored = await browser.storage.local.get(null);
         const plan = planProgressRemove(stored || {}, id);
+        if (plan.set && Object.keys(plan.set).length) {
+            await browser.storage.local.set(plan.set);
+        }
         if (plan.remove.length) await browser.storage.local.remove(plan.remove);
     } catch (error) {
         console.warn('Cannot clear reader progress', error);

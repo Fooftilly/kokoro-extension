@@ -175,8 +175,9 @@ export function collectProgressRecords(store) {
 }
 
 /**
- * Write one document key and prune older entries without rewriting unrelated
- * documents' values (multi-tab safe for distinct files).
+ * Write per-document keys and prune older entries.
+ * When retiring the legacy shared map, every retained record is migrated onto
+ * its own key first so sibling documents are not deleted.
  * Returns { set, remove } payloads for browser.storage.local.
  */
 export function planProgressUpsert(store, record) {
@@ -186,9 +187,14 @@ export function planProgressUpsert(store, record) {
         .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
     const keep = ranked.slice(0, MAX_STORED_DOCUMENTS);
     const keepIds = new Set(keep.map((entry) => entry.documentId));
-    const set = { [progressStorageKey(record.documentId)]: record };
+    // Always emit every kept record as a per-document key so removing the
+    // legacy map cannot drop siblings that only lived in that map.
+    const set = {};
+    for (const entry of keep) {
+        set[progressStorageKey(entry.documentId)] = entry;
+    }
     const remove = [];
-    if (store[STORAGE_KEY]) remove.push(STORAGE_KEY);
+    if (store?.[STORAGE_KEY]) remove.push(STORAGE_KEY);
     for (const id of Object.keys(map)) {
         if (keepIds.has(id)) continue;
         remove.push(progressStorageKey(id));
@@ -220,9 +226,16 @@ export function upsertProgress(store, record) {
 }
 
 export function planProgressRemove(store, documentId) {
+    const map = collectProgressRecords(store);
+    delete map[documentId];
+    // Migrate remaining legacy entries before dropping the shared map.
+    const set = {};
+    for (const entry of Object.values(map)) {
+        set[progressStorageKey(entry.documentId)] = entry;
+    }
     const remove = [progressStorageKey(documentId)];
     if (store?.[STORAGE_KEY]) remove.push(STORAGE_KEY);
-    return { remove: [...new Set(remove)] };
+    return { set, remove: [...new Set(remove)] };
 }
 
 export function removeProgress(store, documentId) {

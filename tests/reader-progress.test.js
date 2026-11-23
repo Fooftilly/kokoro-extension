@@ -15,11 +15,13 @@ import {
     shouldOfferResumeChoice,
     resolveResumeTarget,
     planProgressUpsert,
+    planProgressRemove,
     progressStorageKey,
     upsertProgress,
     removeProgress,
     clearAllProgress,
     fingerprintChapterBlocks,
+    readProgressRecord,
 } from '../reader-progress.js';
 
 function digest(hex = 'a'.repeat(64)) {
@@ -217,7 +219,7 @@ describe('reader-progress helpers (#196)', () => {
         expect(map[documentIdFromDigest(oldestHex)]).toBeUndefined();
     });
 
-    test('planProgressUpsert writes per-document keys without rewriting peers', () => {
+    test('planProgressUpsert migrates legacy siblings before dropping the map', () => {
         const idA = documentIdFromDigest('a'.repeat(64));
         const idB = documentIdFromDigest('b'.repeat(64));
         const recordA = buildProgressRecord({
@@ -230,19 +232,46 @@ describe('reader-progress helpers (#196)', () => {
             chapterHref: 'b.xhtml', blockIndex: 2, chapterFingerprint: 'fp',
             revision: 1, updatedAt: 2,
         });
-        const store = {
-            [progressStorageKey(idA)]: recordA,
-            otherKey: { keep: true },
-        };
-        const plan = planProgressUpsert(store, recordB);
-        expect(plan.set).toEqual({ [progressStorageKey(idB)]: recordB });
-        expect(plan.set[progressStorageKey(idA)]).toBeUndefined();
+        const updatedA = buildProgressRecord({
+            ...recordA, blockIndex: 5, updatedAt: 3, revision: 2,
+        });
+        const store = { [STORAGE_KEY]: { [idA]: recordA, [idB]: recordB } };
+        const plan = planProgressUpsert(store, updatedA);
+        expect(plan.set[progressStorageKey(idA)]).toEqual(updatedA);
+        expect(plan.set[progressStorageKey(idB)]).toEqual(recordB);
+        expect(plan.remove).toContain(STORAGE_KEY);
+        // Simulate applying set then remove — B remains resumable.
+        const after = { ...plan.set };
+        expect(readProgressRecord(after, idB).blockIndex).toBe(2);
         expect(shouldOfferResumeChoice({
             ok: true, blockIndex: 0, chapterHref: 'b.xhtml',
         }, 'a.xhtml')).toBe(true);
         expect(shouldOfferResumeChoice({
             ok: true, blockIndex: 0, chapterHref: 'a.xhtml',
         }, 'a.xhtml')).toBe(false);
+    });
+
+    test('planProgressRemove migrates leftover legacy docs when clearing one', () => {
+        const idA = documentIdFromDigest('a'.repeat(64));
+        const idB = documentIdFromDigest('b'.repeat(64));
+        const recordA = buildProgressRecord({
+            documentId: idA, name: 'a.epub', size: 1, format: 'epub',
+            chapterHref: 'a.xhtml', blockIndex: 1, chapterFingerprint: 'fp',
+            revision: 1, updatedAt: 1,
+        });
+        const recordB = buildProgressRecord({
+            documentId: idB, name: 'b.epub', size: 1, format: 'epub',
+            chapterHref: 'b.xhtml', blockIndex: 2, chapterFingerprint: 'fp',
+            revision: 1, updatedAt: 2,
+        });
+        const store = { [STORAGE_KEY]: { [idA]: recordA, [idB]: recordB } };
+        const plan = planProgressRemove(store, idA);
+        expect(plan.remove).toEqual(expect.arrayContaining([
+            progressStorageKey(idA), STORAGE_KEY,
+        ]));
+        expect(plan.set[progressStorageKey(idB)]).toEqual(recordB);
+        expect(plan.set[progressStorageKey(idA)]).toBeUndefined();
+        expect(readProgressRecord(plan.set, idB).blockIndex).toBe(2);
     });
 
     test('removeProgress and clearAllProgress drop records', () => {
