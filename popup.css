@@ -5,6 +5,9 @@
     --border-color: #ccc;
     --tab-inactive-bg: #f8f9fa;
     --tab-inactive-text: #666;
+    /* Inactive tab :hover must beat generic button:hover (#0056b3). */
+    --tab-hover-bg: #e9ecef;
+    --tab-hover-text: #212529;
     --input-bg: #fff;
     --note-color: #666;
     --mixer-bg: #f9f9f9;
@@ -24,6 +27,8 @@
     --border-color: #444;
     --tab-inactive-bg: #2d2d2d;
     --tab-inactive-text: #aaa;
+    --tab-hover-bg: #3a3a3a;
+    --tab-hover-text: #f0f0f0;
     --input-bg: #2d2d2d;
     --note-color: #999;
     --mixer-bg: #252525;
@@ -100,6 +105,17 @@ body {
     color: var(--text-color);
     margin-bottom: -1px;
     /* Still needed for overlap, but we ensure it's stable */
+}
+
+/* Outrank generic `button:hover` (#0056b3 bg + inactive #666/#aaa text). */
+.tab:hover:not(.active) {
+    background-color: var(--tab-hover-bg);
+    color: var(--tab-hover-text);
+}
+
+.tab.active:hover {
+    background: var(--bg-color);
+    color: var(--text-color);
 }
 
 .tab:focus-visible,

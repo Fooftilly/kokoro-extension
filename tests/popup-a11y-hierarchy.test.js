@@ -136,4 +136,47 @@ describe('popup tab a11y + hierarchy (#194 9+10)', () => {
         popup.syncThemeToggleLabel();
         expect(toggle.getAttribute('aria-label')).toMatch(/light theme/i);
     });
+
+    test('inactive tab hover tokens meet WCAG AA contrast in both themes', () => {
+        const css = fs.readFileSync(path.join(__dirname, '../popup.css'), 'utf8');
+        expect(css).toMatch(/\.tab:hover:not\(\.active\)\s*\{[^}]*background-color:\s*var\(--tab-hover-bg\)/s);
+        expect(css).toMatch(/\.tab:hover:not\(\.active\)\s*\{[^}]*color:\s*var\(--tab-hover-text\)/s);
+
+        function parsePair(block) {
+            const bg = block.match(/--tab-hover-bg:\s*(#[0-9a-fA-F]{3,8})/);
+            const fg = block.match(/--tab-hover-text:\s*(#[0-9a-fA-F]{3,8})/);
+            expect(bg).toBeTruthy();
+            expect(fg).toBeTruthy();
+            return { bg: bg[1], fg: fg[1] };
+        }
+
+        function hexToRgb(hex) {
+            const h = hex.length === 4
+                ? `#${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}`
+                : hex;
+            return [
+                parseInt(h.slice(1, 3), 16) / 255,
+                parseInt(h.slice(3, 5), 16) / 255,
+                parseInt(h.slice(5, 7), 16) / 255,
+            ];
+        }
+
+        function luminance([r, g, b]) {
+            const lin = [r, g, b].map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+            return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+        }
+
+        function contrast(fg, bg) {
+            const L1 = luminance(hexToRgb(fg));
+            const L2 = luminance(hexToRgb(bg));
+            const lighter = Math.max(L1, L2);
+            const darker = Math.min(L1, L2);
+            return (lighter + 0.05) / (darker + 0.05);
+        }
+
+        const root = parsePair(css.match(/:root\s*\{([\s\S]*?)\n\}/)[1]);
+        const dark = parsePair(css.match(/\.dark-theme\s*\{([\s\S]*?)\n\}/)[1]);
+        expect(contrast(root.fg, root.bg)).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(dark.fg, dark.bg)).toBeGreaterThanOrEqual(4.5);
+    });
 });
