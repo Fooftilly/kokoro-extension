@@ -49,16 +49,13 @@ global.browser = {
 
 global.browser.storage.onChanged = { addListener: jest.fn() };
 
-function mockCacheMatch(readyManifestAssets = []) {
-    const readyKeys = new Set(readyManifestAssets);
+// Cache Storage stub for background.js. Local readiness tests spy
+// ModelDataStore.prototype.status (or use local-model-readiness.metadataStatus)
+// instead of synthesizing integrity headers here.
+function mockCacheMatch() {
     return {
         open: jest.fn(async () => ({
-            match: jest.fn(async (key) => {
-                if (!readyKeys.has(key) && readyKeys.size === 0) return undefined;
-                // ModelDataStore.isCurrent checks integrity headers against the asset.
-                // For readiness tests we stub status via prototype when needed.
-                return undefined;
-            }),
+            match: jest.fn(async () => undefined),
         })),
     };
 }
