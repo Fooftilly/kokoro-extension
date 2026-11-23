@@ -1448,7 +1448,8 @@ function markShortcutsCheatSheetFallback(sheet) {
     if (intro) {
         intro.textContent = 'Could not read current bindings from the browser; ' +
             'manifest suggested defaults are shown below (Open Document Alt+M is Firefox’s ' +
-            'suggestion — Chrome often has none). Confirm in the extension shortcuts page.';
+            'suggestion — Chrome often has none). Confirm at chrome://extensions/shortcuts ' +
+            'or Firefox Add-ons → Manage extension shortcuts.';
     }
     // Keep Open Document aligned with the Firefox suggested default + chrome note,
     // not a bare “Not set” that contradicts the install-default framing.

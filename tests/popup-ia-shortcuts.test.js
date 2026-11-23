@@ -71,12 +71,24 @@ describe('popup settings IA + shortcuts (#194 2+4)', () => {
         expect(sheet).toBeTruthy();
         expect(sheet.tagName).toBe('DETAILS');
         expect(sheet.open).toBe(false);
-        const text = sheet.textContent;
-        expect(text).toMatch(/current.*browser bindings/i);
-        expect(text).toMatch(/Chrome ships Open Document with no suggested key/i);
-        expect(text).toMatch(/chrome:\/\/extensions\/shortcuts/);
+        const introEl = sheet.querySelector('#shortcutsIntro');
+        const noteEl = sheet.querySelector('.shortcuts-chrome-note');
+        expect(introEl).toBeTruthy();
+        expect(noteEl).toBeTruthy();
+        expect(sheet.contains(introEl)).toBe(true);
+        expect(sheet.contains(noteEl)).toBe(true);
+        expect(introEl.textContent).toMatch(/current.*browser bindings/i);
+        expect(introEl.textContent).toMatch(/chrome:\/\/extensions\/shortcuts/);
+        expect(introEl.textContent).toMatch(/Firefox Add-ons → Manage extension shortcuts/);
+        expect(noteEl.textContent).toMatch(/Chrome ships Open Document with no suggested key/i);
+        expect(noteEl.textContent).toMatch(/chrome:\/\/extensions\/shortcuts/);
+        expect(noteEl.textContent).toMatch(/Firefox Add-ons → Manage extension shortcuts/);
         expect(sheet.querySelector('[data-command="read-article"]')).toBeTruthy();
         expect(sheet.querySelector('[data-command="open-reader"]')).toBeTruthy();
+        const openHint = document.getElementById('openDocumentShortcutHint');
+        expect(sheet.contains(openHint)).toBe(false);
+        expect(openHint.textContent).toMatch(/Firefox suggests/i);
+        expect(openHint.textContent).toMatch(/Chrome often has none/i);
     });
 
     test('formatCommandShortcut normalizes API shortcut names', () => {
@@ -95,6 +107,8 @@ describe('popup settings IA + shortcuts (#194 2+4)', () => {
         expect(sheet.getAttribute('data-shortcuts-source')).toBe('fallback');
         expect(document.getElementById('shortcutsIntro').textContent)
             .toMatch(/Could not read current bindings/i);
+        expect(document.getElementById('shortcutsIntro').textContent)
+            .toMatch(/Firefox Add-ons → Manage extension shortcuts/);
         expect(document.querySelector('[data-command="open-reader"] [data-shortcut]').textContent)
             .toBe('Alt+M');
         expect(sheet.textContent).toMatch(/Firefox suggested/i);

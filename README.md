@@ -53,7 +53,7 @@ Verified against the current source (not aspirational):
 - **Floating mic button** — optional on-page control (can be disabled in settings).
 - **Document reader** — open EPUB, DOCX, TXT, Markdown, or HTML from the popup; optional EPUB autoplay and continuous chapter playback.
 - **Themes** — light/dark toggle in the popup.
-- **Keyboard shortcuts** — browser commands: Alt+A read article, Alt+, / Alt+. previous/next sentence, Alt+W close overlay; Firefox also suggests Alt+M for Open Document. Chrome does not assign a default Open Document shortcut (manifest limit of four suggested keys) — set one at `chrome://extensions/shortcuts` or use the popup button.
+- **Keyboard shortcuts** — browser commands: Alt+A read article, Alt+, / Alt+. previous/next sentence, Alt+W close overlay; Firefox also suggests Alt+M for Open Document. Chrome does not assign a default Open Document shortcut (manifest limit of four suggested keys) — set one at `chrome://extensions/shortcuts`, or in Firefox via Add-ons → Manage extension shortcuts, or use the popup **Open Document** button. Overlay Space / Left / Right (or `,` / `.`) are in-player keys on both browsers and do not use those extension-command slots.
 - **Connection status icon** — toolbar icon reflects API reachability.
 - **Three TTS backends** — Kokoro server (FastAPI), on-device MediaPipe (CPU/WASM product path), and on-device ONNX Runtime Web (WASM). Choose in the popup; install/test models on **Test TTS backends**. Local modes keep speech text on-device (no server fallback). ONNX English reading needs an opt-in CMUdict download and rejects unknown words. MediaPipe GPU is not offered until a WebGPU adapter and correct inference are verified.
 
@@ -119,7 +119,7 @@ Other commands:
 4. Choose **Stream** or **Download** in settings; adjust voice mixer, speed, volume, and normalization as needed.
 5. **Open a document:** click **Open Document** in the extension popup. Supported formats include EPUB, DOCX, TXT, Markdown, and HTML.
 6. **Reader autoplay:** enable **Autoplay in EPUB** in the popup if desired. Browsers may block automatic sound; the player then explains that you must click **Play**. When autoplay is off, chapters start paused. **Continue to next EPUB chapter** is a separate, opt-in setting.
-7. **Reader keyboard shortcut:** Firefox suggests **Alt+M**. Chrome does not assign a default shortcut for opening the reader because its extension manifest allows only four suggested shortcut keys. On Chrome, use **Open Document** in the popup or assign a shortcut manually at `chrome://extensions/shortcuts`. Reader sentence navigation uses **Alt+,** and **Alt+.** where assigned.
+7. **Reader keyboard shortcut:** Firefox suggests **Alt+M**. Chrome does not assign a default shortcut for opening the reader because its extension manifest allows only four suggested shortcut keys. Use **Open Document** in the popup, or assign a shortcut at `chrome://extensions/shortcuts` (Chrome) or **Add-ons → Manage extension shortcuts** (Firefox). Reader sentence navigation uses **Alt+,** and **Alt+.** where assigned.
 
 ## Development
 
