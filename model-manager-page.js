@@ -1106,6 +1106,53 @@ function verificationResultMessage(result) {
         formatModelSize(result.verifiedBytes) + ' matches its pinned SHA-256 hashes.';
 }
 
+async function finishVerifyCachedData(entry, ui, {
+    priorChooseEnabled, removed, result, message,
+}) {
+    inFlightVerifications.delete(entry.key);
+    ui.verify.textContent = 'Verify cached data';
+    ui.verify.disabled = true;
+    ui.busy = 'finalizing';
+    let statusMessage = message;
+    if (removed || result?.missingAssets > 0) {
+        // A missing asset does not increment removedAssets, but any prior
+        // timing and validation for that model (or ONNX dictionary) is stale.
+        try {
+            await invalidateRuntimeFor(entry);
+        } catch (error) {
+            statusMessage += ' Could not reset the cached engine: ' + String(error.message || error);
+        }
+    }
+    // Always refresh toolbar after verify completes (clean success or prune).
+    try {
+        await notifyLocalModelCacheChanged();
+    } catch (error) {
+        statusMessage += ' Could not refresh toolbar status: ' + String(error.message || error);
+    }
+    let state = null;
+    try {
+        state = await refresh(entry, ui);
+    } catch (error) {
+        statusMessage += ' Could not inspect cache: ' + String(error.message || error);
+    }
+    finishModelOperation(entry, ui);
+    if (state) {
+        applyModelStatus(entry, ui, state);
+        // Preserve a prior user-validated backend only if no bytes were
+        // removed and the model remains installed.
+        ui.choose.disabled = !priorChooseEnabled ||
+            removed > 0 || result?.missingAssets > 0 || !state.ready;
+    } else {
+        ui.lastStatus = null;
+        ui.download.disabled = false;
+        ui.remove.disabled = true;
+        ui.verify.disabled = true;
+        ui.test.disabled = true;
+        ui.choose.disabled = true;
+    }
+    setMessage(ui.status, statusMessage);
+}
+
 // Explicit, offline SHA-256 verification. A mismatch is repaired only by
 // evicting the affected cached asset; downloading it again always requires the
 // user's separate Download action. The exclusive cache lease also prevents
@@ -1149,47 +1196,9 @@ async function verifyCachedData(entry, ui) {
             : 'Cache verification failed without automatic download: ' +
                 String(error.message || error);
     } finally {
-        inFlightVerifications.delete(entry.key);
-        ui.verify.textContent = 'Verify cached data';
-        ui.verify.disabled = true;
-        ui.busy = 'finalizing';
-        if (removed || result?.missingAssets > 0) {
-            // A missing asset does not increment removedAssets, but any prior
-            // timing and validation for that model (or ONNX dictionary) is stale.
-            try {
-                await invalidateRuntimeFor(entry);
-            } catch (error) {
-                message += ' Could not reset the cached engine: ' + String(error.message || error);
-            }
-        }
-        // Always refresh toolbar after verify completes (clean success or prune).
-        try {
-            await notifyLocalModelCacheChanged();
-        } catch (error) {
-            message += ' Could not refresh toolbar status: ' + String(error.message || error);
-        }
-        let state = null;
-        try {
-            state = await refresh(entry, ui);
-        } catch (error) {
-            message += ' Could not inspect cache: ' + String(error.message || error);
-        }
-        finishModelOperation(entry, ui);
-        if (state) {
-            applyModelStatus(entry, ui, state);
-            // Preserve a prior user-validated backend only if no bytes were
-            // removed and the model remains installed.
-            ui.choose.disabled = !priorChooseEnabled ||
-                removed > 0 || result?.missingAssets > 0 || !state.ready;
-        } else {
-            ui.lastStatus = null;
-            ui.download.disabled = false;
-            ui.remove.disabled = true;
-            ui.verify.disabled = true;
-            ui.test.disabled = true;
-            ui.choose.disabled = true;
-        }
-        setMessage(ui.status, message);
+        await finishVerifyCachedData(entry, ui, {
+            priorChooseEnabled, removed, result, message,
+        });
     }
 }
 
