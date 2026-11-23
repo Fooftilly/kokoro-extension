@@ -153,13 +153,21 @@ async function probeFastApiToolbarStatus(apiUrl) {
     }
 
     // Servers that expose speech/models but not /test or /health still count as
-    // reachable (matches popup functional connectivity).
+    // reachable. Require an OpenAI-style `{ data: [...] }` body so an HTML 200
+    // landing page cannot paint a false green toolbar (#208).
     if (!connected) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
         try {
             const modelsUrl = new URL('models', normalized).href;
-            const resp = await tryFetch(modelsUrl);
-            if (resp.ok) connected = true;
-        } catch (_) { /* ignore */ }
+            const resp = await fetch(modelsUrl, { signal: controller.signal });
+            if (resp.ok) {
+                const json = await resp.json();
+                if (json && Array.isArray(json.data)) connected = true;
+            }
+        } catch (_) { /* ignore */ } finally {
+            clearTimeout(timeoutId);
+        }
     }
 
     return {

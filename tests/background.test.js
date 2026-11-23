@@ -663,6 +663,30 @@ describe('background.js logic', () => {
         expect(lastTitle()).toMatch(/reachable/i);
     });
 
+    test('FastAPI /models HTML 200 does not paint green (#208)', async () => {
+        stubToolbarSync({ ttsBackend: 'fastapi' });
+        fetch.mockImplementation(async (url) => {
+            if (String(url).includes('/test') || String(url).includes('/health')) {
+                return { ok: false, json: async () => ({}) };
+            }
+            if (String(url).includes('/models')) {
+                return {
+                    ok: true,
+                    json: async () => {
+                        throw new SyntaxError('Unexpected token < in JSON');
+                    },
+                };
+            }
+            return { ok: false, json: async () => ({}) };
+        });
+        jest.resetModules();
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+        await bg.checkApiStatus();
+        expect(lastIcon48()).not.toMatch(/icon-48-green/);
+        expect(lastTitle()).toMatch(/unreachable|not reachable/i);
+    });
+
     test('storage.local validated-revision changes refresh toolbar status (#208)', async () => {
         stubToolbarSync({ ttsBackend: 'fastapi' });
         fetch.mockResolvedValue({
