@@ -9,6 +9,10 @@
         READY: 'ready',
         UNREACHABLE: 'unreachable',
         NEEDS_SETUP: 'needs_setup',
+        /** Cache / catalog prerequisites missing so readiness cannot be evaluated. */
+        UNAVAILABLE: 'unavailable',
+        /** Probe threw or status check failed after prerequisites were present. */
+        FAILED: 'failed',
         UNKNOWN: 'unknown',
     });
 
@@ -25,7 +29,7 @@
     /**
      * Map readiness kind → icon paths.
      * Ready → green. FastAPI unreachable → red (server-disconnected).
-     * Local setup gaps / unknown → default icons (never falsely green).
+     * Local setup gaps / unavailable / failed / unknown → default icons (never falsely green).
      */
     function iconPathsForKind(kind) {
         if (kind === KIND.READY) {
@@ -59,6 +63,14 @@
             const reason = detail ? String(detail) : 'needs setup';
             return label + ': ' + reason + ' — open Test TTS backends';
         }
+        if (kind === KIND.UNAVAILABLE) {
+            const reason = detail ? String(detail) : 'unavailable';
+            return label + ' unavailable: ' + reason;
+        }
+        if (kind === KIND.FAILED) {
+            const reason = detail ? String(detail) : 'status check failed';
+            return label + ' failed: ' + reason;
+        }
         return 'Kokoro TTS status unknown';
     }
 
@@ -79,7 +91,7 @@
             return { kind: KIND.UNKNOWN, backend, detail: 'unsupported local backend' };
         }
         if (!expectedRevision) {
-            return { kind: KIND.UNKNOWN, backend, detail: 'model revision unavailable' };
+            return { kind: KIND.UNAVAILABLE, backend, detail: 'model revision unavailable' };
         }
         if (!validatedRevision) {
             return {

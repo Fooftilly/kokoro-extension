@@ -79,6 +79,20 @@ const setIconStatus = (isConnected) => {
  * Uses classic-script helpers (importScripts / catalog lite) — no dynamic import().
  */
 async function probeLocalToolbarStatus(backend, settings) {
+    if (typeof caches === 'undefined' || typeof caches.open !== 'function') {
+        return {
+            kind: ToolbarStatus.KIND.UNAVAILABLE,
+            backend,
+            detail: 'Cache Storage unavailable',
+        };
+    }
+    if (!LocalModelReadiness || typeof LocalModelReadiness.probeLocalBackend !== 'function') {
+        return {
+            kind: ToolbarStatus.KIND.UNAVAILABLE,
+            backend,
+            detail: 'local readiness helper unavailable',
+        };
+    }
     try {
         return await LocalModelReadiness.probeLocalBackend(
             backend,
@@ -100,7 +114,7 @@ async function probeLocalToolbarStatus(backend, settings) {
     } catch (error) {
         console.warn('Kokoro: local toolbar status probe failed', error);
         return {
-            kind: ToolbarStatus.KIND.UNKNOWN,
+            kind: ToolbarStatus.KIND.FAILED,
             backend,
             detail: String(error?.message || error || 'probe failed'),
         };
@@ -194,12 +208,22 @@ const checkApiStatus = async () => {
 // Initial check
 void checkApiStatus();
 
-// Poll every minute (local path is Cache/storage only — no model init / no FastAPI).
+// Poll FastAPI reachability every minute. Local backends refresh via storage
+// events (prefs + validated-revision keys) — no indefinite local probe wakeups.
 browser.alarms.create('api-check', { periodInMinutes: 1 });
-browser.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === 'api-check') {
-        void checkApiStatus();
+browser.alarms.onAlarm.addListener(async (alarm) => {
+    if (alarm.name !== 'api-check') return;
+    try {
+        const { ttsBackend } = await browser.storage.sync.get({
+            ttsBackend: TtsProviders.FASTAPI,
+        });
+        if (TtsProviders.resolveBackend(ttsBackend) !== TtsProviders.FASTAPI) {
+            return;
+        }
+    } catch (_) {
+        return;
     }
+    void checkApiStatus();
 });
 
 // Refresh after backend/model preference changes and validation-key updates.

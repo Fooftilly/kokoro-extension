@@ -661,4 +661,35 @@ describe('background.js logic', () => {
         expect(browser.action.setIcon).toHaveBeenCalled();
         expect(lastIcon48()).toMatch(/icon-48-green/);
     });
+
+    test('minute alarm skips local backends (#208)', async () => {
+        stubToolbarSync({ ttsBackend: 'mediapipe', mediaPipeVariant: 'cpu' });
+        jest.resetModules();
+        require('../background.js');
+        await flushToolbarCheck();
+        const alarmListener = browser.alarms.onAlarm.addListener.mock.calls.at(-1)[0];
+        browser.action.setIcon.mockClear();
+        fetch.mockClear();
+        await alarmListener({ name: 'api-check' });
+        await flushToolbarCheck();
+        expect(fetch).not.toHaveBeenCalled();
+        expect(browser.action.setIcon).not.toHaveBeenCalled();
+    });
+
+    test('minute alarm still probes FastAPI (#208)', async () => {
+        stubToolbarSync({ ttsBackend: 'fastapi' });
+        fetch.mockResolvedValue({
+            ok: true,
+            json: async () => ({ status: 'ok' }),
+        });
+        jest.resetModules();
+        require('../background.js');
+        await flushToolbarCheck();
+        const alarmListener = browser.alarms.onAlarm.addListener.mock.calls.at(-1)[0];
+        browser.action.setIcon.mockClear();
+        await alarmListener({ name: 'api-check' });
+        await flushToolbarCheck();
+        expect(browser.action.setIcon).toHaveBeenCalled();
+        expect(lastIcon48()).toMatch(/icon-48-green/);
+    });
 });

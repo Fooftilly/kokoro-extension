@@ -1,6 +1,12 @@
 /**
  * Classic-script local readiness helpers for toolbar status (#208).
  */
+const fs = require('fs');
+const path = require('path');
+const Module = require('module');
+const babel = require('@babel/core');
+const os = require('os');
+
 if (typeof global.Response === 'undefined') {
     global.Response = class Response {};
 }
@@ -16,6 +22,50 @@ const {
     manifestForVariant,
 } = require('../model-catalog.js');
 const ToolbarStatus = require('../toolbar-status.js');
+
+function loadCatalogViaBabel() {
+    const file = path.join(__dirname, '../model-catalog.js');
+    const { code } = babel.transformFileSync(file, {
+        presets: [['@babel/preset-env', { modules: 'commonjs' }]],
+        babelrc: false,
+        configFile: false,
+    });
+    const mod = new Module(file);
+    mod.filename = file;
+    mod.paths = Module._nodeModulePaths(path.dirname(file));
+    mod._compile(code, file);
+    return mod.exports;
+}
+
+function writeCatalogLiteLikeBuild(destPath) {
+    const catalog = loadCatalogViaBabel();
+    const onnxVoices = catalog.listOnnxVoiceAssets();
+    const onnxVoiceManifests = {};
+    for (const voice of onnxVoices) {
+        if (voice.voiceVariant) {
+            onnxVoiceManifests[voice.path] = catalog.manifestForOnnxVoiceAsset(voice.path);
+        }
+    }
+    const lite = {
+        mediapipe: {
+            cpu: catalog.manifestForVariant('mediapipe', 'cpu'),
+            gpu: catalog.manifestForVariant('mediapipe', 'gpu'),
+        },
+        onnx: { q8: catalog.manifestForVariant('onnx', 'q8') },
+        dictionary: catalog.dictionaryManifest(),
+        onnxVoices,
+        onnxVoiceManifests,
+    };
+    fs.writeFileSync(destPath, [
+        '(function (root) {',
+        "'use strict';",
+        'var KokoroModelCatalogLite = ' + JSON.stringify(lite) + ';',
+        'root.KokoroModelCatalogLite = KokoroModelCatalogLite;',
+        "if (typeof module !== 'undefined' && module.exports) module.exports = KokoroModelCatalogLite;",
+        '}(typeof globalThis !== "undefined" ? globalThis : this));',
+        '',
+    ].join('\n'));
+}
 
 describe('local-model-readiness', () => {
     test('metadataStatus reports ready when integrity headers match', async () => {
@@ -135,5 +185,20 @@ describe('local-model-readiness', () => {
             const result = await readiness.metadataStatus(manifest, cacheStorage);
             expect(result.ready).toBe(true);
         }
+    });
+
+    test('generated model-catalog-lite.js loads for packaged SW path (#208)', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kokoro-catalog-lite-'));
+        const dest = path.join(dir, 'model-catalog-lite.js');
+        writeCatalogLiteLikeBuild(dest);
+        delete globalThis.KokoroModelCatalogLite;
+        const lite = require(dest);
+        expect(lite.mediapipe.cpu.revision)
+            .toBe(manifestForVariant('mediapipe', 'cpu').revision);
+        expect(lite.onnx.q8.revision).toBe(manifestForVariant('onnx', 'q8').revision);
+        expect(globalThis.KokoroModelCatalogLite.dictionary.revision)
+            .toBe(dictionaryManifest().revision);
+        fs.rmSync(dir, { recursive: true, force: true });
+        delete globalThis.KokoroModelCatalogLite;
     });
 });

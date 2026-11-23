@@ -12,6 +12,10 @@ describe('toolbar-status helpers (#208)', () => {
             .toMatch(/icon-48-red/);
         expect(ToolbarStatus.iconPathsForKind(ToolbarStatus.KIND.NEEDS_SETUP)[48])
             .toBe('icons/icon48.png');
+        expect(ToolbarStatus.iconPathsForKind(ToolbarStatus.KIND.UNAVAILABLE)[48])
+            .toBe('icons/icon48.png');
+        expect(ToolbarStatus.iconPathsForKind(ToolbarStatus.KIND.FAILED)[48])
+            .toBe('icons/icon48.png');
         expect(ToolbarStatus.iconPathsForKind(ToolbarStatus.KIND.UNKNOWN)[128])
             .toBe('icons/icon128.png');
     });
@@ -31,6 +35,16 @@ describe('toolbar-status helpers (#208)', () => {
             backend: 'onnx',
             detail: 'model not installed',
         })).toMatch(/Test TTS backends/i);
+        expect(ToolbarStatus.titleForStatus({
+            kind: ToolbarStatus.KIND.UNAVAILABLE,
+            backend: 'mediapipe',
+            detail: 'Cache Storage unavailable',
+        })).toMatch(/unavailable/i);
+        expect(ToolbarStatus.titleForStatus({
+            kind: ToolbarStatus.KIND.FAILED,
+            backend: 'onnx',
+            detail: 'boom',
+        })).toMatch(/failed/i);
         expect(ToolbarStatus.titleForStatus({
             kind: ToolbarStatus.KIND.UNKNOWN,
         })).toMatch(/unknown/i);
