@@ -24,7 +24,8 @@ import {
     planBookmarkAdd,
     planBookmarkRemove,
     planBookmarkClear,
-    resolveBookmarkTarget,
+    findBookmarkTocItem,
+    resolveBookmarkPlayback,
 } from './reader-progress.js';
 import './tts-providers.js';
 import './local-voice-mixing.js';
@@ -85,8 +86,14 @@ let currentChapterCanonicalBlocks = [];
 let documentIdentityGeneration = 0;
 /** Monotonic open token for resume-lookup fencing across hash-failure clears. */
 let documentOpenGeneration = 0;
-/** Last playback block index for Add bookmark (from player progress events). */
-let lastKnownBlockIndex = 0;
+/**
+ * Last playback block for Add bookmark. Null until the current chapter
+ * request reports progress (avoids image-only chapters inheriting the prior
+ * chapter's index).
+ */
+let lastKnownBlockIndex = null;
+/** Chapter request id that last reported a bookmarkable progress position. */
+let bookmarkProgressChapterRequestId = null;
 
 const prevChapterBtn = document.getElementById('prevChapter');
 const nextChapterBtn = document.getElementById('nextChapter');
@@ -322,6 +329,46 @@ function currentBookmarkFingerprint() {
     return fingerprintChapterBlocks(blocks);
 }
 
+function canAddBookmarkHere() {
+    const blocks = currentChapterCanonicalBlocks.length > 0
+        ? currentChapterCanonicalBlocks
+        : currentChapterBlocks;
+    return Boolean(currentDocumentMeta?.documentId) &&
+        bookmarkProgressChapterRequestId === chapterRequestId &&
+        Number.isInteger(lastKnownBlockIndex) &&
+        lastKnownBlockIndex >= 0 &&
+        Array.isArray(blocks) &&
+        lastKnownBlockIndex < blocks.length;
+}
+
+function updateAddBookmarkEnabled() {
+    if (addBookmarkButton) addBookmarkButton.disabled = !canAddBookmarkHere();
+}
+
+function resetBookmarkProgressFence() {
+    lastKnownBlockIndex = null;
+    bookmarkProgressChapterRequestId = null;
+    updateAddBookmarkEnabled();
+}
+
+function appendBookmarkListItem(bookmark) {
+    const li = document.createElement('li');
+    const go = document.createElement('button');
+    go.type = 'button';
+    go.className = 'nav-btn bookmark-go';
+    go.textContent = bookmark.label || 'Bookmark';
+    go.title = `${bookmark.chapterHref || 'chapter'} · block ${bookmark.blockIndex + 1}`;
+    go.addEventListener('click', () => { goToBookmark(bookmark); });
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'nav-btn bookmark-remove';
+    remove.setAttribute('aria-label', 'Remove bookmark');
+    remove.textContent = '×';
+    remove.addEventListener('click', () => { void removeBookmark(bookmark.id); });
+    li.append(go, remove);
+    bookmarkListEl.appendChild(li);
+}
+
 async function refreshBookmarksPanel() {
     const documentId = currentDocumentMeta?.documentId;
     if (!documentId || !bookmarksPanel || !bookmarkListEl) {
@@ -338,30 +385,11 @@ async function refreshBookmarksPanel() {
         console.warn('Cannot read reader bookmarks', error);
     }
     bookmarkListEl.innerHTML = '';
-    for (const bookmark of bookmarks) {
-        const li = document.createElement('li');
-        const go = document.createElement('button');
-        go.type = 'button';
-        go.className = 'nav-btn bookmark-go';
-        go.textContent = bookmark.label || 'Bookmark';
-        go.title = `${bookmark.chapterHref || 'chapter'} · block ${bookmark.blockIndex + 1}`;
-        go.addEventListener('click', () => {
-            void goToBookmark(bookmark);
-        });
-        const remove = document.createElement('button');
-        remove.type = 'button';
-        remove.className = 'nav-btn bookmark-remove';
-        remove.setAttribute('aria-label', 'Remove bookmark');
-        remove.textContent = '×';
-        remove.addEventListener('click', () => {
-            void removeBookmark(bookmark.id);
-        });
-        li.append(go, remove);
-        bookmarkListEl.appendChild(li);
-    }
+    for (const bookmark of bookmarks) appendBookmarkListItem(bookmark);
     if (clearBookmarksButton) {
         clearBookmarksButton.hidden = bookmarks.length === 0;
     }
+    updateAddBookmarkEnabled();
 }
 
 async function persistBookmarkPlan(plan) {
@@ -373,17 +401,10 @@ async function persistBookmarkPlan(plan) {
 
 async function addBookmarkAtCurrentPosition() {
     const meta = currentDocumentMeta;
-    if (!meta?.documentId) return;
+    if (!canAddBookmarkHere() || !meta?.documentId) return;
     const chapterHref = currentBookmarkChapterHref();
-    const blocks = currentChapterCanonicalBlocks.length > 0
-        ? currentChapterCanonicalBlocks
-        : currentChapterBlocks;
-    if (!Array.isArray(blocks) || blocks.length === 0) return;
-    const blockIndex = Number.isInteger(lastKnownBlockIndex)
-        ? Math.min(Math.max(0, lastKnownBlockIndex), blocks.length - 1)
-        : 0;
-    const chapterLabel = flatToc.find((entry) => entry.href === chapterHref)?.label
-        || 'Chapter';
+    const blockIndex = lastKnownBlockIndex;
+    const chapterLabel = findBookmarkTocItem(flatToc, chapterHref)?.label || 'Chapter';
     let bookmark;
     try {
         bookmark = buildBookmarkRecord({
@@ -446,11 +467,11 @@ async function clearAllBookmarksForDocument() {
 function goToBookmark(bookmark) {
     if (!bookmark || flatToc.length === 0) return;
     hideResumeBanner();
-    const href = bookmark.chapterHref || flatToc[0]?.href;
-    const item = flatToc.find((entry) => entry.href === href);
+    const item = findBookmarkTocItem(flatToc, bookmark.chapterHref);
     if (!item) {
         chapterErrorMsg.textContent =
-            'That bookmark chapter is no longer in this document.';
+            'That bookmark chapter is not in the current chapter list ' +
+            '(try the other heading-scan setting).';
         chapterErrorMsg.hidden = false;
         return;
     }
@@ -458,6 +479,21 @@ function goToBookmark(bookmark) {
         .find((el) => el.dataset.href === item.href);
     // Validate fingerprint after blocks load; never autoplay.
     activateChapter(item, itemEl || null, false, null, { bookmarkJump: bookmark });
+}
+
+function applyBookmarkJumpPlayback(bookmark, blocks) {
+    const playback = resolveBookmarkPlayback({
+        bookmark,
+        flatToc,
+        chapterFingerprint: fingerprintChapterBlocks(blocks),
+        chapterBlockCount: blocks.length,
+    });
+    if (playback.outdated) {
+        chapterErrorMsg.textContent =
+            'Bookmark is outdated for this chapter; starting at the beginning.';
+        chapterErrorMsg.hidden = false;
+    }
+    return playback;
 }
 
 async function offerResumeOrStart() {
@@ -807,7 +843,7 @@ async function loadEpub(file, requestId) {
 
         commitOpenedEpub(candidate, toc);
         committed = true;
-        lastKnownBlockIndex = 0;
+        resetBookmarkProgressFence();
         await offerResumeOrStart();
         await refreshBookmarksPanel();
     } finally {
@@ -858,7 +894,7 @@ async function loadTextDocument(file, format, requestId) {
     currentToc = [{ href: 'document:0', label: file.name }];
     resumeAutoplayForNewDocument();
     renderChapterList(currentToc, { autoActivate: false });
-    lastKnownBlockIndex = 0;
+    resetBookmarkProgressFence();
     await offerResumeOrStart();
     await refreshBookmarksPanel();
     // Parsing and rendering the chapter list commit the replacement. The
@@ -871,6 +907,7 @@ async function startTextChapterLoad(title, forcedStartIndex = null, resumeCandid
     bookmarkJump = null) {
     const source = textDocument;
     const requestId = ++chapterRequestId;
+    resetBookmarkProgressFence();
     chapterErrorMsg.hidden = true;
     chapterErrorMsg.textContent = '';
     if (!source) return;
@@ -893,21 +930,9 @@ async function startTextChapterLoad(title, forcedStartIndex = null, resumeCandid
             }
         }
         if (bookmarkJump) {
-            const target = resolveBookmarkTarget({
-                bookmark: bookmarkJump,
-                flatToc,
-                chapterFingerprint: fingerprintChapterBlocks(source.blocks),
-                chapterBlockCount: source.blocks.length,
-            });
-            if (target.ok) {
-                startIndex = target.blockIndex;
-            } else {
-                startIndex = 0;
-                chapterErrorMsg.textContent =
-                    'Bookmark is outdated for this document; starting at the beginning.';
-                chapterErrorMsg.hidden = false;
-            }
-            suppressAutoplay = true;
+            const playback = applyBookmarkJumpPlayback(bookmarkJump, source.blocks);
+            startIndex = playback.startIndex;
+            suppressAutoplay = playback.suppressAutoplay;
         }
         await sendToPlayer(source.blocks, title || source.title,
             source.blocks.map(entry => entry.content).join(' ').slice(0, 100),
@@ -1292,6 +1317,7 @@ async function consumeSection(section, source, callback) {
 async function loadEpubChapter(href, title, continuePlaying = false, forcedStartIndex = null,
     options = {}) {
     const requestId = ++chapterRequestId;
+    resetBookmarkProgressFence();
     const requestedBook = book;
     if (!requestedBook) return;
     const spine = requestedBook.spine;
@@ -1405,21 +1431,9 @@ async function loadEpubChapter(href, title, continuePlaying = false, forcedStart
     }
 
     if (options.bookmarkJump) {
-        const target = resolveBookmarkTarget({
-            bookmark: options.bookmarkJump,
-            flatToc,
-            chapterFingerprint: fingerprintChapterBlocks(mergedBlocks),
-            chapterBlockCount: mergedBlocks.length,
-        });
-        if (target.ok) {
-            startIndex = target.blockIndex;
-        } else {
-            startIndex = 0;
-            chapterErrorMsg.textContent =
-                'Bookmark is outdated for this chapter; starting at the beginning.';
-            chapterErrorMsg.hidden = false;
-        }
-        suppressAutoplay = true;
+        const playback = applyBookmarkJumpPlayback(options.bookmarkJump, mergedBlocks);
+        startIndex = playback.startIndex;
+        suppressAutoplay = playback.suppressAutoplay;
     }
 
     const fullText = mergedBlocks.map(b => b.content).join(' ');
@@ -1533,6 +1547,8 @@ window.addEventListener('message', (event) => {
     const blockIndex = event.data.blockIndex;
     if (Number.isInteger(blockIndex) && blockIndex >= 0) {
         lastKnownBlockIndex = blockIndex;
+        bookmarkProgressChapterRequestId = chapterRequestId;
+        updateAddBookmarkEnabled();
     }
     updateActiveChapter(blockIndex);
     scheduleProgressSave(blockIndex);

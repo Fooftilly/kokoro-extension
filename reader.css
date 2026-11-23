@@ -59,7 +59,8 @@ body {
 }
 
 #chapterList {
-    flex: 1;
+    flex: 1 1 auto;
+    min-height: 8rem;
     overflow-y: auto;
     padding: 10px;
 }
@@ -113,6 +114,15 @@ body {
     padding: 12px;
     border: 1px solid var(--border-color);
     border-radius: 6px;
+    flex: 0 1 auto;
+    max-height: 40%;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.bookmarks-panel:not([hidden]) {
+    display: flex;
+    flex-direction: column;
 }
 
 .bookmarks-panel[hidden] {
@@ -139,7 +149,8 @@ body {
     list-style: none;
     margin: 0;
     padding: 0;
-    max-height: 10rem;
+    flex: 1 1 auto;
+    min-height: 0;
     overflow-y: auto;
 }
 

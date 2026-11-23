@@ -10,6 +10,8 @@ import {
     planBookmarkRemove,
     planBookmarkClear,
     resolveBookmarkTarget,
+    findBookmarkTocItem,
+    resolveBookmarkPlayback,
     bookmarkStorageKey,
     MAX_BOOKMARKS_PER_DOCUMENT,
     fingerprintChapterBlocks,
@@ -104,5 +106,51 @@ describe('reader bookmarks helpers (#196)', () => {
             chapterFingerprint: 'changed',
             chapterBlockCount: 2,
         }).ok).toBe(false);
+    });
+
+    test('findBookmarkTocItem falls back to spine path when fragment TOC differs', () => {
+        const toc = [
+            { href: 'ch1.xhtml', label: 'Chapter 1' },
+            { href: 'ch2.xhtml', label: 'Chapter 2' },
+        ];
+        expect(findBookmarkTocItem(toc, 'ch1.xhtml#scan-only').href).toBe('ch1.xhtml');
+        expect(findBookmarkTocItem(toc, 'missing.xhtml')).toBeNull();
+        expect(findBookmarkTocItem(toc, 'ch2.xhtml').href).toBe('ch2.xhtml');
+    });
+
+    test('resolveBookmarkPlayback seeks saved block without autoplay', () => {
+        const blocks = [
+            { content: 'One.', ids: [] },
+            { content: 'Two.', ids: [] },
+            { content: 'Three.', ids: [] },
+        ];
+        const fp = fingerprintChapterBlocks(blocks);
+        const record = bookmark({
+            chapterFingerprint: fp,
+            blockIndex: 2,
+            chapterHref: 'a.xhtml',
+        });
+        expect(resolveBookmarkPlayback({
+            bookmark: record,
+            flatToc: [{ href: 'a.xhtml', label: 'A' }],
+            chapterFingerprint: fp,
+            chapterBlockCount: 3,
+        })).toEqual({
+            startIndex: 2,
+            suppressAutoplay: true,
+            outdated: false,
+            label: 'A',
+        });
+        expect(resolveBookmarkPlayback({
+            bookmark: record,
+            flatToc: [{ href: 'a.xhtml', label: 'A' }],
+            chapterFingerprint: 'stale',
+            chapterBlockCount: 3,
+        })).toEqual({
+            startIndex: 0,
+            suppressAutoplay: true,
+            outdated: true,
+            label: null,
+        });
     });
 });

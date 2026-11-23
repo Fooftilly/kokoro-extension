@@ -471,3 +471,44 @@ export function resolveBookmarkTarget(args) {
         chapterBlockCount: args?.chapterBlockCount,
     });
 }
+
+/**
+ * Resolve which TOC entry a bookmark should open. Exact href first; if the
+ * chapter list mode changed (heading scan vs publisher TOC), fall back to the
+ * same spine path without the fragment.
+ */
+export function findBookmarkTocItem(flatToc, chapterHref) {
+    const toc = Array.isArray(flatToc) ? flatToc : [];
+    if (!toc.length) return null;
+    if (chapterHref == null) return toc[0];
+    const exact = toc.find((entry) => entry?.href === chapterHref);
+    if (exact) return exact;
+    const base = String(chapterHref).split('#')[0];
+    const byBase = toc.filter((entry) => String(entry?.href || '').split('#')[0] === base);
+    if (!byBase.length) return null;
+    return byBase.find((entry) => !String(entry.href || '').includes('#')) || byBase[0];
+}
+
+/** Playback seek for a validated bookmark — never autoplays. */
+export function resolveBookmarkPlayback({
+    bookmark,
+    flatToc,
+    chapterFingerprint,
+    chapterBlockCount,
+}) {
+    const target = resolveBookmarkTarget({
+        bookmark,
+        flatToc,
+        chapterFingerprint,
+        chapterBlockCount,
+    });
+    if (target.ok) {
+        return {
+            startIndex: target.blockIndex,
+            suppressAutoplay: true,
+            outdated: false,
+            label: target.label,
+        };
+    }
+    return { startIndex: 0, suppressAutoplay: true, outdated: true, label: null };
+}
