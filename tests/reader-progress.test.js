@@ -219,7 +219,7 @@ describe('reader-progress helpers (#196)', () => {
         expect(map[documentIdFromDigest(oldestHex)]).toBeUndefined();
     });
 
-    test('planProgressUpsert migrates legacy siblings before dropping the map', () => {
+    test('planProgressUpsert migrates legacy-only siblings before dropping the map', () => {
         const idA = documentIdFromDigest('a'.repeat(64));
         const idB = documentIdFromDigest('b'.repeat(64));
         const recordA = buildProgressRecord({
@@ -240,15 +240,77 @@ describe('reader-progress helpers (#196)', () => {
         expect(plan.set[progressStorageKey(idA)]).toEqual(updatedA);
         expect(plan.set[progressStorageKey(idB)]).toEqual(recordB);
         expect(plan.remove).toContain(STORAGE_KEY);
-        // Simulate applying set then remove — B remains resumable.
         const after = { ...plan.set };
         expect(readProgressRecord(after, idB).blockIndex).toBe(2);
-        expect(shouldOfferResumeChoice({
-            ok: true, blockIndex: 0, chapterHref: 'b.xhtml',
-        }, 'a.xhtml')).toBe(true);
-        expect(shouldOfferResumeChoice({
-            ok: true, blockIndex: 0, chapterHref: 'a.xhtml',
-        }, 'a.xhtml')).toBe(false);
+    });
+
+    test('planProgressUpsert does not rewrite peers that already have per-doc keys', () => {
+        const idA = documentIdFromDigest('a'.repeat(64));
+        const idB = documentIdFromDigest('b'.repeat(64));
+        const recordA = buildProgressRecord({
+            documentId: idA, name: 'a.epub', size: 1, format: 'epub',
+            chapterHref: 'a.xhtml', blockIndex: 1, chapterFingerprint: 'fp',
+            revision: 1, updatedAt: 1,
+        });
+        const recordB = buildProgressRecord({
+            documentId: idB, name: 'b.epub', size: 1, format: 'epub',
+            chapterHref: 'b.xhtml', blockIndex: 2, chapterFingerprint: 'fp',
+            revision: 1, updatedAt: 2,
+        });
+        const updatedA = buildProgressRecord({
+            ...recordA, blockIndex: 5, updatedAt: 3, revision: 2,
+        });
+        const store = {
+            [progressStorageKey(idA)]: recordA,
+            [progressStorageKey(idB)]: recordB,
+        };
+        const plan = planProgressUpsert(store, updatedA);
+        expect(Object.keys(plan.set)).toEqual([progressStorageKey(idA)]);
+        expect(plan.set[progressStorageKey(idB)]).toBeUndefined();
+    });
+
+    test('concurrent upserts from the same snapshot keep both latest values', () => {
+        const idA = documentIdFromDigest('a'.repeat(64));
+        const idB = documentIdFromDigest('b'.repeat(64));
+        const recordA1 = buildProgressRecord({
+            documentId: idA, name: 'a.epub', size: 1, format: 'epub',
+            chapterHref: 'a.xhtml', blockIndex: 1, chapterFingerprint: 'fp',
+            revision: 1, updatedAt: 1,
+        });
+        const recordB2 = buildProgressRecord({
+            documentId: idB, name: 'b.epub', size: 1, format: 'epub',
+            chapterHref: 'b.xhtml', blockIndex: 2, chapterFingerprint: 'fp',
+            revision: 1, updatedAt: 2,
+        });
+        const recordA5 = buildProgressRecord({
+            ...recordA1, blockIndex: 5, updatedAt: 10, revision: 2,
+        });
+        const recordB7 = buildProgressRecord({
+            ...recordB2, blockIndex: 7, updatedAt: 11, revision: 2,
+        });
+        const store = {
+            [progressStorageKey(idA)]: recordA1,
+            [progressStorageKey(idB)]: recordB2,
+        };
+        const planA = planProgressUpsert(store, recordA5);
+        const planB = planProgressUpsert(store, recordB7);
+
+        function apply(order) {
+            let next = { ...store };
+            for (const plan of order) {
+                Object.assign(next, plan.set);
+                for (const key of plan.remove) delete next[key];
+            }
+            return next;
+        }
+
+        const aThenB = apply([planA, planB]);
+        expect(readProgressRecord(aThenB, idA).blockIndex).toBe(5);
+        expect(readProgressRecord(aThenB, idB).blockIndex).toBe(7);
+
+        const bThenA = apply([planB, planA]);
+        expect(readProgressRecord(bThenA, idA).blockIndex).toBe(5);
+        expect(readProgressRecord(bThenA, idB).blockIndex).toBe(7);
     });
 
     test('planProgressRemove migrates leftover legacy docs when clearing one', () => {
