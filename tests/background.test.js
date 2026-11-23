@@ -741,6 +741,11 @@ describe('background.js logic', () => {
         await flushToolbarCheck();
         await flushToolbarCheck();
 
+        // No interim paint of the old endpoint's green after the URL switch.
+        const paintsAfterSwitch = browser.action.setIcon.mock.calls.map(
+            (call) => call[0].path[48]
+        );
+        expect(paintsAfterSwitch.some((path) => /icon-48-green/.test(path))).toBe(false);
         expect(lastIcon48()).not.toMatch(/icon-48-green/);
         expect(lastTitle()).toMatch(/unreachable|not reachable/i);
     });
