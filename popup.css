@@ -5,6 +5,9 @@
     --border-color: #ccc;
     --tab-inactive-bg: #f8f9fa;
     --tab-inactive-text: #666;
+    /* Inactive tab :hover must beat generic button:hover (#0056b3). */
+    --tab-hover-bg: #e9ecef;
+    --tab-hover-text: #212529;
     --input-bg: #fff;
     --note-color: #666;
     --mixer-bg: #f9f9f9;
@@ -24,6 +27,8 @@
     --border-color: #444;
     --tab-inactive-bg: #2d2d2d;
     --tab-inactive-text: #aaa;
+    --tab-hover-bg: #3a3a3a;
+    --tab-hover-text: #f0f0f0;
     --input-bg: #2d2d2d;
     --note-color: #999;
     --mixer-bg: #252525;
@@ -61,14 +66,24 @@ body {
     background: var(--footer-bg);
 }
 
-.tabs {
+.popup-header {
     display: flex;
-    border-bottom: 1px solid var(--border-color);
+    align-items: stretch;
     margin-bottom: 10px;
-    align-items: center;
     height: var(--header-height);
     background: var(--bg-color);
-    /* Matches body to avoid line breaks */
+    border-bottom: 1px solid var(--border-color);
+}
+
+.tabs {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    /* Border lives on .popup-header so theme toggle stays outside tablist. */
+    border-bottom: none;
+    margin-bottom: 0;
 }
 
 .tab {
@@ -84,6 +99,10 @@ body {
     align-items: center;
     justify-content: center;
     box-sizing: border-box;
+    font: inherit;
+    margin: 0;
+    appearance: none;
+    -webkit-appearance: none;
 }
 
 .tab.active {
@@ -98,12 +117,48 @@ body {
     /* Still needed for overlap, but we ensure it's stable */
 }
 
+/* Outrank generic `button:hover` (#0056b3 bg + inactive #666/#aaa text). */
+.tab:hover:not(.active) {
+    background-color: var(--tab-hover-bg);
+    color: var(--tab-hover-text);
+}
+
+.tab.active:hover {
+    background: var(--bg-color);
+    color: var(--text-color);
+}
+
+.tab:focus-visible,
+#theme-toggle:focus-visible {
+    outline: 2px solid var(--text-color);
+    outline-offset: -2px;
+    opacity: 1;
+}
+
 .content {
     display: none;
 }
 
 .content.active {
     display: block;
+}
+
+/* Prefer [hidden] for inactive tabpanels; keep .active for legacy CSS. */
+.content[hidden] {
+    display: none !important;
+}
+
+/* Always-present live region for save/permission toasts (screen readers). */
+.status-live {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    border: 0;
+    white-space: nowrap;
 }
 
 label {
@@ -574,8 +629,6 @@ button:hover {
     /* Match header height */
     opacity: 0.7;
     transition: opacity 0.2s;
-    border-bottom: 1px solid var(--border-color);
-    /* Maintain the line */
     box-sizing: border-box;
 }
 

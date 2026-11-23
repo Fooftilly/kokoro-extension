@@ -4,101 +4,36 @@
  * Settings popup must remain usable when the Kokoro backend is unavailable (#4).
  */
 
-const fs = require('fs');
-const path = require('path');
-
-function loadPopupDom() {
-    const html = fs.readFileSync(path.join(__dirname, '../popup.html'), 'utf8');
-    // Extract body contents (jsdom document already has html/head/body)
-    const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
-    document.body.innerHTML = bodyMatch ? bodyMatch[1] : html;
-    // Remove script tags from injected HTML — we require scripts explicitly
-    document.body.querySelectorAll('script').forEach((s) => s.remove());
-    // Author CSS is required for computed-style checks (e.g. [hidden] vs display:flex).
-    document.querySelectorAll('style[data-popup-css]').forEach((node) => node.remove());
-    const style = document.createElement('style');
-    style.setAttribute('data-popup-css', 'true');
-    style.textContent = fs.readFileSync(path.join(__dirname, '../popup.css'), 'utf8');
-    document.head.appendChild(style);
-}
+const {
+    loadPopupDom,
+    createPopupModuleLoader,
+    installDefaultPopupGlobals,
+} = require('./popup-test-harness.js');
 
 describe('popup backend-loss resilience (#4)', () => {
     let popup;
-    let documentListeners = [];
+    let harness;
 
     // Jest module resets do not remove popup.js's document-level listeners.
-    // Capture them during module loading and remove them after each case.
     function loadPopupModule() {
-        const addListener = document.addEventListener;
-        document.addEventListener = function (type, handler, options) {
-            documentListeners.push({ type, handler, options });
-            return addListener.call(this, type, handler, options);
-        };
-        try {
-            return require('../popup.js');
-        } finally {
-            document.addEventListener = addListener;
-        }
+        return harness.loadPopupModule();
     }
 
     afterEach(() => {
-        for (const { type, handler, options } of documentListeners) {
-            document.removeEventListener(type, handler, options);
-        }
-        documentListeners = [];
+        harness.detachDocumentListeners();
     });
 
     beforeEach(() => {
         jest.resetModules();
         jest.clearAllMocks();
         jest.useRealTimers();
-        loadPopupDom();
-
-        global.browser = {
-            storage: {
-                sync: {
-                    get: jest.fn(async (defaults) => ({
-                        ...defaults,
-                        apiUrl: 'http://127.0.0.1:8880/v1/',
-                        voice: 'af_sarah(0.5)+af_nicole(0.5)',
-                        mode: 'stream',
-                        theme: 'light',
-                    })),
-                    set: jest.fn(async () => {}),
-                },
-                local: {
-                    set: jest.fn(async () => {}),
-                    get: jest.fn(async defaults => defaults),
-                },
-            },
-            permissions: {
-                contains: jest.fn(async () => true),
-                request: jest.fn(async () => true),
-            },
-            runtime: {
-                getManifest: jest.fn(() => ({ version: '1.3.1' })),
-            },
-            tabs: {
-                create: jest.fn(),
-            },
-            commands: {
-                getAll: jest.fn(async () => []),
-            },
-        };
-
-        global.localStorage = {
-            getItem: jest.fn(),
-            setItem: jest.fn(),
-            removeItem: jest.fn(),
-        };
-
-        // Default: backend unreachable
-        global.fetch = jest.fn(() => Promise.reject(new TypeError('Failed to fetch')));
-
-        Object.assign(global, require('../api-client.js'));
-        Object.assign(global, { KokoroLocalVoiceMixing: require('../local-voice-mixing.js') });
-        Object.assign(global, { KokoroBackendDisclosure: require('../backend-disclosure.js') });
-        popup = loadPopupModule();
+        loadPopupDom({ injectCss: true });
+        installDefaultPopupGlobals({
+            syncOverrides: { voice: 'af_sarah(0.5)+af_nicole(0.5)' },
+            manifestVersion: '1.3.1',
+        });
+        harness = createPopupModuleLoader();
+        popup = harness.loadPopupModule();
     });
 
     async function flushAsync() {
@@ -457,7 +392,7 @@ describe('popup backend-loss resilience (#4)', () => {
         });
 
         jest.resetModules();
-        loadPopupDom();
+        loadPopupDom({ injectCss: true });
         Object.assign(global, require('../api-client.js'));
         Object.assign(global, { KokoroLocalVoiceMixing: require('../local-voice-mixing.js') });
         Object.assign(global, { KokoroBackendDisclosure: require('../backend-disclosure.js') });
@@ -701,7 +636,7 @@ describe('popup backend-loss resilience (#4)', () => {
         });
 
         jest.resetModules();
-        loadPopupDom();
+        loadPopupDom({ injectCss: true });
         Object.assign(global, require('../api-client.js'));
         Object.assign(global, { KokoroLocalVoiceMixing: require('../local-voice-mixing.js') });
         Object.assign(global, { KokoroBackendDisclosure: require('../backend-disclosure.js') });

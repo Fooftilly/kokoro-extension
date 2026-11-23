@@ -4,32 +4,15 @@
  * Popup settings IA blocks (#194 item 2) and shortcuts cheat sheet (#194 item 4).
  */
 
-const fs = require('fs');
-const path = require('path');
-
-function loadPopupDom() {
-    const html = fs.readFileSync(path.join(__dirname, '../popup.html'), 'utf8');
-    const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
-    document.body.innerHTML = bodyMatch ? bodyMatch[1] : html;
-    document.body.querySelectorAll('script').forEach((s) => s.remove());
-}
+const {
+    loadPopupDom,
+    createPopupModuleLoader,
+    installDefaultPopupGlobals,
+} = require('./popup-test-harness.js');
 
 describe('popup settings IA + shortcuts (#194 2+4)', () => {
     let popup;
-    let documentListeners = [];
-
-    function loadPopupModule() {
-        const addListener = document.addEventListener;
-        document.addEventListener = function (type, handler, options) {
-            documentListeners.push({ type, handler, options });
-            return addListener.call(this, type, handler, options);
-        };
-        try {
-            return require('../popup.js');
-        } finally {
-            document.addEventListener = addListener;
-        }
-    }
+    let harness;
 
     async function flushAsync() {
         await new Promise((r) => setTimeout(r, 0));
@@ -37,62 +20,24 @@ describe('popup settings IA + shortcuts (#194 2+4)', () => {
     }
 
     afterEach(() => {
-        for (const { type, handler, options } of documentListeners) {
-            document.removeEventListener(type, handler, options);
-        }
-        documentListeners = [];
+        harness.detachDocumentListeners();
     });
 
     beforeEach(() => {
         jest.resetModules();
         jest.clearAllMocks();
         loadPopupDom();
-
-        global.browser = {
-            storage: {
-                sync: {
-                    get: jest.fn(async (defaults) => ({
-                        ...defaults,
-                        apiUrl: 'http://127.0.0.1:8880/v1/',
-                        voice: 'af_sarah',
-                        mode: 'stream',
-                        theme: 'light',
-                    })),
-                    set: jest.fn(async () => {}),
-                },
-                local: {
-                    set: jest.fn(async () => {}),
-                    get: jest.fn(async (defaults) => defaults),
-                },
-            },
-            permissions: {
-                contains: jest.fn(async () => true),
-                request: jest.fn(async () => true),
-            },
-            runtime: {
-                getManifest: jest.fn(() => ({ version: '1.4.0' })),
-            },
-            tabs: { create: jest.fn() },
-            commands: {
-                getAll: jest.fn(async () => ([
-                    { name: 'read-article', shortcut: 'Alt+A' },
-                    { name: 'nav-prev', shortcut: 'Alt+Comma' },
-                    { name: 'nav-next', shortcut: 'Alt+Period' },
-                    { name: 'close-overlay', shortcut: 'Ctrl+Shift+W' },
-                    { name: 'open-reader', shortcut: '' },
-                ])),
-            },
-        };
-        global.fetch = jest.fn(() => Promise.reject(new TypeError('Failed to fetch')));
-        global.localStorage = {
-            getItem: jest.fn(),
-            setItem: jest.fn(),
-            removeItem: jest.fn(),
-        };
-        Object.assign(global, require('../api-client.js'));
-        Object.assign(global, { KokoroLocalVoiceMixing: require('../local-voice-mixing.js') });
-        Object.assign(global, { KokoroBackendDisclosure: require('../backend-disclosure.js') });
-        popup = loadPopupModule();
+        installDefaultPopupGlobals({
+            commandsGetAll: () => ([
+                { name: 'read-article', shortcut: 'Alt+A' },
+                { name: 'nav-prev', shortcut: 'Alt+Comma' },
+                { name: 'nav-next', shortcut: 'Alt+Period' },
+                { name: 'close-overlay', shortcut: 'Ctrl+Shift+W' },
+                { name: 'open-reader', shortcut: '' },
+            ]),
+        });
+        harness = createPopupModuleLoader();
+        popup = harness.loadPopupModule();
     });
 
     test('General tab lists How you listen → Voice → Playback → Page & reader', () => {

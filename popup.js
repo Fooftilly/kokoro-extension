@@ -1,10 +1,50 @@
-// Tab switching
-document.querySelectorAll('.tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-        document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
-        tab.classList.add('active');
-        document.getElementById(tab.dataset.tab).classList.add('active');
+/** Activate a settings tab (ARIA tablist) and optionally move focus (#194 item 9). */
+function activatePopupTab(tabEl, { focus = true } = {}) {
+    if (!tabEl || !tabEl.dataset || !tabEl.dataset.tab) return;
+    const tabs = [...document.querySelectorAll('[role="tab"]')];
+    const panelId = tabEl.dataset.tab;
+    tabs.forEach((tab) => {
+        const selected = tab === tabEl;
+        tab.classList.toggle('active', selected);
+        tab.setAttribute('aria-selected', selected ? 'true' : 'false');
+        tab.tabIndex = selected ? 0 : -1;
+    });
+    document.querySelectorAll('[role="tabpanel"]').forEach((panel) => {
+        const selected = panel.id === panelId;
+        panel.classList.toggle('active', selected);
+        panel.hidden = !selected;
+    });
+    if (focus) tabEl.focus();
+}
+
+function syncThemeToggleLabel() {
+    const toggle = document.getElementById('theme-toggle');
+    if (!toggle) return;
+    const isDark = document.documentElement.classList.contains('dark-theme');
+    toggle.setAttribute('aria-label', isDark ? 'Switch to light theme' : 'Switch to dark theme');
+    toggle.title = isDark ? 'Switch to light theme' : 'Switch to dark theme';
+}
+
+// Tab switching (click + arrow keys)
+document.querySelectorAll('[role="tab"]').forEach((tab) => {
+    tab.addEventListener('click', () => activatePopupTab(tab));
+    tab.addEventListener('keydown', (event) => {
+        const tabs = [...document.querySelectorAll('[role="tab"]')];
+        const index = tabs.indexOf(tab);
+        if (index < 0) return;
+        let next = null;
+        if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+            next = tabs[(index + 1) % tabs.length];
+        } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+            next = tabs[(index - 1 + tabs.length) % tabs.length];
+        } else if (event.key === 'Home') {
+            next = tabs[0];
+        } else if (event.key === 'End') {
+            next = tabs[tabs.length - 1];
+        }
+        if (!next) return;
+        event.preventDefault();
+        activatePopupTab(next);
     });
 });
 
@@ -809,29 +849,44 @@ function attachVoicePreference(settings, ttsBackend) {
     settings.voice = serializeVoiceString(currentVoices);
 }
 
-function showPermissionDeniedToast() {
+/** Announce into the always-present live region, then mirror the visible toast. */
+function announceStatusToast(message, { color, hideAfterMs } = {}) {
+    const live = document.getElementById('statusLive');
     const status = document.getElementById('status');
-    status.textContent = 'Permission denied for this URL.';
-    status.style.color = 'var(--status-error)';
+    if (live) {
+        // Clear first so identical consecutive messages still fire an update.
+        live.textContent = '';
+        live.textContent = message;
+    }
+    if (!status) return;
+    status.textContent = message;
+    if (color) status.style.color = color;
     status.style.display = 'block';
+    if (hideAfterMs) {
+        setTimeout(() => {
+            status.style.display = 'none';
+            status.style.color = 'var(--status-success)';
+        }, hideAfterMs);
+    }
+}
+
+function showPermissionDeniedToast() {
+    announceStatusToast('Permission denied for this URL.', {
+        color: 'var(--status-error)',
+        hideAfterMs: 3000,
+    });
     applyPermissionDeniedUI();
-    setTimeout(() => {
-        status.style.display = 'none';
-        status.style.color = 'var(--status-success)';
-    }, 3000);
 }
 
 function showSaveStatusToast(localValidationError, ttsBackend) {
-    const status = document.getElementById('status');
-    status.textContent = localValidationError
+    const message = localValidationError
         ? 'Other settings saved, but ' + (ttsBackend === 'onnx' ? 'ONNX' : 'MediaPipe') +
             ' was not activated: ' + String(localValidationError.message || localValidationError)
         : 'Settings saved.';
-    status.style.color = localValidationError ? 'var(--status-error)' : 'var(--status-success)';
-    status.style.display = 'block';
-    if (!localValidationError) {
-        setTimeout(() => { status.style.display = 'none'; }, 1500);
-    }
+    announceStatusToast(message, {
+        color: localValidationError ? 'var(--status-error)' : 'var(--status-success)',
+        hideAfterMs: localValidationError ? 0 : 1500,
+    });
 }
 
 async function resolveHostPermissionGranted(apiUrl, ttsBackend, permissionRequestPromise) {
@@ -869,10 +924,9 @@ const saveOptions = async (isDebounced = false, options = {}) => {
     if (!ttsBackend) {
         // An unknown persisted backend leaves no checked radio. Do not silently
         // reset the backend or reject an autosave without an explanation.
-        const status = document.getElementById('status');
-        status.textContent = 'Error: Choose a valid TTS backend before saving.';
-        status.style.color = 'var(--status-error)';
-        status.style.display = 'block';
+        announceStatusToast('Error: Choose a valid TTS backend before saving.', {
+            color: 'var(--status-error)',
+        });
         return { ok: false, error: true };
     }
     const defaultSpeed = document.getElementById('defaultSpeed').value;
@@ -933,10 +987,9 @@ const saveOptions = async (isDebounced = false, options = {}) => {
         return { ok: true, permissionDenied: false, backendUnavailable: !!localValidationError };
     } catch (e) {
         console.error("Error saving options", e);
-        const status = document.getElementById('status');
-        status.textContent = "Error: " + e.message;
-        status.style.color = "var(--status-error)";
-        status.style.display = 'block';
+        announceStatusToast('Error: ' + e.message, {
+            color: 'var(--status-error)',
+        });
         return { ok: false, error: true };
     }
 };
@@ -971,10 +1024,12 @@ function applyThemeFromSettings(theme) {
     if (theme === 'dark') {
         document.documentElement.classList.add('dark-theme');
         localStorage.setItem('kokoro-theme', 'dark');
+        syncThemeToggleLabel();
         return;
     }
     document.documentElement.classList.remove('dark-theme');
     localStorage.setItem('kokoro-theme', 'light');
+    syncThemeToggleLabel();
 }
 
 function applyBackendExplanation(ttsBackend) {
@@ -1435,15 +1490,20 @@ async function checkApiConnection(url) {
 }
 
 // Theme Toggle
-document.getElementById('theme-toggle').addEventListener('click', () => {
-    document.documentElement.classList.toggle('dark-theme');
-    // Save theme immediately
-    const isDark = document.documentElement.classList.contains('dark-theme');
-    const theme = isDark ? 'dark' : 'light';
-    localStorage.setItem('kokoro-theme', theme);
-    browser.storage.sync.set({ theme });
-    browser.storage.local.set({ theme });
-});
+const themeToggleBtn = document.getElementById('theme-toggle');
+if (themeToggleBtn) {
+    syncThemeToggleLabel();
+    themeToggleBtn.addEventListener('click', () => {
+        document.documentElement.classList.toggle('dark-theme');
+        // Save theme immediately
+        const isDark = document.documentElement.classList.contains('dark-theme');
+        const theme = isDark ? 'dark' : 'light';
+        localStorage.setItem('kokoro-theme', theme);
+        syncThemeToggleLabel();
+        browser.storage.sync.set({ theme });
+        browser.storage.local.set({ theme });
+    });
+}
 
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
@@ -1457,6 +1517,10 @@ if (typeof module !== 'undefined' && module.exports) {
         refreshLocalSetupHealth,
         refreshShortcutsCheatSheet,
         formatCommandShortcut,
+        activatePopupTab,
+        syncThemeToggleLabel,
+        showSaveStatusToast,
+        announceStatusToast,
         getStickyLocalSetupFailure: () => stickyLocalSetupFailure,
         setStickyLocalSetupFailureForTests: (value) => { stickyLocalSetupFailure = value; },
         getLocalActiveSetupIssue: () => localActiveSetupIssue,
