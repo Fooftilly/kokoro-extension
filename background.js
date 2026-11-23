@@ -152,6 +152,16 @@ async function probeFastApiToolbarStatus(apiUrl) {
         } catch (_) { /* ignore */ }
     }
 
+    // Servers that expose speech/models but not /test or /health still count as
+    // reachable (matches popup functional connectivity).
+    if (!connected) {
+        try {
+            const modelsUrl = new URL('models', normalized).href;
+            const resp = await tryFetch(modelsUrl);
+            if (resp.ok) connected = true;
+        } catch (_) { /* ignore */ }
+    }
+
     return {
         kind: connected ? ToolbarStatus.KIND.READY : ToolbarStatus.KIND.UNREACHABLE,
         backend: TtsProviders.FASTAPI,

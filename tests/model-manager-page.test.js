@@ -267,6 +267,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(button.disabled).toBe(false);
         expect(document.querySelector('[data-variant="mediapipe-cpu"] .model-verify').disabled)
             .toBe(true); // No recognized cached model data.
+        browser.storage.local.set.mockClear();
         button.click();
         await waitFor(() => row.querySelector('.model-status').textContent.includes('pinned SHA-256 hashes'));
         expect(verifyModel).toHaveBeenCalledTimes(1);
@@ -276,6 +277,10 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(global.fetch).not.toHaveBeenCalled();
         expect(global.browser.permissions.request).not.toHaveBeenCalled();
         expect(installModel).not.toHaveBeenCalled();
+        // Clean verify (no prune) still bumps the toolbar cache epoch (#208).
+        expect(browser.storage.local.set).toHaveBeenCalledWith(
+            expect.objectContaining({ localModelCacheEpoch: expect.any(Number) })
+        );
     });
 
     test('a failed verifier leaves installed models available without deleting or downloading', async () => {

@@ -644,6 +644,25 @@ describe('background.js logic', () => {
         expect(lastTitle()).toMatch(/reachable/i);
     });
 
+    test('FastAPI /models-only servers still paint green (#208)', async () => {
+        stubToolbarSync({ ttsBackend: 'fastapi' });
+        fetch.mockImplementation(async (url) => {
+            if (String(url).includes('/test') || String(url).includes('/health')) {
+                return { ok: false, json: async () => ({}) };
+            }
+            if (String(url).includes('/models')) {
+                return { ok: true, json: async () => ({ data: [] }) };
+            }
+            return { ok: false, json: async () => ({}) };
+        });
+        jest.resetModules();
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+        await bg.checkApiStatus();
+        expect(lastIcon48()).toMatch(/icon-48-green/);
+        expect(lastTitle()).toMatch(/reachable/i);
+    });
+
     test('storage.local validated-revision changes refresh toolbar status (#208)', async () => {
         stubToolbarSync({ ttsBackend: 'fastapi' });
         fetch.mockResolvedValue({
