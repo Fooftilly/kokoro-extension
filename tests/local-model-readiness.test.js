@@ -87,4 +87,53 @@ describe('local-model-readiness', () => {
         expect(optional).toBeTruthy();
         expect(manifestForOnnxVoiceAsset(optional.path).variant).toBe(optional.voiceVariant);
     });
+
+    test('packaged catalog-lite cache keys match ModelDataStore (#208 regression)', async () => {
+        const { ModelDataStore } = require('../model-data-store.js');
+        const store = new ModelDataStore({
+            origin: 'chrome-extension://testid/',
+            cacheStorage: { open: jest.fn() },
+            fetchImpl: jest.fn(),
+            responseClass: Response,
+            streamClass: TransformStream,
+        });
+        // Same shape build.js writes into model-catalog-lite.js for Chrome SW.
+        const liteManifests = [
+            manifestForVariant('mediapipe', 'cpu'),
+            manifestForVariant('onnx', 'q8'),
+            dictionaryManifest(),
+        ];
+        const optional = listOnnxVoiceAssets().find((v) => v.voiceVariant);
+        if (optional) liteManifests.push(manifestForOnnxVoiceAsset(optional.path));
+
+        const byKey = new Map();
+        for (const manifest of liteManifests) {
+            for (const asset of manifest.assets) {
+                const classicKey = readiness.cacheKey(manifest, asset);
+                expect(classicKey).toBe(store.key(manifest, asset));
+                byKey.set(classicKey, asset);
+            }
+        }
+
+        const cache = {
+            match: jest.fn(async (requestKey) => {
+                const asset = byKey.get(requestKey);
+                if (!asset) return undefined;
+                return {
+                    headers: {
+                        get(name) {
+                            if (name === 'x-kokoro-integrity') return asset.integrity;
+                            if (name === 'x-kokoro-bytes') return String(asset.bytes);
+                            return null;
+                        },
+                    },
+                };
+            }),
+        };
+        const cacheStorage = { open: jest.fn(async () => cache) };
+        for (const manifest of liteManifests) {
+            const result = await readiness.metadataStatus(manifest, cacheStorage);
+            expect(result.ready).toBe(true);
+        }
+    });
 });
