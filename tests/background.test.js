@@ -687,6 +687,64 @@ describe('background.js logic', () => {
         expect(lastTitle()).toMatch(/unreachable|not reachable/i);
     });
 
+    test('apiUrl change during post-probe settings read restarts (#208)', async () => {
+        stubToolbarSync({
+            ttsBackend: 'fastapi',
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+        });
+        fetch.mockImplementation(async (url) => {
+            if (String(url).includes('9999')) {
+                return { ok: false, json: async () => ({}) };
+            }
+            if (String(url).includes('/test')) {
+                return { ok: true, json: async () => ({ status: 'ok' }) };
+            }
+            return { ok: false, json: async () => ({}) };
+        });
+        jest.resetModules();
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+
+        let releaseLatest;
+        const latestGate = new Promise((resolve) => { releaseLatest = resolve; });
+        let sawLatestGet = false;
+        let currentApiUrl = 'http://127.0.0.1:8880/v1/';
+        browser.storage.sync.get.mockImplementation(async (defaults = {}) => {
+            const keys = Object.keys(defaults || {});
+            // Post-probe read only asks for ttsBackend.
+            if (keys.length === 1 && keys[0] === 'ttsBackend') {
+                sawLatestGet = true;
+                await latestGate;
+                return { ttsBackend: 'fastapi' };
+            }
+            return {
+                apiUrl: currentApiUrl,
+                ttsBackend: 'fastapi',
+                mediaPipeVariant: 'cpu',
+                onnxVoiceAsset: 'voices/af.bin',
+            };
+        });
+
+        const check = bg.checkApiStatus();
+        for (let i = 0; i < 50 && !sawLatestGet; i++) {
+            await flushToolbarCheck();
+        }
+        expect(sawLatestGet).toBe(true);
+
+        browser.action.setIcon.mockClear();
+        browser.action.setTitle.mockClear();
+        currentApiUrl = 'http://127.0.0.1:9999/v1/';
+        const listener = browser.storage.onChanged.addListener.mock.calls.at(-1)[0];
+        await listener({ apiUrl: { newValue: currentApiUrl } }, 'sync');
+        releaseLatest();
+        await check;
+        await flushToolbarCheck();
+        await flushToolbarCheck();
+
+        expect(lastIcon48()).not.toMatch(/icon-48-green/);
+        expect(lastTitle()).toMatch(/unreachable|not reachable/i);
+    });
+
     test('storage.local validated-revision changes refresh toolbar status (#208)', async () => {
         stubToolbarSync({ ttsBackend: 'fastapi' });
         fetch.mockResolvedValue({
