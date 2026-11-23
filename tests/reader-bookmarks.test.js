@@ -12,7 +12,9 @@ import {
     resolveBookmarkTarget,
     findBookmarkTocItem,
     prepareBookmarkForCurrentToc,
+    resolveBookmarkHeadingForBlock,
     resolveBookmarkPlayback,
+    resolveBookmarkJump,
     bookmarkStorageKey,
     MAX_BOOKMARKS_PER_DOCUMENT,
     fingerprintChapterBlocks,
@@ -144,6 +146,46 @@ describe('reader bookmarks helpers (#196)', () => {
             outdated: false,
             label: 'Chapter 1',
         });
+    });
+
+    test('publisher bookmark remaps to owning scanned heading without autoplay', () => {
+        const blocks = [
+            { content: 'Intro.', ids: ['part1'] },
+            { content: 'A.', ids: [] },
+            { content: 'Part two.', ids: ['part2'] },
+            { content: 'B.', ids: [] },
+            { content: 'C.', ids: [] },
+        ];
+        const fp = fingerprintChapterBlocks(blocks);
+        const saved = bookmark({
+            chapterHref: 'ch1.xhtml',
+            blockIndex: 3,
+            chapterFingerprint: fp,
+        });
+        const scannedToc = [
+            { href: 'ch1.xhtml#part1', label: 'Part 1' },
+            { href: 'ch1.xhtml#part2', label: 'Part 2' },
+        ];
+        expect(resolveBookmarkHeadingForBlock({
+            flatToc: scannedToc,
+            blocks,
+            blockIndex: 3,
+            fallbackItem: scannedToc[0],
+        }).href).toBe('ch1.xhtml#part2');
+        const jump = resolveBookmarkJump({
+            bookmark: saved,
+            flatToc: scannedToc,
+            blocks,
+            chapterFingerprint: fp,
+        });
+        expect(jump).toEqual(expect.objectContaining({
+            startIndex: 3,
+            suppressAutoplay: true,
+            outdated: false,
+            label: 'Part 2',
+            item: expect.objectContaining({ href: 'ch1.xhtml#part2' }),
+        }));
+        expect(jump.record.chapterHref).toBe('ch1.xhtml#part2');
     });
 
     test('resolveBookmarkPlayback seeks saved block without autoplay', () => {

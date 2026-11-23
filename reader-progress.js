@@ -504,6 +504,55 @@ export function prepareBookmarkForCurrentToc(bookmark, flatToc) {
     return { item, record: { ...bookmark, chapterHref: item.href } };
 }
 
+function decodeTocFragment(fragment) {
+    try {
+        return decodeURIComponent(fragment);
+    } catch {
+        return fragment;
+    }
+}
+
+/**
+ * After a same-file TOC fallback, pick the heading entry that owns the saved
+ * block so continuous handoff advances past that section instead of replaying it.
+ */
+export function resolveBookmarkHeadingForBlock({
+    flatToc,
+    blocks,
+    blockIndex,
+    fallbackItem,
+}) {
+    if (!fallbackItem || !Array.isArray(blocks) || !Number.isInteger(blockIndex)) {
+        return fallbackItem || null;
+    }
+    if (blockIndex < 0 || blockIndex >= blocks.length) return fallbackItem;
+    const base = String(fallbackItem.href || '').split('#')[0];
+    const sameFile = (Array.isArray(flatToc) ? flatToc : [])
+        .filter((entry) => String(entry?.href || '').split('#')[0] === base);
+    if (sameFile.length <= 1) return fallbackItem;
+
+    const starts = [];
+    for (const entry of sameFile) {
+        const frag = String(entry.href || '').split('#')[1];
+        if (!frag) {
+            starts.push({ entry, start: 0 });
+            continue;
+        }
+        const id = decodeTocFragment(frag);
+        const idx = blocks.findIndex((block) => block.ids?.includes(id));
+        if (idx !== -1) starts.push({ entry, start: idx });
+    }
+    if (!starts.length) return fallbackItem;
+    starts.sort((a, b) => a.start - b.start || sameFile.indexOf(a.entry) - sameFile.indexOf(b.entry));
+
+    let best = fallbackItem;
+    for (const { entry, start } of starts) {
+        if (start <= blockIndex) best = entry;
+        else break;
+    }
+    return best;
+}
+
 /** Playback seek for a validated bookmark — never autoplays. */
 export function resolveBookmarkPlayback({
     bookmark,
@@ -526,4 +575,52 @@ export function resolveBookmarkPlayback({
         };
     }
     return { startIndex: 0, suppressAutoplay: true, outdated: true, label: null };
+}
+
+/**
+ * Full bookmark jump: TOC align + validate + remap to the heading that owns
+ * the saved block (heading-scan reopen of a publisher-list bookmark).
+ */
+export function resolveBookmarkJump({
+    bookmark,
+    flatToc,
+    blocks,
+    chapterFingerprint,
+}) {
+    const prepared = prepareBookmarkForCurrentToc(bookmark, flatToc);
+    if (!prepared.item || !prepared.record) {
+        return {
+            startIndex: 0,
+            suppressAutoplay: true,
+            outdated: true,
+            label: null,
+            item: null,
+            record: null,
+        };
+    }
+    const fingerprint = chapterFingerprint ?? fingerprintChapterBlocks(blocks || []);
+    const playback = resolveBookmarkPlayback({
+        bookmark: prepared.record,
+        flatToc,
+        chapterFingerprint: fingerprint,
+        chapterBlockCount: Array.isArray(blocks) ? blocks.length : 0,
+    });
+    if (playback.outdated) {
+        return { ...playback, item: prepared.item, record: prepared.record };
+    }
+    const item = resolveBookmarkHeadingForBlock({
+        flatToc,
+        blocks,
+        blockIndex: playback.startIndex,
+        fallbackItem: prepared.item,
+    });
+    const record = item && item.href !== prepared.record.chapterHref
+        ? { ...prepared.record, chapterHref: item.href }
+        : prepared.record;
+    return {
+        ...playback,
+        label: item?.label || playback.label,
+        item: item || prepared.item,
+        record,
+    };
 }

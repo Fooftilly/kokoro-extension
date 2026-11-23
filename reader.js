@@ -25,7 +25,7 @@ import {
     planBookmarkRemove,
     planBookmarkClear,
     prepareBookmarkForCurrentToc,
-    resolveBookmarkPlayback,
+    resolveBookmarkJump,
 } from './reader-progress.js';
 import './tts-providers.js';
 import './local-voice-mixing.js';
@@ -485,19 +485,25 @@ function goToBookmark(bookmark) {
 }
 
 function applyBookmarkJumpPlayback(bookmark, blocks) {
-    const { record } = prepareBookmarkForCurrentToc(bookmark, flatToc);
-    const playback = resolveBookmarkPlayback({
-        bookmark: record || bookmark,
+    const jump = resolveBookmarkJump({
+        bookmark,
         flatToc,
+        blocks,
         chapterFingerprint: fingerprintChapterBlocks(blocks),
-        chapterBlockCount: blocks.length,
     });
-    if (playback.outdated) {
+    if (jump.outdated) {
         chapterErrorMsg.textContent =
             'Bookmark is outdated for this chapter; starting at the beginning.';
         chapterErrorMsg.hidden = false;
     }
-    return playback;
+    // Remap sidebar + player chapter href to the heading that owns the block
+    // so continuous handoff does not replay that section.
+    if (jump.item?.href && jump.item.href !== currentActiveHref) {
+        currentActiveHref = jump.item.href;
+        selectActiveChapter(jump.item.href);
+        updateNavButtons();
+    }
+    return jump;
 }
 
 async function offerResumeOrStart() {
@@ -1434,15 +1440,17 @@ async function loadEpubChapter(href, title, continuePlaying = false, forcedStart
         }
     }
 
+    let playerHref = href;
     if (options.bookmarkJump) {
         const playback = applyBookmarkJumpPlayback(options.bookmarkJump, mergedBlocks);
         startIndex = playback.startIndex;
         suppressAutoplay = playback.suppressAutoplay;
+        if (playback.item?.href) playerHref = playback.item.href;
     }
 
     const fullText = mergedBlocks.map(b => b.content).join(' ');
     await sendToPlayer(mergedBlocks, title || "Chapter", fullText.substring(0, 100), startIndex,
-        requestId, requestedBook, continuePlaying, href, { suppressAutoplay });
+        requestId, requestedBook, continuePlaying, playerHref, { suppressAutoplay });
 }
 
 // --- Content Processing & Extraction ---
