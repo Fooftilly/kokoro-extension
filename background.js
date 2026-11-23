@@ -54,6 +54,10 @@ const notify = (title, message) => {
 };
 
 let isChecking = false;
+/** Set when checkApiStatus is requested while a probe is already in flight. */
+let pendingToolbarCheck = false;
+/** Shared promise so callers can await a coalesced in-flight check. */
+let toolbarCheckPromise = null;
 
 function applyToolbarStatus(status) {
     const kind = status?.kind || ToolbarStatus.KIND.UNKNOWN;
@@ -164,45 +168,82 @@ async function probeFastApiToolbarStatus(apiUrl) {
 }
 
 const checkApiStatus = async () => {
-    if (isChecking) return;
+    // Coalesce overlapping requests so a backend switch during a slow FastAPI
+    // probe is not dropped by the in-flight guard (#208 race).
+    if (isChecking && toolbarCheckPromise) {
+        pendingToolbarCheck = true;
+        return toolbarCheckPromise;
+    }
     isChecking = true;
-
-    try {
-        const settings = await browser.storage.sync.get({
-            apiUrl: 'http://127.0.0.1:8880/v1/',
-            ttsBackend: TtsProviders.FASTAPI,
-            mediaPipeVariant: 'cpu',
-            onnxVoiceAsset: 'voices/af.bin',
-        });
-        let backend;
+    toolbarCheckPromise = (async () => {
         try {
-            backend = TtsProviders.resolveBackend(settings.ttsBackend);
-        } catch (_) {
+            do {
+                pendingToolbarCheck = false;
+                const settings = await browser.storage.sync.get({
+                    apiUrl: 'http://127.0.0.1:8880/v1/',
+                    ttsBackend: TtsProviders.FASTAPI,
+                    mediaPipeVariant: 'cpu',
+                    onnxVoiceAsset: 'voices/af.bin',
+                });
+                let backend;
+                try {
+                    backend = TtsProviders.resolveBackend(settings.ttsBackend);
+                } catch (_) {
+                    applyToolbarStatus({
+                        kind: ToolbarStatus.KIND.UNKNOWN,
+                        backend: settings.ttsBackend,
+                        detail: 'unknown backend',
+                    });
+                    continue;
+                }
+
+                let status;
+                if (backend !== TtsProviders.FASTAPI) {
+                    // Do not probe an HTTP server when a local engine was selected.
+                    status = await probeLocalToolbarStatus(backend, settings);
+                } else {
+                    status = await probeFastApiToolbarStatus(settings.apiUrl);
+                }
+
+                // If prefs changed during the probe, skip applying the stale result
+                // and loop with the latest settings.
+                if (pendingToolbarCheck) continue;
+
+                const latest = await browser.storage.sync.get({
+                    ttsBackend: TtsProviders.FASTAPI,
+                });
+                let latestBackend;
+                try {
+                    latestBackend = TtsProviders.resolveBackend(latest.ttsBackend);
+                } catch (_) {
+                    latestBackend = null;
+                }
+                if (latestBackend !== backend) {
+                    pendingToolbarCheck = true;
+                    continue;
+                }
+
+                applyToolbarStatus(status);
+            } while (pendingToolbarCheck);
+        } catch (e) {
+            console.error('Toolbar status check failed completely:', e);
             applyToolbarStatus({
                 kind: ToolbarStatus.KIND.UNKNOWN,
-                backend: settings.ttsBackend,
-                detail: 'unknown backend',
+                backend: null,
+                detail: String(e?.message || e),
             });
-            return;
+        } finally {
+            isChecking = false;
+            toolbarCheckPromise = null;
+            // A request may have arrived after the loop exited but before we cleared
+            // the lock — schedule one more pass.
+            if (pendingToolbarCheck) {
+                pendingToolbarCheck = false;
+                void checkApiStatus();
+            }
         }
-
-        if (backend !== TtsProviders.FASTAPI) {
-            // Do not probe an HTTP server when a local engine was selected.
-            applyToolbarStatus(await probeLocalToolbarStatus(backend, settings));
-            return;
-        }
-
-        applyToolbarStatus(await probeFastApiToolbarStatus(settings.apiUrl));
-    } catch (e) {
-        console.error('Toolbar status check failed completely:', e);
-        applyToolbarStatus({
-            kind: ToolbarStatus.KIND.UNKNOWN,
-            backend: null,
-            detail: String(e?.message || e),
-        });
-    } finally {
-        isChecking = false;
-    }
+    })();
+    return toolbarCheckPromise;
 };
 
 // Initial check

@@ -692,4 +692,61 @@ describe('background.js logic', () => {
         expect(browser.action.setIcon).toHaveBeenCalled();
         expect(lastIcon48()).toMatch(/icon-48-green/);
     });
+
+    test('backend change during in-flight FastAPI probe coalesces to local status (#208)', async () => {
+        const { manifestForVariant } = require('../model-catalog.js');
+        const revision = manifestForVariant('mediapipe', 'cpu').revision;
+        let resolveFetch;
+        const fetchGate = new Promise((resolve) => { resolveFetch = resolve; });
+
+        browser.storage.sync.get.mockResolvedValue({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'fastapi',
+            mediaPipeVariant: 'cpu',
+            onnxVoiceAsset: 'voices/af.bin',
+        });
+        browser.storage.local.get.mockImplementation(async (defaults = {}) => ({
+            ...defaults,
+            'mediapipeValidatedRevision:cpu': revision,
+        }));
+        fetch.mockImplementation(() => fetchGate.then(() => ({
+            ok: false,
+            json: async () => ({}),
+        })));
+
+        jest.resetModules();
+        const { ModelDataStore } = require('../model-data-store.js');
+        const statusSpy = jest.spyOn(ModelDataStore.prototype, 'status').mockResolvedValue({
+            ready: true, storedBytes: 1, totalBytes: 1,
+        });
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+
+        // Start a FastAPI probe that stays pending on fetch.
+        const first = bg.checkApiStatus();
+        await flushToolbarCheck();
+
+        // Switch to MediaPipe while FastAPI is still in flight.
+        browser.storage.sync.get.mockResolvedValue({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            onnxVoiceAsset: 'voices/af.bin',
+        });
+        const listener = browser.storage.onChanged.addListener.mock.calls.at(-1)[0];
+        browser.action.setIcon.mockClear();
+        browser.action.setTitle.mockClear();
+        await listener({ ttsBackend: { newValue: 'mediapipe' } }, 'sync');
+
+        // Complete the stale FastAPI fetch; coalesce must re-run for MediaPipe.
+        resolveFetch();
+        await first;
+        await flushToolbarCheck();
+        await flushToolbarCheck();
+
+        expect(lastIcon48()).toMatch(/icon-48-green/);
+        expect(lastIcon48()).not.toMatch(/red/);
+        expect(lastTitle()).toMatch(/MediaPipe ready/i);
+        statusSpy.mockRestore();
+    });
 });
