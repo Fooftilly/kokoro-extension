@@ -728,6 +728,49 @@ describe('background.js logic', () => {
         expect(lastIcon48()).toMatch(/icon-48-green/);
     });
 
+    test('out-of-order syncToolbarAlarm reads keep FastAPI alarm (#208)', async () => {
+        // Repro: FastAPI→MediaPipe sync is deferred, then MediaPipe→FastAPI
+        // completes first (creates alarm). Releasing the older MediaPipe result
+        // must not clear the alarm that the newer FastAPI sync just registered.
+        stubToolbarSync({ ttsBackend: 'fastapi' });
+        fetch.mockResolvedValue({
+            ok: true,
+            json: async () => ({ status: 'ok' }),
+        });
+        jest.resetModules();
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+
+        let releaseMediaPipe;
+        const mediaPipeHeld = new Promise((resolve) => { releaseMediaPipe = resolve; });
+        browser.storage.sync.get.mockImplementation(async () => {
+            await mediaPipeHeld;
+            return {
+                apiUrl: 'http://127.0.0.1:8880/v1/',
+                ttsBackend: 'mediapipe',
+                mediaPipeVariant: 'cpu',
+            };
+        });
+        const stale = bg.syncToolbarAlarm();
+
+        browser.storage.sync.get.mockResolvedValue({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'fastapi',
+        });
+        browser.alarms.create.mockClear();
+        browser.alarms.clear.mockClear();
+        await bg.syncToolbarAlarm();
+        expect(browser.alarms.create).toHaveBeenCalledWith(
+            'api-check',
+            expect.objectContaining({ periodInMinutes: 1 })
+        );
+
+        browser.alarms.clear.mockClear();
+        releaseMediaPipe();
+        await stale;
+        expect(browser.alarms.clear).not.toHaveBeenCalled();
+    });
+
     test('localModelCacheEpoch storage changes refresh toolbar (#208)', async () => {
         stubToolbarSync({ ttsBackend: 'onnx', onnxVoiceAsset: 'voices/af_bella.bin' });
         const { manifestForVariant } = require('../model-catalog.js');

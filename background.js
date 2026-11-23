@@ -248,18 +248,27 @@ const checkApiStatus = async () => {
     return toolbarCheckPromise;
 };
 
-/** FastAPI-only minute alarm — cleared while a local backend is selected (#208). */
+/**
+ * FastAPI-only minute alarm — cleared while a local backend is selected (#208).
+ * Generation token discards stale sync results when backend flips rapidly, so an
+ * older MediaPipe read cannot clear an alarm that a newer FastAPI sync just created.
+ */
+let toolbarAlarmSyncGeneration = 0;
+
 async function syncToolbarAlarm() {
+    const generation = ++toolbarAlarmSyncGeneration;
     try {
         const { ttsBackend } = await browser.storage.sync.get({
             ttsBackend: TtsProviders.FASTAPI,
         });
+        if (generation !== toolbarAlarmSyncGeneration) return;
         if (TtsProviders.resolveBackend(ttsBackend) === TtsProviders.FASTAPI) {
             browser.alarms.create('api-check', { periodInMinutes: 1 });
         } else if (browser.alarms.clear) {
             await browser.alarms.clear('api-check');
         }
     } catch (_) {
+        if (generation !== toolbarAlarmSyncGeneration) return;
         if (browser.alarms.clear) {
             try { await browser.alarms.clear('api-check'); } catch (__) { /* ignore */ }
         }
