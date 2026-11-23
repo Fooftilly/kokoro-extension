@@ -18,7 +18,6 @@ import {
     upsertProgress,
     planProgressRemove,
     progressStorageKey,
-    removeProgress,
     readProgressRecord,
 } from '../reader-progress.js';
 
@@ -121,19 +120,26 @@ describe('reader progress persistence integration (#196)', () => {
             new TextEncoder().encode('keep').buffer));
         const idDrop = documentIdFromDigest(await hexDigestFromBuffer(
             new TextEncoder().encode('drop').buffer));
-        const base = {
-            name: 'n.epub', size: 1, format: 'epub',
-            chapterHref: 'a.xhtml', blockIndex: 0,
-            chapterFingerprint: 'fp', revision: 1, updatedAt: 1,
-        };
-        let store = upsertProgress({}, buildProgressRecord({ ...base, documentId: idKeep }));
-        store = upsertProgress(store, buildProgressRecord({
-            ...base, documentId: idDrop, updatedAt: 2,
-        }));
-        store = removeProgress(store, idDrop);
-        expect(readProgressRecord(store, idKeep)).toBeTruthy();
-        expect(readProgressRecord(store, idDrop)).toBeNull();
+        const keep = buildProgressRecord({
+            documentId: idKeep, name: 'keep.epub', size: 1, format: 'epub',
+            chapterHref: 'a.xhtml', blockIndex: 0, chapterFingerprint: 'fp',
+            revision: 1, updatedAt: 1,
+        });
+        const drop = buildProgressRecord({
+            documentId: idDrop, name: 'drop.epub', size: 1, format: 'epub',
+            chapterHref: 'a.xhtml', blockIndex: 1, chapterFingerprint: 'fp',
+            revision: 1, updatedAt: 2,
+        });
+        // Production path: plan against a store that still holds both records.
+        const store = { [STORAGE_KEY]: { [idKeep]: keep, [idDrop]: drop } };
         const plan = planProgressRemove(store, idDrop);
-        expect(plan.remove).toContain(progressStorageKey(idDrop));
+        expect(plan.remove).toEqual(expect.arrayContaining([
+            progressStorageKey(idDrop), STORAGE_KEY,
+        ]));
+        expect(plan.set[progressStorageKey(idKeep)]).toEqual(keep);
+        const applied = { ...plan.set };
+        for (const key of plan.remove) delete applied[key];
+        expect(readProgressRecord(applied, idKeep)).toEqual(keep);
+        expect(readProgressRecord(applied, idDrop)).toBeNull();
     });
 });

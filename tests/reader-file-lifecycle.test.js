@@ -1638,8 +1638,9 @@ describe('EPUB file read/parse lifecycle', () => {
         for (let n = 0; n < 30 && a.destroy.mock.calls.length === 0; n++) await tick();
         expect(a.destroy).toHaveBeenCalledTimes(1);
         // The now-stale old chapter never reloads its text into the player.
+        // Progress upserts share storage.local.set and have no pendingTitle.
         expect(browser.storage.local.set.mock.calls.every(([value]) =>
-            !value.pendingTitle.startsWith('Book A 2'))).toBe(true);
+            !value.pendingTitle || !value.pendingTitle.startsWith('Book A 2'))).toBe(true);
     });
 
     test('chapter-load failure is visible after the file picker has been dismissed', async () => {
@@ -1686,7 +1687,7 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(alert.textContent).toBe('');
         expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
         expect(browser.storage.local.set.mock.calls.every(([value]) =>
-            !value.pendingTitle.startsWith('Book A 2'))).toBe(true);
+            !value.pendingTitle || !value.pendingTitle.startsWith('Book A 2'))).toBe(true);
     });
 
     test('old EPUB image blob URLs are revoked by value only after iframe acknowledgment', async () => {
