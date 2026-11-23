@@ -17,6 +17,7 @@ import {
     planProgressUpsert,
     planProgressRemove,
     reconcileProgressRemoves,
+    runExclusiveProgressMutation,
     readProgressRecord,
 } from './reader-progress.js';
 import './tts-providers.js';
@@ -183,22 +184,27 @@ function progressWriteStillCurrent(write) {
 async function flushProgressSave(write, record) {
     if (!progressWriteStillCurrent(write)) return;
     try {
-        const stored = await browser.storage.local.get(null);
-        if (!progressWriteStillCurrent(write)) return;
-        const plan = planProgressUpsert(stored || {}, record);
-        // Set migrated/kept keys before removing the legacy map.
-        if (plan.set && Object.keys(plan.set).length) {
+        await runExclusiveProgressMutation(async () => {
             if (!progressWriteStillCurrent(write)) return;
-            await browser.storage.local.set(plan.set);
-        }
-        if (!plan.remove.length) return;
-        // Re-rank against post-set storage so a peer tab's newer upsert is not
-        // deleted by the pre-set eviction list (CodeRabbit: eviction race).
-        if (!progressWriteStillCurrent(write)) return;
-        const afterSet = await browser.storage.local.get(null);
-        if (!progressWriteStillCurrent(write)) return;
-        const safeRemove = reconcileProgressRemoves(plan.remove, afterSet || {}, record);
-        if (safeRemove.length) await browser.storage.local.remove(safeRemove);
+            const stored = await browser.storage.local.get(null);
+            if (!progressWriteStillCurrent(write)) return;
+            const plan = planProgressUpsert(stored || {}, record);
+            // Set migrated/kept keys before removing the legacy map.
+            if (plan.set && Object.keys(plan.set).length) {
+                if (!progressWriteStillCurrent(write)) return;
+                await browser.storage.local.set(plan.set);
+            }
+            if (!plan.remove.length) return;
+            // Re-rank under the same exclusive lock so peer tabs cannot
+            // interleave a newer upsert between this read and remove.
+            if (!progressWriteStillCurrent(write)) return;
+            const afterSet = await browser.storage.local.get(null);
+            if (!progressWriteStillCurrent(write)) return;
+            const safeRemove = reconcileProgressRemoves(
+                plan.remove, afterSet || {}, record,
+            );
+            if (safeRemove.length) await browser.storage.local.remove(safeRemove);
+        });
     } catch (error) {
         console.warn('Cannot persist reader progress', error);
     }
@@ -271,12 +277,14 @@ async function clearCurrentDocumentProgress() {
         };
     }
     try {
-        const stored = await browser.storage.local.get(null);
-        const plan = planProgressRemove(stored || {}, id);
-        if (plan.set && Object.keys(plan.set).length) {
-            await browser.storage.local.set(plan.set);
-        }
-        if (plan.remove.length) await browser.storage.local.remove(plan.remove);
+        await runExclusiveProgressMutation(async () => {
+            const stored = await browser.storage.local.get(null);
+            const plan = planProgressRemove(stored || {}, id);
+            if (plan.set && Object.keys(plan.set).length) {
+                await browser.storage.local.set(plan.set);
+            }
+            if (plan.remove.length) await browser.storage.local.remove(plan.remove);
+        });
     } catch (error) {
         console.warn('Cannot clear reader progress', error);
     }

@@ -225,6 +225,8 @@ export function planProgressUpsert(store, record) {
  * After applying `plan.set`, re-rank against a fresh store snapshot and keep
  * only removals both the original plan and the fresh plan agree on. Prevents
  * a concurrent peer upsert from being deleted by a stale eviction list.
+ * Pair with `runExclusiveProgressMutation` — reconcile alone cannot see peer
+ * updates that land after the fresh snapshot is taken.
  */
 export function reconcileProgressRemoves(plannedRemove, store, record) {
     const planned = Array.isArray(plannedRemove) ? plannedRemove : [];
@@ -232,6 +234,24 @@ export function reconcileProgressRemoves(plannedRemove, store, record) {
     const fresh = planProgressUpsert(store, record);
     const freshRemove = new Set(fresh.remove);
     return planned.filter((key) => freshRemove.has(key));
+}
+
+/** Cross-tab exclusive lock name for progress get→plan→set→remove. */
+export const PROGRESS_STORAGE_LOCK = 'kokoro-reader-progress';
+
+/**
+ * Serialize progress storage mutations across reader tabs.
+ * Falls back to running `task` immediately when Web Locks are unavailable
+ * (older browsers / jsdom without a LockManager).
+ */
+export async function runExclusiveProgressMutation(task, {
+    locks = globalThis.navigator?.locks,
+    lockName = PROGRESS_STORAGE_LOCK,
+} = {}) {
+    if (!locks || typeof locks.request !== 'function') {
+        return task();
+    }
+    return locks.request(lockName, { mode: 'exclusive' }, () => task());
 }
 
 /** Test helper: apply an upsert into an in-memory store snapshot. */

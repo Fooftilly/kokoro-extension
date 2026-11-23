@@ -17,6 +17,7 @@ import {
     planProgressUpsert,
     planProgressRemove,
     reconcileProgressRemoves,
+    runExclusiveProgressMutation,
     progressStorageKey,
     upsertProgress,
     removeProgress,
@@ -24,6 +25,31 @@ import {
     fingerprintChapterBlocks,
     readProgressRecord,
 } from '../reader-progress.js';
+
+/** Minimal exclusive LockManager for serializing overlapping mutation tests. */
+function createSerialLockManager() {
+    let held = false;
+    const waiters = [];
+    return {
+        request(_name, _opts, callback) {
+            return new Promise((resolve, reject) => {
+                const run = () => {
+                    held = true;
+                    Promise.resolve()
+                        .then(() => callback())
+                        .then(resolve, reject)
+                        .finally(() => {
+                            held = false;
+                            const next = waiters.shift();
+                            if (next) next();
+                        });
+                };
+                if (held) waiters.push(run);
+                else run();
+            });
+        },
+    };
+}
 
 function digest(hex = 'a'.repeat(64)) {
     return hex;
@@ -359,6 +385,36 @@ describe('reader-progress helpers (#196)', () => {
         };
         const safe = reconcileProgressRemoves(plan.remove, afterPeer, newest);
         expect(safe).not.toContain(progressStorageKey(oldest.documentId));
+
+        // Without an exclusive lock, a peer update *after* the fresh snapshot
+        // still appears in the remove list — locks close that window.
+        const staleSnapshot = {
+            ...store,
+            [progressStorageKey(newest.documentId)]: newest,
+        };
+        const stillEvicts = reconcileProgressRemoves(plan.remove, staleSnapshot, newest);
+        expect(stillEvicts).toContain(progressStorageKey(oldest.documentId));
+    });
+
+    test('runExclusiveProgressMutation serializes overlapping tasks', async () => {
+        const locks = createSerialLockManager();
+        const order = [];
+        const first = runExclusiveProgressMutation(async () => {
+            order.push('a-start');
+            await Promise.resolve();
+            order.push('a-end');
+        }, { locks });
+        const second = runExclusiveProgressMutation(async () => {
+            order.push('b-start');
+            order.push('b-end');
+        }, { locks });
+        await Promise.all([first, second]);
+        expect(order).toEqual(['a-start', 'a-end', 'b-start', 'b-end']);
+    });
+
+    test('runExclusiveProgressMutation runs immediately without LockManager', async () => {
+        const result = await runExclusiveProgressMutation(async () => 42, { locks: null });
+        expect(result).toBe(42);
     });
 
     test('removeProgress and clearAllProgress drop records', () => {
