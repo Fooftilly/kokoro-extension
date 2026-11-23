@@ -489,6 +489,21 @@ export function findBookmarkTocItem(flatToc, chapterHref) {
     return byBase.find((entry) => !String(entry.href || '').includes('#')) || byBase[0];
 }
 
+/**
+ * Pair a bookmark with the active TOC entry, rewriting chapterHref when the
+ * spine-path fallback selected a different TOC href so fingerprint/block
+ * validation does not fail with chapter-missing.
+ */
+export function prepareBookmarkForCurrentToc(bookmark, flatToc) {
+    if (!bookmark) return { item: null, record: null };
+    const item = findBookmarkTocItem(flatToc, bookmark.chapterHref);
+    if (!item) return { item: null, record: null };
+    if (bookmark.chapterHref === item.href) {
+        return { item, record: bookmark };
+    }
+    return { item, record: { ...bookmark, chapterHref: item.href } };
+}
+
 /** Playback seek for a validated bookmark — never autoplays. */
 export function resolveBookmarkPlayback({
     bookmark,

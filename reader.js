@@ -24,7 +24,7 @@ import {
     planBookmarkAdd,
     planBookmarkRemove,
     planBookmarkClear,
-    findBookmarkTocItem,
+    prepareBookmarkForCurrentToc,
     resolveBookmarkPlayback,
 } from './reader-progress.js';
 import './tts-providers.js';
@@ -404,7 +404,9 @@ async function addBookmarkAtCurrentPosition() {
     if (!canAddBookmarkHere() || !meta?.documentId) return;
     const chapterHref = currentBookmarkChapterHref();
     const blockIndex = lastKnownBlockIndex;
-    const chapterLabel = findBookmarkTocItem(flatToc, chapterHref)?.label || 'Chapter';
+    const chapterLabel = prepareBookmarkForCurrentToc(
+        { chapterHref }, flatToc,
+    ).item?.label || 'Chapter';
     let bookmark;
     try {
         bookmark = buildBookmarkRecord({
@@ -467,8 +469,8 @@ async function clearAllBookmarksForDocument() {
 function goToBookmark(bookmark) {
     if (!bookmark || flatToc.length === 0) return;
     hideResumeBanner();
-    const item = findBookmarkTocItem(flatToc, bookmark.chapterHref);
-    if (!item) {
+    const { item, record } = prepareBookmarkForCurrentToc(bookmark, flatToc);
+    if (!item || !record) {
         chapterErrorMsg.textContent =
             'That bookmark chapter is not in the current chapter list ' +
             '(try the other heading-scan setting).';
@@ -478,12 +480,14 @@ function goToBookmark(bookmark) {
     const itemEl = [...chapterList.querySelectorAll('.playable-chapter')]
         .find((el) => el.dataset.href === item.href);
     // Validate fingerprint after blocks load; never autoplay.
-    activateChapter(item, itemEl || null, false, null, { bookmarkJump: bookmark });
+    // Use the TOC-aligned record so fragment vs publisher href still validates.
+    activateChapter(item, itemEl || null, false, null, { bookmarkJump: record });
 }
 
 function applyBookmarkJumpPlayback(bookmark, blocks) {
+    const { record } = prepareBookmarkForCurrentToc(bookmark, flatToc);
     const playback = resolveBookmarkPlayback({
-        bookmark,
+        bookmark: record || bookmark,
         flatToc,
         chapterFingerprint: fingerprintChapterBlocks(blocks),
         chapterBlockCount: blocks.length,

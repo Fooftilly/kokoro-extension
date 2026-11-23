@@ -11,6 +11,7 @@ import {
     planBookmarkClear,
     resolveBookmarkTarget,
     findBookmarkTocItem,
+    prepareBookmarkForCurrentToc,
     resolveBookmarkPlayback,
     bookmarkStorageKey,
     MAX_BOOKMARKS_PER_DOCUMENT,
@@ -116,6 +117,33 @@ describe('reader bookmarks helpers (#196)', () => {
         expect(findBookmarkTocItem(toc, 'ch1.xhtml#scan-only').href).toBe('ch1.xhtml');
         expect(findBookmarkTocItem(toc, 'missing.xhtml')).toBeNull();
         expect(findBookmarkTocItem(toc, 'ch2.xhtml').href).toBe('ch2.xhtml');
+    });
+
+    test('fragment bookmark restores block after publisher TOC rewrite', () => {
+        const blocks = Array.from({ length: 6 }, (_, i) => ({
+            content: `Block ${i}.`, ids: [],
+        }));
+        const fp = fingerprintChapterBlocks(blocks);
+        const saved = bookmark({
+            chapterHref: 'ch1.xhtml#part2',
+            blockIndex: 4,
+            chapterFingerprint: fp,
+        });
+        const publisherToc = [{ href: 'ch1.xhtml', label: 'Chapter 1' }];
+        const { item, record } = prepareBookmarkForCurrentToc(saved, publisherToc);
+        expect(item.href).toBe('ch1.xhtml');
+        expect(record.chapterHref).toBe('ch1.xhtml');
+        expect(resolveBookmarkPlayback({
+            bookmark: record,
+            flatToc: publisherToc,
+            chapterFingerprint: fp,
+            chapterBlockCount: blocks.length,
+        })).toEqual({
+            startIndex: 4,
+            suppressAutoplay: true,
+            outdated: false,
+            label: 'Chapter 1',
+        });
     });
 
     test('resolveBookmarkPlayback seeks saved block without autoplay', () => {
