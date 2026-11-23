@@ -437,14 +437,24 @@ export function readBookmarks(store, documentId) {
         .slice(0, MAX_BOOKMARKS_PER_DOCUMENT);
 }
 
+/** Spine path without fragment — stable across publisher vs heading-scan hrefs. */
+export function bookmarkSpinePath(href) {
+    return href == null ? '' : String(href).split('#')[0];
+}
+
+/** Same reading position even when TOC mode rewrites the chapter fragment. */
+export function isSameBookmarkPosition(a, b) {
+    if (!a || !b) return false;
+    return a.blockIndex === b.blockIndex &&
+        a.chapterFingerprint === b.chapterFingerprint &&
+        bookmarkSpinePath(a.chapterHref) === bookmarkSpinePath(b.chapterHref);
+}
+
 /** Add or replace a same-position bookmark; newest first; bounded. */
 export function planBookmarkAdd(store, bookmark) {
     const key = bookmarkStorageKey(bookmark.documentId);
     const list = readBookmarks(store, bookmark.documentId)
-        .filter((entry) => !(
-            entry.chapterHref === bookmark.chapterHref &&
-            entry.blockIndex === bookmark.blockIndex
-        ));
+        .filter((entry) => !isSameBookmarkPosition(entry, bookmark));
     const next = [bookmark, ...list].slice(0, MAX_BOOKMARKS_PER_DOCUMENT);
     return { set: { [key]: next }, remove: [] };
 }
@@ -512,6 +522,39 @@ function decodeTocFragment(fragment) {
     }
 }
 
+function sameFileTocEntries(flatToc, base) {
+    return (Array.isArray(flatToc) ? flatToc : [])
+        .filter((entry) => String(entry?.href || '').split('#')[0] === base);
+}
+
+/** Block index where a TOC heading starts within loaded chapter blocks. */
+function headingStartIndex(entry, blocks) {
+    const frag = String(entry?.href || '').split('#')[1];
+    if (!frag) return 0;
+    const id = decodeTocFragment(frag);
+    return blocks.findIndex((block) => block.ids?.includes(id));
+}
+
+function collectHeadingStarts(sameFile, blocks) {
+    const starts = [];
+    for (const entry of sameFile) {
+        const start = headingStartIndex(entry, blocks);
+        if (start !== -1) starts.push({ entry, start });
+    }
+    starts.sort((a, b) => a.start - b.start ||
+        sameFile.indexOf(a.entry) - sameFile.indexOf(b.entry));
+    return starts;
+}
+
+function pickHeadingOwningBlock(starts, blockIndex, fallbackItem) {
+    let best = fallbackItem;
+    for (const { entry, start } of starts) {
+        if (start <= blockIndex) best = entry;
+        else break;
+    }
+    return best;
+}
+
 /**
  * After a same-file TOC fallback, pick the heading entry that owns the saved
  * block so continuous handoff advances past that section instead of replaying it.
@@ -526,31 +569,11 @@ export function resolveBookmarkHeadingForBlock({
         return fallbackItem || null;
     }
     if (blockIndex < 0 || blockIndex >= blocks.length) return fallbackItem;
-    const base = String(fallbackItem.href || '').split('#')[0];
-    const sameFile = (Array.isArray(flatToc) ? flatToc : [])
-        .filter((entry) => String(entry?.href || '').split('#')[0] === base);
+    const sameFile = sameFileTocEntries(flatToc, bookmarkSpinePath(fallbackItem.href));
     if (sameFile.length <= 1) return fallbackItem;
-
-    const starts = [];
-    for (const entry of sameFile) {
-        const frag = String(entry.href || '').split('#')[1];
-        if (!frag) {
-            starts.push({ entry, start: 0 });
-            continue;
-        }
-        const id = decodeTocFragment(frag);
-        const idx = blocks.findIndex((block) => block.ids?.includes(id));
-        if (idx !== -1) starts.push({ entry, start: idx });
-    }
+    const starts = collectHeadingStarts(sameFile, blocks);
     if (!starts.length) return fallbackItem;
-    starts.sort((a, b) => a.start - b.start || sameFile.indexOf(a.entry) - sameFile.indexOf(b.entry));
-
-    let best = fallbackItem;
-    for (const { entry, start } of starts) {
-        if (start <= blockIndex) best = entry;
-        else break;
-    }
-    return best;
+    return pickHeadingOwningBlock(starts, blockIndex, fallbackItem);
 }
 
 /** Playback seek for a validated bookmark — never autoplays. */

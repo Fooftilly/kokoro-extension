@@ -15,6 +15,7 @@ import {
     resolveBookmarkHeadingForBlock,
     resolveBookmarkPlayback,
     resolveBookmarkJump,
+    isSameBookmarkPosition,
     bookmarkStorageKey,
     MAX_BOOKMARKS_PER_DOCUMENT,
     fingerprintChapterBlocks,
@@ -61,6 +62,35 @@ describe('reader bookmarks helpers (#196)', () => {
             .filter((entry) => entry.blockIndex === list[0].blockIndex);
         expect(samePos).toHaveLength(1);
         expect(samePos[0].label).toBe('Updated');
+    });
+
+    test('planBookmarkAdd dedupes spine path after TOC fragment remap', () => {
+        const first = bookmark({
+            id: 'bm_file',
+            chapterHref: 'chapter.xhtml',
+            blockIndex: 12,
+            chapterFingerprint: 'fp-same',
+            createdAt: 1,
+        });
+        const remapped = bookmark({
+            id: 'bm_heading',
+            chapterHref: 'chapter.xhtml#methods',
+            blockIndex: 12,
+            chapterFingerprint: 'fp-same',
+            createdAt: 2,
+            label: 'Methods · 13',
+        });
+        expect(isSameBookmarkPosition(first, remapped)).toBe(true);
+        let store = {};
+        store = { ...store, ...planBookmarkAdd(store, first).set };
+        store = { ...store, ...planBookmarkAdd(store, remapped).set };
+        const list = readBookmarks(store, id);
+        expect(list).toHaveLength(1);
+        expect(list[0]).toEqual(expect.objectContaining({
+            id: 'bm_heading',
+            chapterHref: 'chapter.xhtml#methods',
+            blockIndex: 12,
+        }));
     });
 
     test('planBookmarkRemove and clear drop bookmarks without touching progress keys', () => {

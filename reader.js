@@ -315,9 +315,11 @@ function hideBookmarksPanel() {
 }
 
 function currentBookmarkChapterHref() {
-    return lastPublishedReload?.chapterHref
+    // Prefer the sidebar-highlighted heading so Add does not keep a stale
+    // file-level href after playback advances within the same XHTML file.
+    return currentActiveHref
+        || lastPublishedReload?.chapterHref
         || renderedChapterHref
-        || currentActiveHref
         || flatToc[0]?.href
         || null;
 }
