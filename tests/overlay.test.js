@@ -176,11 +176,18 @@ describe('overlay.js logic', () => {
             const readyAt = window.parent.postMessage.mock.calls.findIndex(([message]) =>
                 message?.type === 'KOKORO_READER_RELOAD_READY' &&
                 message.revision === 42);
+            expect(readyAt).toBeGreaterThanOrEqual(0);
+            // No progress for this revision may precede READY (including other blocks).
+            const progressBeforeReady = window.parent.postMessage.mock.calls
+                .slice(0, readyAt)
+                .some(([message]) =>
+                    message?.type === 'KOKORO_READING_PROGRESS' &&
+                    message.revision === 42);
+            expect(progressBeforeReady).toBe(false);
             const progressAt = window.parent.postMessage.mock.calls.findIndex(([message]) =>
                 message?.type === 'KOKORO_READING_PROGRESS' &&
                 message.revision === 42 &&
                 message.blockIndex === 1);
-            expect(readyAt).toBeGreaterThanOrEqual(0);
             expect(progressAt).toBeGreaterThan(readyAt);
 
             // Invalid revisions are never acknowledged as a successful read.
