@@ -80,6 +80,7 @@ export default [
     files: [
       'overlay.js',
       'reader.js',
+      'reader-progress.js',
       'document-formats.js',
       'docx-reader.js',
       'audio-manager.js',

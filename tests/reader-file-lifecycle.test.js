@@ -1,7 +1,9 @@
 /** @jest-environment jsdom */
+import { webcrypto } from 'crypto';
 import { TextDecoder } from 'util';
 
 global.TextDecoder = TextDecoder;
+Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true });
 
 function deferred() {
     let resolve;
@@ -57,6 +59,12 @@ function mountReaderDOM() {
         <input id="scanDocumentHeadings" type="checkbox">
         <button id="openAnotherDocument" type="button"></button>
         <button id="cancelDocumentPicker" type="button" hidden></button>
+        <div id="resumeBanner" hidden>
+            <p id="resumeBannerText"></p>
+            <button id="resumeReading" type="button"></button>
+            <button id="startOverReading" type="button"></button>
+            <button id="clearReadingProgress" type="button"></button>
+        </div>
         <div id="errorMsg" style="display:none"></div>
         <div id="chapterError" role="alert" hidden></div>
         <div id="loadingStatus" style="display:none"></div>
@@ -88,6 +96,9 @@ describe('EPUB file read/parse lifecycle', () => {
             runtime: { onMessage: { addListener: jest.fn() } },
             storage: {
                 local: {
+                    get: jest.fn(async (defaults = {}) => (
+                        typeof defaults === 'object' && defaults ? { ...defaults } : {}
+                    )),
                     remove: jest.fn(async () => {}),
                     set: jest.fn(async () => {}),
                 },
@@ -136,8 +147,11 @@ describe('EPUB file read/parse lifecycle', () => {
     });
 
     function acknowledgeCurrentChapter({ revision, source } = {}) {
-        const writes = browser.storage.local.set.mock.calls;
-        const latestRevision = writes[writes.length - 1]?.[0]?.pendingReaderReloadRevision;
+        // Progress upserts share storage.local.set; find the latest player reload.
+        const writes = browser.storage.local.set.mock.calls
+            .map(([value]) => value)
+            .filter(value => Number.isSafeInteger(value?.pendingReaderReloadRevision));
+        const latestRevision = writes[writes.length - 1]?.pendingReaderReloadRevision;
         expect(Number.isSafeInteger(latestRevision)).toBe(true);
         const frame = document.getElementById('playerFrame');
         window.dispatchEvent(new MessageEvent('message', {
@@ -991,9 +1005,10 @@ describe('EPUB file read/parse lifecycle', () => {
 
         expect(document.querySelector('.playable-chapter').dataset.href)
             .toBe('Nav/nav.xhtml#chapter1');
-        expect(browser.storage.local.set.mock.lastCall[0].pendingTitle)
-            .toBe('Navigation chapter');
-        expect(browser.storage.local.set.mock.lastCall[0].pendingStartIndex).toBe(0);
+        const navStored = browser.storage.local.set.mock.calls
+            .map(([value]) => value)
+            .find(value => value.pendingTitle === 'Navigation chapter');
+        expect(navStored.pendingStartIndex).toBe(0);
         expect(document.getElementById('chapterError').hidden).toBe(true);
     });
 
@@ -1016,10 +1031,10 @@ describe('EPUB file read/parse lifecycle', () => {
 
         expect(Array.from(document.querySelectorAll('.playable-chapter'), el => el.dataset.href))
             .toEqual(['chapter.xhtml#root', 'Nav/chapter.xhtml#nav']);
-        expect(browser.storage.local.set.mock.lastCall[0].pendingTitle)
-            .toBe('The root chapter.');
-        expect(browser.storage.local.set.mock.lastCall[0].pendingContent[0].content)
-            .toBe('The root chapter.');
+        const rootStored = browser.storage.local.set.mock.calls
+            .map(([value]) => value)
+            .find(value => value.pendingTitle === 'The root chapter.');
+        expect(rootStored.pendingContent[0].content).toBe('The root chapter.');
         expect(document.getElementById('chapterError').hidden).toBe(true);
     });
 
@@ -1367,6 +1382,8 @@ describe('EPUB file read/parse lifecycle', () => {
 
         window.dispatchEvent(new MessageEvent('message', {
             data: { type: 'KOKORO_READING_PROGRESS', blockIndex: 1 },
+            source: document.getElementById('playerFrame').contentWindow,
+            origin: window.location.origin,
         }));
 
         expect(document.querySelector('.playable-chapter.active')).toBe(next);
@@ -1395,6 +1412,8 @@ describe('EPUB file read/parse lifecycle', () => {
 
         window.dispatchEvent(new MessageEvent('message', {
             data: { type: 'KOKORO_READING_PROGRESS', blockIndex: 1 },
+            source: document.getElementById('playerFrame').contentWindow,
+            origin: window.location.origin,
         }));
 
         expect(document.querySelector('.playable-chapter.active')).toBe(validItem);
@@ -1619,8 +1638,9 @@ describe('EPUB file read/parse lifecycle', () => {
         for (let n = 0; n < 30 && a.destroy.mock.calls.length === 0; n++) await tick();
         expect(a.destroy).toHaveBeenCalledTimes(1);
         // The now-stale old chapter never reloads its text into the player.
+        // Progress upserts share storage.local.set and have no pendingTitle.
         expect(browser.storage.local.set.mock.calls.every(([value]) =>
-            !value.pendingTitle.startsWith('Book A 2'))).toBe(true);
+            !value.pendingTitle || !value.pendingTitle.startsWith('Book A 2'))).toBe(true);
     });
 
     test('chapter-load failure is visible after the file picker has been dismissed', async () => {
@@ -1667,7 +1687,7 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(alert.textContent).toBe('');
         expect(document.getElementById('filePickerOverlay').style.display).toBe('none');
         expect(browser.storage.local.set.mock.calls.every(([value]) =>
-            !value.pendingTitle.startsWith('Book A 2'))).toBe(true);
+            !value.pendingTitle || !value.pendingTitle.startsWith('Book A 2'))).toBe(true);
     });
 
     test('old EPUB image blob URLs are revoked by value only after iframe acknowledgment', async () => {
@@ -1717,7 +1737,13 @@ describe('EPUB file read/parse lifecycle', () => {
         books.push(a, b);
         selectFile('a.epub').succeed();
         await expectLoaded('Book A');
-        const priorRevision = browser.storage.local.set.mock.lastCall[0].pendingReaderReloadRevision;
+        // Progress upserts may be the latest storage.local.set — take the
+        // last player reload revision, not mock.lastCall blindly.
+        const priorRevision = browser.storage.local.set.mock.calls
+            .map(([value]) => value)
+            .filter(value => Number.isSafeInteger(value?.pendingReaderReloadRevision))
+            .at(-1)?.pendingReaderReloadRevision;
+        expect(Number.isSafeInteger(priorRevision)).toBe(true);
 
         messages.length = 0;
         selectFile('b.epub').succeed();

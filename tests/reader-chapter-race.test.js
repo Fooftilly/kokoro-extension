@@ -1,4 +1,7 @@
 /** @jest-environment jsdom */
+import { webcrypto } from 'crypto';
+
+Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true });
 
 function deferred() {
     let resolve;
@@ -16,6 +19,12 @@ function readerDOM() {
         <input id="scanDocumentHeadings" type="checkbox">
         <button id="openAnotherDocument" type="button"></button>
         <button id="cancelDocumentPicker" type="button" hidden></button>
+        <div id="resumeBanner" hidden>
+            <p id="resumeBannerText"></p>
+            <button id="resumeReading" type="button"></button>
+            <button id="startOverReading" type="button"></button>
+            <button id="clearReadingProgress" type="button"></button>
+        </div>
         <div id="errorMsg"></div>
         <div id="chapterError" role="alert" hidden></div>
         <div id="loadingStatus"></div>
@@ -64,6 +73,9 @@ describe('EPUB chapter loading and storage ordering', () => {
             runtime: { onMessage: { addListener: jest.fn() } },
             storage: {
                 local: {
+                    get: jest.fn(async (defaults = {}) => (
+                        typeof defaults === 'object' && defaults ? { ...defaults } : {}
+                    )),
                     remove: jest.fn(() => removePending.promise),
                     set: jest.fn(async () => {}),
                 },

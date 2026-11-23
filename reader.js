@@ -5,6 +5,21 @@ import {
     parseTextDocument,
 } from './document-formats.js';
 import { MAX_DOCX_ARCHIVE_BYTES, parseDocxDocument } from './docx-reader.js';
+import {
+    documentIdFromDigest,
+    hexDigestFromBuffer,
+    fingerprintChapterBlocks,
+    buildProgressRecord,
+    shouldAcceptProgressWrite,
+    shouldPersistProgressUpdate,
+    shouldOfferResumeChoice,
+    resolveResumeTarget,
+    planProgressRemove,
+    applyProgressUpsertMutation,
+    runExclusiveProgressMutation,
+    isResumeLookupStillCurrent,
+    readProgressRecord,
+} from './reader-progress.js';
 import './tts-providers.js';
 import './local-voice-mixing.js';
 
@@ -20,6 +35,11 @@ const loadingStatus = document.getElementById('loadingStatus');
 const playerFrame = document.getElementById('playerFrame');
 const sidebar = document.getElementById('sidebar');
 const appContainer = document.querySelector('.app-container');
+const resumeBanner = document.getElementById('resumeBanner');
+const resumeBannerText = document.getElementById('resumeBannerText');
+const resumeReadingButton = document.getElementById('resumeReading');
+const startOverReadingButton = document.getElementById('startOverReading');
+const clearReadingProgressButton = document.getElementById('clearReadingProgress');
 
 let book = null; // EPUB object
 let textDocument = null; // parsed TXT/Markdown/HTML document, not an EPUB archive
@@ -44,6 +64,17 @@ let renderedChapterContinuous = false;
 let lastContinuedRevision = null; // an ended chapter may advance only once
 let deferredChapterEndRevision = null; // do not advance behind the open file picker
 let readerPausedForPicker = false; // Close must suppress pending chapter autoplay
+/** @type {{ documentId: string, name: string, size: number, format: string, progressRevision: number, openGeneration: number } | null} */
+let currentDocumentMeta = null;
+let progressSaveTimer = null;
+/** Validated resume target waiting on explicit Resume (never autoplays). */
+let pendingResumeTarget = null;
+/** Full chapter blocks for fingerprinting (independent of continuous-reader truncation). */
+let currentChapterCanonicalBlocks = [];
+/** Monotonic identity generation so stale hash completions cannot replace a newer commit. */
+let documentIdentityGeneration = 0;
+/** Monotonic open token for resume-lookup fencing across hash-failure clears. */
+let documentOpenGeneration = 0;
 
 const prevChapterBtn = document.getElementById('prevChapter');
 const nextChapterBtn = document.getElementById('nextChapter');
@@ -82,6 +113,225 @@ function hasOpenDocument() {
     return Boolean(book || textDocument);
 }
 
+function hideResumeBanner() {
+    pendingResumeTarget = null;
+    if (resumeBanner) resumeBanner.hidden = true;
+    if (resumeBannerText) resumeBannerText.textContent = '';
+}
+
+function showResumeBanner(target) {
+    pendingResumeTarget = target;
+    if (!resumeBanner || !resumeBannerText) return;
+    const place = target.label
+        ? `"${target.label}" (block ${target.blockIndex + 1})`
+        : `block ${target.blockIndex + 1}`;
+    resumeBannerText.textContent =
+        'Saved reading position found for this file: ' + place +
+        '. Resume continues without starting audio automatically.';
+    resumeBanner.hidden = false;
+}
+
+async function hashDocumentIdentity(file, format, buffer, identityGeneration) {
+    const hex = await hexDigestFromBuffer(buffer);
+    if (identityGeneration !== documentIdentityGeneration) return null;
+    return {
+        documentId: documentIdFromDigest(hex),
+        name: file.name,
+        size: Number.isFinite(file.size) ? file.size : 0,
+        format,
+        identityGeneration,
+    };
+}
+
+function commitDocumentIdentity(candidate, priorRevision = 0) {
+    if (!candidate || candidate.identityGeneration !== documentIdentityGeneration) {
+        return false;
+    }
+    clearTimeout(progressSaveTimer);
+    progressSaveTimer = null;
+    currentDocumentMeta = {
+        documentId: candidate.documentId,
+        name: candidate.name,
+        size: candidate.size,
+        format: candidate.format,
+        progressRevision: priorRevision + 1,
+        openGeneration: ++documentOpenGeneration,
+    };
+    return true;
+}
+
+/** Open without durable resume when hashing fails; reject superseded hashes. */
+function commitOrSkipDocumentIdentity(identity, priorRevision, identityGeneration) {
+    if (identity && commitDocumentIdentity(identity, priorRevision)) return true;
+    if (identityGeneration !== documentIdentityGeneration) return false;
+    // Hash unavailable — keep the document usable without a progress identity.
+    // Advance openGeneration so a later successful commit cannot reuse the
+    // progressRevision/open token an in-flight resume lookup captured earlier.
+    clearTimeout(progressSaveTimer);
+    progressSaveTimer = null;
+    currentDocumentMeta = null;
+    ++documentOpenGeneration;
+    return true;
+}
+
+function progressWriteStillCurrent(write) {
+    return shouldPersistProgressUpdate({
+        resumeDecisionPending: Boolean(pendingResumeTarget),
+    }) && shouldAcceptProgressWrite({
+        writeRevision: write.writeRevision,
+        currentRevision: currentDocumentMeta?.progressRevision,
+        writeChapterRequestId: write.writeChapterRequestId,
+        currentChapterRequestId: chapterRequestId,
+        writeDocumentId: write.writeDocumentId,
+        currentDocumentId: currentDocumentMeta?.documentId,
+    });
+}
+
+async function flushProgressSave(write, record) {
+    if (!progressWriteStillCurrent(write)) return;
+    try {
+        await applyProgressUpsertMutation({
+            record,
+            getStore: () => browser.storage.local.get(null),
+            setStore: (patch) => browser.storage.local.set(patch),
+            removeKeys: (keys) => browser.storage.local.remove(keys),
+            isCurrent: () => progressWriteStillCurrent(write),
+        });
+    } catch (error) {
+        console.warn('Cannot persist reader progress', error);
+    }
+}
+
+function scheduleProgressSave(blockIndex) {
+    // Overlay init emits progress at block 0 while the resume banner is up.
+    // Persisting that would clobber the saved position before the user chooses.
+    // Explicit Play dismisses the banner via KOKORO_READER_RESUMED so later
+    // progress is saved again.
+    if (!shouldPersistProgressUpdate({ resumeDecisionPending: Boolean(pendingResumeTarget) })) {
+        return;
+    }
+    const meta = currentDocumentMeta;
+    if (!meta?.documentId) return;
+    const playbackBlocks = currentChapterBlocks;
+    const fingerprintBlocks = currentChapterCanonicalBlocks.length > 0
+        ? currentChapterCanonicalBlocks
+        : playbackBlocks;
+    // Prefer the href for the in-flight or acknowledged reload — never the
+    // previous subsection's href while a new continuous chapter is publishing.
+    const chapterHref = lastPublishedReload?.chapterHref
+        || renderedChapterHref
+        || currentActiveHref;
+    const write = {
+        writeRevision: meta.progressRevision,
+        writeChapterRequestId: chapterRequestId,
+        writeDocumentId: meta.documentId,
+    };
+    if (!Array.isArray(playbackBlocks) || playbackBlocks.length === 0) return;
+    if (!Number.isInteger(blockIndex) || blockIndex < 0 ||
+        blockIndex >= playbackBlocks.length) {
+        return;
+    }
+    let record;
+    try {
+        record = buildProgressRecord({
+            documentId: write.writeDocumentId,
+            name: meta.name,
+            size: meta.size,
+            format: meta.format,
+            chapterHref,
+            blockIndex,
+            chapterFingerprint: fingerprintChapterBlocks(fingerprintBlocks),
+            revision: write.writeRevision,
+            updatedAt: Date.now(),
+        });
+    } catch (error) {
+        console.warn('Skipping invalid reader progress record', error);
+        return;
+    }
+    clearTimeout(progressSaveTimer);
+    progressSaveTimer = setTimeout(() => {
+        void flushProgressSave(write, record);
+    }, 400);
+}
+
+async function clearCurrentDocumentProgress() {
+    clearTimeout(progressSaveTimer);
+    progressSaveTimer = null;
+    const id = currentDocumentMeta?.documentId;
+    hideResumeBanner();
+    if (!id) return;
+    // Bump revision so an in-flight flush that already passed clearTimeout
+    // fails progressWriteStillCurrent and cannot restore the cleared record.
+    if (currentDocumentMeta) {
+        currentDocumentMeta = {
+            ...currentDocumentMeta,
+            progressRevision: (currentDocumentMeta.progressRevision || 0) + 1,
+        };
+    }
+    try {
+        await runExclusiveProgressMutation(async () => {
+            const stored = await browser.storage.local.get(null);
+            const plan = planProgressRemove(stored || {}, id);
+            if (plan.set && Object.keys(plan.set).length) {
+                await browser.storage.local.set(plan.set);
+            }
+            if (plan.remove.length) await browser.storage.local.remove(plan.remove);
+        });
+    } catch (error) {
+        console.warn('Cannot clear reader progress', error);
+    }
+}
+
+function activateFirstPlayableChapter(continuePlaying = false, forcedStartIndex = null) {
+    const firstItem = chapterList.querySelector('.playable-chapter');
+    if (firstItem && flatToc[0]) {
+        activateChapter(flatToc[0], firstItem, continuePlaying, forcedStartIndex);
+    }
+}
+
+async function offerResumeOrStart() {
+    hideResumeBanner();
+    const meta = currentDocumentMeta;
+    const documentId = meta?.documentId;
+    const openGeneration = meta?.openGeneration;
+    if (!documentId || flatToc.length === 0) {
+        activateFirstPlayableChapter();
+        return;
+    }
+    let record = null;
+    try {
+        const stored = await browser.storage.local.get(null);
+        // Same-file re-open and hash-failure clears bump openGeneration; a
+        // different file changes documentId. Leave the newer commit's
+        // offerResumeOrStart to drive activation. Failed/cancelled selections
+        // never commit, so openGeneration stays put and this lookup proceeds.
+        if (!isResumeLookupStillCurrent({
+            capturedDocumentId: documentId,
+            capturedOpenGeneration: openGeneration,
+            currentMeta: currentDocumentMeta,
+        })) return;
+        record = readProgressRecord(stored || {}, documentId);
+    } catch (error) {
+        console.warn('Cannot read saved reader progress', error);
+    }
+    if (!isResumeLookupStillCurrent({
+        capturedDocumentId: documentId,
+        capturedOpenGeneration: openGeneration,
+        currentMeta: currentDocumentMeta,
+    })) return;
+    if (!record) {
+        activateFirstPlayableChapter();
+        return;
+    }
+    const href = record.chapterHref || flatToc[0].href;
+    const item = flatToc.find((entry) => entry.href === href) || flatToc[0];
+    const itemEl = [...chapterList.querySelectorAll('.playable-chapter')]
+        .find((el) => el.dataset.href === item.href);
+    // Load the saved chapter at index 0 (no autoplay). After blocks are ready,
+    // validate fingerprint/range and offer Resume without unexpected audio.
+    activateChapter(item, itemEl || null, false, 0, { resumeCandidate: record });
+}
+
 function resetPickerState() {
     fileInput.value = '';
     if (fileNameDisplay) fileNameDisplay.textContent = 'No file selected.';
@@ -111,6 +361,7 @@ function cancelDocumentPicker() {
     // Cancel an in-flight file read or EPUB open/TOC scan without altering
     // the already committed chapter/player, even if old promises settle later.
     ++fileRequestId;
+    ++documentIdentityGeneration;
     if (activeFileReader && activeFileReader.readyState === FileReader.LOADING &&
         typeof activeFileReader.abort === 'function') {
         activeFileReader.abort();
@@ -309,12 +560,59 @@ async function readDocumentBuffer(file) {
     }
 }
 
+async function resolveEpubToc(candidate, requestId) {
+    const publisherToc = candidate.navigation?.toc || [];
+    // The EPUB's own navigation is authoritative. Heading scanning is an
+    // opt-in alternative, except for books without a publisher TOC.
+    const scan = scanDocumentHeadings.checked || publisherToc.length === 0;
+    if (scan) loadingStatus.textContent = 'Scanning for chapters...';
+    const discovered = scan
+        ? await getEnrichedToc(candidate, () => requestId === fileRequestId)
+        : publisherToc;
+    if (requestId !== fileRequestId) return null;
+    // Heading-scan links come from Section.href and are already relative
+    // to the OPF. Do not resolve them against the nav document again:
+    // same-name chapters in different directories would be conflated.
+    // If no headings were found, the scanner returns the original
+    // publisher array by identity; those raw links still need resolving.
+    const toc = scan && discovered !== publisherToc
+        ? discovered
+        : normalizePublisherToc(discovered, candidate);
+    if (!hasPlayableTocEntry(toc)) throw new Error('EPUB contains no readable chapters');
+    return toc;
+}
+
+function commitOpenedEpub(candidate, toc) {
+    const oldBook = book;
+    chapterRequestId++;
+    book = candidate;
+    textDocument = null;
+    deferredChapterEndRevision = null;
+    if (oldBook) retiringBooks.add(oldBook);
+    currentChapterBlocks = [];
+    currentChapterCanonicalBlocks = [];
+    currentActiveHref = null;
+    currentToc = toc;
+    resumeAutoplayForNewDocument();
+    renderChapterList(toc, { autoActivate: false });
+}
+
 async function loadEpub(file, requestId) {
     const bookData = await readDocumentBuffer(file);
     if (requestId !== fileRequestId) return;
     if (!(bookData instanceof ArrayBuffer)) {
         throw new Error('EPUB file did not contain binary data');
     }
+    // Hash in parallel with open/TOC so identity is ready for resume without
+    // delaying EPUB.js construction (and without changing first-tick open race tests).
+    // Do not assign currentDocumentMeta until the candidate is committed.
+    const identityGeneration = ++documentIdentityGeneration;
+    const priorProgressRevision = currentDocumentMeta?.progressRevision || 0;
+    const identityPromise = hashDocumentIdentity(
+        file, 'epub', bookData, identityGeneration).catch((error) => {
+        console.warn('Cannot hash document for reader progress', error);
+        return null;
+    });
 
     // Keep the existing book and player intact until the replacement has
     // parsed successfully. Failed selections must not destroy a working book.
@@ -328,39 +626,17 @@ async function loadEpub(file, requestId) {
         await candidate.ready;
         if (requestId !== fileRequestId) return;
 
-        const publisherToc = candidate.navigation?.toc || [];
-        // The EPUB's own navigation is authoritative. Heading scanning is an
-        // opt-in alternative, except for books without a publisher TOC.
-        const scan = scanDocumentHeadings.checked || publisherToc.length === 0;
-        if (scan) loadingStatus.textContent = 'Scanning for chapters...';
-        const discovered = scan
-            ? await getEnrichedToc(candidate, () => requestId === fileRequestId)
-            : publisherToc;
-        if (requestId !== fileRequestId) return;
-        // Heading-scan links come from Section.href and are already relative
-        // to the OPF. Do not resolve them against the nav document again:
-        // same-name chapters in different directories would be conflated.
-        // If no headings were found, the scanner returns the original
-        // publisher array by identity; those raw links still need resolving.
-        const toc = scan && discovered !== publisherToc
-            ? discovered
-            : normalizePublisherToc(discovered, candidate);
-        if (!hasPlayableTocEntry(toc)) throw new Error('EPUB contains no readable chapters');
+        const toc = await resolveEpubToc(candidate, requestId);
+        if (!toc || requestId !== fileRequestId) return;
 
-        // Retain the old book until the new chapter reaches the player:
-        // current audio/image blob URLs may still refer to its archive.
-        const oldBook = book;
-        chapterRequestId++;
-        book = candidate;
-        textDocument = null;
-        deferredChapterEndRevision = null;
+        const identity = await identityPromise;
+        if (requestId !== fileRequestId) return;
+        if (!commitOrSkipDocumentIdentity(
+            identity, priorProgressRevision, identityGeneration)) return;
+
+        commitOpenedEpub(candidate, toc);
         committed = true;
-        if (oldBook) retiringBooks.add(oldBook);
-        currentChapterBlocks = [];
-        currentActiveHref = null;
-        currentToc = toc;
-        resumeAutoplayForNewDocument();
-        renderChapterList(toc);
+        await offerResumeOrStart();
     } finally {
         // A failed/superseded candidate must not retain its ZIP and section
         // documents. Only the successfully committed book remains owned here.
@@ -379,10 +655,21 @@ async function loadTextDocument(file, format, requestId) {
     }
     const bytes = await readDocumentBuffer(file);
     if (requestId !== fileRequestId) return;
+    const identityGeneration = ++documentIdentityGeneration;
+    const priorProgressRevision = currentDocumentMeta?.progressRevision || 0;
+    const identityPromise = hashDocumentIdentity(
+        file, format, bytes, identityGeneration).catch((error) => {
+        console.warn('Cannot hash document for reader progress', error);
+        return null;
+    });
     const blocks = format === 'docx'
         ? await parseDocxDocument(bytes)
         : parseTextDocument(format, decodeTextDocument(bytes));
     if (requestId !== fileRequestId) return;
+    const identity = await identityPromise;
+    if (requestId !== fileRequestId) return;
+    if (!commitOrSkipDocumentIdentity(
+        identity, priorProgressRevision, identityGeneration)) return;
 
     // Preserve the existing EPUB if reading/parsing fails, and hand its image
     // URLs over only after the text chapter has rendered in the iframe.
@@ -393,26 +680,44 @@ async function loadTextDocument(file, format, requestId) {
     deferredChapterEndRevision = null;
     if (oldBook) retiringBooks.add(oldBook);
     currentChapterBlocks = blocks;
+    currentChapterCanonicalBlocks = blocks;
     currentActiveHref = null;
     currentToc = [{ href: 'document:0', label: file.name }];
     resumeAutoplayForNewDocument();
-    renderChapterList(currentToc);
+    renderChapterList(currentToc, { autoActivate: false });
+    await offerResumeOrStart();
     // Parsing and rendering the chapter list commit the replacement. The
     // async player write must *not* keep Cancel visible after this point.
     // Subsequent storage failures are reported by startTextChapterLoad() in
     // the reader's visible alert, without rolling back a committed document.
 }
 
-async function startTextChapterLoad(title) {
+async function startTextChapterLoad(title, forcedStartIndex = null, resumeCandidate = null) {
     const source = textDocument;
     const requestId = ++chapterRequestId;
     chapterErrorMsg.hidden = true;
     chapterErrorMsg.textContent = '';
     if (!source) return;
     try {
+        let startIndex = Number.isInteger(forcedStartIndex) ? forcedStartIndex : 0;
+        if (resumeCandidate && forcedStartIndex === 0) {
+            const target = resolveResumeTarget({
+                record: resumeCandidate,
+                flatToc,
+                chapterFingerprint: fingerprintChapterBlocks(source.blocks),
+                chapterBlockCount: source.blocks.length,
+            });
+            if (shouldOfferResumeChoice(target, flatToc[0]?.href)) {
+                showResumeBanner(target);
+                startIndex = 0;
+            } else if (!target.ok) {
+                void clearCurrentDocumentProgress();
+            }
+        }
         await sendToPlayer(source.blocks, title || source.title,
             source.blocks.map(entry => entry.content).join(' ').slice(0, 100),
-            0, requestId, null);
+            startIndex, requestId, null, false, currentToc[0]?.href || 'document:0',
+            { suppressAutoplay: Boolean(resumeCandidate) || Number.isInteger(forcedStartIndex) });
     } catch (error) {
         if (source !== textDocument || requestId !== chapterRequestId) return;
         chapterErrorMsg.textContent = 'Failed to load document: ' + String(error.message || error);
@@ -557,7 +862,8 @@ function selectActiveChapter(href) {
     return selected;
 }
 
-function renderChapterList(toc) {
+function renderChapterList(toc, options = {}) {
+    const autoActivate = options.autoActivate !== false;
     chapterList.innerHTML = '';
     flatToc = [];
     let subListId = 0;
@@ -610,6 +916,7 @@ function renderChapterList(toc) {
             chapterButton.dataset.href = item.href;
             chapterButton.appendChild(label);
             chapterButton.addEventListener('click', () => {
+                hideResumeBanner();
                 activateChapter(item, chapterButton);
             });
             itemEl.appendChild(chapterButton);
@@ -638,7 +945,7 @@ function renderChapterList(toc) {
     // Expand parent TOC groups of the selected chapter, including when
     // a non-linked group label contains the first playable chapter.
     const firstItem = chapterList.querySelector('.playable-chapter');
-    if (firstItem && flatToc[0]) {
+    if (autoActivate && firstItem && flatToc[0]) {
         // Activate through the same path as a user click, but call the
         // handler directly so first-chapter Prev/Next state cannot depend on
         // dispatching a DOM click against a just-mounted button.
@@ -648,17 +955,26 @@ function renderChapterList(toc) {
             setChapterGroupExpanded(group, true);
             group = group.parentElement?.closest('.chapter-group');
         }
+    } else if (firstItem) {
+        let group = firstItem.closest('.chapter-group');
+        while (group && chapterList.contains(group)) {
+            setChapterGroupExpanded(group, true);
+            group = group.parentElement?.closest('.chapter-group');
+        }
     }
 }
 
-function activateChapter(item, itemEl, continuePlaying = false) {
+function activateChapter(item, itemEl, continuePlaying = false, forcedStartIndex = null,
+    options = {}) {
+    if (!item?.href) return;
     selectActiveChapter(item.href);
     currentActiveHref = item.href;
     updateNavButtons();
     if (book) {
-        startChapterLoad(item.href, item.label, continuePlaying);
+        startChapterLoad(item.href, item.label, continuePlaying, forcedStartIndex, options);
     } else if (textDocument) {
-        activeTextChapterWrite = startTextChapterLoad(item.label);
+        activeTextChapterWrite = startTextChapterLoad(
+            item.label, forcedStartIndex, options.resumeCandidate || null);
         // The reader alert carries errors; avoid unhandled rejections.
         void activeTextChapterWrite.catch(() => {});
     }
@@ -701,13 +1017,14 @@ function updateNavButtons() {
 
 // A prior book may still have section.load() in progress when its successor
 // is selected. Track chapter work so Book.destroy() waits for those readers.
-function startChapterLoad(href, title, continuePlaying = false) {
+function startChapterLoad(href, title, continuePlaying = false, forcedStartIndex = null,
+    options = {}) {
     const source = book;
     // The file picker is hidden after successful EPUB loading; chapter errors
     // must be shown in the reader, not in the hidden file picker.
     chapterErrorMsg.hidden = true;
     chapterErrorMsg.textContent = '';
-    const task = loadEpubChapter(href, title, continuePlaying);
+    const task = loadEpubChapter(href, title, continuePlaying, forcedStartIndex, options);
     const requestId = chapterRequestId;
     let tasks = chapterTasks.get(source);
     if (!tasks) {
@@ -776,7 +1093,8 @@ async function consumeSection(section, source, callback) {
     }
 }
 
-async function loadEpubChapter(href, title, continuePlaying = false) {
+async function loadEpubChapter(href, title, continuePlaying = false, forcedStartIndex = null,
+    options = {}) {
     const requestId = ++chapterRequestId;
     const requestedBook = book;
     if (!requestedBook) return;
@@ -847,11 +1165,18 @@ async function loadEpubChapter(href, title, continuePlaying = false) {
 
     if (requestId !== chapterRequestId || book !== requestedBook) return;
     currentChapterBlocks = mergedBlocks;
+    // Fingerprint the full section set so continuous-reader truncation cannot
+    // invalidate an otherwise valid saved position for the same file.
+    currentChapterCanonicalBlocks = mergedBlocks;
 
     // baseHref and fragment are already defined at the start of the function
     let startIndex = 0;
+    let suppressAutoplay = false;
 
-    if (fragment) {
+    if (Number.isInteger(forcedStartIndex) && forcedStartIndex >= 0) {
+        startIndex = Math.min(forcedStartIndex, Math.max(0, mergedBlocks.length - 1));
+        suppressAutoplay = true;
+    } else if (fragment) {
         const targetId = decodedChapterId(fragment);
         const idx = mergedBlocks.findIndex(b => b.ids && b.ids.includes(targetId));
         if (idx !== -1) {
@@ -867,9 +1192,25 @@ async function loadEpubChapter(href, title, continuePlaying = false) {
         }
     }
 
+    if (options.resumeCandidate) {
+        const target = resolveResumeTarget({
+            record: options.resumeCandidate,
+            flatToc,
+            chapterFingerprint: fingerprintChapterBlocks(mergedBlocks),
+            chapterBlockCount: mergedBlocks.length,
+        });
+        if (shouldOfferResumeChoice(target, flatToc[0]?.href)) {
+            showResumeBanner(target);
+            startIndex = 0;
+            suppressAutoplay = true;
+        } else if (!target.ok) {
+            void clearCurrentDocumentProgress();
+        }
+    }
+
     const fullText = mergedBlocks.map(b => b.content).join(' ');
     await sendToPlayer(mergedBlocks, title || "Chapter", fullText.substring(0, 100), startIndex,
-        requestId, requestedBook, continuePlaying, href);
+        requestId, requestedBook, continuePlaying, href, { suppressAutoplay });
 }
 
 // --- Content Processing & Extraction ---
@@ -970,9 +1311,36 @@ async function extractBlocks(section, bodyElement, sourceBook = book) {
 // --- Bi-directional Sync ---
 
 window.addEventListener('message', (event) => {
-    if (event.data && event.data.type === 'KOKORO_READING_PROGRESS') {
-        updateActiveChapter(event.data.blockIndex);
+    if (event.source !== playerFrame.contentWindow ||
+        event.origin !== window.location.origin ||
+        event.data?.type !== 'KOKORO_READING_PROGRESS') {
+        return;
     }
+    const blockIndex = event.data.blockIndex;
+    updateActiveChapter(blockIndex);
+    scheduleProgressSave(blockIndex);
+});
+
+resumeReadingButton?.addEventListener('click', () => {
+    const target = pendingResumeTarget;
+    if (!target || !Number.isInteger(target.blockIndex)) return;
+    const href = target.chapterHref;
+    const item = flatToc.find((entry) => entry.href === href);
+    const itemEl = item && [...chapterList.querySelectorAll('.playable-chapter')]
+        .find((el) => el.dataset.href === item.href);
+    hideResumeBanner();
+    if (!item) return;
+    // Explicit Resume never autoplays — user presses Play in the overlay.
+    activateChapter(item, itemEl || null, false, target.blockIndex);
+});
+
+startOverReadingButton?.addEventListener('click', () => {
+    void clearCurrentDocumentProgress();
+    activateFirstPlayableChapter(false, 0);
+});
+
+clearReadingProgressButton?.addEventListener('click', () => {
+    void clearCurrentDocumentProgress();
 });
 
 function updateActiveChapter(blockIndex) {
@@ -1047,7 +1415,7 @@ function updateActiveChapter(blockIndex) {
 }
 
 async function sendToPlayer(content, title, textPreview, startIndex, requestId, requestedBook,
-    continuePlaying = false, sourceHref = null) {
+    continuePlaying = false, sourceHref = null, options = {}) {
     const settings = await browser.storage.sync.get([
         'voice', 'normalizationOptions', 'customPronunciations', 'apiUrl',
         'autoplayReader', 'continuousReader', 'ttsBackend', 'mediaPipeVariant',
@@ -1092,7 +1460,9 @@ async function sendToPlayer(content, title, textPreview, startIndex, requestId, 
         pendingNormalizationOptions: settings.normalizationOptions,
         pendingCustomPronunciations: settings.customPronunciations,
         pendingStartIndex: startIndex,
-        pendingAutoplay: continuePlaying || settings.autoplayReader === true,
+        pendingAutoplay: options.suppressAutoplay
+            ? false
+            : (continuePlaying || settings.autoplayReader === true),
         pendingContinuousReader: Boolean(requestedBook && settings.continuousReader === true),
     };
     // Storage updates can finish out of order even when chapter extraction
@@ -1185,6 +1555,9 @@ window.addEventListener('message', (event) => {
         renderedChapterRequestId === chapterRequestId &&
         hasOpenDocument() && filePickerOverlay.style.display === 'none') {
         readerPausedForPicker = false;
+        // Play without clicking Resume still counts as committing to the
+        // current preview chapter — resume saving from here forward.
+        hideResumeBanner();
     }
     // The reader owns its embedded player: Close returns to the document
     // picker without discarding the current book or leaving audio playing.
