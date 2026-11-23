@@ -28,6 +28,25 @@ function digest(hex = 'a'.repeat(64)) {
     return hex;
 }
 
+/** Two-doc fixture used by migration / multi-tab upsert tests. */
+function twoDocProgressRecords(overrides = {}) {
+    const idA = documentIdFromDigest('a'.repeat(64));
+    const idB = documentIdFromDigest('b'.repeat(64));
+    const recordA = buildProgressRecord({
+        documentId: idA, name: 'a.epub', size: 1, format: 'epub',
+        chapterHref: 'a.xhtml', blockIndex: 1, chapterFingerprint: 'fp',
+        revision: 1, updatedAt: 1,
+        ...overrides.a,
+    });
+    const recordB = buildProgressRecord({
+        documentId: idB, name: 'b.epub', size: 1, format: 'epub',
+        chapterHref: 'b.xhtml', blockIndex: 2, chapterFingerprint: 'fp',
+        revision: 1, updatedAt: 2,
+        ...overrides.b,
+    });
+    return { idA, idB, recordA, recordB };
+}
+
 describe('reader-progress helpers (#196)', () => {
     beforeAll(() => {
         Object.defineProperty(globalThis, 'crypto', {
@@ -233,18 +252,7 @@ describe('reader-progress helpers (#196)', () => {
     });
 
     test('planProgressUpsert migrates legacy-only siblings before dropping the map', () => {
-        const idA = documentIdFromDigest('a'.repeat(64));
-        const idB = documentIdFromDigest('b'.repeat(64));
-        const recordA = buildProgressRecord({
-            documentId: idA, name: 'a.epub', size: 1, format: 'epub',
-            chapterHref: 'a.xhtml', blockIndex: 1, chapterFingerprint: 'fp',
-            revision: 1, updatedAt: 1,
-        });
-        const recordB = buildProgressRecord({
-            documentId: idB, name: 'b.epub', size: 1, format: 'epub',
-            chapterHref: 'b.xhtml', blockIndex: 2, chapterFingerprint: 'fp',
-            revision: 1, updatedAt: 2,
-        });
+        const { idA, idB, recordA, recordB } = twoDocProgressRecords();
         const updatedA = buildProgressRecord({
             ...recordA, blockIndex: 5, updatedAt: 3, revision: 2,
         });
@@ -253,23 +261,11 @@ describe('reader-progress helpers (#196)', () => {
         expect(plan.set[progressStorageKey(idA)]).toEqual(updatedA);
         expect(plan.set[progressStorageKey(idB)]).toEqual(recordB);
         expect(plan.remove).toContain(STORAGE_KEY);
-        const after = { ...plan.set };
-        expect(readProgressRecord(after, idB).blockIndex).toBe(2);
+        expect(readProgressRecord({ ...plan.set }, idB).blockIndex).toBe(2);
     });
 
     test('planProgressUpsert does not rewrite peers that already have per-doc keys', () => {
-        const idA = documentIdFromDigest('a'.repeat(64));
-        const idB = documentIdFromDigest('b'.repeat(64));
-        const recordA = buildProgressRecord({
-            documentId: idA, name: 'a.epub', size: 1, format: 'epub',
-            chapterHref: 'a.xhtml', blockIndex: 1, chapterFingerprint: 'fp',
-            revision: 1, updatedAt: 1,
-        });
-        const recordB = buildProgressRecord({
-            documentId: idB, name: 'b.epub', size: 1, format: 'epub',
-            chapterHref: 'b.xhtml', blockIndex: 2, chapterFingerprint: 'fp',
-            revision: 1, updatedAt: 2,
-        });
+        const { idA, idB, recordA, recordB } = twoDocProgressRecords();
         const updatedA = buildProgressRecord({
             ...recordA, blockIndex: 5, updatedAt: 3, revision: 2,
         });
@@ -283,27 +279,16 @@ describe('reader-progress helpers (#196)', () => {
     });
 
     test('concurrent upserts from the same snapshot keep both latest values', () => {
-        const idA = documentIdFromDigest('a'.repeat(64));
-        const idB = documentIdFromDigest('b'.repeat(64));
-        const recordA1 = buildProgressRecord({
-            documentId: idA, name: 'a.epub', size: 1, format: 'epub',
-            chapterHref: 'a.xhtml', blockIndex: 1, chapterFingerprint: 'fp',
-            revision: 1, updatedAt: 1,
-        });
-        const recordB2 = buildProgressRecord({
-            documentId: idB, name: 'b.epub', size: 1, format: 'epub',
-            chapterHref: 'b.xhtml', blockIndex: 2, chapterFingerprint: 'fp',
-            revision: 1, updatedAt: 2,
-        });
+        const { idA, idB, recordA, recordB } = twoDocProgressRecords();
         const recordA5 = buildProgressRecord({
-            ...recordA1, blockIndex: 5, updatedAt: 10, revision: 2,
+            ...recordA, blockIndex: 5, updatedAt: 10, revision: 2,
         });
         const recordB7 = buildProgressRecord({
-            ...recordB2, blockIndex: 7, updatedAt: 11, revision: 2,
+            ...recordB, blockIndex: 7, updatedAt: 11, revision: 2,
         });
         const store = {
-            [progressStorageKey(idA)]: recordA1,
-            [progressStorageKey(idB)]: recordB2,
+            [progressStorageKey(idA)]: recordA,
+            [progressStorageKey(idB)]: recordB,
         };
         const planA = planProgressUpsert(store, recordA5);
         const planB = planProgressUpsert(store, recordB7);
@@ -327,18 +312,7 @@ describe('reader-progress helpers (#196)', () => {
     });
 
     test('planProgressRemove migrates leftover legacy docs when clearing one', () => {
-        const idA = documentIdFromDigest('a'.repeat(64));
-        const idB = documentIdFromDigest('b'.repeat(64));
-        const recordA = buildProgressRecord({
-            documentId: idA, name: 'a.epub', size: 1, format: 'epub',
-            chapterHref: 'a.xhtml', blockIndex: 1, chapterFingerprint: 'fp',
-            revision: 1, updatedAt: 1,
-        });
-        const recordB = buildProgressRecord({
-            documentId: idB, name: 'b.epub', size: 1, format: 'epub',
-            chapterHref: 'b.xhtml', blockIndex: 2, chapterFingerprint: 'fp',
-            revision: 1, updatedAt: 2,
-        });
+        const { idA, idB, recordA, recordB } = twoDocProgressRecords();
         const store = { [STORAGE_KEY]: { [idA]: recordA, [idB]: recordB } };
         const plan = planProgressRemove(store, idA);
         expect(plan.remove).toEqual(expect.arrayContaining([
