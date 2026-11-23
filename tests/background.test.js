@@ -22,7 +22,8 @@ global.browser = {
             }))
         },
         local: {
-            set: jest.fn(() => Promise.resolve())
+            set: jest.fn(() => Promise.resolve()),
+            get: jest.fn(async (defaults = {}) => ({ ...defaults })),
         }
     },
     tabs: {
@@ -37,15 +38,36 @@ global.browser = {
         onCommand: { addListener: jest.fn() }
     },
     action: {
-        setIcon: jest.fn()
+        setIcon: jest.fn(),
+        setTitle: jest.fn(() => Promise.resolve()),
     },
     alarms: {
         create: jest.fn(),
+        clear: jest.fn(() => Promise.resolve(true)),
         onAlarm: { addListener: jest.fn() }
     }
 };
 
 global.browser.storage.onChanged = { addListener: jest.fn() };
+
+// Cache Storage stub for background.js. Local readiness tests spy
+// ModelDataStore.prototype.status (or use local-model-readiness.metadataStatus)
+// instead of synthesizing integrity headers here.
+function mockCacheMatch() {
+    return {
+        open: jest.fn(async () => ({
+            match: jest.fn(async () => undefined),
+        })),
+    };
+}
+
+global.caches = mockCacheMatch();
+if (typeof global.Response === 'undefined') {
+    global.Response = class Response {};
+}
+if (typeof global.TransformStream === 'undefined') {
+    global.TransformStream = class TransformStream {};
+}
 
 function mockSpeechStreamResponse(payload = 'audio') {
     const bytes = Uint8Array.from(
@@ -512,5 +534,490 @@ describe('background.js logic', () => {
         expect(result.firstBodyByteMs).toBeGreaterThanOrEqual(90);
         expect(result.firstBodyByteMs).toBeLessThan(300);
         jest.useRealTimers();
+    });
+
+    async function flushToolbarCheck() {
+        await new Promise((r) => setTimeout(r, 0));
+        await new Promise((r) => setTimeout(r, 0));
+    }
+
+    async function loadBackgroundWithReadyStore() {
+        jest.resetModules();
+        const { ModelDataStore } = require('../model-data-store.js');
+        const statusSpy = jest.spyOn(ModelDataStore.prototype, 'status').mockResolvedValue({
+            ready: true, storedBytes: 1, totalBytes: 1,
+        });
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+        return { bg, statusSpy };
+    }
+
+    function stubToolbarSync(overrides) {
+        browser.storage.sync.get.mockResolvedValue({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ...overrides,
+        });
+        fetch.mockClear();
+        browser.action.setIcon.mockClear();
+        browser.action.setTitle.mockClear();
+    }
+
+    function lastIcon48() {
+        return browser.action.setIcon.mock.calls.at(-1)[0].path[48];
+    }
+
+    function lastTitle() {
+        return browser.action.setTitle.mock.calls.at(-1)[0].title;
+    }
+
+    test('ready MediaPipe does not use the server-disconnected red icon (#208)', async () => {
+        stubToolbarSync({ ttsBackend: 'mediapipe', mediaPipeVariant: 'cpu' });
+        const { manifestForVariant } = require('../model-catalog.js');
+        const revision = manifestForVariant('mediapipe', 'cpu').revision;
+        browser.storage.local.get.mockImplementation(async (defaults = {}) => ({
+            ...defaults,
+            'mediapipeValidatedRevision:cpu': revision,
+        }));
+        const { bg, statusSpy } = await loadBackgroundWithReadyStore();
+        await bg.checkApiStatus();
+
+        expect(fetch).not.toHaveBeenCalled();
+        expect(lastIcon48()).toMatch(/icon-48-green/);
+        expect(lastIcon48()).not.toMatch(/red/);
+        expect(lastTitle()).toMatch(/MediaPipe ready/i);
+        statusSpy.mockRestore();
+    });
+
+    test('untested MediaPipe uses default icons and needs-setup title (#208)', async () => {
+        stubToolbarSync({ ttsBackend: 'mediapipe', mediaPipeVariant: 'cpu' });
+        browser.storage.local.get.mockImplementation(async (defaults = {}) => ({ ...defaults }));
+        const { bg, statusSpy } = await loadBackgroundWithReadyStore();
+        await bg.checkApiStatus();
+
+        expect(fetch).not.toHaveBeenCalled();
+        expect(lastIcon48()).toBe('icons/icon48.png');
+        expect(lastTitle()).toMatch(/test the installed model first/i);
+        statusSpy.mockRestore();
+    });
+
+    test('ready ONNX paints green without FastAPI fetch (#208)', async () => {
+        stubToolbarSync({ ttsBackend: 'onnx', onnxVoiceAsset: 'voices/af.bin' });
+        const { manifestForVariant } = require('../model-catalog.js');
+        const revision = manifestForVariant('onnx', 'q8').revision;
+        browser.storage.local.get.mockImplementation(async (defaults = {}) => ({
+            ...defaults,
+            'onnxValidatedRevision:q8': revision,
+        }));
+        const { bg, statusSpy } = await loadBackgroundWithReadyStore();
+        await bg.checkApiStatus();
+
+        expect(fetch).not.toHaveBeenCalled();
+        expect(lastIcon48()).toMatch(/icon-48-green/);
+        expect(lastTitle()).toMatch(/ONNX ready \(on-device\)/);
+        statusSpy.mockRestore();
+    });
+
+    test('FastAPI unreachable still paints red with unreachable title (#208)', async () => {
+        stubToolbarSync({ ttsBackend: 'fastapi' });
+        fetch.mockRejectedValue(new TypeError('Failed to fetch'));
+        jest.resetModules();
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+        await bg.checkApiStatus();
+
+        expect(lastIcon48()).toMatch(/icon-48-red/);
+        expect(lastTitle()).toMatch(/unreachable/i);
+    });
+
+    test('FastAPI reachable paints green (#208)', async () => {
+        stubToolbarSync({ ttsBackend: 'fastapi' });
+        fetch.mockResolvedValue({
+            ok: true,
+            json: async () => ({ status: 'ok' }),
+        });
+        jest.resetModules();
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+        await bg.checkApiStatus();
+
+        expect(lastIcon48()).toMatch(/icon-48-green/);
+        expect(lastTitle()).toMatch(/reachable/i);
+    });
+
+    test('FastAPI /models-only servers still paint green (#208)', async () => {
+        stubToolbarSync({ ttsBackend: 'fastapi' });
+        fetch.mockImplementation(async (url) => {
+            if (String(url).includes('/test') || String(url).includes('/health')) {
+                return { ok: false, json: async () => ({}) };
+            }
+            if (String(url).includes('/models')) {
+                return { ok: true, json: async () => ({ data: [] }) };
+            }
+            return { ok: false, json: async () => ({}) };
+        });
+        jest.resetModules();
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+        await bg.checkApiStatus();
+        expect(lastIcon48()).toMatch(/icon-48-green/);
+        expect(lastTitle()).toMatch(/reachable/i);
+    });
+
+    test('FastAPI /models HTML 200 does not paint green (#208)', async () => {
+        stubToolbarSync({ ttsBackend: 'fastapi' });
+        fetch.mockImplementation(async (url) => {
+            if (String(url).includes('/test') || String(url).includes('/health')) {
+                return { ok: false, json: async () => ({}) };
+            }
+            if (String(url).includes('/models')) {
+                return {
+                    ok: true,
+                    json: async () => {
+                        throw new SyntaxError('Unexpected token < in JSON');
+                    },
+                };
+            }
+            return { ok: false, json: async () => ({}) };
+        });
+        jest.resetModules();
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+        await bg.checkApiStatus();
+        expect(lastIcon48()).not.toMatch(/icon-48-green/);
+        expect(lastTitle()).toMatch(/unreachable|not reachable/i);
+    });
+
+    test('apiUrl change during post-probe settings read restarts (#208)', async () => {
+        stubToolbarSync({
+            ttsBackend: 'fastapi',
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+        });
+        fetch.mockImplementation(async (url) => {
+            if (String(url).includes('9999')) {
+                return { ok: false, json: async () => ({}) };
+            }
+            if (String(url).includes('/test')) {
+                return { ok: true, json: async () => ({ status: 'ok' }) };
+            }
+            return { ok: false, json: async () => ({}) };
+        });
+        jest.resetModules();
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+
+        let releaseLatest;
+        const latestGate = new Promise((resolve) => { releaseLatest = resolve; });
+        let sawLatestGet = false;
+        let currentApiUrl = 'http://127.0.0.1:8880/v1/';
+        browser.storage.sync.get.mockImplementation(async (defaults = {}) => {
+            const keys = Object.keys(defaults || {});
+            // Post-probe read only asks for ttsBackend.
+            if (keys.length === 1 && keys[0] === 'ttsBackend') {
+                sawLatestGet = true;
+                await latestGate;
+                return { ttsBackend: 'fastapi' };
+            }
+            return {
+                apiUrl: currentApiUrl,
+                ttsBackend: 'fastapi',
+                mediaPipeVariant: 'cpu',
+                onnxVoiceAsset: 'voices/af.bin',
+            };
+        });
+
+        const check = bg.checkApiStatus();
+        for (let i = 0; i < 50 && !sawLatestGet; i++) {
+            await flushToolbarCheck();
+        }
+        expect(sawLatestGet).toBe(true);
+
+        browser.action.setIcon.mockClear();
+        browser.action.setTitle.mockClear();
+        currentApiUrl = 'http://127.0.0.1:9999/v1/';
+        const listener = browser.storage.onChanged.addListener.mock.calls.at(-1)[0];
+        await listener({ apiUrl: { newValue: currentApiUrl } }, 'sync');
+        releaseLatest();
+        await check;
+        await flushToolbarCheck();
+        await flushToolbarCheck();
+
+        // No interim paint of the old endpoint's green after the URL switch.
+        const paintsAfterSwitch = browser.action.setIcon.mock.calls.map(
+            (call) => call[0].path[48]
+        );
+        expect(paintsAfterSwitch.some((path) => /icon-48-green/.test(path))).toBe(false);
+        expect(lastIcon48()).not.toMatch(/icon-48-green/);
+        expect(lastTitle()).toMatch(/unreachable|not reachable/i);
+    });
+
+    test('storage.local validated-revision changes refresh toolbar status (#208)', async () => {
+        stubToolbarSync({ ttsBackend: 'fastapi' });
+        fetch.mockResolvedValue({
+            ok: true,
+            json: async () => ({ status: 'ok' }),
+        });
+        jest.resetModules();
+        const bg = require('../background.js');
+        // Drain startup checkApiStatus so it cannot mask the listener assertion.
+        await flushToolbarCheck();
+        await bg.checkApiStatus();
+        const listener = browser.storage.onChanged.addListener.mock.calls.at(-1)[0];
+        browser.action.setIcon.mockClear();
+        await listener({ 'onnxValidatedRevision:q8': { newValue: 'abc' } }, 'local');
+        await flushToolbarCheck();
+        expect(browser.action.setIcon).toHaveBeenCalled();
+        expect(lastIcon48()).toMatch(/icon-48-green/);
+    });
+
+    test('minute alarm clears via storage backend switch lifecycle (#208)', async () => {
+        stubToolbarSync({ ttsBackend: 'fastapi' });
+        fetch.mockResolvedValue({
+            ok: true,
+            json: async () => ({ status: 'ok' }),
+        });
+        jest.resetModules();
+        require('../background.js');
+        await flushToolbarCheck();
+        expect(browser.alarms.create).toHaveBeenCalledWith(
+            'api-check',
+            expect.objectContaining({ periodInMinutes: 1 })
+        );
+        browser.storage.sync.get.mockResolvedValue({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+        });
+        const listener = browser.storage.onChanged.addListener.mock.calls.at(-1)[0];
+        browser.alarms.clear.mockClear();
+        await listener({ ttsBackend: { newValue: 'mediapipe' } }, 'sync');
+        await flushToolbarCheck();
+        expect(browser.alarms.clear).toHaveBeenCalledWith('api-check');
+    });
+
+    test('minute alarm is registered for FastAPI and probes (#208)', async () => {
+        stubToolbarSync({ ttsBackend: 'fastapi' });
+        fetch.mockResolvedValue({
+            ok: true,
+            json: async () => ({ status: 'ok' }),
+        });
+        jest.resetModules();
+        require('../background.js');
+        await flushToolbarCheck();
+        expect(browser.alarms.create).toHaveBeenCalledWith(
+            'api-check',
+            expect.objectContaining({ periodInMinutes: 1 })
+        );
+        const alarmListener = browser.alarms.onAlarm.addListener.mock.calls.at(-1)[0];
+        browser.action.setIcon.mockClear();
+        await alarmListener({ name: 'api-check' });
+        await flushToolbarCheck();
+        expect(browser.action.setIcon).toHaveBeenCalled();
+        expect(lastIcon48()).toMatch(/icon-48-green/);
+    });
+
+    test('out-of-order syncToolbarAlarm reads keep FastAPI alarm (#208)', async () => {
+        // Repro: FastAPI→MediaPipe sync is deferred, then MediaPipe→FastAPI
+        // completes first (creates alarm). Releasing the older MediaPipe result
+        // must not clear the alarm that the newer FastAPI sync just registered.
+        stubToolbarSync({ ttsBackend: 'fastapi' });
+        fetch.mockResolvedValue({
+            ok: true,
+            json: async () => ({ status: 'ok' }),
+        });
+        jest.resetModules();
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+
+        let releaseMediaPipe;
+        const mediaPipeHeld = new Promise((resolve) => { releaseMediaPipe = resolve; });
+        browser.storage.sync.get.mockImplementation(async () => {
+            await mediaPipeHeld;
+            return {
+                apiUrl: 'http://127.0.0.1:8880/v1/',
+                ttsBackend: 'mediapipe',
+                mediaPipeVariant: 'cpu',
+            };
+        });
+        const stale = bg.syncToolbarAlarm();
+
+        browser.storage.sync.get.mockResolvedValue({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'fastapi',
+        });
+        browser.alarms.create.mockClear();
+        browser.alarms.clear.mockClear();
+        await bg.syncToolbarAlarm();
+        expect(browser.alarms.create).toHaveBeenCalledWith(
+            'api-check',
+            expect.objectContaining({ periodInMinutes: 1 })
+        );
+
+        browser.alarms.clear.mockClear();
+        releaseMediaPipe();
+        await stale;
+        expect(browser.alarms.clear).not.toHaveBeenCalled();
+    });
+
+    test('localModelCacheEpoch storage changes refresh toolbar (#208)', async () => {
+        stubToolbarSync({ ttsBackend: 'onnx', onnxVoiceAsset: 'voices/af_bella.bin' });
+        const { manifestForVariant } = require('../model-catalog.js');
+        const revision = manifestForVariant('onnx', 'q8').revision;
+        browser.storage.local.get.mockImplementation(async (defaults = {}) => ({
+            ...defaults,
+            'onnxValidatedRevision:q8': revision,
+        }));
+        let voiceReady = true;
+        jest.resetModules();
+        const { ModelDataStore } = require('../model-data-store.js');
+        const statusSpy = jest.spyOn(ModelDataStore.prototype, 'status')
+            .mockImplementation(async (manifest) => {
+                if (String(manifest?.variant || '').startsWith('voice-')) {
+                    return {
+                        ready: voiceReady,
+                        storedBytes: voiceReady ? 1 : 0,
+                        totalBytes: 1,
+                    };
+                }
+                return { ready: true, storedBytes: 1, totalBytes: 1 };
+            });
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+        await bg.checkApiStatus();
+        expect(lastTitle()).toMatch(/ONNX ready/i);
+        const listener = browser.storage.onChanged.addListener.mock.calls.at(-1)[0];
+        voiceReady = false;
+        browser.action.setIcon.mockClear();
+        browser.action.setTitle.mockClear();
+        await listener({ localModelCacheEpoch: { newValue: Date.now() } }, 'local');
+        await flushToolbarCheck();
+        expect(browser.action.setIcon).toHaveBeenCalled();
+        expect(lastTitle()).toMatch(/voice not installed/i);
+        statusSpy.mockRestore();
+    });
+
+    test('backend change during in-flight FastAPI probe coalesces to local status (#208)', async () => {
+        const { manifestForVariant } = require('../model-catalog.js');
+        const revision = manifestForVariant('mediapipe', 'cpu').revision;
+        let resolveFetch;
+        const fetchGate = new Promise((resolve) => { resolveFetch = resolve; });
+
+        browser.storage.sync.get.mockResolvedValue({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'fastapi',
+            mediaPipeVariant: 'cpu',
+            onnxVoiceAsset: 'voices/af.bin',
+        });
+        browser.storage.local.get.mockImplementation(async (defaults = {}) => ({
+            ...defaults,
+            'mediapipeValidatedRevision:cpu': revision,
+        }));
+        fetch.mockImplementation(() => fetchGate.then(() => ({
+            ok: false,
+            json: async () => ({}),
+        })));
+
+        jest.resetModules();
+        const { ModelDataStore } = require('../model-data-store.js');
+        const statusSpy = jest.spyOn(ModelDataStore.prototype, 'status').mockResolvedValue({
+            ready: true, storedBytes: 1, totalBytes: 1,
+        });
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+
+        // Start a FastAPI probe that stays pending on fetch.
+        const first = bg.checkApiStatus();
+        await flushToolbarCheck();
+
+        // Switch to MediaPipe while FastAPI is still in flight.
+        browser.storage.sync.get.mockResolvedValue({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            onnxVoiceAsset: 'voices/af.bin',
+        });
+        const listener = browser.storage.onChanged.addListener.mock.calls.at(-1)[0];
+        browser.action.setIcon.mockClear();
+        browser.action.setTitle.mockClear();
+        const statusCallsBeforeSwitch = statusSpy.mock.calls.length;
+        await listener({ ttsBackend: { newValue: 'mediapipe' } }, 'sync');
+        // Listener marks a pending coalesce while FastAPI fetch is still gated —
+        // local ModelDataStore.status must not run until the in-flight probe ends.
+        expect(statusSpy.mock.calls.length).toBe(statusCallsBeforeSwitch);
+
+        // Complete the stale FastAPI fetch; coalesce must re-run for MediaPipe.
+        resolveFetch();
+        await first;
+        await flushToolbarCheck();
+        await flushToolbarCheck();
+
+        expect(statusSpy.mock.calls.length).toBeGreaterThan(statusCallsBeforeSwitch);
+        expect(lastIcon48()).toMatch(/icon-48-green/);
+        expect(lastIcon48()).not.toMatch(/red/);
+        expect(lastTitle()).toMatch(/MediaPipe ready/i);
+        statusSpy.mockRestore();
+    });
+
+    test('late FastAPI /models success does not overwrite local toolbar (#208)', async () => {
+        let resolveModels;
+        const modelsGate = new Promise((resolve) => { resolveModels = resolve; });
+        browser.storage.sync.get.mockResolvedValue({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'fastapi',
+            mediaPipeVariant: 'cpu',
+            voice: 'af_sarah',
+            mode: 'stream',
+            normalizationOptions: {},
+        });
+        fetch.mockImplementation((url) => {
+            if (String(url).includes('/models')) {
+                return modelsGate.then(() => ({
+                    ok: true,
+                    json: async () => ({ data: [] }),
+                }));
+            }
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({ status: 'ok' }),
+            });
+        });
+        jest.resetModules();
+        const { ModelDataStore } = require('../model-data-store.js');
+        const statusSpy = jest.spyOn(ModelDataStore.prototype, 'status').mockResolvedValue({
+            ready: false, storedBytes: 0, totalBytes: 1,
+        });
+        require('../background.js');
+        await flushToolbarCheck();
+
+        const onClicked = browser.contextMenus.onClicked.addListener.mock.calls.at(-1)[0];
+        const pendingAction = onClicked(
+            { menuItemId: 'send-to-kokoro', selectionText: 'Hello mid-switch' },
+            { id: 55, title: 'Page' }
+        );
+        await flushToolbarCheck();
+
+        // Switch to unready MediaPipe while /models is still in flight.
+        browser.storage.sync.get.mockResolvedValue({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            voice: 'af_sarah',
+            mode: 'stream',
+            normalizationOptions: {},
+        });
+        const storageListener = browser.storage.onChanged.addListener.mock.calls.at(-1)[0];
+        await storageListener({ ttsBackend: { newValue: 'mediapipe' } }, 'sync');
+        await flushToolbarCheck();
+
+        browser.action.setIcon.mockClear();
+        browser.action.setTitle.mockClear();
+        resolveModels();
+        await pendingAction;
+        await flushToolbarCheck();
+        await flushToolbarCheck();
+
+        expect(lastIcon48()).not.toMatch(/green/);
+        expect(lastTitle()).toMatch(/model not installed|MediaPipe/i);
+        expect(lastTitle()).not.toMatch(/server reachable/i);
+        statusSpy.mockRestore();
     });
 });

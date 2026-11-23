@@ -61,6 +61,8 @@ export default [
       'transliteration-lite.js',
       'tts-providers.js',
       'local-voice-mixing.js',
+      'toolbar-status.js',
+      'local-model-readiness.js',
       'backend-disclosure.js',
       'gpu-execution-disclosure.js',
       'benchmark-capabilities.js',
@@ -106,7 +108,7 @@ export default [
   },
   // Classic scripts that optionally export for Jest via CJS interop
   {
-    files: ['content.js', 'api-client.js', 'overlay-position.js', 'floating-mic-position.js', 'benchmark-capabilities.js', 'tts-providers.js', 'local-voice-mixing.js', 'backend-disclosure.js', 'gpu-execution-disclosure.js', 'broader-g2p-disclosure.js', 'store-signing-disclosure.js', 'longer-shared-english-sample.js'],
+    files: ['content.js', 'api-client.js', 'overlay-position.js', 'floating-mic-position.js', 'benchmark-capabilities.js', 'tts-providers.js', 'local-voice-mixing.js', 'toolbar-status.js', 'local-model-readiness.js', 'backend-disclosure.js', 'gpu-execution-disclosure.js', 'broader-g2p-disclosure.js', 'store-signing-disclosure.js', 'longer-shared-english-sample.js'],
     languageOptions: {
       globals: {
         module: 'readonly',
@@ -127,10 +129,10 @@ export default [
       globals: { KokoroBackendDisclosure: 'readonly' },
     },
   },
-  // background.js uses require only in its Jest CommonJS harness.
+  // background.js uses require / module.exports in its Jest CommonJS harness.
   {
     files: ['background.js'],
-    languageOptions: { globals: { require: 'readonly' } },
+    languageOptions: { globals: { require: 'readonly', module: 'readonly' } },
   },
   // content.js depends on overlay-position.js / floating-mic-position.js (classic script globals)
   {

@@ -3,6 +3,10 @@ try {
         importScripts('browser-polyfill.min.js');
         importScripts('tts-providers.js');
         importScripts('local-voice-mixing.js');
+        importScripts('toolbar-status.js');
+        // Classic catalog lite + readiness (Chrome SW cannot dynamic-import ES modules).
+        importScripts('model-catalog-lite.js');
+        importScripts('local-model-readiness.js');
     }
 } catch (e) {
     console.error("Polyfill load error:", e);
@@ -16,6 +20,12 @@ const TtsProviders = typeof require === 'function'
 const LocalVoice = typeof require === 'function'
     ? require('./local-voice-mixing.js')
     : globalThis.KokoroLocalVoiceMixing;
+const ToolbarStatus = typeof require === 'function'
+    ? require('./toolbar-status.js')
+    : globalThis.KokoroToolbarStatus;
+const LocalModelReadiness = typeof require === 'function'
+    ? require('./local-model-readiness.js')
+    : globalThis.KokoroLocalModelReadiness;
 
 browser.runtime.onInstalled.addListener(() => {
     browser.contextMenus.create({
@@ -44,108 +54,265 @@ const notify = (title, message) => {
 };
 
 let isChecking = false;
+/** Set when checkApiStatus is requested while a probe is already in flight. */
+let pendingToolbarCheck = false;
+/** Shared promise so callers can await a coalesced in-flight check. */
+let toolbarCheckPromise = null;
 
-// Icon management
-const setIconStatus = (isConnected) => {
-    const suffix = isConnected ? '-green' : '-red';
-    browser.action.setIcon({
-        path: {
-            48: `icons/icon-48${suffix}.png`,
-            128: `icons/icon-128${suffix}.png`
-        }
-    });
-};
+function applyToolbarStatus(status) {
+    const kind = status?.kind || ToolbarStatus.KIND.UNKNOWN;
+    const title = ToolbarStatus.titleForStatus(status);
+    browser.action.setIcon({ path: ToolbarStatus.iconPathsForKind(kind) });
+    if (browser.action.setTitle) {
+        browser.action.setTitle({ title });
+    }
+    return { kind, title, backend: status?.backend || null };
+}
 
-const checkApiStatus = async () => {
-    if (isChecking) return;
-    isChecking = true;
-
-    try {
-        const settings = await browser.storage.sync.get({
-            apiUrl: 'http://127.0.0.1:8880/v1/',
-            ttsBackend: TtsProviders.FASTAPI
-        });
-        const backend = TtsProviders.resolveBackend(settings.ttsBackend);
-        if (backend !== TtsProviders.FASTAPI) {
-            // Do not probe an HTTP server when a local engine was selected.
-            setIconStatus(false);
-            return;
-        }
-
-        let apiUrl = settings.apiUrl;
-        if (!apiUrl.endsWith('/')) apiUrl += '/';
-
-        // Helper to try fetch with timeout
-        const tryFetch = async (url) => {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 3000);
-            try {
-                const response = await fetch(url, { signal: controller.signal });
-                return response;
-            } finally {
-                clearTimeout(timeoutId);
-            }
+/**
+ * Read-only local readiness from validated-revision keys + Cache Storage metadata.
+ * Never probes FastAPI and never initializes a heavy TTS runtime.
+ * Uses classic-script helpers (importScripts / catalog lite) — no dynamic import().
+ */
+async function probeLocalToolbarStatus(backend, settings) {
+    if (typeof caches === 'undefined' || typeof caches.open !== 'function') {
+        return {
+            kind: ToolbarStatus.KIND.UNAVAILABLE,
+            backend,
+            detail: 'Cache Storage unavailable',
         };
+    }
+    if (!LocalModelReadiness || typeof LocalModelReadiness.probeLocalBackend !== 'function') {
+        return {
+            kind: ToolbarStatus.KIND.UNAVAILABLE,
+            backend,
+            detail: 'local readiness helper unavailable',
+        };
+    }
+    try {
+        return await LocalModelReadiness.probeLocalBackend(
+            backend,
+            settings,
+            {
+                origin: browser.runtime.getURL('/'),
+                cacheStorage: caches,
+                fetchImpl: fetch.bind(globalThis),
+                responseClass: Response,
+                streamClass: typeof TransformStream === 'function' ? TransformStream : undefined,
+                storageLocal: browser.storage.local,
+            },
+            {
+                classifyLocalReadiness: ToolbarStatus.classifyLocalReadiness,
+                normalizeOnnxVoiceAsset: LocalVoice.normalizeOnnxVoiceAsset,
+                onnxFixedVoice: LocalVoice.ONNX_FIXED_VOICE_ASSET,
+            }
+        );
+    } catch (error) {
+        console.warn('Kokoro: local toolbar status probe failed', error);
+        return {
+            kind: ToolbarStatus.KIND.FAILED,
+            backend,
+            detail: String(error?.message || error || 'probe failed'),
+        };
+    }
+}
 
-        // Check 1: /v1/test (kokoro-fastapi specific)
-        let connected = false;
+async function probeFastApiToolbarStatus(apiUrl) {
+    let normalized = apiUrl;
+    if (!normalized.endsWith('/')) normalized += '/';
 
+    const tryFetch = async (url) => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
         try {
-            const testUrl = new URL('test', apiUrl).href;
-            const resp = await tryFetch(testUrl);
+            return await fetch(url, { signal: controller.signal });
+        } finally {
+            clearTimeout(timeoutId);
+        }
+    };
+
+    let connected = false;
+    try {
+        const testUrl = new URL('test', normalized).href;
+        const resp = await tryFetch(testUrl);
+        if (resp.ok) {
+            const json = await resp.json();
+            if (json.status === 'ok') connected = true;
+        }
+    } catch (_) { /* ignore */ }
+
+    if (!connected) {
+        try {
+            const healthUrl = new URL('/health', new URL(normalized).origin).href;
+            const resp = await tryFetch(healthUrl);
             if (resp.ok) {
                 const json = await resp.json();
-                if (json.status === 'ok') {
-                    connected = true;
-                }
+                if (json.status === 'healthy') connected = true;
             }
-        } catch (e) {
-            // ignore
-        }
-
-        // If not yet connected, try /health
-        if (!connected) {
-            try {
-                const urlObj = new URL(apiUrl);
-                const healthUrl = new URL('/health', urlObj.origin).href;
-
-                const resp = await tryFetch(healthUrl);
-                if (resp.ok) {
-                    const json = await resp.json();
-                    if (json.status === 'healthy') {
-                        connected = true;
-                    }
-                }
-            } catch (e) {
-                // ignore
-            }
-        }
-
-        setIconStatus(connected);
-
-    } catch (e) {
-        console.error("API check failed completely:", e);
-        setIconStatus(false);
-    } finally {
-        isChecking = false;
+        } catch (_) { /* ignore */ }
     }
+
+    // Servers that expose speech/models but not /test or /health still count as
+    // reachable. Require an OpenAI-style `{ data: [...] }` body so an HTML 200
+    // landing page cannot paint a false green toolbar (#208).
+    if (!connected) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        try {
+            const modelsUrl = new URL('models', normalized).href;
+            const resp = await fetch(modelsUrl, { signal: controller.signal });
+            if (resp.ok) {
+                const json = await resp.json();
+                if (json && Array.isArray(json.data)) connected = true;
+            }
+        } catch (_) { /* ignore */ } finally {
+            clearTimeout(timeoutId);
+        }
+    }
+
+    return {
+        kind: connected ? ToolbarStatus.KIND.READY : ToolbarStatus.KIND.UNREACHABLE,
+        backend: TtsProviders.FASTAPI,
+        detail: null,
+    };
+}
+
+const checkApiStatus = async () => {
+    // Coalesce overlapping requests so a backend switch during a slow FastAPI
+    // probe is not dropped by the in-flight guard (#208 race).
+    if (isChecking && toolbarCheckPromise) {
+        pendingToolbarCheck = true;
+        return toolbarCheckPromise;
+    }
+    isChecking = true;
+    toolbarCheckPromise = (async () => {
+        try {
+            do {
+                pendingToolbarCheck = false;
+                const settings = await browser.storage.sync.get({
+                    apiUrl: 'http://127.0.0.1:8880/v1/',
+                    ttsBackend: TtsProviders.FASTAPI,
+                    mediaPipeVariant: 'cpu',
+                    onnxVoiceAsset: 'voices/af.bin',
+                });
+                let backend;
+                try {
+                    backend = TtsProviders.resolveBackend(settings.ttsBackend);
+                } catch (_) {
+                    applyToolbarStatus({
+                        kind: ToolbarStatus.KIND.UNKNOWN,
+                        backend: settings.ttsBackend,
+                        detail: 'unknown backend',
+                    });
+                    continue;
+                }
+
+                let status;
+                if (backend !== TtsProviders.FASTAPI) {
+                    // Do not probe an HTTP server when a local engine was selected.
+                    status = await probeLocalToolbarStatus(backend, settings);
+                } else {
+                    status = await probeFastApiToolbarStatus(settings.apiUrl);
+                }
+
+                // If prefs changed during the probe, skip applying the stale result
+                // and loop with the latest settings.
+                if (pendingToolbarCheck) continue;
+
+                const latest = await browser.storage.sync.get({
+                    ttsBackend: TtsProviders.FASTAPI,
+                });
+                // A change during the get (e.g. apiUrl) sets the pending flag; do
+                // not apply the previous endpoint/backend probe result.
+                if (pendingToolbarCheck) continue;
+                let latestBackend;
+                try {
+                    latestBackend = TtsProviders.resolveBackend(latest.ttsBackend);
+                } catch (_) {
+                    latestBackend = null;
+                }
+                if (latestBackend !== backend) {
+                    pendingToolbarCheck = true;
+                    continue;
+                }
+
+                applyToolbarStatus(status);
+            } while (pendingToolbarCheck);
+        } catch (e) {
+            console.error('Toolbar status check failed completely:', e);
+            applyToolbarStatus({
+                kind: ToolbarStatus.KIND.UNKNOWN,
+                backend: null,
+                detail: String(e?.message || e),
+            });
+        } finally {
+            isChecking = false;
+            toolbarCheckPromise = null;
+            // A request may have arrived after the loop exited but before we cleared
+            // the lock — schedule one more pass.
+            if (pendingToolbarCheck) {
+                pendingToolbarCheck = false;
+                void checkApiStatus();
+            }
+        }
+    })();
+    return toolbarCheckPromise;
 };
 
-// Initial check
-checkApiStatus();
+/**
+ * FastAPI-only minute alarm — cleared while a local backend is selected (#208).
+ * Generation token discards stale sync results when backend flips rapidly, so an
+ * older MediaPipe read cannot clear an alarm that a newer FastAPI sync just created.
+ */
+let toolbarAlarmSyncGeneration = 0;
 
-// Poll every minute
-browser.alarms.create('api-check', { periodInMinutes: 1 });
+async function syncToolbarAlarm() {
+    const generation = ++toolbarAlarmSyncGeneration;
+    try {
+        const { ttsBackend } = await browser.storage.sync.get({
+            ttsBackend: TtsProviders.FASTAPI,
+        });
+        if (generation !== toolbarAlarmSyncGeneration) return;
+        if (TtsProviders.resolveBackend(ttsBackend) === TtsProviders.FASTAPI) {
+            browser.alarms.create('api-check', { periodInMinutes: 1 });
+        } else if (browser.alarms.clear) {
+            await browser.alarms.clear('api-check');
+        }
+    } catch (_) {
+        if (generation !== toolbarAlarmSyncGeneration) return;
+        if (browser.alarms.clear) {
+            try { await browser.alarms.clear('api-check'); } catch (__) { /* ignore */ }
+        }
+    }
+}
+
+// Initial check + alarm aligned to current backend.
+void checkApiStatus().then(() => syncToolbarAlarm());
+
 browser.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === 'api-check') {
-        checkApiStatus();
+        void checkApiStatus();
     }
 });
 
-// Update on settings change
+// Refresh after backend/model preference changes, validation-key updates, and
+// model-manager Cache Storage mutations (localModelCacheEpoch).
 browser.storage.onChanged.addListener((changes, area) => {
-    if (area === 'sync' && (changes.apiUrl || changes.ttsBackend)) {
-        checkApiStatus();
+    if (area === 'sync' && (
+        changes.apiUrl ||
+        changes.ttsBackend ||
+        changes.mediaPipeVariant ||
+        changes.onnxVoiceAsset
+    )) {
+        void checkApiStatus();
+        if (changes.ttsBackend) void syncToolbarAlarm();
+        return;
+    }
+    if (area === 'local' && Object.keys(changes).some((key) =>
+        ToolbarStatus.isValidatedRevisionStorageKey(key) ||
+        ToolbarStatus.isLocalModelCacheEpochKey(key)
+    )) {
+        void checkApiStatus();
     }
 });
 
@@ -257,17 +424,18 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
     }
 
     // Network connectivity matters only for the explicitly selected server backend.
+    // Toolbar paint stays with checkApiStatus so a mid-flight backend switch cannot
+    // be overwritten by a late /models success (#208).
     if (backend === TtsProviders.FASTAPI) {
         try {
             const statusUrl = new URL('models', apiUrl).href;
             const statusResp = await fetch(statusUrl);
             if (!statusResp.ok) {
                 console.warn("Status check returned " + statusResp.status);
-            } else {
-                setIconStatus(true);
             }
+            void checkApiStatus();
         } catch (e) {
-            checkApiStatus();
+            void checkApiStatus();
             notify("Kokoro TTS Error", `Could not connect to Kokoro API at ${apiUrl}. Is it running?`);
             return;
         }
@@ -591,3 +759,14 @@ browser.commands.onCommand.addListener(async (command) => {
     if (command === "nav-next" || command === "nav-prev") return handleNavShortcut(command);
     if (command === "close-overlay") return handleCloseOverlayShortcut();
 });
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        checkApiStatus,
+        applyToolbarStatus,
+        probeLocalToolbarStatus,
+        probeFastApiToolbarStatus,
+        syncToolbarAlarm,
+        ToolbarStatus,
+    };
+}

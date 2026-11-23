@@ -758,6 +758,9 @@ async function doDownload(entry, ui) {
                     '%); validating and storing model data…');
             },
         });
+        // Notify as soon as Cache Storage has the assets — even if the
+        // subsequent refresh() inspect fails (#208 toolbar refresh).
+        await notifyLocalModelCacheChanged();
     } catch (error) {
         downloadError = controller.signal.aborted ? 'Download cancelled.' :
             'Download failed: ' + String(error.message || error);
@@ -1083,6 +1086,15 @@ async function invalidateRuntimeFor(entry) {
     }
 }
 
+/** Signal background toolbar to re-probe Cache Storage readiness (#208). */
+async function notifyLocalModelCacheChanged() {
+    try {
+        await browser.storage.local.set({ localModelCacheEpoch: Date.now() });
+    } catch (_) {
+        // Best-effort; toolbar also refreshes on validated-revision changes.
+    }
+}
+
 function verificationResultMessage(result) {
     if (result.removedAssets) {
         return 'Removed ' + result.removedAssets +
@@ -1094,6 +1106,53 @@ function verificationResultMessage(result) {
     }
     return 'Cached model data verified: ' +
         formatModelSize(result.verifiedBytes) + ' matches its pinned SHA-256 hashes.';
+}
+
+async function finishVerifyCachedData(entry, ui, {
+    priorChooseEnabled, removed, result, message,
+}) {
+    inFlightVerifications.delete(entry.key);
+    ui.verify.textContent = 'Verify cached data';
+    ui.verify.disabled = true;
+    ui.busy = 'finalizing';
+    let statusMessage = message;
+    if (removed || result?.missingAssets > 0) {
+        // A missing asset does not increment removedAssets, but any prior
+        // timing and validation for that model (or ONNX dictionary) is stale.
+        try {
+            await invalidateRuntimeFor(entry);
+        } catch (error) {
+            statusMessage += ' Could not reset the cached engine: ' + String(error.message || error);
+        }
+    }
+    // Always refresh toolbar after verify completes (clean success or prune).
+    try {
+        await notifyLocalModelCacheChanged();
+    } catch (error) {
+        statusMessage += ' Could not refresh toolbar status: ' + String(error.message || error);
+    }
+    let state = null;
+    try {
+        state = await refresh(entry, ui);
+    } catch (error) {
+        statusMessage += ' Could not inspect cache: ' + String(error.message || error);
+    }
+    finishModelOperation(entry, ui);
+    if (state) {
+        applyModelStatus(entry, ui, state);
+        // Preserve a prior user-validated backend only if no bytes were
+        // removed and the model remains installed.
+        ui.choose.disabled = !priorChooseEnabled ||
+            removed > 0 || result?.missingAssets > 0 || !state.ready;
+    } else {
+        ui.lastStatus = null;
+        ui.download.disabled = false;
+        ui.remove.disabled = true;
+        ui.verify.disabled = true;
+        ui.test.disabled = true;
+        ui.choose.disabled = true;
+    }
+    setMessage(ui.status, statusMessage);
 }
 
 // Explicit, offline SHA-256 verification. A mismatch is repaired only by
@@ -1139,41 +1198,9 @@ async function verifyCachedData(entry, ui) {
             : 'Cache verification failed without automatic download: ' +
                 String(error.message || error);
     } finally {
-        inFlightVerifications.delete(entry.key);
-        ui.verify.textContent = 'Verify cached data';
-        ui.verify.disabled = true;
-        ui.busy = 'finalizing';
-        if (removed || result?.missingAssets > 0) {
-            // A missing asset does not increment removedAssets, but any prior
-            // timing and validation for that model (or ONNX dictionary) is stale.
-            try {
-                await invalidateRuntimeFor(entry);
-            } catch (error) {
-                message += ' Could not reset the cached engine: ' + String(error.message || error);
-            }
-        }
-        let state = null;
-        try {
-            state = await refresh(entry, ui);
-        } catch (error) {
-            message += ' Could not inspect cache: ' + String(error.message || error);
-        }
-        finishModelOperation(entry, ui);
-        if (state) {
-            applyModelStatus(entry, ui, state);
-            // Preserve a prior user-validated backend only if no bytes were
-            // removed and the model remains installed.
-            ui.choose.disabled = !priorChooseEnabled ||
-                removed > 0 || result?.missingAssets > 0 || !state.ready;
-        } else {
-            ui.lastStatus = null;
-            ui.download.disabled = false;
-            ui.remove.disabled = true;
-            ui.verify.disabled = true;
-            ui.test.disabled = true;
-            ui.choose.disabled = true;
-        }
-        setMessage(ui.status, message);
+        await finishVerifyCachedData(entry, ui, {
+            priorChooseEnabled, removed, result, message,
+        });
     }
 }
 
@@ -1195,6 +1222,7 @@ function registerModel(entry) {
         try {
             await invalidateRuntimeFor(entry);
             await cacheStore().remove(entryManifest(entry));
+            await notifyLocalModelCacheChanged();
             ui.progress.hidden = true;
             ui.storageWarning.hidden = true;
         } catch (error) {

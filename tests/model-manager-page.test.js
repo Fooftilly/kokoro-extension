@@ -267,6 +267,7 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(button.disabled).toBe(false);
         expect(document.querySelector('[data-variant="mediapipe-cpu"] .model-verify').disabled)
             .toBe(true); // No recognized cached model data.
+        browser.storage.local.set.mockClear();
         button.click();
         await waitFor(() => row.querySelector('.model-status').textContent.includes('pinned SHA-256 hashes'));
         expect(verifyModel).toHaveBeenCalledTimes(1);
@@ -276,6 +277,10 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(global.fetch).not.toHaveBeenCalled();
         expect(global.browser.permissions.request).not.toHaveBeenCalled();
         expect(installModel).not.toHaveBeenCalled();
+        // Clean verify (no prune) still bumps the toolbar cache epoch (#208).
+        expect(browser.storage.local.set).toHaveBeenCalledWith(
+            expect.objectContaining({ localModelCacheEpoch: expect.any(Number) })
+        );
     });
 
     test('a failed verifier leaves installed models available without deleting or downloading', async () => {
@@ -287,6 +292,41 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         expect(row.querySelector('.model-remove').disabled).toBe(false);
         expect(removeModel).not.toHaveBeenCalled();
         expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('removing an installed model bumps localModelCacheEpoch for toolbar (#208)', async () => {
+        const row = document.querySelector('[data-variant="onnx-q8"]');
+        installedModels.add('q8');
+        document.getElementById('refreshModelCache').click();
+        await waitFor(() => row.querySelector('.model-status').textContent.includes('Installed'));
+        browser.storage.local.set.mockClear();
+        row.querySelector('.model-remove').click();
+        await waitFor(() => removeModel.mock.calls.length >= 1);
+        await waitFor(() => browser.storage.local.set.mock.calls.some(
+            (call) => call[0] && Object.prototype.hasOwnProperty.call(call[0], 'localModelCacheEpoch')
+        ));
+        expect(browser.storage.local.set).toHaveBeenCalledWith(
+            expect.objectContaining({ localModelCacheEpoch: expect.any(Number) })
+        );
+    });
+
+    test('successful install bumps cache epoch even when post-install refresh fails (#208)', async () => {
+        global.browser.permissions.request.mockResolvedValue(true);
+        installModel.mockImplementation(async () => {
+            installedModels.add('cpu');
+        });
+        const row = document.querySelector('[data-variant="mediapipe-cpu"]');
+        browser.storage.local.set.mockClear();
+        failStatusFor.add('mediapipe-cpu');
+        row.querySelector('.model-download').click();
+        await waitFor(() => installModel.mock.calls.length >= 1);
+        await waitFor(() => browser.storage.local.set.mock.calls.some(
+            (call) => call[0] && Object.prototype.hasOwnProperty.call(call[0], 'localModelCacheEpoch')
+        ));
+        expect(browser.storage.local.set).toHaveBeenCalledWith(
+            expect.objectContaining({ localModelCacheEpoch: expect.any(Number) })
+        );
+        expect(row.querySelector('.model-status').textContent).toMatch(/Cannot inspect model cache/i);
     });
 
     test('corrupt cached MediaPipe data is evicted, validation revoked and repair requires opt-in', async () => {
