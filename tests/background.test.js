@@ -774,7 +774,9 @@ describe('background.js logic', () => {
         const listener = browser.storage.onChanged.addListener.mock.calls.at(-1)[0];
         browser.action.setIcon.mockClear();
         browser.action.setTitle.mockClear();
+        const checkSpy = jest.spyOn(bg, 'checkApiStatus');
         await listener({ ttsBackend: { newValue: 'mediapipe' } }, 'sync');
+        expect(checkSpy).toHaveBeenCalled();
 
         // Complete the stale FastAPI fetch; coalesce must re-run for MediaPipe.
         resolveFetch();
@@ -785,6 +787,7 @@ describe('background.js logic', () => {
         expect(lastIcon48()).toMatch(/icon-48-green/);
         expect(lastIcon48()).not.toMatch(/red/);
         expect(lastTitle()).toMatch(/MediaPipe ready/i);
+        checkSpy.mockRestore();
         statusSpy.mockRestore();
     });
 });

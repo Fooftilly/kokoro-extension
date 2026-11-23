@@ -57,6 +57,20 @@ describe('toolbar-status helpers (#208)', () => {
             validatedRevision: null,
             modelReady: true,
         }).kind).toBe(ToolbarStatus.KIND.NEEDS_SETUP);
+        expect(ToolbarStatus.classifyLocalReadiness({
+            backend: 'mediapipe',
+            expectedRevision: 'abc',
+            validatedRevision: null,
+            modelReady: true,
+        }).detail).toMatch(/test the installed model first/i);
+
+        // Uninstalled beats "test first" even with no validation key.
+        expect(ToolbarStatus.classifyLocalReadiness({
+            backend: 'mediapipe',
+            expectedRevision: 'abc',
+            validatedRevision: null,
+            modelReady: false,
+        }).detail).toMatch(/model not installed/i);
 
         expect(ToolbarStatus.classifyLocalReadiness({
             backend: 'mediapipe',

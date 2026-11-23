@@ -93,6 +93,17 @@
         if (!expectedRevision) {
             return { kind: KIND.UNAVAILABLE, backend, detail: 'model revision unavailable' };
         }
+        // Prefer "not installed" over "test first" when cache metadata says missing.
+        if (modelReady === false) {
+            return {
+                kind: KIND.NEEDS_SETUP,
+                backend,
+                detail: 'model not installed',
+            };
+        }
+        if (modelReady !== true) {
+            return { kind: KIND.UNKNOWN, backend, detail: 'model install state unknown' };
+        }
         if (!validatedRevision) {
             return {
                 kind: KIND.NEEDS_SETUP,
@@ -108,16 +119,6 @@
                 backend,
                 detail: 'model revision changed — retest',
             };
-        }
-        if (modelReady !== true) {
-            if (modelReady === false) {
-                return {
-                    kind: KIND.NEEDS_SETUP,
-                    backend,
-                    detail: 'model not installed',
-                };
-            }
-            return { kind: KIND.UNKNOWN, backend, detail: 'model install state unknown' };
         }
         if (backend === 'onnx' && dictionaryReady !== true) {
             if (dictionaryReady === false) {
