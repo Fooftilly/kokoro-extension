@@ -104,5 +104,7 @@ describe('toolbar-status helpers (#208)', () => {
         expect(ToolbarStatus.isValidatedRevisionStorageKey('onnxValidatedRevision:q8'))
             .toBe(true);
         expect(ToolbarStatus.isValidatedRevisionStorageKey('theme')).toBe(false);
+        expect(ToolbarStatus.isLocalModelCacheEpochKey('localModelCacheEpoch')).toBe(true);
+        expect(ToolbarStatus.isLocalModelCacheEpochKey('theme')).toBe(false);
     });
 });

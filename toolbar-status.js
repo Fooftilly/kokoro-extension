@@ -148,12 +148,21 @@
         return typeof key === 'string' && /ValidatedRevision/.test(key);
     }
 
+    /** Bumped by the model manager after Cache Storage install/remove/verify. */
+    const LOCAL_MODEL_CACHE_EPOCH_KEY = 'localModelCacheEpoch';
+
+    function isLocalModelCacheEpochKey(key) {
+        return key === LOCAL_MODEL_CACHE_EPOCH_KEY;
+    }
+
     const api = Object.freeze({
         KIND,
         iconPathsForKind,
         titleForStatus,
         classifyLocalReadiness,
         isValidatedRevisionStorageKey,
+        LOCAL_MODEL_CACHE_EPOCH_KEY,
+        isLocalModelCacheEpochKey,
         backendLabel,
     });
     if (typeof module !== 'undefined' && module.exports) module.exports = api;

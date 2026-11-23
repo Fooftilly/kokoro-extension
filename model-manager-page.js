@@ -792,6 +792,7 @@ async function doDownload(entry, ui) {
             setMessage(ui.status, downloadError);
         } else {
             ui.progress.value = 100;
+            await notifyLocalModelCacheChanged();
         }
     }
 }
@@ -1083,6 +1084,15 @@ async function invalidateRuntimeFor(entry) {
     }
 }
 
+/** Signal background toolbar to re-probe Cache Storage readiness (#208). */
+async function notifyLocalModelCacheChanged() {
+    try {
+        await browser.storage.local.set({ localModelCacheEpoch: Date.now() });
+    } catch (_) {
+        // Best-effort; toolbar also refreshes on validated-revision changes.
+    }
+}
+
 function verificationResultMessage(result) {
     if (result.removedAssets) {
         return 'Removed ' + result.removedAssets +
@@ -1151,6 +1161,11 @@ async function verifyCachedData(entry, ui) {
             } catch (error) {
                 message += ' Could not reset the cached engine: ' + String(error.message || error);
             }
+            try {
+                await notifyLocalModelCacheChanged();
+            } catch (error) {
+                message += ' Could not refresh toolbar status: ' + String(error.message || error);
+            }
         }
         let state = null;
         try {
@@ -1195,6 +1210,7 @@ function registerModel(entry) {
         try {
             await invalidateRuntimeFor(entry);
             await cacheStore().remove(entryManifest(entry));
+            await notifyLocalModelCacheChanged();
             ui.progress.hidden = true;
             ui.storageWarning.hidden = true;
         } catch (error) {

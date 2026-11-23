@@ -246,28 +246,35 @@ const checkApiStatus = async () => {
     return toolbarCheckPromise;
 };
 
-// Initial check
-void checkApiStatus();
-
-// Poll FastAPI reachability every minute. Local backends refresh via storage
-// events (prefs + validated-revision keys) — no indefinite local probe wakeups.
-browser.alarms.create('api-check', { periodInMinutes: 1 });
-browser.alarms.onAlarm.addListener(async (alarm) => {
-    if (alarm.name !== 'api-check') return;
+/** FastAPI-only minute alarm — cleared while a local backend is selected (#208). */
+async function syncToolbarAlarm() {
     try {
         const { ttsBackend } = await browser.storage.sync.get({
             ttsBackend: TtsProviders.FASTAPI,
         });
-        if (TtsProviders.resolveBackend(ttsBackend) !== TtsProviders.FASTAPI) {
-            return;
+        if (TtsProviders.resolveBackend(ttsBackend) === TtsProviders.FASTAPI) {
+            browser.alarms.create('api-check', { periodInMinutes: 1 });
+        } else if (browser.alarms.clear) {
+            await browser.alarms.clear('api-check');
         }
     } catch (_) {
-        return;
+        if (browser.alarms.clear) {
+            try { await browser.alarms.clear('api-check'); } catch (__) { /* ignore */ }
+        }
     }
-    void checkApiStatus();
+}
+
+// Initial check + alarm aligned to current backend.
+void checkApiStatus().then(() => syncToolbarAlarm());
+
+browser.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === 'api-check') {
+        void checkApiStatus();
+    }
 });
 
-// Refresh after backend/model preference changes and validation-key updates.
+// Refresh after backend/model preference changes, validation-key updates, and
+// model-manager Cache Storage mutations (localModelCacheEpoch).
 browser.storage.onChanged.addListener((changes, area) => {
     if (area === 'sync' && (
         changes.apiUrl ||
@@ -276,10 +283,13 @@ browser.storage.onChanged.addListener((changes, area) => {
         changes.onnxVoiceAsset
     )) {
         void checkApiStatus();
+        if (changes.ttsBackend) void syncToolbarAlarm();
         return;
     }
-    if (area === 'local' &&
-        Object.keys(changes).some((key) => ToolbarStatus.isValidatedRevisionStorageKey(key))) {
+    if (area === 'local' && Object.keys(changes).some((key) =>
+        ToolbarStatus.isValidatedRevisionStorageKey(key) ||
+        ToolbarStatus.isLocalModelCacheEpochKey(key)
+    )) {
         void checkApiStatus();
     }
 });
@@ -733,6 +743,7 @@ if (typeof module !== 'undefined' && module.exports) {
         applyToolbarStatus,
         probeLocalToolbarStatus,
         probeFastApiToolbarStatus,
+        syncToolbarAlarm,
         ToolbarStatus,
     };
 }

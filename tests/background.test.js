@@ -43,6 +43,7 @@ global.browser = {
     },
     alarms: {
         create: jest.fn(),
+        clear: jest.fn(() => Promise.resolve(true)),
         onAlarm: { addListener: jest.fn() }
     }
 };
@@ -662,35 +663,72 @@ describe('background.js logic', () => {
         expect(lastIcon48()).toMatch(/icon-48-green/);
     });
 
-    test('minute alarm skips local backends (#208)', async () => {
+    test('minute alarm is cleared for local backends (#208)', async () => {
         stubToolbarSync({ ttsBackend: 'mediapipe', mediaPipeVariant: 'cpu' });
         jest.resetModules();
-        require('../background.js');
+        const bg = require('../background.js');
         await flushToolbarCheck();
-        const alarmListener = browser.alarms.onAlarm.addListener.mock.calls.at(-1)[0];
-        browser.action.setIcon.mockClear();
-        fetch.mockClear();
-        await alarmListener({ name: 'api-check' });
-        await flushToolbarCheck();
-        expect(fetch).not.toHaveBeenCalled();
-        expect(browser.action.setIcon).not.toHaveBeenCalled();
+        await bg.syncToolbarAlarm();
+        expect(browser.alarms.clear).toHaveBeenCalledWith('api-check');
     });
 
-    test('minute alarm still probes FastAPI (#208)', async () => {
+    test('minute alarm is registered for FastAPI and probes (#208)', async () => {
         stubToolbarSync({ ttsBackend: 'fastapi' });
         fetch.mockResolvedValue({
             ok: true,
             json: async () => ({ status: 'ok' }),
         });
         jest.resetModules();
-        require('../background.js');
+        const bg = require('../background.js');
         await flushToolbarCheck();
+        await bg.syncToolbarAlarm();
+        expect(browser.alarms.create).toHaveBeenCalledWith(
+            'api-check',
+            expect.objectContaining({ periodInMinutes: 1 })
+        );
         const alarmListener = browser.alarms.onAlarm.addListener.mock.calls.at(-1)[0];
         browser.action.setIcon.mockClear();
         await alarmListener({ name: 'api-check' });
         await flushToolbarCheck();
         expect(browser.action.setIcon).toHaveBeenCalled();
         expect(lastIcon48()).toMatch(/icon-48-green/);
+    });
+
+    test('localModelCacheEpoch storage changes refresh toolbar (#208)', async () => {
+        stubToolbarSync({ ttsBackend: 'onnx', onnxVoiceAsset: 'voices/af_bella.bin' });
+        const { manifestForVariant } = require('../model-catalog.js');
+        const revision = manifestForVariant('onnx', 'q8').revision;
+        browser.storage.local.get.mockImplementation(async (defaults = {}) => ({
+            ...defaults,
+            'onnxValidatedRevision:q8': revision,
+        }));
+        let voiceReady = true;
+        jest.resetModules();
+        const { ModelDataStore } = require('../model-data-store.js');
+        const statusSpy = jest.spyOn(ModelDataStore.prototype, 'status')
+            .mockImplementation(async (manifest) => {
+                if (String(manifest?.variant || '').startsWith('voice-')) {
+                    return {
+                        ready: voiceReady,
+                        storedBytes: voiceReady ? 1 : 0,
+                        totalBytes: 1,
+                    };
+                }
+                return { ready: true, storedBytes: 1, totalBytes: 1 };
+            });
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+        await bg.checkApiStatus();
+        expect(lastTitle()).toMatch(/ONNX ready/i);
+        const listener = browser.storage.onChanged.addListener.mock.calls.at(-1)[0];
+        voiceReady = false;
+        browser.action.setIcon.mockClear();
+        browser.action.setTitle.mockClear();
+        await listener({ localModelCacheEpoch: { newValue: Date.now() } }, 'local');
+        await flushToolbarCheck();
+        expect(browser.action.setIcon).toHaveBeenCalled();
+        expect(lastTitle()).toMatch(/voice not installed/i);
+        statusSpy.mockRestore();
     });
 
     test('backend change during in-flight FastAPI probe coalesces to local status (#208)', async () => {
