@@ -774,9 +774,11 @@ describe('background.js logic', () => {
         const listener = browser.storage.onChanged.addListener.mock.calls.at(-1)[0];
         browser.action.setIcon.mockClear();
         browser.action.setTitle.mockClear();
-        const checkSpy = jest.spyOn(bg, 'checkApiStatus');
+        const statusCallsBeforeSwitch = statusSpy.mock.calls.length;
         await listener({ ttsBackend: { newValue: 'mediapipe' } }, 'sync');
-        expect(checkSpy).toHaveBeenCalled();
+        // Listener marks a pending coalesce while FastAPI fetch is still gated —
+        // local ModelDataStore.status must not run until the in-flight probe ends.
+        expect(statusSpy.mock.calls.length).toBe(statusCallsBeforeSwitch);
 
         // Complete the stale FastAPI fetch; coalesce must re-run for MediaPipe.
         resolveFetch();
@@ -784,10 +786,10 @@ describe('background.js logic', () => {
         await flushToolbarCheck();
         await flushToolbarCheck();
 
+        expect(statusSpy.mock.calls.length).toBeGreaterThan(statusCallsBeforeSwitch);
         expect(lastIcon48()).toMatch(/icon-48-green/);
         expect(lastIcon48()).not.toMatch(/red/);
         expect(lastTitle()).toMatch(/MediaPipe ready/i);
-        checkSpy.mockRestore();
         statusSpy.mockRestore();
     });
 });
