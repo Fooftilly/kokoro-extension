@@ -22,7 +22,8 @@ global.browser = {
             }))
         },
         local: {
-            set: jest.fn(() => Promise.resolve())
+            set: jest.fn(() => Promise.resolve()),
+            get: jest.fn(async (defaults = {}) => ({ ...defaults })),
         }
     },
     tabs: {
@@ -37,7 +38,8 @@ global.browser = {
         onCommand: { addListener: jest.fn() }
     },
     action: {
-        setIcon: jest.fn()
+        setIcon: jest.fn(),
+        setTitle: jest.fn(() => Promise.resolve()),
     },
     alarms: {
         create: jest.fn(),
@@ -46,6 +48,28 @@ global.browser = {
 };
 
 global.browser.storage.onChanged = { addListener: jest.fn() };
+
+function mockCacheMatch(readyManifestAssets = []) {
+    const readyKeys = new Set(readyManifestAssets);
+    return {
+        open: jest.fn(async () => ({
+            match: jest.fn(async (key) => {
+                if (!readyKeys.has(key) && readyKeys.size === 0) return undefined;
+                // ModelDataStore.isCurrent checks integrity headers against the asset.
+                // For readiness tests we stub status via prototype when needed.
+                return undefined;
+            }),
+        })),
+    };
+}
+
+global.caches = mockCacheMatch();
+if (typeof global.Response === 'undefined') {
+    global.Response = class Response {};
+}
+if (typeof global.TransformStream === 'undefined') {
+    global.TransformStream = class TransformStream {};
+}
 
 function mockSpeechStreamResponse(payload = 'audio') {
     const bytes = Uint8Array.from(
@@ -512,5 +536,168 @@ describe('background.js logic', () => {
         expect(result.firstBodyByteMs).toBeGreaterThanOrEqual(90);
         expect(result.firstBodyByteMs).toBeLessThan(300);
         jest.useRealTimers();
+    });
+
+    async function flushToolbarCheck() {
+        await new Promise((r) => setTimeout(r, 0));
+        await new Promise((r) => setTimeout(r, 0));
+    }
+
+    test('ready MediaPipe does not use the server-disconnected red icon (#208)', async () => {
+        browser.storage.sync.get.mockResolvedValue({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            voice: 'af_sarah',
+            mode: 'stream',
+        });
+        const { manifestForVariant } = require('../model-catalog.js');
+        const revision = manifestForVariant('mediapipe', 'cpu').revision;
+        browser.storage.local.get.mockImplementation(async (defaults = {}) => ({
+            ...defaults,
+            'mediapipeValidatedRevision:cpu': revision,
+        }));
+        fetch.mockClear();
+        browser.action.setIcon.mockClear();
+        browser.action.setTitle.mockClear();
+
+        jest.resetModules();
+        const { ModelDataStore } = require('../model-data-store.js');
+        const statusSpy = jest.spyOn(ModelDataStore.prototype, 'status').mockResolvedValue({
+            ready: true, storedBytes: 1, totalBytes: 1,
+        });
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+        await bg.checkApiStatus();
+
+        expect(fetch).not.toHaveBeenCalled();
+        const iconCall = browser.action.setIcon.mock.calls.at(-1)[0];
+        expect(iconCall.path[48]).toMatch(/icon-48-green/);
+        expect(iconCall.path[48]).not.toMatch(/red/);
+        expect(browser.action.setTitle).toHaveBeenCalledWith(
+            expect.objectContaining({ title: expect.stringMatching(/MediaPipe ready/i) })
+        );
+        statusSpy.mockRestore();
+    });
+
+    test('untested MediaPipe uses default icons and needs-setup title (#208)', async () => {
+        browser.storage.sync.get.mockResolvedValue({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+        });
+        browser.storage.local.get.mockImplementation(async (defaults = {}) => ({ ...defaults }));
+        fetch.mockClear();
+        browser.action.setIcon.mockClear();
+        browser.action.setTitle.mockClear();
+
+        jest.resetModules();
+        const { ModelDataStore } = require('../model-data-store.js');
+        const statusSpy = jest.spyOn(ModelDataStore.prototype, 'status').mockResolvedValue({
+            ready: true, storedBytes: 1, totalBytes: 1,
+        });
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+        await bg.checkApiStatus();
+
+        expect(fetch).not.toHaveBeenCalled();
+        const iconCall = browser.action.setIcon.mock.calls.at(-1)[0];
+        expect(iconCall.path[48]).toBe('icons/icon48.png');
+        expect(browser.action.setTitle.mock.calls.at(-1)[0].title)
+            .toMatch(/test the installed model first/i);
+        statusSpy.mockRestore();
+    });
+
+    test('ready ONNX paints green without FastAPI fetch (#208)', async () => {
+        browser.storage.sync.get.mockResolvedValue({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'onnx',
+            onnxVoiceAsset: 'voices/af.bin',
+        });
+        const { manifestForVariant } = require('../model-catalog.js');
+        const revision = manifestForVariant('onnx', 'q8').revision;
+        browser.storage.local.get.mockImplementation(async (defaults = {}) => ({
+            ...defaults,
+            'onnxValidatedRevision:q8': revision,
+        }));
+        fetch.mockClear();
+        browser.action.setIcon.mockClear();
+        browser.action.setTitle.mockClear();
+
+        jest.resetModules();
+        const { ModelDataStore } = require('../model-data-store.js');
+        const statusSpy = jest.spyOn(ModelDataStore.prototype, 'status').mockResolvedValue({
+            ready: true, storedBytes: 1, totalBytes: 1,
+        });
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+        await bg.checkApiStatus();
+
+        expect(fetch).not.toHaveBeenCalled();
+        expect(browser.action.setIcon.mock.calls.at(-1)[0].path[48]).toMatch(/icon-48-green/);
+        expect(browser.action.setTitle.mock.calls.at(-1)[0].title)
+            .toMatch(/ONNX ready \(on-device\)/);
+        statusSpy.mockRestore();
+    });
+
+    test('FastAPI unreachable still paints red with unreachable title (#208)', async () => {
+        browser.storage.sync.get.mockResolvedValue({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'fastapi',
+        });
+        fetch.mockRejectedValue(new TypeError('Failed to fetch'));
+        browser.action.setIcon.mockClear();
+        browser.action.setTitle.mockClear();
+
+        jest.resetModules();
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+        await bg.checkApiStatus();
+
+        const iconCall = browser.action.setIcon.mock.calls.at(-1)[0];
+        expect(iconCall.path[48]).toMatch(/icon-48-red/);
+        expect(browser.action.setTitle.mock.calls.at(-1)[0].title)
+            .toMatch(/unreachable/i);
+    });
+
+    test('FastAPI reachable paints green (#208)', async () => {
+        browser.storage.sync.get.mockResolvedValue({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'fastapi',
+        });
+        fetch.mockResolvedValue({
+            ok: true,
+            json: async () => ({ status: 'ok' }),
+        });
+        browser.action.setIcon.mockClear();
+        browser.action.setTitle.mockClear();
+
+        jest.resetModules();
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+        await bg.checkApiStatus();
+
+        const iconCall = browser.action.setIcon.mock.calls.at(-1)[0];
+        expect(iconCall.path[48]).toMatch(/icon-48-green/);
+        expect(browser.action.setTitle.mock.calls.at(-1)[0].title)
+            .toMatch(/reachable/i);
+    });
+
+    test('storage.local validated-revision changes refresh toolbar status (#208)', async () => {
+        jest.resetModules();
+        require('../background.js');
+        const listener = browser.storage.onChanged.addListener.mock.calls.at(-1)[0];
+        browser.storage.sync.get.mockResolvedValue({
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'fastapi',
+        });
+        fetch.mockResolvedValue({
+            ok: true,
+            json: async () => ({ status: 'ok' }),
+        });
+        browser.action.setIcon.mockClear();
+        await listener({ 'onnxValidatedRevision:q8': { newValue: 'abc' } }, 'local');
+        await flushToolbarCheck();
+        expect(browser.action.setIcon).toHaveBeenCalled();
     });
 });

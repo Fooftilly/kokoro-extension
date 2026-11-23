@@ -3,6 +3,7 @@ try {
         importScripts('browser-polyfill.min.js');
         importScripts('tts-providers.js');
         importScripts('local-voice-mixing.js');
+        importScripts('toolbar-status.js');
     }
 } catch (e) {
     console.error("Polyfill load error:", e);
@@ -16,6 +17,9 @@ const TtsProviders = typeof require === 'function'
 const LocalVoice = typeof require === 'function'
     ? require('./local-voice-mixing.js')
     : globalThis.KokoroLocalVoiceMixing;
+const ToolbarStatus = typeof require === 'function'
+    ? require('./toolbar-status.js')
+    : globalThis.KokoroToolbarStatus;
 
 browser.runtime.onInstalled.addListener(() => {
     browser.contextMenus.create({
@@ -45,16 +49,144 @@ const notify = (title, message) => {
 
 let isChecking = false;
 
-// Icon management
+function applyToolbarStatus(status) {
+    const kind = status?.kind || ToolbarStatus.KIND.UNKNOWN;
+    const title = ToolbarStatus.titleForStatus(status);
+    browser.action.setIcon({ path: ToolbarStatus.iconPathsForKind(kind) });
+    if (browser.action.setTitle) {
+        browser.action.setTitle({ title });
+    }
+    return { kind, title, backend: status?.backend || null };
+}
+
+/** @deprecated Prefer applyToolbarStatus — kept for a few FastAPI call sites. */
 const setIconStatus = (isConnected) => {
-    const suffix = isConnected ? '-green' : '-red';
-    browser.action.setIcon({
-        path: {
-            48: `icons/icon-48${suffix}.png`,
-            128: `icons/icon-128${suffix}.png`
-        }
+    applyToolbarStatus({
+        kind: isConnected ? ToolbarStatus.KIND.READY : ToolbarStatus.KIND.UNREACHABLE,
+        backend: TtsProviders.FASTAPI,
     });
 };
+
+function createModelDataStore(ModelDataStore) {
+    return new ModelDataStore({
+        origin: browser.runtime.getURL('/'),
+        cacheStorage: caches,
+        fetchImpl: fetch.bind(globalThis),
+        responseClass: Response,
+        streamClass: typeof TransformStream === 'function' ? TransformStream : undefined,
+    });
+}
+
+/**
+ * Read-only local readiness from validated-revision keys + Cache Storage metadata.
+ * Never probes FastAPI and never initializes a heavy TTS runtime.
+ */
+async function probeLocalToolbarStatus(backend, settings) {
+    try {
+        const {
+            dictionaryManifest,
+            listOnnxVoiceAssets,
+            manifestForOnnxVoiceAsset,
+            manifestForVariant,
+        } = await import('./model-catalog.js');
+        const { ModelDataStore } = await import('./model-data-store.js');
+        const store = createModelDataStore(ModelDataStore);
+
+        if (backend === TtsProviders.MEDIAPIPE) {
+            const variant = settings.mediaPipeVariant || 'cpu';
+            const manifest = manifestForVariant('mediapipe', variant);
+            const key = 'mediapipeValidatedRevision:' + variant;
+            const stored = await browser.storage.local.get({ [key]: null });
+            const modelState = await store.status(manifest);
+            return ToolbarStatus.classifyLocalReadiness({
+                backend,
+                validatedRevision: stored[key],
+                expectedRevision: manifest.revision,
+                modelReady: modelState.ready,
+            });
+        }
+
+        if (backend === TtsProviders.ONNX) {
+            const model = manifestForVariant('onnx', 'q8');
+            const key = 'onnxValidatedRevision:q8';
+            const stored = await browser.storage.local.get({ [key]: null });
+            const [modelState, dictionaryState] = await Promise.all([
+                store.status(model),
+                store.status(dictionaryManifest()),
+            ]);
+            const selected = LocalVoice.normalizeOnnxVoiceAsset
+                ? LocalVoice.normalizeOnnxVoiceAsset(settings.onnxVoiceAsset || '')
+                : (LocalVoice.ONNX_FIXED_VOICE_ASSET || 'voices/af.bin');
+            const voiceEntry = listOnnxVoiceAssets().find((item) => item.path === selected);
+            let optionalVoiceRequired = false;
+            let voiceReady;
+            if (voiceEntry?.voiceVariant) {
+                optionalVoiceRequired = true;
+                voiceReady = (await store.status(manifestForOnnxVoiceAsset(selected))).ready;
+            }
+            return ToolbarStatus.classifyLocalReadiness({
+                backend,
+                validatedRevision: stored[key],
+                expectedRevision: model.revision,
+                modelReady: modelState.ready,
+                dictionaryReady: dictionaryState.ready,
+                optionalVoiceRequired,
+                voiceReady,
+            });
+        }
+
+        return { kind: ToolbarStatus.KIND.UNKNOWN, backend, detail: 'unsupported backend' };
+    } catch (error) {
+        console.warn('Kokoro: local toolbar status probe failed', error);
+        return {
+            kind: ToolbarStatus.KIND.UNKNOWN,
+            backend,
+            detail: String(error?.message || error || 'probe failed'),
+        };
+    }
+}
+
+async function probeFastApiToolbarStatus(apiUrl) {
+    let normalized = apiUrl;
+    if (!normalized.endsWith('/')) normalized += '/';
+
+    const tryFetch = async (url) => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        try {
+            return await fetch(url, { signal: controller.signal });
+        } finally {
+            clearTimeout(timeoutId);
+        }
+    };
+
+    let connected = false;
+    try {
+        const testUrl = new URL('test', normalized).href;
+        const resp = await tryFetch(testUrl);
+        if (resp.ok) {
+            const json = await resp.json();
+            if (json.status === 'ok') connected = true;
+        }
+    } catch (_) { /* ignore */ }
+
+    if (!connected) {
+        try {
+            const healthUrl = new URL('/health', new URL(normalized).origin).href;
+            const resp = await tryFetch(healthUrl);
+            if (resp.ok) {
+                const json = await resp.json();
+                if (json.status === 'healthy') connected = true;
+            }
+        } catch (_) { /* ignore */ }
+    }
+
+    return {
+        kind: connected ? ToolbarStatus.KIND.READY : ToolbarStatus.KIND.UNREACHABLE,
+        backend: TtsProviders.FASTAPI,
+        detail: null,
+    };
+}
 
 const checkApiStatus = async () => {
     if (isChecking) return;
@@ -63,69 +195,36 @@ const checkApiStatus = async () => {
     try {
         const settings = await browser.storage.sync.get({
             apiUrl: 'http://127.0.0.1:8880/v1/',
-            ttsBackend: TtsProviders.FASTAPI
+            ttsBackend: TtsProviders.FASTAPI,
+            mediaPipeVariant: 'cpu',
+            onnxVoiceAsset: 'voices/af.bin',
         });
-        const backend = TtsProviders.resolveBackend(settings.ttsBackend);
-        if (backend !== TtsProviders.FASTAPI) {
-            // Do not probe an HTTP server when a local engine was selected.
-            setIconStatus(false);
+        let backend;
+        try {
+            backend = TtsProviders.resolveBackend(settings.ttsBackend);
+        } catch (_) {
+            applyToolbarStatus({
+                kind: ToolbarStatus.KIND.UNKNOWN,
+                backend: settings.ttsBackend,
+                detail: 'unknown backend',
+            });
             return;
         }
 
-        let apiUrl = settings.apiUrl;
-        if (!apiUrl.endsWith('/')) apiUrl += '/';
-
-        // Helper to try fetch with timeout
-        const tryFetch = async (url) => {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 3000);
-            try {
-                const response = await fetch(url, { signal: controller.signal });
-                return response;
-            } finally {
-                clearTimeout(timeoutId);
-            }
-        };
-
-        // Check 1: /v1/test (kokoro-fastapi specific)
-        let connected = false;
-
-        try {
-            const testUrl = new URL('test', apiUrl).href;
-            const resp = await tryFetch(testUrl);
-            if (resp.ok) {
-                const json = await resp.json();
-                if (json.status === 'ok') {
-                    connected = true;
-                }
-            }
-        } catch (e) {
-            // ignore
+        if (backend !== TtsProviders.FASTAPI) {
+            // Do not probe an HTTP server when a local engine was selected.
+            applyToolbarStatus(await probeLocalToolbarStatus(backend, settings));
+            return;
         }
 
-        // If not yet connected, try /health
-        if (!connected) {
-            try {
-                const urlObj = new URL(apiUrl);
-                const healthUrl = new URL('/health', urlObj.origin).href;
-
-                const resp = await tryFetch(healthUrl);
-                if (resp.ok) {
-                    const json = await resp.json();
-                    if (json.status === 'healthy') {
-                        connected = true;
-                    }
-                }
-            } catch (e) {
-                // ignore
-            }
-        }
-
-        setIconStatus(connected);
-
+        applyToolbarStatus(await probeFastApiToolbarStatus(settings.apiUrl));
     } catch (e) {
-        console.error("API check failed completely:", e);
-        setIconStatus(false);
+        console.error('Toolbar status check failed completely:', e);
+        applyToolbarStatus({
+            kind: ToolbarStatus.KIND.UNKNOWN,
+            backend: null,
+            detail: String(e?.message || e),
+        });
     } finally {
         isChecking = false;
     }
@@ -134,7 +233,7 @@ const checkApiStatus = async () => {
 // Initial check
 checkApiStatus();
 
-// Poll every minute
+// Poll every minute (local path is Cache/storage only — no model init / no FastAPI).
 browser.alarms.create('api-check', { periodInMinutes: 1 });
 browser.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === 'api-check') {
@@ -142,9 +241,19 @@ browser.alarms.onAlarm.addListener((alarm) => {
     }
 });
 
-// Update on settings change
+// Refresh after backend/model preference changes and validation-key updates.
 browser.storage.onChanged.addListener((changes, area) => {
-    if (area === 'sync' && (changes.apiUrl || changes.ttsBackend)) {
+    if (area === 'sync' && (
+        changes.apiUrl ||
+        changes.ttsBackend ||
+        changes.mediaPipeVariant ||
+        changes.onnxVoiceAsset
+    )) {
+        checkApiStatus();
+        return;
+    }
+    if (area === 'local' &&
+        Object.keys(changes).some(ToolbarStatus.isValidatedRevisionStorageKey)) {
         checkApiStatus();
     }
 });
@@ -591,3 +700,13 @@ browser.commands.onCommand.addListener(async (command) => {
     if (command === "nav-next" || command === "nav-prev") return handleNavShortcut(command);
     if (command === "close-overlay") return handleCloseOverlayShortcut();
 });
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        checkApiStatus,
+        applyToolbarStatus,
+        probeLocalToolbarStatus,
+        probeFastApiToolbarStatus,
+        ToolbarStatus,
+    };
+}
