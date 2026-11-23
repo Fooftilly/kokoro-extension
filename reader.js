@@ -26,6 +26,7 @@ import {
     planBookmarkClear,
     prepareBookmarkForCurrentToc,
     resolveBookmarkJump,
+    shouldAcceptReadingProgress,
 } from './reader-progress.js';
 import './tts-providers.js';
 import './local-voice-mixing.js';
@@ -87,13 +88,13 @@ let documentIdentityGeneration = 0;
 /** Monotonic open token for resume-lookup fencing across hash-failure clears. */
 let documentOpenGeneration = 0;
 /**
- * Last playback block for Add bookmark. Null until the current chapter
- * request reports progress (avoids image-only chapters inheriting the prior
- * chapter's index).
+ * Last playback block for Add bookmark. Null until the acknowledged current
+ * player revision reports progress (avoids image-only / late prior-chapter
+ * events fencing the newly selected chapter).
  */
 let lastKnownBlockIndex = null;
-/** Chapter request id that last reported a bookmarkable progress position. */
-let bookmarkProgressChapterRequestId = null;
+/** Player reload revision that last reported a bookmarkable progress position. */
+let bookmarkProgressRevision = null;
 
 const prevChapterBtn = document.getElementById('prevChapter');
 const nextChapterBtn = document.getElementById('nextChapter');
@@ -336,7 +337,12 @@ function canAddBookmarkHere() {
         ? currentChapterCanonicalBlocks
         : currentChapterBlocks;
     return Boolean(currentDocumentMeta?.documentId) &&
-        bookmarkProgressChapterRequestId === chapterRequestId &&
+        shouldAcceptReadingProgress({
+            messageRevision: bookmarkProgressRevision,
+            renderedChapterRevision,
+            renderedChapterRequestId,
+            chapterRequestId,
+        }) &&
         Number.isInteger(lastKnownBlockIndex) &&
         lastKnownBlockIndex >= 0 &&
         Array.isArray(blocks) &&
@@ -349,7 +355,7 @@ function updateAddBookmarkEnabled() {
 
 function resetBookmarkProgressFence() {
     lastKnownBlockIndex = null;
-    bookmarkProgressChapterRequestId = null;
+    bookmarkProgressRevision = null;
     updateAddBookmarkEnabled();
 }
 
@@ -1558,10 +1564,18 @@ window.addEventListener('message', (event) => {
         event.data?.type !== 'KOKORO_READING_PROGRESS') {
         return;
     }
+    if (!shouldAcceptReadingProgress({
+        messageRevision: event.data.revision,
+        renderedChapterRevision,
+        renderedChapterRequestId,
+        chapterRequestId,
+    })) {
+        return;
+    }
     const blockIndex = event.data.blockIndex;
     if (Number.isInteger(blockIndex) && blockIndex >= 0) {
         lastKnownBlockIndex = blockIndex;
-        bookmarkProgressChapterRequestId = chapterRequestId;
+        bookmarkProgressRevision = event.data.revision;
         updateAddBookmarkEnabled();
     }
     updateActiveChapter(blockIndex);

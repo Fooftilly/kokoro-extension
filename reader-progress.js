@@ -576,6 +576,24 @@ export function resolveBookmarkHeadingForBlock({
     return pickHeadingOwningBlock(starts, blockIndex, fallbackItem);
 }
 
+/**
+ * Accept iframe progress only for the chapter the reader has already
+ * acknowledged — prevents a late prior-chapter event from fencing bookmarks
+ * (or saving progress) against the newly selected chapter.
+ */
+export function shouldAcceptReadingProgress({
+    messageRevision,
+    renderedChapterRevision,
+    renderedChapterRequestId,
+    chapterRequestId,
+}) {
+    return Number.isSafeInteger(messageRevision) &&
+        messageRevision > 0 &&
+        messageRevision === renderedChapterRevision &&
+        Number.isSafeInteger(renderedChapterRequestId) &&
+        renderedChapterRequestId === chapterRequestId;
+}
+
 /** Playback seek for a validated bookmark — never autoplays. */
 export function resolveBookmarkPlayback({
     bookmark,

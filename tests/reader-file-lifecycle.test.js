@@ -151,12 +151,16 @@ describe('EPUB file read/parse lifecycle', () => {
         require('../reader.js');
     });
 
-    function acknowledgeCurrentChapter({ revision, source } = {}) {
-        // Progress upserts share storage.local.set; find the latest player reload.
+    function latestPlayerReloadRevision() {
         const writes = browser.storage.local.set.mock.calls
             .map(([value]) => value)
             .filter(value => Number.isSafeInteger(value?.pendingReaderReloadRevision));
-        const latestRevision = writes[writes.length - 1]?.pendingReaderReloadRevision;
+        return writes[writes.length - 1]?.pendingReaderReloadRevision;
+    }
+
+    function acknowledgeCurrentChapter({ revision, source } = {}) {
+        // Progress upserts share storage.local.set; find the latest player reload.
+        const latestRevision = latestPlayerReloadRevision();
         expect(Number.isSafeInteger(latestRevision)).toBe(true);
         const frame = document.getElementById('playerFrame');
         window.dispatchEvent(new MessageEvent('message', {
@@ -165,6 +169,20 @@ describe('EPUB file read/parse lifecycle', () => {
                 revision: revision ?? latestRevision,
             },
             source: source === undefined ? frame.contentWindow : source,
+        }));
+        return revision ?? latestRevision;
+    }
+
+    function emitReadingProgress(blockIndex, { revision, source } = {}) {
+        const frame = document.getElementById('playerFrame');
+        window.dispatchEvent(new MessageEvent('message', {
+            data: {
+                type: 'KOKORO_READING_PROGRESS',
+                blockIndex,
+                revision: revision ?? latestPlayerReloadRevision(),
+            },
+            source: source === undefined ? frame.contentWindow : source,
+            origin: window.location.origin,
         }));
     }
 
@@ -409,10 +427,7 @@ describe('EPUB file read/parse lifecycle', () => {
 
         // Both files contain id="title". Progress in B must never
         // activate A's identically named fragment in the sidebar.
-        window.dispatchEvent(new MessageEvent('message', {
-            data: { type: 'KOKORO_READING_PROGRESS', blockIndex: 0 },
-            source: frame.contentWindow, origin: window.location.origin,
-        }));
+        emitReadingProgress(0, { revision: second.pendingReaderReloadRevision });
         expect(document.querySelector('.playable-chapter.active').dataset.href)
             .toBe('b.xhtml#title');
 
@@ -1384,12 +1399,8 @@ describe('EPUB file read/parse lifecycle', () => {
         expect(document.querySelector('.playable-chapter.active').dataset.href).toBe('start.xhtml');
         const next = document.querySelector('[data-href="start.xhtml#caf%C3%A9"]');
         next.scrollIntoView = jest.fn();
-
-        window.dispatchEvent(new MessageEvent('message', {
-            data: { type: 'KOKORO_READING_PROGRESS', blockIndex: 1 },
-            source: document.getElementById('playerFrame').contentWindow,
-            origin: window.location.origin,
-        }));
+        acknowledgeCurrentChapter();
+        emitReadingProgress(1);
 
         expect(document.querySelector('.playable-chapter.active')).toBe(next);
         expect(document.getElementById('prevChapter').disabled).toBe(false);
@@ -1414,16 +1425,45 @@ describe('EPUB file read/parse lifecycle', () => {
         for (let i = 0; i < 30 && browser.storage.local.set.mock.calls.length === 0; i++) await tick();
         const validItem = document.querySelector('[data-href="start.xhtml#caf%C3%A9"]');
         validItem.scrollIntoView = jest.fn();
-
-        window.dispatchEvent(new MessageEvent('message', {
-            data: { type: 'KOKORO_READING_PROGRESS', blockIndex: 1 },
-            source: document.getElementById('playerFrame').contentWindow,
-            origin: window.location.origin,
-        }));
+        acknowledgeCurrentChapter();
+        emitReadingProgress(1);
 
         expect(document.querySelector('.playable-chapter.active')).toBe(validItem);
         expect(messages).toContainEqual({ type: 'UPDATE_TITLE', title: 'Correct anchor' });
         expect(browser.storage.local.set).toHaveBeenCalledTimes(1);
+    });
+
+    test('stale prior-chapter progress cannot enable Add bookmark after a new chapter request', async () => {
+        const candidate = createMockBook('Book A');
+        candidate.sections[1].load.mockResolvedValue(
+            new DOMParser().parseFromString(
+                '<body><img src="plate.png" alt="plate"></body>', 'text/html'));
+        books.push(candidate);
+        selectFile('stale-progress.epub').succeed();
+        await expectLoaded('Book A');
+        const firstRevision = acknowledgeCurrentChapter();
+        emitReadingProgress(0, { revision: firstRevision });
+        expect(document.getElementById('addBookmark').disabled).toBe(false);
+
+        document.querySelector('[data-href="next.xhtml"]').click();
+        for (let i = 0; i < 40 && !browser.storage.local.set.mock.calls
+            .some(([value]) => value.pendingTitle === 'Book A 2'); i++) await tick();
+        expect(browser.storage.local.set.mock.calls
+            .some(([value]) => value.pendingTitle === 'Book A 2')).toBe(true);
+        expect(document.getElementById('addBookmark').disabled).toBe(true);
+
+        // Late event from the prior acknowledged revision must not fence Add.
+        emitReadingProgress(0, { revision: firstRevision });
+        expect(document.getElementById('addBookmark').disabled).toBe(true);
+
+        // Untagged progress (no revision) is also ignored.
+        const frame = document.getElementById('playerFrame');
+        window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'KOKORO_READING_PROGRESS', blockIndex: 0 },
+            source: frame.contentWindow,
+            origin: window.location.origin,
+        }));
+        expect(document.getElementById('addBookmark').disabled).toBe(true);
     });
 
     test('malformed publisher anchor escapes warn and fall back without aborting playback', async () => {

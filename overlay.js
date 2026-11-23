@@ -472,7 +472,9 @@ async function initialize() {
     // entry; ordinary webpage overlays never emit chapter-advance messages.
     continuousReaderEnabled = urlParams.get('waitForData') === 'true' &&
         data.pendingContinuousReader === true;
-    activeReaderRevision = continuousReaderEnabled &&
+    // Track the published chapter revision for every reader iframe reload so
+    // progress events can be provenance-checked (not only continuous handoff).
+    activeReaderRevision = urlParams.get('waitForData') === 'true' &&
         Number.isSafeInteger(data.pendingReaderReloadRevision) &&
         data.pendingReaderReloadRevision > 0
         ? data.pendingReaderReloadRevision : null;
@@ -880,13 +882,18 @@ async function navigate(index, forcePlay = null) {
         });
     }
 
-    // Emit progress event for parent (reader.js)
+    // Emit progress event for parent (reader.js), tagged with the chapter
+    // revision so late events from a previous reload cannot fence bookmarks.
     const blockIndex = sentences[currentIndex].blockIndex;
     if (window.parent) {
-        postToHostPage({
+        const progress = {
             type: 'KOKORO_READING_PROGRESS',
-            blockIndex: blockIndex
-        });
+            blockIndex,
+        };
+        if (Number.isSafeInteger(activeReaderRevision) && activeReaderRevision > 0) {
+            progress.revision = activeReaderRevision;
+        }
+        postToHostPage(progress);
     }
 
     // Update Progress

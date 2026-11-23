@@ -16,6 +16,7 @@ import {
     resolveBookmarkPlayback,
     resolveBookmarkJump,
     isSameBookmarkPosition,
+    shouldAcceptReadingProgress,
     bookmarkStorageKey,
     MAX_BOOKMARKS_PER_DOCUMENT,
     fingerprintChapterBlocks,
@@ -216,6 +217,33 @@ describe('reader bookmarks helpers (#196)', () => {
             item: expect.objectContaining({ href: 'ch1.xhtml#part2' }),
         }));
         expect(jump.record.chapterHref).toBe('ch1.xhtml#part2');
+    });
+
+    test('shouldAcceptReadingProgress requires the acknowledged current revision', () => {
+        expect(shouldAcceptReadingProgress({
+            messageRevision: 3,
+            renderedChapterRevision: 3,
+            renderedChapterRequestId: 7,
+            chapterRequestId: 7,
+        })).toBe(true);
+        expect(shouldAcceptReadingProgress({
+            messageRevision: 2,
+            renderedChapterRevision: 3,
+            renderedChapterRequestId: 7,
+            chapterRequestId: 7,
+        })).toBe(false);
+        expect(shouldAcceptReadingProgress({
+            messageRevision: 3,
+            renderedChapterRevision: 3,
+            renderedChapterRequestId: 6,
+            chapterRequestId: 7,
+        })).toBe(false);
+        expect(shouldAcceptReadingProgress({
+            messageRevision: undefined,
+            renderedChapterRevision: 3,
+            renderedChapterRequestId: 7,
+            chapterRequestId: 7,
+        })).toBe(false);
     });
 
     test('resolveBookmarkPlayback seeks saved block without autoplay', () => {
