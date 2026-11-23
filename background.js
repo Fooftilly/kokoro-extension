@@ -214,6 +214,9 @@ const checkApiStatus = async () => {
                 const latest = await browser.storage.sync.get({
                     ttsBackend: TtsProviders.FASTAPI,
                 });
+                // A change during the get (e.g. apiUrl) sets the pending flag; do
+                // not apply the previous endpoint/backend probe result.
+                if (pendingToolbarCheck) continue;
                 let latestBackend;
                 try {
                     latestBackend = TtsProviders.resolveBackend(latest.ttsBackend);

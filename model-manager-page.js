@@ -758,6 +758,9 @@ async function doDownload(entry, ui) {
                     '%); validating and storing model data…');
             },
         });
+        // Notify as soon as Cache Storage has the assets — even if the
+        // subsequent refresh() inspect fails (#208 toolbar refresh).
+        await notifyLocalModelCacheChanged();
     } catch (error) {
         downloadError = controller.signal.aborted ? 'Download cancelled.' :
             'Download failed: ' + String(error.message || error);
@@ -792,7 +795,6 @@ async function doDownload(entry, ui) {
             setMessage(ui.status, downloadError);
         } else {
             ui.progress.value = 100;
-            await notifyLocalModelCacheChanged();
         }
     }
 }

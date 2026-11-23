@@ -310,6 +310,25 @@ describe('ONNX model manager English synthesis diagnostics', () => {
         );
     });
 
+    test('successful install bumps cache epoch even when post-install refresh fails (#208)', async () => {
+        global.browser.permissions.request.mockResolvedValue(true);
+        installModel.mockImplementation(async () => {
+            installedModels.add('cpu');
+        });
+        const row = document.querySelector('[data-variant="mediapipe-cpu"]');
+        browser.storage.local.set.mockClear();
+        failStatusFor.add('mediapipe-cpu');
+        row.querySelector('.model-download').click();
+        await waitFor(() => installModel.mock.calls.length >= 1);
+        await waitFor(() => browser.storage.local.set.mock.calls.some(
+            (call) => call[0] && Object.prototype.hasOwnProperty.call(call[0], 'localModelCacheEpoch')
+        ));
+        expect(browser.storage.local.set).toHaveBeenCalledWith(
+            expect.objectContaining({ localModelCacheEpoch: expect.any(Number) })
+        );
+        expect(row.querySelector('.model-status').textContent).toMatch(/Cannot inspect model cache/i);
+    });
+
     test('corrupt cached MediaPipe data is evicted, validation revoked and repair requires opt-in', async () => {
         const row = document.querySelector('[data-variant="mediapipe-cpu"]');
         const recheck = document.getElementById('refreshModelCache');
