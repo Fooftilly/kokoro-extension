@@ -18,6 +18,7 @@ import {
     planProgressRemove,
     reconcileProgressRemoves,
     runExclusiveProgressMutation,
+    isResumeLookupStillCurrent,
     progressStorageKey,
     upsertProgress,
     removeProgress,
@@ -278,7 +279,7 @@ describe('reader-progress helpers (#196)', () => {
         expect(map[documentIdFromDigest(oldestHex)]).toBeUndefined();
     });
 
-    test('planProgressUpsert migrates legacy-only siblings before dropping the map', () => {
+    test('planProgressUpsert keeps legacy peers in the map instead of writing peer keys', () => {
         const { idA, idB, recordA, recordB } = twoDocProgressRecords();
         const updatedA = buildProgressRecord({
             ...recordA, blockIndex: 5, updatedAt: 3, revision: 2,
@@ -286,9 +287,13 @@ describe('reader-progress helpers (#196)', () => {
         const store = { [STORAGE_KEY]: { [idA]: recordA, [idB]: recordB } };
         const plan = planProgressUpsert(store, updatedA);
         expect(plan.set[progressStorageKey(idA)]).toEqual(updatedA);
-        expect(plan.set[progressStorageKey(idB)]).toEqual(recordB);
-        expect(plan.remove).toContain(STORAGE_KEY);
-        expect(readProgressRecord({ ...plan.set }, idB).blockIndex).toBe(2);
+        expect(plan.set[progressStorageKey(idB)]).toBeUndefined();
+        expect(plan.set[STORAGE_KEY]).toEqual({ [idB]: recordB });
+        expect(plan.remove).not.toContain(STORAGE_KEY);
+        const after = { ...store, ...plan.set };
+        for (const key of plan.remove) delete after[key];
+        expect(readProgressRecord(after, idB).blockIndex).toBe(2);
+        expect(readProgressRecord(after, idA).blockIndex).toBe(5);
     });
 
     test('planProgressUpsert does not rewrite peers that already have per-doc keys', () => {
@@ -338,16 +343,91 @@ describe('reader-progress helpers (#196)', () => {
         expect(readProgressRecord(bThenA, idB).blockIndex).toBe(7);
     });
 
-    test('planProgressRemove migrates leftover legacy docs when clearing one', () => {
+    test('planProgressRemove keeps leftover legacy peers without writing peer keys', () => {
         const { idA, idB, recordA, recordB } = twoDocProgressRecords();
         const store = { [STORAGE_KEY]: { [idA]: recordA, [idB]: recordB } };
         const plan = planProgressRemove(store, idA);
-        expect(plan.remove).toEqual(expect.arrayContaining([
-            progressStorageKey(idA), STORAGE_KEY,
-        ]));
-        expect(plan.set[progressStorageKey(idB)]).toEqual(recordB);
-        expect(plan.set[progressStorageKey(idA)]).toBeUndefined();
-        expect(readProgressRecord(plan.set, idB).blockIndex).toBe(2);
+        expect(plan.remove).toEqual([progressStorageKey(idA)]);
+        expect(plan.set[STORAGE_KEY]).toEqual({ [idB]: recordB });
+        expect(plan.set[progressStorageKey(idB)]).toBeUndefined();
+        const after = { ...store, ...plan.set };
+        for (const key of plan.remove) delete after[key];
+        expect(readProgressRecord(after, idB).blockIndex).toBe(2);
+        expect(readProgressRecord(after, idA)).toBeNull();
+    });
+
+    test('concurrent legacy-only upserts keep both latest values in either order', () => {
+        const { idA, idB, recordA, recordB } = twoDocProgressRecords();
+        const recordA5 = buildProgressRecord({
+            ...recordA, blockIndex: 5, updatedAt: 10, revision: 2,
+        });
+        const recordB7 = buildProgressRecord({
+            ...recordB, blockIndex: 7, updatedAt: 11, revision: 2,
+        });
+        const store = { [STORAGE_KEY]: { [idA]: recordA, [idB]: recordB } };
+        const planA = planProgressUpsert(store, recordA5);
+        const planB = planProgressUpsert(store, recordB7);
+
+        function apply(order) {
+            let next = { ...store };
+            for (const plan of order) {
+                Object.assign(next, plan.set);
+                for (const key of plan.remove) delete next[key];
+            }
+            return next;
+        }
+
+        for (const order of [[planA, planB], [planB, planA]]) {
+            const after = apply(order);
+            expect(readProgressRecord(after, idA).blockIndex).toBe(5);
+            expect(readProgressRecord(after, idB).blockIndex).toBe(7);
+            // Neither plan may write the peer's per-document key from the
+            // shared legacy snapshot.
+            expect(planA.set[progressStorageKey(idB)]).toBeUndefined();
+            expect(planB.set[progressStorageKey(idA)]).toBeUndefined();
+        }
+    });
+
+    test('isResumeLookupStillCurrent fences same-file recommit and failed selects', () => {
+        const id = documentIdFromDigest('a'.repeat(64));
+        const meta = { documentId: id, progressRevision: 3 };
+        expect(isResumeLookupStillCurrent({
+            capturedDocumentId: id,
+            capturedProgressRevision: 3,
+            currentMeta: meta,
+        })).toBe(true);
+        // Same file replaced — commit bumps progressRevision.
+        expect(isResumeLookupStillCurrent({
+            capturedDocumentId: id,
+            capturedProgressRevision: 3,
+            currentMeta: { documentId: id, progressRevision: 4 },
+        })).toBe(false);
+        // Different document committed.
+        expect(isResumeLookupStillCurrent({
+            capturedDocumentId: id,
+            capturedProgressRevision: 3,
+            currentMeta: {
+                documentId: documentIdFromDigest('b'.repeat(64)),
+                progressRevision: 1,
+            },
+        })).toBe(false);
+        // Failed/cancelled selection never commits — revision unchanged.
+        expect(isResumeLookupStillCurrent({
+            capturedDocumentId: id,
+            capturedProgressRevision: 3,
+            currentMeta: meta,
+        })).toBe(true);
+    });
+
+    test('clear revision bump rejects an in-flight progress write', () => {
+        expect(shouldAcceptProgressWrite({
+            writeRevision: 2,
+            currentRevision: 3,
+            writeChapterRequestId: 1,
+            currentChapterRequestId: 1,
+            writeDocumentId: 'sha256:' + 'a'.repeat(64),
+            currentDocumentId: 'sha256:' + 'a'.repeat(64),
+        })).toBe(false);
     });
 
     test('reconcileProgressRemoves drops eviction when a peer record was refreshed', () => {

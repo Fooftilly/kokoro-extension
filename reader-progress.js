@@ -176,8 +176,10 @@ export function collectProgressRecords(store) {
 
 /**
  * Write the current document's key and prune older entries.
- * Legacy siblings are migrated only when they lack a per-document key —
- * never rewrite peers that already have their own key (multi-tab safe).
+ * Never materialize peer per-document keys from a legacy snapshot — concurrent
+ * tabs reading the same legacy-only map would otherwise clobber each other.
+ * Legacy peers stay in a pruned `STORAGE_KEY` map until each tab writes its
+ * own key (or the map becomes empty and is removed).
  * Returns { set, remove } payloads for browser.storage.local.
  */
 export function planProgressUpsert(store, record) {
@@ -190,25 +192,25 @@ export function planProgressUpsert(store, record) {
     const set = {
         [progressStorageKey(record.documentId)]: record,
     };
+    const remove = [];
     const legacy = store?.[STORAGE_KEY];
     if (legacy && typeof legacy === 'object') {
+        // Keep unmigrated peers in the legacy map only — never write peer keys.
+        const nextLegacy = {};
         for (const entry of keep) {
             if (entry.documentId === record.documentId) continue;
             const key = progressStorageKey(entry.documentId);
-            // One-time migration only — do not overwrite a peer's live key.
-            if (!isProgressRecord(store[key])) set[key] = entry;
+            if (isProgressRecord(store[key])) continue;
+            const fromLegacy = legacy[entry.documentId];
+            nextLegacy[entry.documentId] = isProgressRecord(fromLegacy)
+                ? fromLegacy
+                : entry;
         }
-    }
-    const remove = [];
-    if (legacy && typeof legacy === 'object') {
-        const legacyIds = Object.keys(legacy)
-            .filter((id) => isProgressRecord(legacy[id]));
-        const migrated = legacyIds.every((id) => {
-            if (!keepIds.has(id)) return true;
-            const key = progressStorageKey(id);
-            return isProgressRecord(store[key]) || isProgressRecord(set[key]);
-        });
-        if (migrated) remove.push(STORAGE_KEY);
+        if (Object.keys(nextLegacy).length === 0) {
+            remove.push(STORAGE_KEY);
+        } else {
+            set[STORAGE_KEY] = nextLegacy;
+        }
     }
     for (const id of Object.keys(map)) {
         if (keepIds.has(id)) continue;
@@ -219,6 +221,17 @@ export function planProgressUpsert(store, record) {
         if (!keepIds.has(value.documentId)) remove.push(key);
     }
     return { set, remove: [...new Set(remove)] };
+}
+
+/** True when the resume lookup still belongs to the committed document open. */
+export function isResumeLookupStillCurrent({
+    capturedDocumentId,
+    capturedProgressRevision,
+    currentMeta,
+}) {
+    return Boolean(capturedDocumentId) &&
+        currentMeta?.documentId === capturedDocumentId &&
+        currentMeta?.progressRevision === capturedProgressRevision;
 }
 
 /**
@@ -277,22 +290,26 @@ export function planProgressRemove(store, documentId) {
     const map = collectProgressRecords(store);
     delete map[documentId];
     const set = {};
+    const remove = [progressStorageKey(documentId)];
     const legacy = store?.[STORAGE_KEY];
     if (legacy && typeof legacy === 'object') {
+        // Keep remaining unmigrated peers in the legacy map — do not write
+        // their per-document keys from this snapshot (same concurrent-migration
+        // rule as planProgressUpsert).
+        const nextLegacy = {};
         for (const entry of Object.values(map)) {
             const key = progressStorageKey(entry.documentId);
-            if (!isProgressRecord(store[key])) set[key] = entry;
+            if (isProgressRecord(store[key])) continue;
+            const fromLegacy = legacy[entry.documentId];
+            nextLegacy[entry.documentId] = isProgressRecord(fromLegacy)
+                ? fromLegacy
+                : entry;
         }
-    }
-    const remove = [progressStorageKey(documentId)];
-    if (legacy && typeof legacy === 'object') {
-        const legacyIds = Object.keys(legacy)
-            .filter((id) => isProgressRecord(legacy[id]) && id !== documentId);
-        const migrated = legacyIds.every((id) => {
-            const key = progressStorageKey(id);
-            return isProgressRecord(store[key]) || isProgressRecord(set[key]);
-        });
-        if (migrated) remove.push(STORAGE_KEY);
+        if (Object.keys(nextLegacy).length === 0) {
+            remove.push(STORAGE_KEY);
+        } else {
+            set[STORAGE_KEY] = nextLegacy;
+        }
     }
     return { set, remove: [...new Set(remove)] };
 }

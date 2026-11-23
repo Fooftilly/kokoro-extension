@@ -133,11 +133,10 @@ describe('reader progress persistence integration (#196)', () => {
         // Production path: plan against a store that still holds both records.
         const store = { [STORAGE_KEY]: { [idKeep]: keep, [idDrop]: drop } };
         const plan = planProgressRemove(store, idDrop);
-        expect(plan.remove).toEqual(expect.arrayContaining([
-            progressStorageKey(idDrop), STORAGE_KEY,
-        ]));
-        expect(plan.set[progressStorageKey(idKeep)]).toEqual(keep);
-        const applied = { ...plan.set };
+        expect(plan.remove).toEqual([progressStorageKey(idDrop)]);
+        expect(plan.set[STORAGE_KEY]).toEqual({ [idKeep]: keep });
+        expect(plan.set[progressStorageKey(idKeep)]).toBeUndefined();
+        const applied = { ...store, ...plan.set };
         for (const key of plan.remove) delete applied[key];
         expect(readProgressRecord(applied, idKeep)).toEqual(keep);
         expect(readProgressRecord(applied, idDrop)).toBeNull();

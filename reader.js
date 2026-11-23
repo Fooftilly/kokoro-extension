@@ -18,6 +18,7 @@ import {
     planProgressRemove,
     reconcileProgressRemoves,
     runExclusiveProgressMutation,
+    isResumeLookupStillCurrent,
     readProgressRecord,
 } from './reader-progress.js';
 import './tts-providers.js';
@@ -301,6 +302,7 @@ async function offerResumeOrStart() {
     hideResumeBanner();
     const meta = currentDocumentMeta;
     const documentId = meta?.documentId;
+    const progressRevision = meta?.progressRevision;
     if (!documentId || flatToc.length === 0) {
         activateFirstPlayableChapter();
         return;
@@ -308,14 +310,24 @@ async function offerResumeOrStart() {
     let record = null;
     try {
         const stored = await browser.storage.local.get(null);
-        // Another document may have committed during the await — leave that
-        // document's own offerResumeOrStart to drive activation.
-        if (currentDocumentMeta?.documentId !== documentId) return;
+        // Same-file re-open bumps progressRevision; a different file changes
+        // documentId. Either way, leave the newer commit's offerResumeOrStart
+        // to drive activation. Failed/cancelled selections never commit, so
+        // revision stays put and this lookup may still proceed.
+        if (!isResumeLookupStillCurrent({
+            capturedDocumentId: documentId,
+            capturedProgressRevision: progressRevision,
+            currentMeta: currentDocumentMeta,
+        })) return;
         record = readProgressRecord(stored || {}, documentId);
     } catch (error) {
         console.warn('Cannot read saved reader progress', error);
     }
-    if (currentDocumentMeta?.documentId !== documentId) return;
+    if (!isResumeLookupStillCurrent({
+        capturedDocumentId: documentId,
+        capturedProgressRevision: progressRevision,
+        currentMeta: currentDocumentMeta,
+    })) return;
     if (!record) {
         activateFirstPlayableChapter();
         return;
