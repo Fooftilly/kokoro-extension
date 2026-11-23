@@ -1,7 +1,9 @@
 /** @jest-environment jsdom */
+import { webcrypto } from 'crypto';
 import { TextDecoder } from 'util';
 
 global.TextDecoder = TextDecoder;
+Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true });
 
 function deferred() {
     let resolve;
@@ -57,6 +59,12 @@ function mountReaderDOM() {
         <input id="scanDocumentHeadings" type="checkbox">
         <button id="openAnotherDocument" type="button"></button>
         <button id="cancelDocumentPicker" type="button" hidden></button>
+        <div id="resumeBanner" hidden>
+            <p id="resumeBannerText"></p>
+            <button id="resumeReading" type="button"></button>
+            <button id="startOverReading" type="button"></button>
+            <button id="clearReadingProgress" type="button"></button>
+        </div>
         <div id="errorMsg" style="display:none"></div>
         <div id="chapterError" role="alert" hidden></div>
         <div id="loadingStatus" style="display:none"></div>
@@ -88,6 +96,9 @@ describe('EPUB file read/parse lifecycle', () => {
             runtime: { onMessage: { addListener: jest.fn() } },
             storage: {
                 local: {
+                    get: jest.fn(async (defaults = {}) => (
+                        typeof defaults === 'object' && defaults ? { ...defaults } : {}
+                    )),
                     remove: jest.fn(async () => {}),
                     set: jest.fn(async () => {}),
                 },
@@ -991,9 +1002,10 @@ describe('EPUB file read/parse lifecycle', () => {
 
         expect(document.querySelector('.playable-chapter').dataset.href)
             .toBe('Nav/nav.xhtml#chapter1');
-        expect(browser.storage.local.set.mock.lastCall[0].pendingTitle)
-            .toBe('Navigation chapter');
-        expect(browser.storage.local.set.mock.lastCall[0].pendingStartIndex).toBe(0);
+        const navStored = browser.storage.local.set.mock.calls
+            .map(([value]) => value)
+            .find(value => value.pendingTitle === 'Navigation chapter');
+        expect(navStored.pendingStartIndex).toBe(0);
         expect(document.getElementById('chapterError').hidden).toBe(true);
     });
 
@@ -1016,10 +1028,10 @@ describe('EPUB file read/parse lifecycle', () => {
 
         expect(Array.from(document.querySelectorAll('.playable-chapter'), el => el.dataset.href))
             .toEqual(['chapter.xhtml#root', 'Nav/chapter.xhtml#nav']);
-        expect(browser.storage.local.set.mock.lastCall[0].pendingTitle)
-            .toBe('The root chapter.');
-        expect(browser.storage.local.set.mock.lastCall[0].pendingContent[0].content)
-            .toBe('The root chapter.');
+        const rootStored = browser.storage.local.set.mock.calls
+            .map(([value]) => value)
+            .find(value => value.pendingTitle === 'The root chapter.');
+        expect(rootStored.pendingContent[0].content).toBe('The root chapter.');
         expect(document.getElementById('chapterError').hidden).toBe(true);
     });
 

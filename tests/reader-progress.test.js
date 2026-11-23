@@ -1,0 +1,236 @@
+/**
+ * @jest-environment jsdom
+ */
+
+import { webcrypto } from 'crypto';
+import { TextEncoder } from 'util';
+import {
+    STORAGE_KEY,
+    MAX_STORED_DOCUMENTS,
+    documentIdFromDigest,
+    hexDigestFromBuffer,
+    buildProgressRecord,
+    shouldAcceptProgressWrite,
+    resolveResumeTarget,
+    upsertProgress,
+    removeProgress,
+    clearAllProgress,
+    fingerprintChapterBlocks,
+} from '../reader-progress.js';
+
+function digest(hex = 'a'.repeat(64)) {
+    return hex;
+}
+
+describe('reader-progress helpers (#196)', () => {
+    beforeAll(() => {
+        Object.defineProperty(globalThis, 'crypto', {
+            value: webcrypto,
+            configurable: true,
+        });
+    });
+
+    test('documentIdFromDigest prefixes a stable sha256 id', () => {
+        expect(documentIdFromDigest(digest())).toBe('sha256:' + 'a'.repeat(64));
+        expect(() => documentIdFromDigest('not-hex')).toThrow(/digest/i);
+    });
+
+    test('hexDigestFromBuffer hashes ArrayBuffer bytes', async () => {
+        const bytes = new TextEncoder().encode('kokoro-reader');
+        const hex = await hexDigestFromBuffer(bytes.buffer);
+        expect(hex).toMatch(/^[a-f0-9]{64}$/);
+        const again = await hexDigestFromBuffer(bytes.buffer);
+        expect(again).toBe(hex);
+        const other = await hexDigestFromBuffer(new TextEncoder().encode('other').buffer);
+        expect(other).not.toBe(hex);
+    });
+
+    test('fingerprintChapterBlocks is stable for the same blocks', () => {
+        const blocks = [
+            { content: 'Hello world.', ids: ['a'] },
+            { content: 'Second.', ids: [] },
+        ];
+        const a = fingerprintChapterBlocks(blocks);
+        const b = fingerprintChapterBlocks(blocks);
+        expect(a).toBe(b);
+        expect(a).toMatch(/^[a-f0-9]{16,}$/);
+        expect(fingerprintChapterBlocks([
+            { content: 'Hello world!', ids: ['a'] },
+        ])).not.toBe(a);
+    });
+
+    test('buildProgressRecord stores validated fields without source text', () => {
+        const record = buildProgressRecord({
+            documentId: documentIdFromDigest(digest()),
+            name: 'book.epub',
+            size: 12,
+            format: 'epub',
+            chapterHref: 'ch1.xhtml#intro',
+            blockIndex: 3,
+            chapterFingerprint: 'abc',
+            revision: 7,
+            updatedAt: 1000,
+        });
+        expect(record).toEqual(expect.objectContaining({
+            documentId: 'sha256:' + 'a'.repeat(64),
+            name: 'book.epub',
+            size: 12,
+            format: 'epub',
+            chapterHref: 'ch1.xhtml#intro',
+            blockIndex: 3,
+            chapterFingerprint: 'abc',
+            revision: 7,
+            updatedAt: 1000,
+        }));
+        expect(JSON.stringify(record)).not.toMatch(/Hello|pendingText|content/);
+    });
+
+    test('shouldAcceptProgressWrite fences stale document and chapter revisions', () => {
+        expect(shouldAcceptProgressWrite({
+            writeRevision: 2,
+            currentRevision: 2,
+            writeChapterRequestId: 5,
+            currentChapterRequestId: 5,
+            writeDocumentId: 'sha256:aa',
+            currentDocumentId: 'sha256:aa',
+        })).toBe(true);
+
+        expect(shouldAcceptProgressWrite({
+            writeRevision: 1,
+            currentRevision: 2,
+            writeChapterRequestId: 5,
+            currentChapterRequestId: 5,
+            writeDocumentId: 'sha256:aa',
+            currentDocumentId: 'sha256:aa',
+        })).toBe(false);
+
+        expect(shouldAcceptProgressWrite({
+            writeRevision: 2,
+            currentRevision: 2,
+            writeChapterRequestId: 4,
+            currentChapterRequestId: 5,
+            writeDocumentId: 'sha256:aa',
+            currentDocumentId: 'sha256:aa',
+        })).toBe(false);
+
+        expect(shouldAcceptProgressWrite({
+            writeRevision: 2,
+            currentRevision: 2,
+            writeChapterRequestId: 5,
+            currentChapterRequestId: 5,
+            writeDocumentId: 'sha256:old',
+            currentDocumentId: 'sha256:new',
+        })).toBe(false);
+    });
+
+    test('resolveResumeTarget validates chapter href and block index', () => {
+        const flatToc = [
+            { href: 'a.xhtml', label: 'A' },
+            { href: 'b.xhtml#mid', label: 'B' },
+        ];
+        const record = buildProgressRecord({
+            documentId: documentIdFromDigest(digest()),
+            name: 'book.epub',
+            size: 1,
+            format: 'epub',
+            chapterHref: 'b.xhtml#mid',
+            blockIndex: 2,
+            chapterFingerprint: 'fp1',
+            revision: 1,
+            updatedAt: 1,
+        });
+
+        expect(resolveResumeTarget({
+            record,
+            flatToc,
+            chapterFingerprint: 'fp1',
+            chapterBlockCount: 5,
+        })).toEqual({
+            ok: true,
+            chapterHref: 'b.xhtml#mid',
+            blockIndex: 2,
+            label: 'B',
+        });
+
+        expect(resolveResumeTarget({
+            record,
+            flatToc,
+            chapterFingerprint: 'changed',
+            chapterBlockCount: 5,
+        }).ok).toBe(false);
+
+        expect(resolveResumeTarget({
+            record: { ...record, blockIndex: 9 },
+            flatToc,
+            chapterFingerprint: 'fp1',
+            chapterBlockCount: 5,
+        }).ok).toBe(false);
+
+        expect(resolveResumeTarget({
+            record: { ...record, chapterHref: 'missing.xhtml' },
+            flatToc,
+            chapterFingerprint: 'fp1',
+            chapterBlockCount: 5,
+        }).ok).toBe(false);
+    });
+
+    test('upsertProgress replaces same id and bounds stored documents', () => {
+        let store = {};
+        const base = {
+            name: 'n.epub', size: 1, format: 'epub',
+            chapterHref: 'a.xhtml', blockIndex: 0,
+            chapterFingerprint: 'fp', revision: 1, updatedAt: 1,
+        };
+        for (let i = 0; i < MAX_STORED_DOCUMENTS + 3; i++) {
+            const hex = i.toString(16).padStart(64, '0');
+            store = upsertProgress(store, buildProgressRecord({
+                ...base,
+                documentId: documentIdFromDigest(hex),
+                updatedAt: i + 1,
+                revision: i + 1,
+            }));
+        }
+        expect(Object.keys(store[STORAGE_KEY] || store).length <= MAX_STORED_DOCUMENTS ||
+            Object.keys(store).length <= MAX_STORED_DOCUMENTS).toBe(true);
+        // Prefer inspecting via helpers: last upserts remain; oldest dropped.
+        const map = store[STORAGE_KEY] || store;
+        expect(Object.keys(map).length).toBe(MAX_STORED_DOCUMENTS);
+        const oldestHex = (0).toString(16).padStart(64, '0');
+        expect(map[documentIdFromDigest(oldestHex)]).toBeUndefined();
+    });
+
+    test('removeProgress and clearAllProgress drop records', () => {
+        const id = documentIdFromDigest(digest());
+        let store = upsertProgress({}, buildProgressRecord({
+            documentId: id,
+            name: 'book.epub',
+            size: 2,
+            format: 'epub',
+            chapterHref: 'a.xhtml',
+            blockIndex: 1,
+            chapterFingerprint: 'fp',
+            revision: 1,
+            updatedAt: 10,
+        }));
+        store = removeProgress(store, id);
+        expect((store[STORAGE_KEY] || {})[id]).toBeUndefined();
+        store = upsertProgress({}, buildProgressRecord({
+            documentId: id,
+            name: 'book.epub',
+            size: 2,
+            format: 'epub',
+            chapterHref: 'a.xhtml',
+            blockIndex: 1,
+            chapterFingerprint: 'fp',
+            revision: 1,
+            updatedAt: 10,
+        }));
+        store = clearAllProgress(store);
+        expect(store[STORAGE_KEY] || {}).toEqual({});
+    });
+
+    test('STORAGE_KEY stays in local storage namespace', () => {
+        expect(STORAGE_KEY).toBe('readerProgressByDocumentId');
+        expect(STORAGE_KEY).not.toMatch(/sync/i);
+    });
+});

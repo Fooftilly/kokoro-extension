@@ -73,6 +73,41 @@ body {
     width: 100%;
 }
 
+.resume-banner {
+    margin: 10px 15px 0;
+    padding: 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--panel-bg, transparent);
+}
+
+.resume-banner[hidden] {
+    display: none;
+}
+
+.resume-banner p {
+    margin: 0 0 8px;
+    font-size: 0.9rem;
+    line-height: 1.35;
+}
+
+.resume-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.resume-actions .nav-btn {
+    flex: 1 1 auto;
+    min-width: 6.5rem;
+}
+
+.resume-storage-note {
+    margin: 8px 0 0;
+    font-size: 0.75rem;
+    opacity: 0.8;
+}
+
 .picker-options {
     margin-top: 18px;
     text-align: left;

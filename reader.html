@@ -42,6 +42,15 @@
             <div class="reader-file-actions">
                 <button id="openAnotherDocument" type="button" class="nav-btn">Open another document</button>
             </div>
+            <div id="resumeBanner" class="resume-banner" hidden>
+                <p id="resumeBannerText"></p>
+                <div class="resume-actions">
+                    <button id="resumeReading" type="button" class="nav-btn">Resume</button>
+                    <button id="startOverReading" type="button" class="nav-btn">Start over</button>
+                    <button id="clearReadingProgress" type="button" class="nav-btn">Clear saved position</button>
+                </div>
+                <p class="resume-storage-note">Saved positions stay in this browser only (local storage). Re-select the file to restore; source bytes are not stored.</p>
+            </div>
             <div class="nav-controls">
                 <button id="prevChapter" class="nav-btn" disabled>Prev</button>
                 <button id="nextChapter" class="nav-btn" disabled>Next</button>
