@@ -4,6 +4,64 @@
     'use strict';
 
     const DEFAULT_MEDIAPIPE_VOICE = 'af_heart';
+    /**
+     * Kokoro-82M MediaPipe voice IDs (54), grouped for the popup curated select (#194 item 6).
+     * Source: MediaPipe Text-to-Speech / litert-community Kokoro-82M docs.
+     */
+    const MEDIAPIPE_VOICE_GROUPS = Object.freeze([
+        Object.freeze({
+            label: 'English (American)',
+            voices: Object.freeze([
+                'af_alloy', 'af_aoede', 'af_bella', 'af_heart', 'af_jessica', 'af_kore',
+                'af_nicole', 'af_nova', 'af_river', 'af_sarah', 'af_sky',
+                'am_adam', 'am_echo', 'am_eric', 'am_fenrir', 'am_liam',
+                'am_michael', 'am_onyx', 'am_puck', 'am_santa',
+            ]),
+        }),
+        Object.freeze({
+            label: 'English (British)',
+            voices: Object.freeze([
+                'bf_alice', 'bf_emma', 'bf_isabella', 'bf_lily',
+                'bm_daniel', 'bm_fable', 'bm_george', 'bm_lewis',
+            ]),
+        }),
+        Object.freeze({
+            label: 'Spanish',
+            voices: Object.freeze(['ef_dora', 'em_alex', 'em_santa']),
+        }),
+        Object.freeze({
+            label: 'French',
+            voices: Object.freeze(['ff_siwis']),
+        }),
+        Object.freeze({
+            label: 'Hindi',
+            voices: Object.freeze(['hf_alpha', 'hf_beta', 'hm_omega', 'hm_psi']),
+        }),
+        Object.freeze({
+            label: 'Italian',
+            voices: Object.freeze(['if_sara', 'im_nicola']),
+        }),
+        Object.freeze({
+            label: 'Portuguese (Brazilian)',
+            voices: Object.freeze(['pf_dora', 'pm_alex', 'pm_santa']),
+        }),
+        Object.freeze({
+            label: 'Mandarin Chinese',
+            voices: Object.freeze([
+                'zf_xiaobei', 'zf_xiaoni', 'zf_xiaoxiao', 'zf_xiaoyi',
+                'zm_yunjian', 'zm_yunxi', 'zm_yunxia', 'zm_yunyang',
+            ]),
+        }),
+        Object.freeze({
+            label: 'Japanese',
+            voices: Object.freeze([
+                'jf_alpha', 'jf_gongitsune', 'jf_nezumi', 'jf_tebukuro', 'jm_kumo',
+            ]),
+        }),
+    ]);
+    const MEDIAPIPE_VOICE_IDS = Object.freeze(
+        MEDIAPIPE_VOICE_GROUPS.flatMap((group) => group.voices));
+    const MEDIAPIPE_VOICE_ID_SET = new Set(MEDIAPIPE_VOICE_IDS);
     /** Default ONNX voice binary (American English pack). */
     const ONNX_FIXED_VOICE_ASSET = 'voices/af.bin';
     /** Catalogued selectable ONNX voice paths (#60 voice-change first slice). */
@@ -14,6 +72,42 @@
         if (typeof value !== 'string') return DEFAULT_MEDIAPIPE_VOICE;
         const trimmed = value.trim().toLowerCase();
         return LOCAL_VOICE_ID_RE.test(trimmed) ? trimmed : DEFAULT_MEDIAPIPE_VOICE;
+    }
+
+    function isKnownMediaPipeVoice(voiceId) {
+        return MEDIAPIPE_VOICE_ID_SET.has(voiceId);
+    }
+
+    /**
+     * Fill a <select> with curated Kokoro-82M voices (optgroups). Preserves a
+     * custom ID as an extra option when it is valid but not in the catalog.
+     */
+    function populateMediaPipeVoiceSelect(selectEl, selectedId) {
+        if (!selectEl || selectEl.tagName !== 'SELECT') return DEFAULT_MEDIAPIPE_VOICE;
+        const voiceId = normalizeLocalVoiceId(selectedId);
+        selectEl.textContent = '';
+        for (const group of MEDIAPIPE_VOICE_GROUPS) {
+            const optgroup = document.createElement('optgroup');
+            optgroup.label = group.label;
+            for (const id of group.voices) {
+                const option = document.createElement('option');
+                option.value = id;
+                option.textContent = id;
+                optgroup.appendChild(option);
+            }
+            selectEl.appendChild(optgroup);
+        }
+        if (!isKnownMediaPipeVoice(voiceId)) {
+            const customGroup = document.createElement('optgroup');
+            customGroup.label = 'Custom';
+            const option = document.createElement('option');
+            option.value = voiceId;
+            option.textContent = voiceId + ' (custom)';
+            customGroup.appendChild(option);
+            selectEl.appendChild(customGroup);
+        }
+        selectEl.value = voiceId;
+        return voiceId;
     }
 
     function isLocalBackend(backend) {
@@ -94,10 +188,14 @@
         DEFAULT_MEDIAPIPE_VOICE,
         /** @deprecated use DEFAULT_MEDIAPIPE_VOICE */
         DEFAULT_LOCAL_VOICE: DEFAULT_MEDIAPIPE_VOICE,
+        MEDIAPIPE_VOICE_GROUPS,
+        MEDIAPIPE_VOICE_IDS,
         ONNX_FIXED_VOICE_ASSET,
         ONNX_VOICE_ASSETS,
         LOCAL_VOICE_ID_RE,
         normalizeLocalVoiceId,
+        isKnownMediaPipeVoice,
+        populateMediaPipeVoiceSelect,
         normalizeOnnxVoiceAsset,
         isLocalBackend,
         weightedMixingSupported,

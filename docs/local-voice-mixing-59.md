@@ -5,7 +5,7 @@
 | Backend | Weighted mixing | Decision |
 | --- | --- | --- |
 | Kokoro-FastAPI | Yes (`af_sarah(5)+af_nicole(3)+…`) | Unchanged |
-| MediaPipe Kokoro | No official blend API | Single editable `voiceId` + explicit UI |
+| MediaPipe Kokoro | No official blend API | Curated Kokoro-82M `<select>` (+ optional advanced custom ID) |
 | ONNX Runtime Web | Style tensor is blendable; catalog offers selectable assets | Default `voices/af.bin` with onnx-q8; optional `voices/af_bella.bin` download (#60); style-vector lerp remains available for future weighted mixes |
 
 ## MediaPipe (official API)
@@ -29,7 +29,7 @@ Three independent sync keys (never rewritten when switching backends):
 | Key | Backend | Editable |
 | --- | --- | --- |
 | `browser.storage.sync.voice` | FastAPI weighted mix | Yes (mixer) |
-| `browser.storage.sync.mediaPipeVoice` | MediaPipe `voiceId` | Yes |
+| `browser.storage.sync.mediaPipeVoice` | MediaPipe `voiceId` | Yes (curated select of 54 Kokoro-82M IDs; optional advanced free-text) |
 | `browser.storage.sync.onnxVoiceAsset` | ONNX catalog asset | Yes (catalog select: `af.bin` / `af_bella.bin`) |
 
 Legacy `localVoice` is read once as a MediaPipe fallback when `mediaPipeVoice` is absent.
@@ -37,7 +37,7 @@ Callers must **not** pass a `mediaPipeVoice` default into `browser.storage.sync.
 
 - Switching to MediaPipe/ONNX must not clear or rewrite `voice`.
 - Switching between MediaPipe and ONNX must not overwrite the other local preference.
-- Popup shows the mixer for FastAPI, an editable MediaPipe voice ID, or an ONNX catalog voice-asset select + limitation note.
+- Popup shows the mixer for FastAPI, a curated MediaPipe voice select (optional advanced custom ID), or an ONNX catalog voice-asset select + limitation note.
 - Test page (`benchmark.html` / model manager) states the same limitation.
 
 ## Rejected shortcut

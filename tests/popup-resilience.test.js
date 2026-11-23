@@ -142,6 +142,24 @@ describe('popup backend-loss resilience (#4)', () => {
         }));
     }
 
+    /** Load popup with MediaPipe selected and a given mediaPipeVoice (#194 item 6). */
+    async function loadMediaPipePopupWithVoice(mediaPipeVoice = 'af_heart') {
+        allowMediaPipeSelection();
+        browser.storage.sync.get.mockImplementation(async (defaults) => ({
+            ...defaults,
+            apiUrl: 'http://127.0.0.1:8880/v1/',
+            ttsBackend: 'mediapipe',
+            mediaPipeVariant: 'cpu',
+            voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
+            mediaPipeVoice,
+            onnxVoiceAsset: 'voices/af.bin',
+            mode: 'stream',
+            theme: 'light',
+        }));
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        await flushAsync();
+    }
+
     /** Sync get/set that honors writes so rollback tests cannot mask a bad persist. */
     function useWritableSyncStore(initial) {
         const store = { ...initial };
@@ -900,28 +918,20 @@ describe('popup backend-loss resilience (#4)', () => {
     });
 
     test('MediaPipe save writes mediaPipeVoice only and keeps FastAPI mix (#59)', async () => {
-        allowMediaPipeSelection();
-        browser.storage.sync.get.mockImplementation(async (defaults) => ({
-            ...defaults,
-            apiUrl: 'http://127.0.0.1:8880/v1/',
-            ttsBackend: 'mediapipe',
-            mediaPipeVariant: 'cpu',
-            voice: 'af_sarah(5)+af_nicole(3)+af_sky(2)',
-            mediaPipeVoice: 'af_heart',
-            onnxVoiceAsset: 'voices/af.bin',
-            mode: 'stream',
-            theme: 'light',
-        }));
-
-        document.dispatchEvent(new Event('DOMContentLoaded'));
-        await flushAsync();
+        await loadMediaPipePopupWithVoice('af_heart');
 
         expect(document.getElementById('voiceMixerContainer').hidden).toBe(true);
         expect(document.getElementById('mediaPipeVoiceContainer').hidden).toBe(false);
         expect(document.getElementById('onnxVoiceContainer').hidden).toBe(true);
-        expect(document.getElementById('mediaPipeVoice').disabled).toBe(false);
+        const mediaPipeSelect = document.getElementById('mediaPipeVoice');
+        expect(mediaPipeSelect.disabled).toBe(false);
+        expect(mediaPipeSelect.tagName).toBe('SELECT');
+        expect(mediaPipeSelect.querySelectorAll('option').length).toBeGreaterThanOrEqual(54);
+        expect(mediaPipeSelect.value).toBe('af_heart');
 
-        document.getElementById('mediaPipeVoice').value = 'af_bella';
+        mediaPipeSelect.value = 'af_bella';
+        mediaPipeSelect.dispatchEvent(new Event('change'));
+        await flushAsync();
         browser.storage.sync.set.mockClear();
         await popup.saveOptions(false);
 
@@ -929,6 +939,112 @@ describe('popup backend-loss resilience (#4)', () => {
         expect(writes.some((payload) => payload.mediaPipeVoice === 'af_bella')).toBe(true);
         expect(writes.every((payload) => !Object.hasOwn(payload, 'voice'))).toBe(true);
         expect(writes.every((payload) => !Object.hasOwn(payload, 'onnxVoiceAsset'))).toBe(true);
+    });
+
+    test('MediaPipe curated select + advanced custom ID (#194 item 6)', async () => {
+        await loadMediaPipePopupWithVoice('xx_custom');
+
+        const mediaPipeSelect = document.getElementById('mediaPipeVoice');
+        const customInput = document.getElementById('mediaPipeVoiceCustom');
+        const advanced = document.querySelector('.media-pipe-voice-advanced');
+        expect(mediaPipeSelect.tagName).toBe('SELECT');
+        expect(mediaPipeSelect.value).toBe('xx_custom');
+        expect(mediaPipeSelect.querySelector('optgroup[label="Custom"]')).toBeTruthy();
+        expect(customInput.value).toBe('xx_custom');
+        expect(advanced.open).toBe(true);
+
+        mediaPipeSelect.value = 'am_adam';
+        mediaPipeSelect.dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(mediaPipeSelect.value).toBe('am_adam');
+        expect(customInput.value).toBe('');
+
+        customInput.value = 'ef_dora';
+        customInput.dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(mediaPipeSelect.value).toBe('ef_dora');
+
+        browser.storage.sync.set.mockClear();
+        await popup.saveOptions(false);
+        const writes = browser.storage.sync.set.mock.calls.map(([payload]) => payload);
+        expect(writes.some((payload) => payload.mediaPipeVoice === 'ef_dora')).toBe(true);
+    });
+
+    test('MediaPipe custom voice draft survives quiet autosave (#194 item 6)', async () => {
+        await loadMediaPipePopupWithVoice('af_heart');
+
+        const customInput = document.getElementById('mediaPipeVoiceCustom');
+        customInput.value = 'xx_';
+        customInput.dispatchEvent(new Event('input'));
+        await popup.saveOptions(false);
+
+        expect(customInput.value).toBe('xx_');
+        expect(document.getElementById('mediaPipeVoice').value).toBe('af_heart');
+    });
+
+    test('MediaPipe incomplete custom draft on blur keeps baseline (#194 item 6)', async () => {
+        await loadMediaPipePopupWithVoice('af_sarah');
+
+        const customInput = document.getElementById('mediaPipeVoiceCustom');
+        const mediaPipeSelect = document.getElementById('mediaPipeVoice');
+        customInput.value = 'xx_';
+        customInput.dispatchEvent(new Event('input'));
+        expect(mediaPipeSelect.value).toBe('af_sarah');
+
+        browser.storage.sync.set.mockClear();
+        customInput.dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(mediaPipeSelect.value).toBe('af_sarah');
+        const writes = browser.storage.sync.set.mock.calls.map(([payload]) => payload);
+        expect(writes.some((payload) => payload.mediaPipeVoice === 'af_sarah')).toBe(true);
+        expect(writes.every((payload) => !Object.hasOwn(payload, 'mediaPipeVoice') ||
+            payload.mediaPipeVoice === 'af_sarah')).toBe(true);
+    });
+
+    test('MediaPipe discarded custom draft restores baseline voice', async () => {
+        await loadMediaPipePopupWithVoice('af_sarah');
+
+        const customInput = document.getElementById('mediaPipeVoiceCustom');
+        const mediaPipeSelect = document.getElementById('mediaPipeVoice');
+        expect(mediaPipeSelect.value).toBe('af_sarah');
+        expect(customInput.value).toBe('');
+
+        customInput.value = 'af_bella';
+        customInput.dispatchEvent(new Event('input'));
+        expect(mediaPipeSelect.value).toBe('af_bella');
+
+        customInput.value = '';
+        customInput.dispatchEvent(new Event('input'));
+        expect(mediaPipeSelect.value).toBe('af_sarah');
+
+        browser.storage.sync.set.mockClear();
+        await popup.saveOptions(false);
+        const writes = browser.storage.sync.set.mock.calls.map(([payload]) => payload);
+        expect(writes.some((payload) => payload.mediaPipeVoice === 'af_sarah')).toBe(true);
+        expect(writes.every((payload) => payload.mediaPipeVoice !== 'af_bella' &&
+            (!Object.hasOwn(payload, 'mediaPipeVoice') || payload.mediaPipeVoice === 'af_sarah'))).toBe(true);
+    });
+
+    test('MediaPipe custom typing keeps longer IDs whose prefixes are catalogued', async () => {
+        await loadMediaPipePopupWithVoice('af_heart');
+
+        const customInput = document.getElementById('mediaPipeVoiceCustom');
+        const mediaPipeSelect = document.getElementById('mediaPipeVoice');
+        let draft = '';
+        for (const ch of 'zm_yunxia') {
+            draft += ch;
+            customInput.value = draft;
+            customInput.dispatchEvent(new Event('input'));
+        }
+        expect(customInput.value).toBe('zm_yunxia');
+        expect(mediaPipeSelect.value).toBe('zm_yunxia');
+
+        browser.storage.sync.set.mockClear();
+        customInput.dispatchEvent(new Event('change'));
+        await flushAsync();
+        expect(mediaPipeSelect.value).toBe('zm_yunxia');
+        const writes = browser.storage.sync.set.mock.calls.map(([payload]) => payload);
+        expect(writes.some((payload) => payload.mediaPipeVoice === 'zm_yunxia')).toBe(true);
     });
 
     test('hides FastAPI-only chrome for local backends (#194 item 1)', async () => {
