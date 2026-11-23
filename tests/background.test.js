@@ -543,161 +543,125 @@ describe('background.js logic', () => {
         await new Promise((r) => setTimeout(r, 0));
     }
 
-    test('ready MediaPipe does not use the server-disconnected red icon (#208)', async () => {
+    async function loadBackgroundWithReadyStore() {
+        jest.resetModules();
+        const { ModelDataStore } = require('../model-data-store.js');
+        const statusSpy = jest.spyOn(ModelDataStore.prototype, 'status').mockResolvedValue({
+            ready: true, storedBytes: 1, totalBytes: 1,
+        });
+        const bg = require('../background.js');
+        await flushToolbarCheck();
+        return { bg, statusSpy };
+    }
+
+    function stubToolbarSync(overrides) {
         browser.storage.sync.get.mockResolvedValue({
             apiUrl: 'http://127.0.0.1:8880/v1/',
-            ttsBackend: 'mediapipe',
-            mediaPipeVariant: 'cpu',
-            voice: 'af_sarah',
-            mode: 'stream',
+            ...overrides,
         });
+        fetch.mockClear();
+        browser.action.setIcon.mockClear();
+        browser.action.setTitle.mockClear();
+    }
+
+    function lastIcon48() {
+        return browser.action.setIcon.mock.calls.at(-1)[0].path[48];
+    }
+
+    function lastTitle() {
+        return browser.action.setTitle.mock.calls.at(-1)[0].title;
+    }
+
+    test('ready MediaPipe does not use the server-disconnected red icon (#208)', async () => {
+        stubToolbarSync({ ttsBackend: 'mediapipe', mediaPipeVariant: 'cpu' });
         const { manifestForVariant } = require('../model-catalog.js');
         const revision = manifestForVariant('mediapipe', 'cpu').revision;
         browser.storage.local.get.mockImplementation(async (defaults = {}) => ({
             ...defaults,
             'mediapipeValidatedRevision:cpu': revision,
         }));
-        fetch.mockClear();
-        browser.action.setIcon.mockClear();
-        browser.action.setTitle.mockClear();
-
-        jest.resetModules();
-        const { ModelDataStore } = require('../model-data-store.js');
-        const statusSpy = jest.spyOn(ModelDataStore.prototype, 'status').mockResolvedValue({
-            ready: true, storedBytes: 1, totalBytes: 1,
-        });
-        const bg = require('../background.js');
-        await flushToolbarCheck();
+        const { bg, statusSpy } = await loadBackgroundWithReadyStore();
         await bg.checkApiStatus();
 
         expect(fetch).not.toHaveBeenCalled();
-        const iconCall = browser.action.setIcon.mock.calls.at(-1)[0];
-        expect(iconCall.path[48]).toMatch(/icon-48-green/);
-        expect(iconCall.path[48]).not.toMatch(/red/);
-        expect(browser.action.setTitle).toHaveBeenCalledWith(
-            expect.objectContaining({ title: expect.stringMatching(/MediaPipe ready/i) })
-        );
+        expect(lastIcon48()).toMatch(/icon-48-green/);
+        expect(lastIcon48()).not.toMatch(/red/);
+        expect(lastTitle()).toMatch(/MediaPipe ready/i);
         statusSpy.mockRestore();
     });
 
     test('untested MediaPipe uses default icons and needs-setup title (#208)', async () => {
-        browser.storage.sync.get.mockResolvedValue({
-            apiUrl: 'http://127.0.0.1:8880/v1/',
-            ttsBackend: 'mediapipe',
-            mediaPipeVariant: 'cpu',
-        });
+        stubToolbarSync({ ttsBackend: 'mediapipe', mediaPipeVariant: 'cpu' });
         browser.storage.local.get.mockImplementation(async (defaults = {}) => ({ ...defaults }));
-        fetch.mockClear();
-        browser.action.setIcon.mockClear();
-        browser.action.setTitle.mockClear();
-
-        jest.resetModules();
-        const { ModelDataStore } = require('../model-data-store.js');
-        const statusSpy = jest.spyOn(ModelDataStore.prototype, 'status').mockResolvedValue({
-            ready: true, storedBytes: 1, totalBytes: 1,
-        });
-        const bg = require('../background.js');
-        await flushToolbarCheck();
+        const { bg, statusSpy } = await loadBackgroundWithReadyStore();
         await bg.checkApiStatus();
 
         expect(fetch).not.toHaveBeenCalled();
-        const iconCall = browser.action.setIcon.mock.calls.at(-1)[0];
-        expect(iconCall.path[48]).toBe('icons/icon48.png');
-        expect(browser.action.setTitle.mock.calls.at(-1)[0].title)
-            .toMatch(/test the installed model first/i);
+        expect(lastIcon48()).toBe('icons/icon48.png');
+        expect(lastTitle()).toMatch(/test the installed model first/i);
         statusSpy.mockRestore();
     });
 
     test('ready ONNX paints green without FastAPI fetch (#208)', async () => {
-        browser.storage.sync.get.mockResolvedValue({
-            apiUrl: 'http://127.0.0.1:8880/v1/',
-            ttsBackend: 'onnx',
-            onnxVoiceAsset: 'voices/af.bin',
-        });
+        stubToolbarSync({ ttsBackend: 'onnx', onnxVoiceAsset: 'voices/af.bin' });
         const { manifestForVariant } = require('../model-catalog.js');
         const revision = manifestForVariant('onnx', 'q8').revision;
         browser.storage.local.get.mockImplementation(async (defaults = {}) => ({
             ...defaults,
             'onnxValidatedRevision:q8': revision,
         }));
-        fetch.mockClear();
-        browser.action.setIcon.mockClear();
-        browser.action.setTitle.mockClear();
-
-        jest.resetModules();
-        const { ModelDataStore } = require('../model-data-store.js');
-        const statusSpy = jest.spyOn(ModelDataStore.prototype, 'status').mockResolvedValue({
-            ready: true, storedBytes: 1, totalBytes: 1,
-        });
-        const bg = require('../background.js');
-        await flushToolbarCheck();
+        const { bg, statusSpy } = await loadBackgroundWithReadyStore();
         await bg.checkApiStatus();
 
         expect(fetch).not.toHaveBeenCalled();
-        expect(browser.action.setIcon.mock.calls.at(-1)[0].path[48]).toMatch(/icon-48-green/);
-        expect(browser.action.setTitle.mock.calls.at(-1)[0].title)
-            .toMatch(/ONNX ready \(on-device\)/);
+        expect(lastIcon48()).toMatch(/icon-48-green/);
+        expect(lastTitle()).toMatch(/ONNX ready \(on-device\)/);
         statusSpy.mockRestore();
     });
 
     test('FastAPI unreachable still paints red with unreachable title (#208)', async () => {
-        browser.storage.sync.get.mockResolvedValue({
-            apiUrl: 'http://127.0.0.1:8880/v1/',
-            ttsBackend: 'fastapi',
-        });
+        stubToolbarSync({ ttsBackend: 'fastapi' });
         fetch.mockRejectedValue(new TypeError('Failed to fetch'));
-        browser.action.setIcon.mockClear();
-        browser.action.setTitle.mockClear();
-
         jest.resetModules();
         const bg = require('../background.js');
         await flushToolbarCheck();
         await bg.checkApiStatus();
 
-        const iconCall = browser.action.setIcon.mock.calls.at(-1)[0];
-        expect(iconCall.path[48]).toMatch(/icon-48-red/);
-        expect(browser.action.setTitle.mock.calls.at(-1)[0].title)
-            .toMatch(/unreachable/i);
+        expect(lastIcon48()).toMatch(/icon-48-red/);
+        expect(lastTitle()).toMatch(/unreachable/i);
     });
 
     test('FastAPI reachable paints green (#208)', async () => {
-        browser.storage.sync.get.mockResolvedValue({
-            apiUrl: 'http://127.0.0.1:8880/v1/',
-            ttsBackend: 'fastapi',
-        });
+        stubToolbarSync({ ttsBackend: 'fastapi' });
         fetch.mockResolvedValue({
             ok: true,
             json: async () => ({ status: 'ok' }),
         });
-        browser.action.setIcon.mockClear();
-        browser.action.setTitle.mockClear();
-
         jest.resetModules();
         const bg = require('../background.js');
         await flushToolbarCheck();
         await bg.checkApiStatus();
 
-        const iconCall = browser.action.setIcon.mock.calls.at(-1)[0];
-        expect(iconCall.path[48]).toMatch(/icon-48-green/);
-        expect(browser.action.setTitle.mock.calls.at(-1)[0].title)
-            .toMatch(/reachable/i);
+        expect(lastIcon48()).toMatch(/icon-48-green/);
+        expect(lastTitle()).toMatch(/reachable/i);
     });
 
     test('storage.local validated-revision changes refresh toolbar status (#208)', async () => {
-        jest.resetModules();
-        require('../background.js');
-        const listener = browser.storage.onChanged.addListener.mock.calls.at(-1)[0];
-        browser.storage.sync.get.mockResolvedValue({
-            apiUrl: 'http://127.0.0.1:8880/v1/',
-            ttsBackend: 'fastapi',
-        });
+        stubToolbarSync({ ttsBackend: 'fastapi' });
         fetch.mockResolvedValue({
             ok: true,
             json: async () => ({ status: 'ok' }),
         });
+        jest.resetModules();
+        const bg = require('../background.js');
+        // Drain startup checkApiStatus so it cannot mask the listener assertion.
+        await flushToolbarCheck();
+        await bg.checkApiStatus();
+        const listener = browser.storage.onChanged.addListener.mock.calls.at(-1)[0];
         browser.action.setIcon.mockClear();
         await listener({ 'onnxValidatedRevision:q8': { newValue: 'abc' } }, 'local');
         await flushToolbarCheck();
         expect(browser.action.setIcon).toHaveBeenCalled();
+        expect(lastIcon48()).toMatch(/icon-48-green/);
     });
 });

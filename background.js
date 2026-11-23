@@ -4,6 +4,9 @@ try {
         importScripts('tts-providers.js');
         importScripts('local-voice-mixing.js');
         importScripts('toolbar-status.js');
+        // Classic catalog lite + readiness (Chrome SW cannot dynamic-import ES modules).
+        importScripts('model-catalog-lite.js');
+        importScripts('local-model-readiness.js');
     }
 } catch (e) {
     console.error("Polyfill load error:", e);
@@ -20,6 +23,9 @@ const LocalVoice = typeof require === 'function'
 const ToolbarStatus = typeof require === 'function'
     ? require('./toolbar-status.js')
     : globalThis.KokoroToolbarStatus;
+const LocalModelReadiness = typeof require === 'function'
+    ? require('./local-model-readiness.js')
+    : globalThis.KokoroLocalModelReadiness;
 
 browser.runtime.onInstalled.addListener(() => {
     browser.contextMenus.create({
@@ -67,75 +73,30 @@ const setIconStatus = (isConnected) => {
     });
 };
 
-function createModelDataStore(ModelDataStore) {
-    return new ModelDataStore({
-        origin: browser.runtime.getURL('/'),
-        cacheStorage: caches,
-        fetchImpl: fetch.bind(globalThis),
-        responseClass: Response,
-        streamClass: typeof TransformStream === 'function' ? TransformStream : undefined,
-    });
-}
-
 /**
  * Read-only local readiness from validated-revision keys + Cache Storage metadata.
  * Never probes FastAPI and never initializes a heavy TTS runtime.
+ * Uses classic-script helpers (importScripts / catalog lite) — no dynamic import().
  */
 async function probeLocalToolbarStatus(backend, settings) {
     try {
-        const {
-            dictionaryManifest,
-            listOnnxVoiceAssets,
-            manifestForOnnxVoiceAsset,
-            manifestForVariant,
-        } = await import('./model-catalog.js');
-        const { ModelDataStore } = await import('./model-data-store.js');
-        const store = createModelDataStore(ModelDataStore);
-
-        if (backend === TtsProviders.MEDIAPIPE) {
-            const variant = settings.mediaPipeVariant || 'cpu';
-            const manifest = manifestForVariant('mediapipe', variant);
-            const key = 'mediapipeValidatedRevision:' + variant;
-            const stored = await browser.storage.local.get({ [key]: null });
-            const modelState = await store.status(manifest);
-            return ToolbarStatus.classifyLocalReadiness({
-                backend,
-                validatedRevision: stored[key],
-                expectedRevision: manifest.revision,
-                modelReady: modelState.ready,
-            });
-        }
-
-        if (backend === TtsProviders.ONNX) {
-            const model = manifestForVariant('onnx', 'q8');
-            const key = 'onnxValidatedRevision:q8';
-            const stored = await browser.storage.local.get({ [key]: null });
-            const [modelState, dictionaryState] = await Promise.all([
-                store.status(model),
-                store.status(dictionaryManifest()),
-            ]);
-            const selected = LocalVoice.normalizeOnnxVoiceAsset
-                ? LocalVoice.normalizeOnnxVoiceAsset(settings.onnxVoiceAsset || '')
-                : (LocalVoice.ONNX_FIXED_VOICE_ASSET || 'voices/af.bin');
-            const voiceEntry = listOnnxVoiceAssets().find((item) => item.path === selected);
-            let optionalVoiceRequired = false;
-            let voiceReady;
-            if (voiceEntry?.voiceVariant) {
-                optionalVoiceRequired = true;
-                voiceReady = (await store.status(manifestForOnnxVoiceAsset(selected))).ready;
+        return await LocalModelReadiness.probeLocalBackend(
+            backend,
+            settings,
+            {
+                origin: browser.runtime.getURL('/'),
+                cacheStorage: caches,
+                fetchImpl: fetch.bind(globalThis),
+                responseClass: Response,
+                streamClass: typeof TransformStream === 'function' ? TransformStream : undefined,
+                storageLocal: browser.storage.local,
+            },
+            {
+                classifyLocalReadiness: ToolbarStatus.classifyLocalReadiness,
+                normalizeOnnxVoiceAsset: LocalVoice.normalizeOnnxVoiceAsset,
+                onnxFixedVoice: LocalVoice.ONNX_FIXED_VOICE_ASSET,
             }
-            return ToolbarStatus.classifyLocalReadiness({
-                backend,
-                validatedRevision: stored[key],
-                expectedRevision: model.revision,
-                modelReady: modelState.ready,
-                dictionaryReady: dictionaryState.ready,
-                optionalVoiceRequired,
-                voiceReady,
-            });
-        }
-
-        return { kind: ToolbarStatus.KIND.UNKNOWN, backend, detail: 'unsupported backend' };
+        );
     } catch (error) {
         console.warn('Kokoro: local toolbar status probe failed', error);
         return {
@@ -231,13 +192,13 @@ const checkApiStatus = async () => {
 };
 
 // Initial check
-checkApiStatus();
+void checkApiStatus();
 
 // Poll every minute (local path is Cache/storage only — no model init / no FastAPI).
 browser.alarms.create('api-check', { periodInMinutes: 1 });
 browser.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === 'api-check') {
-        checkApiStatus();
+        void checkApiStatus();
     }
 });
 
@@ -249,12 +210,12 @@ browser.storage.onChanged.addListener((changes, area) => {
         changes.mediaPipeVariant ||
         changes.onnxVoiceAsset
     )) {
-        checkApiStatus();
+        void checkApiStatus();
         return;
     }
     if (area === 'local' &&
-        Object.keys(changes).some(ToolbarStatus.isValidatedRevisionStorageKey)) {
-        checkApiStatus();
+        Object.keys(changes).some((key) => ToolbarStatus.isValidatedRevisionStorageKey(key))) {
+        void checkApiStatus();
     }
 });
 
