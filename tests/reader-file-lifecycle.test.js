@@ -1737,7 +1737,13 @@ describe('EPUB file read/parse lifecycle', () => {
         books.push(a, b);
         selectFile('a.epub').succeed();
         await expectLoaded('Book A');
-        const priorRevision = browser.storage.local.set.mock.lastCall[0].pendingReaderReloadRevision;
+        // Progress upserts may be the latest storage.local.set — take the
+        // last player reload revision, not mock.lastCall blindly.
+        const priorRevision = browser.storage.local.set.mock.calls
+            .map(([value]) => value)
+            .filter(value => Number.isSafeInteger(value?.pendingReaderReloadRevision))
+            .at(-1)?.pendingReaderReloadRevision;
+        expect(Number.isSafeInteger(priorRevision)).toBe(true);
 
         messages.length = 0;
         selectFile('b.epub').succeed();

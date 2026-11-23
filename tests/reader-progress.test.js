@@ -96,6 +96,19 @@ describe('reader-progress helpers (#196)', () => {
         expect(shouldPersistProgressUpdate({ resumeDecisionPending: false })).toBe(true);
     });
 
+    test('shouldOfferResumeChoice at block zero only for non-first chapters', () => {
+        expect(shouldOfferResumeChoice({
+            ok: true, blockIndex: 0, chapterHref: 'later.xhtml',
+        }, 'first.xhtml')).toBe(true);
+        expect(shouldOfferResumeChoice({
+            ok: true, blockIndex: 0, chapterHref: 'first.xhtml',
+        }, 'first.xhtml')).toBe(false);
+        expect(shouldOfferResumeChoice({
+            ok: true, blockIndex: 3, chapterHref: 'first.xhtml',
+        }, 'first.xhtml')).toBe(true);
+        expect(shouldOfferResumeChoice({ ok: false, blockIndex: 0 }, 'first.xhtml')).toBe(false);
+    });
+
     test('fingerprint ignores continuous-reader playback truncation when using canonical blocks', () => {
         const full = [
             { content: 'A.', ids: ['a'] },
