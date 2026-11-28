@@ -7,12 +7,15 @@ import {
 import { MAX_DOCX_ARCHIVE_BYTES, parseDocxDocument } from './docx-reader.js';
 import {
     MAX_PDF_DOCUMENT_BYTES,
+    accountPdfPageChars,
     assertPdfHasExtractableText,
     buildPdfPageToc,
+    createPdfDocumentCharBudget,
     destroyPdfSession,
     extractPdfPageBlocks,
     openPdfDocument,
     parsePdfPageHref,
+    pdfPageHref,
 } from './pdf-reader.js';
 import {
     documentIdFromDigest,
@@ -360,9 +363,17 @@ async function clearCurrentDocumentProgress() {
 }
 
 function activateFirstPlayableChapter(continuePlaying = false, forcedStartIndex = null) {
-    const firstItem = chapterList.querySelector('.playable-chapter');
-    if (firstItem && flatToc[0]) {
-        activateChapter(flatToc[0], firstItem, continuePlaying, forcedStartIndex);
+    // Prefer a document-specific start (e.g. first PDF page with extractable text)
+    // when no saved resume target applies; fall back to TOC order.
+    const preferredHref = pdfDocument?.firstTextHref || null;
+    const item = (preferredHref && flatToc.find((entry) => entry.href === preferredHref))
+        || flatToc[0];
+    if (!item) return;
+    const itemEl = [...chapterList.querySelectorAll('.playable-chapter')]
+        .find((el) => el.dataset.href === item.href)
+        || chapterList.querySelector('.playable-chapter');
+    if (itemEl) {
+        activateChapter(item, itemEl, continuePlaying, forcedStartIndex);
     }
 }
 
@@ -1001,12 +1012,20 @@ async function loadPdfDocument(file, requestId) {
     });
     const pdfjs = await ensurePdfjs();
     if (requestId !== fileRequestId) return;
-    const session = await openPdfDocument(bytes, pdfjs);
+    const cMapUrl = typeof browser?.runtime?.getURL === 'function'
+        ? browser.runtime.getURL('cmaps/')
+        : 'cmaps/';
+    const session = await openPdfDocument(bytes, pdfjs, {
+        cMapUrl,
+        cMapPacked: true,
+    });
     let committed = false;
     try {
         if (requestId !== fileRequestId) return;
-        await assertPdfHasExtractableText(session.pdf, {
+        const charBudget = createPdfDocumentCharBudget();
+        const probe = await assertPdfHasExtractableText(session.pdf, {
             isCurrent: () => requestId === fileRequestId,
+            charBudget,
         });
         if (requestId !== fileRequestId) return;
         const toc = buildPdfPageToc(session.pdf.numPages, file.name);
@@ -1025,6 +1044,8 @@ async function loadPdfDocument(file, requestId) {
             loadingTask: session.loadingTask,
             title: file.name,
             pageCount: session.pdf.numPages,
+            firstTextHref: pdfPageHref(probe.firstTextPage),
+            charBudget,
         };
         deferredChapterEndRevision = null;
         if (oldBook) retiringBooks.add(oldBook);
@@ -1131,6 +1152,7 @@ async function startPdfPageLoad(href, title, forcedStartIndex = null, resumeCand
             isCurrent: () => source === pdfDocument && requestId === chapterRequestId,
         });
         if (source !== pdfDocument || requestId !== chapterRequestId) return;
+        accountPdfPageChars(source.charBudget, pageNumber, blocks);
         currentChapterBlocks = blocks;
         currentChapterCanonicalBlocks = blocks;
         const playback = resolvePdfPagePlaybackStart(

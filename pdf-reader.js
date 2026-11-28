@@ -117,7 +117,7 @@ export async function openPdfDocument(buffer, pdfjs, options = {}) {
     const data = new Uint8Array(buffer);
     let loadingTask;
     try {
-        loadingTask = pdfjs.getDocument({
+        const documentParams = {
             data,
             // Local package only — never fetch fonts or cmaps from the network.
             disableFontFace: true,
@@ -126,7 +126,13 @@ export async function openPdfDocument(buffer, pdfjs, options = {}) {
             useWorkerFetch: false,
             verbosity: 0,
             ...options.documentParams,
-        });
+        };
+        // Packaged Adobe CMaps (binary .bcmap) so named predefined CMaps decode.
+        if (typeof options.cMapUrl === 'string' && options.cMapUrl) {
+            documentParams.cMapUrl = options.cMapUrl;
+            documentParams.cMapPacked = options.cMapPacked !== false;
+        }
+        loadingTask = pdfjs.getDocument(documentParams);
         const pdf = await loadingTask.promise;
         if (!Number.isInteger(pdf?.numPages) || pdf.numPages < 1) {
             await destroyPdfSession({ pdf, loadingTask });
@@ -202,16 +208,16 @@ function appendPdfTextRows(items, state, limits) {
 
 async function collectRowsFromReadableStream(reader, limits) {
     const state = { rows: [], chars: 0 };
-    while (true) {
-        throwIfCancelled(limits.isCurrent);
-        const { done, value } = await reader.read();
-        if (done) break;
-        try {
+    try {
+        while (true) {
+            throwIfCancelled(limits.isCurrent);
+            const { done, value } = await reader.read();
+            if (done) break;
             appendPdfTextRows(streamChunkItems(value), state, limits);
-        } catch (error) {
-            try { await reader.cancel(); } catch { /* ignore */ }
-            throw error;
         }
+    } catch (error) {
+        try { await reader.cancel(); } catch { /* ignore */ }
+        throw error;
     }
     return state.rows;
 }
@@ -283,10 +289,15 @@ function orderPdfTextItems(rows) {
     const left = [];
     const right = [];
     for (const row of rows) {
-        if (row.x < mid - gap) left.push(row);
+        const rightEdge = row.x + (Number(row.width) || 0);
+        // Full-width / gutter-spanning items (footers, titles) break the split.
+        if (row.x < mid - gap && rightEdge > mid + gap) {
+            return [...rows].sort(byReadingOrder);
+        }
+        if (row.x < mid - gap && rightEdge <= mid + gap) left.push(row);
         else if (row.x > mid + gap) right.push(row);
         else {
-            // Middle/spanning items break a clean two-column partition.
+            // Middle-band or ambiguous items break a clean two-column partition.
             return [...rows].sort(byReadingOrder);
         }
     }
@@ -361,8 +372,31 @@ export async function extractPdfPageBlocks(pdf, pageNumber, options = {}) {
 }
 
 /**
+ * Session-wide character budget: each page counts at most once as the user
+ * navigates. Keeps open-time probing cheap (early exit) while still enforcing
+ * MAX_PDF_DOCUMENT_TEXT_CHARS across the document lifetime.
+ */
+export function createPdfDocumentCharBudget() {
+    return { chars: 0, countedPages: new Set() };
+}
+
+export function accountPdfPageChars(budget, pageNumber, blocks) {
+    if (!budget || budget.countedPages.has(pageNumber)) return;
+    const pageChars = (Array.isArray(blocks) ? blocks : []).reduce(
+        (sum, block) => sum + String(block?.content || '').length, 0);
+    const next = budget.chars + pageChars;
+    if (next > MAX_PDF_DOCUMENT_TEXT_CHARS) {
+        throw new Error(
+            'This PDF exceeds the safe document text extraction limit.');
+    }
+    budget.chars = next;
+    budget.countedPages.add(pageNumber);
+}
+
+/**
  * Probe pages (up to the document page count / MAX_PDF_PAGES) for extractable
  * text so image-only PDFs fail closed at open. Cancel via isCurrent().
+ * Returns `{ firstTextPage }` for fresh-open activation.
  */
 export async function assertPdfHasExtractableText(pdf, options = {}) {
     const probePages = Math.min(
@@ -370,8 +404,6 @@ export async function assertPdfHasExtractableText(pdf, options = {}) {
         MAX_PDF_PAGES,
         Number.isInteger(options.probePages) ? options.probePages : pdf.numPages,
     );
-    let sawText = false;
-    let documentChars = 0;
     for (let pageNumber = 1; pageNumber <= probePages; pageNumber++) {
         throwIfCancelled(options.isCurrent);
         try {
@@ -379,14 +411,10 @@ export async function assertPdfHasExtractableText(pdf, options = {}) {
                 maxChars: MAX_PDF_PAGE_TEXT_CHARS,
                 isCurrent: options.isCurrent,
             });
-            documentChars += blocks.reduce(
-                (sum, block) => sum + block.content.length, 0);
-            if (documentChars > MAX_PDF_DOCUMENT_TEXT_CHARS) {
-                throw new Error(
-                    'This PDF exceeds the safe document text extraction limit.');
+            if (options.charBudget) {
+                accountPdfPageChars(options.charBudget, pageNumber, blocks);
             }
-            sawText = true;
-            break;
+            return { firstTextPage: pageNumber };
         } catch (error) {
             if (error?.name === 'AbortError') throw error;
             if (/exceeds the safe .*extraction limit/i.test(
@@ -398,10 +426,7 @@ export async function assertPdfHasExtractableText(pdf, options = {}) {
             }
         }
     }
-    if (!sawText) {
-        throw new Error(
-            'This PDF has no extractable text. Scanned or image-only PDFs ' +
-            'are not supported without OCR.');
-    }
-    return true;
+    throw new Error(
+        'This PDF has no extractable text. Scanned or image-only PDFs ' +
+        'are not supported without OCR.');
 }

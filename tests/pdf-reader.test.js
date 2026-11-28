@@ -6,11 +6,14 @@
  */
 import {
     MAX_PDF_DOCUMENT_BYTES,
+    MAX_PDF_DOCUMENT_TEXT_CHARS,
     MAX_PDF_PAGES,
     MAX_PDF_PAGE_TEXT_CHARS,
+    accountPdfPageChars,
     assertPdfHasExtractableText,
     blocksFromPdfTextContent,
     buildPdfPageToc,
+    createPdfDocumentCharBudget,
     destroyPdfSession,
     extractPdfPageBlocks,
     mapPdfJsOpenError,
@@ -92,6 +95,25 @@ describe('text item ordering and paragraph grouping', () => {
         expect(joined.match(/\bL1\b/g)).toHaveLength(1);
     });
 
+    test('rejects two-column split when a full-width footer spans the gutter', () => {
+        const blocks = blocksFromPdfTextContent({
+            items: [
+                { str: 'L1', transform: [1, 0, 0, 1, 40, 700], width: 20 },
+                { str: 'L2', transform: [1, 0, 0, 1, 40, 660], width: 20 },
+                { str: 'R1', transform: [1, 0, 0, 1, 320, 700], width: 20 },
+                { str: 'R2', transform: [1, 0, 0, 1, 320, 660], width: 20 },
+                // Same left edge as L*, but wide enough to cross the mid gutter.
+                { str: 'Footer across', transform: [1, 0, 0, 1, 40, 620], width: 360 },
+            ],
+        });
+        const joined = blocks.map((b) => b.content).join(' ');
+        expect(joined).toContain('Footer across');
+        // Single-column reading order: footer stays after both columns by y,
+        // never spoken between left and right.
+        expect(joined.indexOf('L2')).toBeLessThan(joined.indexOf('Footer across'));
+        expect(joined.indexOf('R2')).toBeLessThan(joined.indexOf('Footer across'));
+    });
+
     test('rejects pages that exceed the extraction character limit', () => {
         const huge = 'x'.repeat(MAX_PDF_PAGE_TEXT_CHARS + 10);
         expect(() => blocksFromPdfTextContent({
@@ -107,9 +129,12 @@ function fakePdfjs({
     streamByPage = null,
 } = {}) {
     const destroyed = { count: 0 };
+    const lastParams = { value: null };
     return {
         destroyed,
-        getDocument() {
+        lastParams,
+        getDocument(params) {
+            lastParams.value = params;
             if (openError) {
                 return {
                     promise: Promise.reject(openError),
@@ -171,10 +196,39 @@ describe('openPdfDocument and page extraction with injectable PDF.js', () => {
             },
         });
         const session = await openPdfDocument(new ArrayBuffer(16), pdfjs);
-        await expect(assertPdfHasExtractableText(session.pdf)).resolves.toBe(true);
+        await expect(assertPdfHasExtractableText(session.pdf))
+            .resolves.toEqual({ firstTextPage: 4 });
         const page4 = await extractPdfPageBlocks(session.pdf, 4);
         expect(page4[0].content).toMatch(/Late text page/);
         await destroyPdfSession(session);
+    });
+
+    test('passes packaged cMapUrl into getDocument', async () => {
+        const pdfjs = fakePdfjs({
+            numPages: 1,
+            textByPage: {
+                1: [{ str: 'Hi', transform: [1, 0, 0, 1, 72, 720], width: 10 }],
+            },
+        });
+        const session = await openPdfDocument(new ArrayBuffer(8), pdfjs, {
+            cMapUrl: 'chrome-extension://id/cmaps/',
+            cMapPacked: true,
+        });
+        expect(pdfjs.lastParams.value.cMapUrl).toBe('chrome-extension://id/cmaps/');
+        expect(pdfjs.lastParams.value.cMapPacked).toBe(true);
+        expect(pdfjs.lastParams.value.useWorkerFetch).toBe(false);
+        await destroyPdfSession(session);
+    });
+
+    test('session char budget counts each page once and enforces the document cap', () => {
+        const budget = createPdfDocumentCharBudget();
+        accountPdfPageChars(budget, 1, [{ content: 'a'.repeat(1000) }]);
+        accountPdfPageChars(budget, 1, [{ content: 'a'.repeat(1000) }]);
+        expect(budget.chars).toBe(1000);
+        expect(budget.countedPages.size).toBe(1);
+        expect(() => accountPdfPageChars(budget, 2, [{
+            content: 'x'.repeat(MAX_PDF_DOCUMENT_TEXT_CHARS),
+        }])).toThrow(/document text extraction limit/);
     });
 
     test('rejects oversized, corrupt, password, and image-only PDFs', async () => {
@@ -272,6 +326,9 @@ describe('reader wiring keeps PDF paths out of overlay/audio-export', () => {
         expect(source).toContain('destroyPdfSession');
         expect(source).toContain('loadingTask');
         expect(source).toContain('isCurrent');
+        expect(source).toContain('cmaps/');
+        expect(source).toContain('firstTextHref');
+        expect(source).toContain('accountPdfPageChars');
         expect(source).not.toContain('audio-export');
     });
 });
