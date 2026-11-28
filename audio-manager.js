@@ -49,11 +49,22 @@ export class AudioManager {
         this.localActivityRevision = 0;
         this.objectUrls = new Set();
         this.generation = 0;
+        // Provider/voice/endpoint snapshot for this loaded player document.
+        // Export and playback share it so cross-tab pending* writes cannot
+        // redirect synthesis until the next initialize()/clear().
+        this.defaultSettings = null;
+    }
+
+    setDefaultSettings(settings) {
+        this.defaultSettings = settings && typeof settings === 'object'
+            ? { ...settings }
+            : null;
     }
 
     clear() {
         const activity = this.beginLocalActivity();
         this.generation++;
+        this.defaultSettings = null;
         for (const entry of this.audioCache.values()) entry.evicted = true;
         this.cacheWindow = null;
         // A browser download may still be reading a blob URL after its page
@@ -206,24 +217,31 @@ export class AudioManager {
     async getAudio(index, { speculative = false, settings = null } = {}) {
         if (!Number.isInteger(index) || index < 0 || index >= this.sentences.length) return null;
 
-        const wantKey = settings ? fingerprintAudioSettings(settings) : null;
+        const effectiveSettings = settings || this.defaultSettings;
+        const wantKey = effectiveSettings
+            ? fingerprintAudioSettings(effectiveSettings)
+            : null;
         if (this.audioCache.has(index)) {
             const cached = this.audioCache.get(index);
-            // Reuse only when the caller did not pin a provider snapshot, or the
-            // cached entry was produced under that same snapshot.
+            // Reuse only when no snapshot was requested, or the cached entry
+            // was produced under that same snapshot.
             if (wantKey === null || cached.settingsKey === wantKey) {
                 return cached.promise;
             }
-            // Another tab may have flipped shared pending* settings. Do not
-            // reuse the wrong backend/voice; drop unpinned mismatched entries.
             if (!this.isPinned(index)) {
                 this.evictAudio(index, cached);
-            } else {
-                // Keep the pin's URL for an in-flight download, but synthesize
-                // this request with the caller's immutable snapshot.
-                return this.fetchAudio(
-                    this.sentences[index].text, this.generation, null, settings);
+            } else if (this.audioCache.get(index) === cached) {
+                // Detach the cache slot without revoking — download pins still
+                // own the previous Blob URL. Fall through to synthesize under
+                // the requested settings into a new cache entry.
+                this.audioCache.delete(index);
+                cached.evicted = true;
+                cached.pending = false;
             }
+        }
+
+        if (this.audioCache.has(index)) {
+            return this.audioCache.get(index).promise;
         }
 
         const generation = this.generation;
@@ -233,14 +251,19 @@ export class AudioManager {
             settingsKey: wantKey,
         };
         const promise = this.fetchAudio(
-            this.sentences[index].text, generation, entry, settings);
+            this.sentences[index].text, generation, entry, effectiveSettings);
         entry.promise = promise;
         this.audioCache.set(index, entry);
         void promise.then(url => {
             entry.pending = false;
             entry.url = url;
+            // Only fill pins that are still waiting for their first URL.
+            // Never retarget an in-flight download pin that already owns a blob.
             for (const pin of this.audioPins) {
-                if (pin.index === index && pin.generation === generation) pin.url = url;
+                if (pin.index === index && pin.generation === generation &&
+                    pin.url === null) {
+                    pin.url = url;
+                }
             }
         }, () => {});
         // A missing model or transient server error must not poison retries.

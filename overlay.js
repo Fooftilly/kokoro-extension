@@ -47,6 +47,8 @@ let exportAbortController = null;
 let exportInFlight = false;
 /** Index currently awaited by an in-flight export fetch (not playback). */
 let exportActiveIndex = null;
+/** Provider/voice/endpoint snapshot captured with the loaded document. */
+let sessionAudioSettings = null;
 
 const audioManager = new AudioManager();
 const playPauseBtn = document.getElementById('playPause');
@@ -422,14 +424,14 @@ if (saveAudioBtn) {
         });
 
         try {
-            // Immutable provider/voice/endpoint snapshot for this export. Later
-            // cross-tab writes to pending* must not redirect uncached sentences
-            // (e.g. local → FastAPI) mid-file.
-            const settingsSnapshot = await browser.storage.local.get([
-                ...AUDIO_SETTINGS_KEYS,
-            ]);
             if (audioManager.generation !== exportGeneration || controller.signal.aborted) {
                 throw new DOMException('Audio export cancelled', 'AbortError');
+            }
+            // Use the document-load snapshot — never re-read shared pending*
+            // at Save time (another tab may already have flipped to FastAPI).
+            const settingsSnapshot = sessionAudioSettings;
+            if (!settingsSnapshot) {
+                throw new Error('No loaded document settings for export');
             }
             const backend = ['mediapipe', 'onnx', 'fastapi'].includes(
                 settingsSnapshot.pendingTtsBackend)
@@ -446,31 +448,38 @@ if (saveAudioBtn) {
                 signal: controller.signal,
                 isSessionValid: () =>
                     audioManager.generation === exportGeneration &&
-                    !controller.signal.aborted,
+                    !controller.signal.aborted &&
+                    sessionAudioSettings === settingsSnapshot,
                 onProgress: updateExportProgress,
                 fetchAudioBytes: async (index) => {
                     if (controller.signal.aborted ||
-                        audioManager.generation !== exportGeneration) {
+                        audioManager.generation !== exportGeneration ||
+                        sessionAudioSettings !== settingsSnapshot) {
                         throw new DOMException('Audio export cancelled', 'AbortError');
                     }
                     let release = null;
                     exportActiveIndex = index;
                     try {
-                        release = audioManager.pinAudio(index);
+                        // Resolve audio first so a settings-matched cache entry
+                        // exists, then pin that URL (avoids the pin-before-get
+                        // mismatch path that leaked unowned Blob URLs).
                         const audioUrl = await audioManager.getAudio(index, {
                             settings: settingsSnapshot,
                         });
                         if (controller.signal.aborted ||
-                            audioManager.generation !== exportGeneration) {
+                            audioManager.generation !== exportGeneration ||
+                            sessionAudioSettings !== settingsSnapshot) {
                             cancelInFlightExportSynthesis(index);
                             throw new DOMException('Audio export cancelled', 'AbortError');
                         }
                         if (!audioUrl) throw new Error('No generated audio to save');
+                        release = audioManager.pinAudio(index);
                         // Preserve the real MIME from the URL/response. Orchestrator
                         // verifies MP3 magic / WAV headers — do not overwrite.
                         const fetched = await bytesFromAudioUrl(audioUrl);
                         if (controller.signal.aborted ||
-                            audioManager.generation !== exportGeneration) {
+                            audioManager.generation !== exportGeneration ||
+                            sessionAudioSettings !== settingsSnapshot) {
                             throw new DOMException('Audio export cancelled', 'AbortError');
                         }
                         return {
@@ -481,7 +490,8 @@ if (saveAudioBtn) {
                     } catch (error) {
                         release?.();
                         if (controller.signal.aborted ||
-                            audioManager.generation !== exportGeneration) {
+                            audioManager.generation !== exportGeneration ||
+                            sessionAudioSettings !== settingsSnapshot) {
                             cancelInFlightExportSynthesis(index);
                             throw new DOMException('Audio export cancelled', 'AbortError');
                         }
@@ -685,13 +695,27 @@ async function initialize() {
     currentIndex = 0;
     continuousReaderEnabled = false;
     activeReaderRevision = null;
+    sessionAudioSettings = null;
     audioManager.clear();
     textDisplay.textContent = '';
 
-    const data = await browser.storage.local.get(['pendingText', 'pendingContent', 'pendingVoice', 'pendingApiUrl', 'pendingTitle', 'pendingTtsBackend', 'defaultSpeed', 'defaultVolume', 'autoScroll', 'pendingCustomPronunciations', 'theme', 'pendingStartIndex', 'pendingAutoplay', 'pendingContinuousReader', 'pendingReaderReloadRevision', 'pendingAcceptanceProbe']);
+    const data = await browser.storage.local.get([
+        'pendingText', 'pendingContent', 'pendingTitle',
+        'defaultSpeed', 'defaultVolume', 'autoScroll',
+        'pendingCustomPronunciations', 'theme', 'pendingStartIndex',
+        'pendingAutoplay', 'pendingContinuousReader',
+        'pendingReaderReloadRevision', 'pendingAcceptanceProbe',
+        ...AUDIO_SETTINGS_KEYS,
+    ]);
     // A newer chapter can finish loading while an earlier storage read is
     // still pending. Never paint or start playback from a superseded read.
     if (loadId !== initializationRequestId) return;
+
+    // Bind this player generation to the provider context loaded with the
+    // document — later popup/tab pending* writes must not redirect synthesis.
+    sessionAudioSettings = Object.fromEntries(
+        AUDIO_SETTINGS_KEYS.map((key) => [key, data[key]]));
+    audioManager.setDefaultSettings(sessionAudioSettings);
 
     syncAcceptanceProbe(data.pendingAcceptanceProbe);
     syncBackendBadge(data.pendingTtsBackend);

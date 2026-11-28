@@ -74,6 +74,7 @@ jest.mock('../audio-manager.js', () => ({
         prioritizeNavigation: jest.fn(),
         prefetch: jest.fn(),
         on: jest.fn(),
+        setDefaultSettings: jest.fn(),
         generation: 0,
     }))
 }));
@@ -658,8 +659,17 @@ describe('overlay.js logic', () => {
         const { AudioManager } = require('../audio-manager.js');
         const manager = AudioManager.mock.results[0].value;
         manager.getAudio.mockResolvedValue('blob:local-wav');
-        // Save reads pendingTtsBackend after the initial overlay initialize get().
-        browser.storage.local.get.mockResolvedValueOnce({ pendingTtsBackend: 'onnx' });
+        // Document-load snapshot (not Save-time storage) selects the backend.
+        browser.storage.local.get.mockResolvedValue({
+            pendingText: 'Hello world',
+            pendingContent: [{ type: 'text', content: 'Hello world' }],
+            pendingTitle: 'Test Title',
+            pendingTtsBackend: 'onnx',
+        });
+        window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
+        await new Promise(resolve => setTimeout(resolve, 50));
+        expect(manager.setDefaultSettings).toHaveBeenCalledWith(
+            expect.objectContaining({ pendingTtsBackend: 'onnx' }));
         document.getElementById('saveAudio').click();
         await new Promise(resolve => setTimeout(resolve, 0));
         const call = browser.downloads.download.mock.calls[0][0];
@@ -675,9 +685,6 @@ describe('overlay.js logic', () => {
         manager.getAudio.mockReset();
         manager.getAudio.mockImplementation(
             () => new Promise(resolve => { resolveAudio = resolve; }));
-        browser.storage.local.get.mockResolvedValueOnce({
-            pendingTtsBackend: 'mediapipe',
-        });
         document.getElementById('exportScope').value = 'article';
         document.getElementById('saveAudio').click();
         await Promise.resolve();
@@ -712,9 +719,6 @@ describe('overlay.js logic', () => {
         manager.getAudio.mockReset();
         manager.getAudio.mockImplementation(
             () => new Promise(resolve => { resolveAudio = resolve; }));
-        browser.storage.local.get.mockResolvedValueOnce({
-            pendingTtsBackend: 'mediapipe',
-        });
         document.getElementById('exportScope').value = 'article';
         document.getElementById('saveAudio').click();
         await Promise.resolve();

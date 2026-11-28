@@ -286,4 +286,68 @@ describe('AudioManager', () => {
         expect(synthesize).toHaveBeenCalledTimes(1);
         expect(browser.runtime.sendMessage).toHaveBeenCalledTimes(1);
     });
+
+    test('pinned mismatched cache detaches without leaking the new Blob URL', async () => {
+        const synthesize = jest.fn(async () => ({
+            samples: new Float32Array([0.2, -0.1, 0.3]), sampleRateHz: 24000,
+        }));
+        MediaPipeKokoroProvider.mockImplementation(() => ({
+            synthesize, cancel: jest.fn(async () => {}), close: jest.fn(async () => {}),
+        }));
+        URL.createObjectURL = jest.fn()
+            .mockReturnValueOnce('blob:first')
+            .mockReturnValueOnce('blob:second');
+        URL.revokeObjectURL = jest.fn();
+
+        const localA = {
+            pendingTtsBackend: 'mediapipe',
+            pendingMediaPipeVariant: 'cpu',
+            pendingLocalVoice: 'af_heart',
+        };
+        const localB = {
+            pendingTtsBackend: 'mediapipe',
+            pendingMediaPipeVariant: 'cpu',
+            pendingLocalVoice: 'af_bella',
+        };
+        audioManager.setSentences([{ text: 'Cached then exported' }]);
+        await expect(audioManager.getAudio(0, { settings: localA }))
+            .resolves.toBe('blob:first');
+        const release = audioManager.pinAudio(0);
+        await expect(audioManager.getAudio(0, { settings: localB }))
+            .resolves.toBe('blob:second');
+        // New URL is cached/pinnable; first URL stays owned by the pin until release.
+        expect(audioManager.objectUrls.has('blob:first')).toBe(true);
+        expect(audioManager.objectUrls.has('blob:second')).toBe(true);
+        expect(audioManager.audioCache.get(0).settingsKey)
+            .toBe(fingerprintAudioSettings(localB));
+        release();
+        audioManager.retainWindow(0, 0, 0);
+        // After pin release + window eviction of out-of-window index, second stays
+        // only while still the cached entry; first must not linger unowned.
+        expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:second');
+    });
+
+    test('defaultSettings from document load are used without re-reading storage', async () => {
+        const synthesize = jest.fn(async () => ({
+            samples: new Float32Array([0.2, -0.1, 0.3]), sampleRateHz: 24000,
+        }));
+        MediaPipeKokoroProvider.mockImplementation(() => ({
+            synthesize, cancel: jest.fn(async () => {}), close: jest.fn(async () => {}),
+        }));
+        URL.createObjectURL = jest.fn(() => 'blob:session');
+        audioManager.setDefaultSettings({
+            pendingTtsBackend: 'mediapipe',
+            pendingMediaPipeVariant: 'cpu',
+            pendingLocalVoice: 'af_heart',
+        });
+        // Storage now claims FastAPI (other tab), but session defaults win.
+        browser.storage.local.get.mockResolvedValue({
+            pendingTtsBackend: 'fastapi',
+            pendingApiUrl: 'http://evil.example/v1/',
+        });
+        audioManager.setSentences([{ text: 'Session bound' }]);
+        await expect(audioManager.getAudio(0)).resolves.toBe('blob:session');
+        expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
+        expect(browser.storage.local.get).not.toHaveBeenCalled();
+    });
 });
