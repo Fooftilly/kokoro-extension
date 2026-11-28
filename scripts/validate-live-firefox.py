@@ -8,6 +8,7 @@ import contextlib
 import hashlib
 import http.server
 import json
+import math
 import os
 from pathlib import Path
 import secrets
@@ -3226,7 +3227,7 @@ def _seek_third_block_and_wait(driver, progress_key, saved_block, block_two_text
 def _wait_for_progress_save_settle(driver, delivered_at_ms):
     # Cover scheduleProgressSave debounce + in-flight flush so a wrongly
     # accepted stale write cannot hide behind an immediate post-delivery read.
-    if not isinstance(delivered_at_ms, (int, float)) or delivered_at_ms != delivered_at_ms:
+    if not isinstance(delivered_at_ms, (int, float)) or not math.isfinite(delivered_at_ms):
         raise RuntimeError(
             "_wait_for_progress_save_settle requires a finite delivered_at_ms, got: " +
             json.dumps(delivered_at_ms))
