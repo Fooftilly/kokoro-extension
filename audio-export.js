@@ -32,6 +32,13 @@ function ensureNotAborted(signal) {
     if (signal?.aborted) throwAbort();
 }
 
+function ensureExportSession(signal, isSessionValid) {
+    ensureNotAborted(signal);
+    if (typeof isSessionValid === 'function' && isSessionValid() === false) {
+        throwAbort();
+    }
+}
+
 function asUint8(bytes) {
     return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
 }
@@ -39,6 +46,14 @@ function asUint8(bytes) {
 function arrayBufferView(bytes) {
     const view = asUint8(bytes);
     return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+}
+
+/** True when bytes begin with an ID3 tag or an MPEG frame sync word. */
+export function looksLikeMp3(bytes) {
+    const u8 = asUint8(bytes);
+    if (u8.length < 3) return false;
+    if (u8[0] === 0x49 && u8[1] === 0x44 && u8[2] === 0x33) return true;
+    return u8[0] === 0xFF && (u8[1] & 0xE0) === 0xE0;
 }
 
 /**
@@ -353,12 +368,17 @@ function partProgressMessage(verb, index, total) {
     return verb + ' part ' + ordinal + '/' + total;
 }
 
-function assertMp3ContentType(format, contentType) {
-    if (format !== 'mp3' || !contentType) return;
-    if (/mpeg|mp3|audio\/mpeg/i.test(contentType)) return;
-    if (/octet-stream/i.test(contentType)) return;
-    throw new TypeError(
-        'Refusing to label non-MP3 bytes as MP3 (got ' + contentType + ')');
+function assertVerifiedMp3(format, contentType, bytes) {
+    if (format !== 'mp3') return;
+    if (!contentType || !/mpeg|mp3|audio\/mpeg/i.test(contentType)) {
+        throw new TypeError(
+            'Refusing to label non-MP3 Content-Type as MP3 (got ' +
+            String(contentType || 'missing') + ')');
+    }
+    if (!looksLikeMp3(bytes)) {
+        throw new TypeError(
+            'Refusing to save non-MP3 bytes as .mp3 (missing ID3/frame sync)');
+    }
 }
 
 async function downloadCompressedParts({
@@ -367,6 +387,7 @@ async function downloadCompressedParts({
     title,
     format,
     signal,
+    isSessionValid,
     fetchAudioBytes,
     downloadFile,
     onProgress,
@@ -374,7 +395,7 @@ async function downloadCompressedParts({
 }) {
     const total = indices.length;
     for (let i = 0; i < total; i++) {
-        ensureNotAborted(signal);
+        ensureExportSession(signal, isSessionValid);
         const index = indices[i];
         onProgress({
             phase: 'synthesize',
@@ -383,37 +404,44 @@ async function downloadCompressedParts({
             message: partProgressMessage('Generating', i, total),
         });
         const chunk = await fetchAudioBytes(index);
-        releases.push(chunk.release || (() => {}));
-        ensureNotAborted(signal);
-        assertMp3ContentType(format, chunk.contentType);
-        const filename = buildExportFilename({
-            title,
-            scope,
-            extension: format,
-            partIndex: total > 1 ? i + 1 : undefined,
-            partCount: total > 1 ? total : undefined,
-            sentenceNumber: index + 1,
-        });
-        onProgress({
-            phase: 'download',
-            completed: i,
-            total,
-            message: partProgressMessage('Downloading', i, total),
-        });
-        const bytes = asUint8(chunk.bytes);
-        const blob = new Blob([bytes], {
-            type: chunk.contentType || 'audio/mpeg',
-        });
         const release = chunk.release || (() => {});
-        await downloadFile({ blob, bytes, filename, release });
-        const at = releases.indexOf(release);
-        if (at >= 0) releases.splice(at, 1);
-        onProgress({
-            phase: 'download',
-            completed: i + 1,
-            total,
-            message: partProgressMessage('Downloaded', i, total),
-        });
+        releases.push(release);
+        try {
+            ensureExportSession(signal, isSessionValid);
+            const bytes = asUint8(chunk.bytes);
+            assertVerifiedMp3(format, chunk.contentType, bytes);
+            const filename = buildExportFilename({
+                title,
+                scope,
+                extension: format,
+                partIndex: total > 1 ? i + 1 : undefined,
+                partCount: total > 1 ? total : undefined,
+                sentenceNumber: index + 1,
+            });
+            onProgress({
+                phase: 'download',
+                completed: i,
+                total,
+                message: partProgressMessage('Downloading', i, total),
+            });
+            const blob = new Blob([bytes], {
+                type: chunk.contentType || 'audio/mpeg',
+            });
+            await downloadFile({ blob, bytes, filename, release });
+            const at = releases.indexOf(release);
+            if (at >= 0) releases.splice(at, 1);
+            onProgress({
+                phase: 'download',
+                completed: i + 1,
+                total,
+                message: partProgressMessage('Downloaded', i, total),
+            });
+        } catch (error) {
+            release();
+            const at = releases.indexOf(release);
+            if (at >= 0) releases.splice(at, 1);
+            throw error;
+        }
     }
     return total;
 }
@@ -422,14 +450,22 @@ async function collectWavParts({
     indices,
     format,
     signal,
+    isSessionValid,
     fetchAudioBytes,
     onProgress,
-    releases,
+    maxPcmSamples = EXPORT_LIMITS.MAX_PCM_SAMPLES,
 }) {
+    if (format !== 'wav') {
+        throw new TypeError('Merged export requires WAV from a local backend');
+    }
+    const sampleCap = Number.isInteger(maxPcmSamples) && maxPcmSamples > 0
+        ? maxPcmSamples
+        : EXPORT_LIMITS.MAX_PCM_SAMPLES;
     const total = indices.length;
     const wavParts = [];
+    let runningSamples = 0;
     for (let i = 0; i < total; i++) {
-        ensureNotAborted(signal);
+        ensureExportSession(signal, isSessionValid);
         onProgress({
             phase: 'synthesize',
             completed: i,
@@ -437,19 +473,31 @@ async function collectWavParts({
             message: 'Generating ' + (i + 1) + '/' + total,
         });
         const chunk = await fetchAudioBytes(indices[i]);
-        releases.push(chunk.release || (() => {}));
-        ensureNotAborted(signal);
-        if (format !== 'wav') {
-            throw new TypeError(
-                'Merged export requires WAV from a local backend');
+        const release = chunk.release || (() => {});
+        try {
+            ensureExportSession(signal, isSessionValid);
+            // Own a copy immediately, then drop the synthesis lease so memory
+            // stays bounded to export buffers rather than live blob URLs.
+            const owned = arrayBufferView(chunk.bytes);
+            release();
+            const parsed = readWavPcm16Mono(owned);
+            runningSamples += parsed.pcmInt16.length;
+            if (runningSamples > sampleCap) {
+                throw new RangeError(
+                    'Export exceeds the ' + sampleCap +
+                    '-sample PCM limit (too long)');
+            }
+            wavParts.push(owned);
+            onProgress({
+                phase: 'synthesize',
+                completed: i + 1,
+                total,
+                message: 'Generated ' + (i + 1) + '/' + total,
+            });
+        } catch (error) {
+            release();
+            throw error;
         }
-        wavParts.push(chunk.bytes);
-        onProgress({
-            phase: 'synthesize',
-            completed: i + 1,
-            total,
-            message: 'Generated ' + (i + 1) + '/' + total,
-        });
     }
     return wavParts;
 }
@@ -470,22 +518,24 @@ async function downloadMergedWavExport({
     format,
     packaging,
     signal,
+    isSessionValid,
     fetchAudioBytes,
     downloadFile,
     onProgress,
-    releases,
+    maxPcmSamples,
 }) {
     const wavParts = await collectWavParts({
         indices,
         format,
         signal,
+        isSessionValid,
         fetchAudioBytes,
         onProgress,
-        releases,
+        maxPcmSamples,
     });
-    ensureNotAborted(signal);
+    ensureExportSession(signal, isSessionValid);
     const outBytes = buildMergedWavBytes(wavParts, packaging);
-    ensureNotAborted(signal);
+    ensureExportSession(signal, isSessionValid);
     const filename = buildExportFilename({
         title,
         scope,
@@ -499,12 +549,12 @@ async function downloadMergedWavExport({
         message: 'Downloading export',
     });
     const blob = new Blob([outBytes], { type: 'audio/wav' });
-    const releasePins = () => releaseAll(releases);
+    // Source leases were released as each chunk was copied; no-op release.
     await downloadFile({
         blob,
         bytes: outBytes,
         filename,
-        release: releasePins,
+        release: () => {},
     });
     return 1;
 }
@@ -522,6 +572,8 @@ export async function runScopedAudioExport({
     backend,
     title,
     signal = null,
+    isSessionValid = () => true,
+    maxPcmSamples = EXPORT_LIMITS.MAX_PCM_SAMPLES,
     fetchAudioBytes,
     downloadFile,
     onProgress = () => {},
@@ -544,7 +596,7 @@ export async function runScopedAudioExport({
         (packaging === 'single' && format === 'mp3');
 
     try {
-        ensureNotAborted(signal);
+        ensureExportSession(signal, isSessionValid);
         if (useCompressedParts) {
             // FastAPI (or any compressed stream): one verified file per chunk.
             // Never concatenate MP3 byte streams into a fake single file.
@@ -554,6 +606,7 @@ export async function runScopedAudioExport({
                 title,
                 format,
                 signal,
+                isSessionValid,
                 fetchAudioBytes,
                 downloadFile,
                 onProgress,
@@ -569,10 +622,11 @@ export async function runScopedAudioExport({
             format,
             packaging,
             signal,
+            isSessionValid,
             fetchAudioBytes,
             downloadFile,
             onProgress,
-            releases,
+            maxPcmSamples,
         });
         return { packaging, format, files };
     } catch (error) {

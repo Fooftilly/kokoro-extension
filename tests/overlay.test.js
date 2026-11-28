@@ -58,7 +58,7 @@ jest.mock('../audio-manager.js', () => ({
         setApiUrl: jest.fn(),
         setNormalizationOptions: jest.fn(),
         setCustomPronunciations: jest.fn(),
-        getAudio: jest.fn().mockResolvedValue('blob:url'),
+        getAudio: jest.fn().mockResolvedValue('data:audio/mpeg;base64,SUQz'),
         pinAudio: jest.fn(() => jest.fn()),
         retainWindow: jest.fn(),
         prioritizeNavigation: jest.fn(),
@@ -88,7 +88,11 @@ function installExportAudioFetchMock() {
     const samples = new Float32Array(48);
     for (let i = 0; i < samples.length; i++) samples[i] = Math.sin(i / 10) * 0.25;
     const wavBytes = encodePcm16Wav(samples, 24000);
-    const mp3Bytes = Uint8Array.from(Buffer.from('fake-mp3-bytes'));
+    // ID3-tagged stub so FastAPI export MIME/magic checks pass.
+    const mp3Bytes = Uint8Array.from([
+        0x49, 0x44, 0x33, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ...Buffer.from('fake-mp3-bytes'),
+    ]);
 
     global.fetch = jest.fn(async (url) => {
         const asString = String(url);
@@ -471,7 +475,7 @@ describe('overlay.js logic', () => {
         await Promise.resolve();
         expect(manager.getAudio).toHaveBeenCalledWith(0);
         document.getElementById('seekFwd').click();
-        resolveAudio('blob:the-original-sentence');
+        resolveAudio('data:audio/mpeg;base64,SUQzBAAAAAA=');
         await new Promise(resolve => setTimeout(resolve, 0));
         // Export copies bytes into a fresh blob URL for downloads.download;
         // the filename still reflects the sentence that was pinned for save.
@@ -640,12 +644,41 @@ describe('overlay.js logic', () => {
 
     test('local ONNX sentence downloads retain WAV format', async () => {
         await new Promise(resolve => setTimeout(resolve, 100));
+        const { AudioManager } = require('../audio-manager.js');
+        const manager = AudioManager.mock.results[0].value;
+        manager.getAudio.mockResolvedValue('blob:local-wav');
         // Save reads pendingTtsBackend after the initial overlay initialize get().
         browser.storage.local.get.mockResolvedValueOnce({ pendingTtsBackend: 'onnx' });
         document.getElementById('saveAudio').click();
         await new Promise(resolve => setTimeout(resolve, 0));
         const call = browser.downloads.download.mock.calls[0][0];
         expect(call.filename.endsWith('-sentence-1.wav')).toBe(true);
+    });
+
+    test('chapter reload aborts an in-flight export session fence', async () => {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const { AudioManager } = require('../audio-manager.js');
+        const manager = AudioManager.mock.results[0].value;
+        manager.generation = 1;
+        let resolveAudio;
+        manager.getAudio.mockReset();
+        manager.getAudio.mockImplementation(
+            () => new Promise(resolve => { resolveAudio = resolve; }));
+        browser.storage.local.get.mockResolvedValueOnce({
+            pendingTtsBackend: 'mediapipe',
+        });
+        document.getElementById('exportScope').value = 'article';
+        document.getElementById('saveAudio').click();
+        await Promise.resolve();
+        await Promise.resolve();
+        // Simulate RELOAD_DATA → initialize → clear() bumping generation.
+        manager.generation = 2;
+        window.dispatchEvent(new MessageEvent('message', { data: 'RELOAD_DATA' }));
+        resolveAudio?.('blob:stale-chapter');
+        await new Promise(resolve => setTimeout(resolve, 20));
+        expect(document.getElementById('status').textContent)
+            .toMatch(/cancel/i);
+        expect(browser.downloads.download).not.toHaveBeenCalled();
     });
 
     test('full article export scope is offered for webpage overlays', async () => {
@@ -664,6 +697,7 @@ describe('overlay.js logic', () => {
         manager.audioCache = new Map();
         manager.evictAudio = jest.fn();
         let resolveAudio;
+        manager.generation = 1;
         manager.getAudio.mockReset();
         manager.getAudio.mockImplementation(
             () => new Promise(resolve => { resolveAudio = resolve; }));
@@ -681,6 +715,9 @@ describe('overlay.js logic', () => {
         expect(document.getElementById('status').textContent)
             .toMatch(/cancel/i);
         expect(browser.downloads.download).not.toHaveBeenCalled();
+        // Cancel must target the export index (0), not leave playback eviction
+        // when the export index differs — evictAudio is only for non-current.
+        expect(manager.evictAudio).not.toHaveBeenCalled();
     });
 
     test('Handles navigation calls correctly', async () => {

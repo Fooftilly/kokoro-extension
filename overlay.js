@@ -45,6 +45,8 @@ let lastDragScreenX = 0;
 let lastDragScreenY = 0;
 let exportAbortController = null;
 let exportInFlight = false;
+/** Index currently awaited by an in-flight export fetch (not playback). */
+let exportActiveIndex = null;
 
 const audioManager = new AudioManager();
 const playPauseBtn = document.getElementById('playPause');
@@ -372,10 +374,26 @@ async function downloadExportBlob(blob, filename, release) {
     }
 }
 
+/**
+ * Cancel only the export's pending synthesis index. Never evict the sentence
+ * playback currently owns — that would interrupt ordinary Prev/Next/Play.
+ */
 function cancelInFlightExportSynthesis(index) {
+    if (!Number.isInteger(index) || index === currentIndex) return;
     const entry = audioManager.audioCache.get(index);
     if (entry?.pending) {
         audioManager.evictAudio(index, entry);
+    }
+}
+
+function abortActiveExport(reason = 'session') {
+    if (!exportAbortController) return;
+    exportAbortController.abort();
+    if (exportActiveIndex !== null) {
+        cancelInFlightExportSynthesis(exportActiveIndex);
+    }
+    if (reason === 'session' && exportProgressLabel) {
+        exportProgressLabel.textContent = 'Export cancelled (document changed)';
     }
 }
 
@@ -391,6 +409,10 @@ if (saveAudioBtn) {
         const scope = exportScopeSelect?.value || EXPORT_SCOPE.SENTENCE;
         const controller = new AbortController();
         exportAbortController = controller;
+        // Fence chapter/document reloads: initialize() bumps generation via clear().
+        const exportGeneration = audioManager.generation;
+        const exportSentences = sentences.slice();
+        const exportCurrentIndex = currentIndex;
         setExportUiBusy(true);
         updateExportProgress({
             phase: 'synthesize',
@@ -401,6 +423,9 @@ if (saveAudioBtn) {
 
         try {
             const settings = await browser.storage.local.get(['pendingTtsBackend']);
+            if (audioManager.generation !== exportGeneration || controller.signal.aborted) {
+                throw new DOMException('Audio export cancelled', 'AbortError');
+            }
             const backend = ['mediapipe', 'onnx', 'fastapi'].includes(
                 settings.pendingTtsBackend)
                 ? settings.pendingTtsBackend
@@ -409,47 +434,58 @@ if (saveAudioBtn) {
 
             await runScopedAudioExport({
                 scope,
-                currentIndex,
-                sentences,
+                currentIndex: exportCurrentIndex,
+                sentences: exportSentences,
                 backend,
                 title,
                 signal: controller.signal,
+                isSessionValid: () =>
+                    audioManager.generation === exportGeneration &&
+                    !controller.signal.aborted,
                 onProgress: updateExportProgress,
                 fetchAudioBytes: async (index) => {
-                    if (controller.signal.aborted) {
+                    if (controller.signal.aborted ||
+                        audioManager.generation !== exportGeneration) {
                         throw new DOMException('Audio export cancelled', 'AbortError');
                     }
                     let release = null;
+                    exportActiveIndex = index;
                     try {
                         release = audioManager.pinAudio(index);
                         const audioUrl = await audioManager.getAudio(index);
-                        if (controller.signal.aborted) {
+                        if (controller.signal.aborted ||
+                            audioManager.generation !== exportGeneration) {
                             cancelInFlightExportSynthesis(index);
                             throw new DOMException('Audio export cancelled', 'AbortError');
                         }
                         if (!audioUrl) throw new Error('No generated audio to save');
+                        // Preserve the real MIME from the URL/response. Orchestrator
+                        // verifies MP3 magic / WAV headers — do not overwrite.
                         const fetched = await bytesFromAudioUrl(audioUrl);
-                        // Prefer the backend's known format over opaque blob: URLs
-                        // so FastAPI MP3 is never mislabeled as WAV (and vice versa).
-                        const contentType = backend === 'fastapi'
-                            ? 'audio/mpeg'
-                            : 'audio/wav';
+                        if (controller.signal.aborted ||
+                            audioManager.generation !== exportGeneration) {
+                            throw new DOMException('Audio export cancelled', 'AbortError');
+                        }
                         return {
                             bytes: fetched.bytes,
-                            contentType,
+                            contentType: fetched.contentType,
                             release,
                         };
                     } catch (error) {
                         release?.();
-                        if (controller.signal.aborted) {
+                        if (controller.signal.aborted ||
+                            audioManager.generation !== exportGeneration) {
                             cancelInFlightExportSynthesis(index);
                             throw new DOMException('Audio export cancelled', 'AbortError');
                         }
                         throw error;
+                    } finally {
+                        if (exportActiveIndex === index) exportActiveIndex = null;
                     }
                 },
                 downloadFile: async ({ blob, filename, release }) => {
-                    if (controller.signal.aborted) {
+                    if (controller.signal.aborted ||
+                        audioManager.generation !== exportGeneration) {
                         release?.();
                         throw new DOMException('Audio export cancelled', 'AbortError');
                     }
@@ -466,6 +502,7 @@ if (saveAudioBtn) {
             }
         } finally {
             if (exportAbortController === controller) exportAbortController = null;
+            exportActiveIndex = null;
             setExportUiBusy(false);
         }
     });
@@ -474,9 +511,10 @@ if (saveAudioBtn) {
 if (cancelExportBtn) {
     cancelExportBtn.addEventListener('click', () => {
         exportAbortController?.abort();
-        // Best-effort: stale any pending synthesis for the active sentence so
-        // local inference joins cancel without clearing the whole player.
-        cancelInFlightExportSynthesis(currentIndex);
+        // Evict only the export's pending index — never the playback sentence.
+        if (exportActiveIndex !== null) {
+            cancelInFlightExportSynthesis(exportActiveIndex);
+        }
         if (exportProgressLabel) {
             exportProgressLabel.textContent = 'Cancelling…';
         }
@@ -629,6 +667,10 @@ async function initialize() {
     window.focus();
     retryBtn.style.display = 'none';
     statusEl.textContent = "Initializing...";
+
+    // A chapter/document reload must not continue a prior scoped export against
+    // the new sentence list (generation fence + AbortSignal).
+    abortActiveExport('session');
 
     // Clear state and invalidate outstanding playback from the previous document.
     navigationRequestId++;

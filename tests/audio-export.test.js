@@ -14,6 +14,7 @@ const {
     exportPackaging,
     readWavPcm16Mono,
     mergeMonoPcm16Wavs,
+    looksLikeMp3,
     runScopedAudioExport,
 } = require('../audio-export.js');
 
@@ -26,6 +27,15 @@ function pcmTone(samples, amplitude = 0.25) {
 function encodeTinyWav(sampleCount, sampleRateHz = 24000) {
     const { encodePcm16Wav } = require('../pcm-wav.js');
     return encodePcm16Wav(pcmTone(sampleCount), sampleRateHz).buffer;
+}
+
+/** Minimal ID3-tagged payload that passes looksLikeMp3. */
+function encodeFakeMp3(label) {
+    const body = Buffer.from(String(label), 'utf8');
+    return Uint8Array.from([
+        0x49, 0x44, 0x33, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ...body,
+    ]).buffer;
 }
 
 describe('audio-export scopes and bounds (#197)', () => {
@@ -253,16 +263,11 @@ describe('runScopedAudioExport orchestration (#197)', () => {
             sentences,
             backend: 'fastapi',
             title: 'Remote',
-            fetchAudioBytes: async (index) => {
-                const bytes = Uint8Array.from(
-                    Buffer.from('mp3-part-' + index, 'utf8'),
-                ).buffer;
-                return {
-                    bytes,
-                    contentType: 'audio/mpeg',
-                    release: () => {},
-                };
-            },
+            fetchAudioBytes: async (index) => ({
+                bytes: encodeFakeMp3('mp3-part-' + index),
+                contentType: 'audio/mpeg',
+                release: () => {},
+            }),
             downloadFile: async ({ bytes, filename, release }) => {
                 const view = bytes instanceof Uint8Array
                     ? bytes
@@ -279,9 +284,127 @@ describe('runScopedAudioExport orchestration (#197)', () => {
             'Remote-article-part-02-of-03.mp3',
             'Remote-article-part-03-of-03.mp3',
         ]);
-        expect(downloads.map(d => d.text)).toEqual([
+        expect(downloads.every(d => d.text.includes('ID3') || d.text.includes('mp3-part-')))
+            .toBe(true);
+        expect(downloads.map(d => d.text.slice(-10))).toEqual([
             'mp3-part-0', 'mp3-part-1', 'mp3-part-2',
         ]);
+    });
+
+    test('FastAPI export rejects WAV Content-Type and non-MP3 bytes', async () => {
+        await expect(runScopedAudioExport({
+            scope: EXPORT_SCOPE.SENTENCE,
+            currentIndex: 0,
+            sentences: [{ text: 'X' }],
+            backend: 'fastapi',
+            title: 'Bad',
+            fetchAudioBytes: async () => ({
+                bytes: encodeTinyWav(16),
+                contentType: 'audio/wav',
+                release: () => {},
+            }),
+            downloadFile: async () => {
+                throw new Error('should not download');
+            },
+        })).rejects.toThrow(/Content-Type|non-MP3/i);
+
+        await expect(runScopedAudioExport({
+            scope: EXPORT_SCOPE.SENTENCE,
+            currentIndex: 0,
+            sentences: [{ text: 'X' }],
+            backend: 'fastapi',
+            title: 'BadBytes',
+            fetchAudioBytes: async () => ({
+                bytes: Uint8Array.from(Buffer.from('<html>nope</html>')).buffer,
+                contentType: 'audio/mpeg',
+                release: () => {},
+            }),
+            downloadFile: async () => {
+                throw new Error('should not download');
+            },
+        })).rejects.toThrow(/frame sync|ID3|non-MP3/i);
+    });
+
+    test('looksLikeMp3 accepts ID3 and frame sync only', () => {
+        expect(looksLikeMp3(encodeFakeMp3('x'))).toBe(true);
+        expect(looksLikeMp3(Uint8Array.from([0xFF, 0xFB, 0x90, 0x00]))).toBe(true);
+        expect(looksLikeMp3(encodeTinyWav(8))).toBe(false);
+        expect(looksLikeMp3(Uint8Array.from([0x00, 0x01]))).toBe(false);
+    });
+
+    test('WAV merge stops when running PCM budget would be exceeded', async () => {
+        const sentences = [{ text: 'A' }, { text: 'B' }];
+        let fetchCount = 0;
+        const releases = [];
+        await expect(runScopedAudioExport({
+            scope: EXPORT_SCOPE.ARTICLE,
+            currentIndex: 0,
+            sentences,
+            backend: 'mediapipe',
+            title: 'Huge',
+            maxPcmSamples: 20,
+            fetchAudioBytes: async () => {
+                fetchCount += 1;
+                const release = jest.fn();
+                releases.push(release);
+                return {
+                    bytes: encodeTinyWav(12),
+                    contentType: 'audio/wav',
+                    release,
+                };
+            },
+            downloadFile: async () => {
+                throw new Error('should not download');
+            },
+        })).rejects.toThrow(/PCM limit|too long/i);
+        expect(fetchCount).toBe(2);
+        expect(releases.every(r => r.mock.calls.length >= 1)).toBe(true);
+    });
+
+    test('single-chunk WAV export also enforces the PCM sample cap', async () => {
+        await expect(runScopedAudioExport({
+            scope: EXPORT_SCOPE.SENTENCE,
+            currentIndex: 0,
+            sentences: [{ text: 'Solo' }],
+            backend: 'onnx',
+            title: 'One',
+            maxPcmSamples: 4,
+            fetchAudioBytes: async () => ({
+                bytes: encodeTinyWav(16),
+                contentType: 'audio/wav',
+                release: jest.fn(),
+            }),
+            downloadFile: async () => {
+                throw new Error('should not download');
+            },
+        })).rejects.toThrow(/PCM limit|too long/i);
+    });
+
+    test('isSessionValid abort stops further chunk fetches after a reload fence', async () => {
+        const sentences = [{ text: 'A' }, { text: 'B' }, { text: 'C' }];
+        let generation = 1;
+        let fetchCount = 0;
+        await expect(runScopedAudioExport({
+            scope: EXPORT_SCOPE.ARTICLE,
+            currentIndex: 0,
+            sentences,
+            backend: 'mediapipe',
+            title: 'Fence',
+            isSessionValid: () => generation === 1,
+            fetchAudioBytes: async () => {
+                fetchCount += 1;
+                if (fetchCount === 1) generation = 2; // simulate chapter reload
+                return {
+                    bytes: encodeTinyWav(8),
+                    contentType: 'audio/wav',
+                    release: () => {},
+                };
+            },
+            downloadFile: async () => {
+                throw new Error('should not download');
+            },
+        })).rejects.toMatchObject({ name: 'AbortError' });
+        expect(fetchCount).toBe(1);
     });
 
     test('cancel mid-export stops further downloads and releases resources', async () => {
