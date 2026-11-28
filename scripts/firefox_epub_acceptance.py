@@ -65,3 +65,45 @@ def assert_distinct_chapter_audio_hashes(
                 "second": second_sha, "third": third_sha, "txt": txt_sha,
             }))
     return True
+
+
+READER_PROGRESS_ACCEPTANCE_STAGE = "offline-reader-progress-bookmarks-fencing"
+
+
+def assert_lock_manager_available(available):
+    """Packaged Firefox reader must expose navigator.locks.request (#196)."""
+    if not available:
+        raise RuntimeError(
+            "Packaged reader requires navigator.locks.request for progress mutations")
+    return True
+
+
+def assert_bookmark_jump_did_not_autoplay(pending_autoplay):
+    """Bookmark go-to must never start audio without explicit Play."""
+    if pending_autoplay is True:
+        raise RuntimeError("Bookmark go-to must keep pendingAutoplay false")
+    return True
+
+
+def assert_resume_banner_visible(hidden):
+    """Resume banner must appear when prior progress exists for the same file."""
+    if hidden:
+        raise RuntimeError("Expected resume banner after reopening the same EPUB")
+    return True
+
+
+def build_progress_acceptance_report(
+        *, locks_available, bookmark_added, bookmark_go_restored_chapter,
+        bookmark_go_suppressed_autoplay, bookmark_removed,
+        resume_banner_after_reopen, resume_cleared):
+    """Comparable Chromium/Firefox progress-stage report for #196."""
+    return {
+        "stage": READER_PROGRESS_ACCEPTANCE_STAGE,
+        "locksAvailable": bool(locks_available),
+        "bookmarkAdded": bool(bookmark_added),
+        "bookmarkGoRestoredChapter": bookmark_go_restored_chapter or None,
+        "bookmarkGoSuppressedAutoplay": bool(bookmark_go_suppressed_autoplay),
+        "bookmarkRemoved": bool(bookmark_removed),
+        "resumeBannerAfterReopen": bool(resume_banner_after_reopen),
+        "resumeCleared": bool(resume_cleared),
+    }

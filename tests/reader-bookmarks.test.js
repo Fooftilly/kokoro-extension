@@ -214,9 +214,14 @@ describe('reader bookmarks helpers (#196)', () => {
             suppressAutoplay: true,
             outdated: false,
             label: 'Part 2',
-            item: expect.objectContaining({ href: 'ch1.xhtml#part2' }),
+            item: expect.objectContaining({
+                href: 'ch1.xhtml#part2',
+                label: 'Part 2',
+            }),
         }));
         expect(jump.record.chapterHref).toBe('ch1.xhtml#part2');
+        // Player title must use the remapped heading label (not Part 1).
+        expect(jump.item.label).toBe('Part 2');
     });
 
     test('shouldAcceptReadingProgress requires the acknowledged current revision', () => {

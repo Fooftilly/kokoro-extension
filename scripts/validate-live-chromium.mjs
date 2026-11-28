@@ -14,6 +14,12 @@ import {
     buildReaderAcceptanceEpub,
 } from './reader-acceptance-epub.mjs';
 import {
+    assertLockManagerAvailable,
+    assertBookmarkJumpDidNotAutoplay,
+    assertResumeBannerVisible,
+    buildProgressAcceptanceReport,
+} from './reader-progress-acceptance.mjs';
+import {
     ARTICLE_SELECTION_SPEECH,
     articleSelectionStorageConfig,
     assertDistinctArticleSelectionAudioHashes,
@@ -2741,6 +2747,75 @@ async function acceptLongFormMemoryPerformance(page, context, extensionId, backe
 // pendingContent shortcut—create a local offline WAV for all three chapters.
 // Also cover replacing the book with a TXT file through the same UI.
 // backend is 'onnx' or 'mediapipe' (chromium-*-origin scopes).
+/**
+ * #196 packaged Chromium stage: LockManager presence, bookmark add/go/remove,
+ * no-autoplay jump, and resume banner after reopening the same EPUB bytes.
+ */
+async function acceptReaderProgressAndBookmarks(page, {
+    clickTocChapter, waitForChapter, third, epubBytes,
+}) {
+    const locksAvailable = await page.evaluate(() =>
+        typeof navigator.locks?.request === 'function');
+    assertLockManagerAvailable(locksAvailable ? { request: () => {} } : null);
+
+    await page.waitForFunction(() => {
+        const btn = document.getElementById('addBookmark');
+        return Boolean(btn) && btn.disabled === false;
+    }, null, { timeout: 60000 });
+    await page.locator('#addBookmark').click();
+    await page.waitForFunction(() =>
+        document.querySelectorAll('#bookmarkList li').length >= 1,
+    null, { timeout: 15000 });
+
+    await clickTocChapter('Second Chapter');
+    const afterLeave = await waitForChapter(
+        'Second Chapter', third.revision, third.audioUrl, third.audioSha256);
+
+    await page.locator('#bookmarkList .bookmark-go').first().click();
+    const restored = await waitForChapter(
+        'Third Chapter', afterLeave.revision, afterLeave.audioUrl,
+        afterLeave.audioSha256);
+    if (restored.title !== 'Third Chapter') {
+        throw Error('Bookmark go-to did not restore Third Chapter: ' +
+            JSON.stringify(restored));
+    }
+    const pendingAutoplay = await page.evaluate(async () =>
+        (await chrome.storage.local.get(['pendingAutoplay'])).pendingAutoplay);
+    assertBookmarkJumpDidNotAutoplay(pendingAutoplay);
+
+    await page.locator('#bookmarkList .bookmark-remove').first().click();
+    await page.waitForFunction(() =>
+        document.querySelectorAll('#bookmarkList li').length === 0,
+    null, { timeout: 15000 });
+
+    // Re-open the same EPUB bytes so resume can match document identity.
+    await page.locator('#openAnotherDocument').click();
+    await page.locator('#fileInput').setInputFiles({
+        name: 'offline-reader-acceptance.epub',
+        mimeType: 'application/epub+zip',
+        buffer: epubBytes,
+    });
+    await page.waitForFunction(() =>
+        document.getElementById('resumeBanner')?.hidden === false,
+    null, { timeout: 60000 });
+    assertResumeBannerVisible(
+        await page.evaluate(() => document.getElementById('resumeBanner')?.hidden));
+    await page.locator('#startOverReading').click();
+    await page.waitForFunction(() =>
+        document.getElementById('resumeBanner')?.hidden !== false,
+    null, { timeout: 15000 });
+
+    return buildProgressAcceptanceReport({
+        locksAvailable: true,
+        bookmarkAdded: true,
+        bookmarkGoRestoredChapter: 'Third Chapter',
+        bookmarkGoSuppressedAutoplay: true,
+        bookmarkRemoved: true,
+        resumeBannerAfterReopen: true,
+        resumeCleared: true,
+    });
+}
+
 async function acceptRealEpubReader(page, extensionId, backend) {
     if (backend !== 'onnx' && backend !== 'mediapipe') {
         throw Error('EPUB reader acceptance requires onnx or mediapipe backend');
@@ -2966,6 +3041,12 @@ async function acceptRealEpubReader(page, extensionId, backend) {
                 secondAudioSha256: second.audioSha256, thirdAudioSha256: third.audioSha256,
                 live: await readReaderNavDiagnostics() }));
     }
+    const progressAcceptance = await acceptReaderProgressAndBookmarks(page, {
+        clickTocChapter,
+        waitForChapter,
+        third,
+        epubBytes: epub,
+    });
     await page.locator('#openAnotherDocument').click();
     await page.locator('#fileInput').setInputFiles({
         name: 'acceptance.txt', mimeType: 'text/plain',
@@ -3016,6 +3097,7 @@ async function acceptRealEpubReader(page, extensionId, backend) {
         local24kHzWav: true, differentAudioPerChapter,
         offline: true, noServerFallback: true, autoplayDisabled: true,
         userBackendUnchanged: true,
+        progressAcceptance,
     };
 }
 

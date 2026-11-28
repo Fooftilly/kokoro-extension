@@ -33,7 +33,11 @@ from firefox_article_selection_acceptance import (
     require_article_selection_backend,
 )
 from firefox_epub_acceptance import (
+    assert_bookmark_jump_did_not_autoplay,
     assert_distinct_chapter_audio_hashes,
+    assert_lock_manager_available,
+    assert_resume_banner_visible,
+    build_progress_acceptance_report,
     epub_backend_variant,
     origin_epub_stage_enabled,
     reader_storage_config,
@@ -3121,6 +3125,67 @@ def _return_to_benchmark_for_model_remove(driver, origin, backend):
     )
 
 
+def accept_reader_progress_and_bookmarks(driver, epub_path, third, backend):
+    """#196 LockManager + bookmark add/go/remove + resume after EPUB reopen."""
+    locks_available = driver.execute_script(
+        "return typeof navigator.locks !== 'undefined' && "
+        "typeof navigator.locks.request === 'function';")
+    assert_lock_manager_available(locks_available)
+
+    WebDriverWait(driver, 60).until(
+        lambda d: d.find_element(By.ID, "addBookmark").is_enabled())
+    driver.find_element(By.ID, "addBookmark").click()
+    WebDriverWait(driver, 15).until(
+        lambda d: len(d.find_elements(By.CSS_SELECTOR, "#bookmarkList li")) >= 1)
+
+    _click_toc_chapter(driver, "Second Chapter")
+    after_leave = _wait_for_epub_chapter(
+        driver, "Second Chapter", third["revision"], third["audioUrl"],
+        third["audioSha256"], backend=backend)
+
+    driver.find_element(By.CSS_SELECTOR, "#bookmarkList .bookmark-go").click()
+    restored = _wait_for_epub_chapter(
+        driver, "Third Chapter", after_leave["revision"], after_leave["audioUrl"],
+        after_leave["audioSha256"], backend=backend)
+    if restored.get("title") != "Third Chapter":
+        raise RuntimeError(
+            "Bookmark go-to did not restore Third Chapter: " + json.dumps(restored))
+    pending_autoplay = driver.execute_async_script("""
+        const done = arguments[arguments.length - 1];
+        browser.storage.local.get(['pendingAutoplay']).then((data) => {
+            done(data.pendingAutoplay);
+        });
+    """)
+    assert_bookmark_jump_did_not_autoplay(pending_autoplay)
+
+    driver.find_element(By.CSS_SELECTOR, "#bookmarkList .bookmark-remove").click()
+    WebDriverWait(driver, 15).until(
+        lambda d: len(d.find_elements(By.CSS_SELECTOR, "#bookmarkList li")) == 0)
+
+    driver.find_element(By.ID, "openAnotherDocument").click()
+    driver.find_element(By.ID, "fileInput").send_keys(str(epub_path))
+    WebDriverWait(driver, 60).until(
+        lambda d: d.execute_script(
+            "return document.getElementById('resumeBanner')?.hidden === false;"))
+    banner_hidden = driver.execute_script(
+        "return document.getElementById('resumeBanner')?.hidden === true;")
+    assert_resume_banner_visible(banner_hidden)
+    driver.find_element(By.ID, "startOverReading").click()
+    WebDriverWait(driver, 15).until(
+        lambda d: d.execute_script(
+            "return document.getElementById('resumeBanner')?.hidden !== false;"))
+
+    return build_progress_acceptance_report(
+        locks_available=True,
+        bookmark_added=True,
+        bookmark_go_restored_chapter="Third Chapter",
+        bookmark_go_suppressed_autoplay=True,
+        bookmark_removed=True,
+        resume_banner_after_reopen=True,
+        resume_cleared=True,
+    )
+
+
 def accept_real_epub_reader(driver, origin, backend):
     """Real Firefox file picker → EPUB.js → chapter nav → overlay → offline WAV."""
     require_epub_backend(backend)
@@ -3179,6 +3244,9 @@ def accept_real_epub_reader(driver, origin, backend):
                     "thirdAudioSha256": third.get("audioSha256"),
                 }))
 
+        progress_acceptance = accept_reader_progress_and_bookmarks(
+            driver, epub_path, third, backend)
+
         driver.find_element(By.ID, "openAnotherDocument").click()
         driver.find_element(By.ID, "fileInput").send_keys(str(txt_path))
         plain_text = _wait_for_epub_chapter(
@@ -3223,6 +3291,7 @@ def accept_real_epub_reader(driver, origin, backend):
         "local24kHzWav": True, "differentAudioPerChapter": True,
         "offline": True, "noServerFallback": True, "autoplayDisabled": True,
         "userBackendUnchanged": True,
+        "progressAcceptance": progress_acceptance,
     }
 
 

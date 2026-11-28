@@ -1449,15 +1449,20 @@ async function loadEpubChapter(href, title, continuePlaying = false, forcedStart
     }
 
     let playerHref = href;
+    let playerTitle = title || 'Chapter';
     if (options.bookmarkJump) {
         const playback = applyBookmarkJumpPlayback(options.bookmarkJump, mergedBlocks);
         startIndex = playback.startIndex;
         suppressAutoplay = playback.suppressAutoplay;
+        // Remapped heading must update both href and title; initial progress
+        // may lack heading IDs so updateActiveChapter cannot correct the label.
         if (playback.item?.href) playerHref = playback.item.href;
+        if (playback.item?.label) playerTitle = playback.item.label;
+        else if (playback.label) playerTitle = playback.label;
     }
 
     const fullText = mergedBlocks.map(b => b.content).join(' ');
-    await sendToPlayer(mergedBlocks, title || "Chapter", fullText.substring(0, 100), startIndex,
+    await sendToPlayer(mergedBlocks, playerTitle, fullText.substring(0, 100), startIndex,
         requestId, requestedBook, continuePlaying, playerHref, { suppressAutoplay });
 }
 
