@@ -2833,39 +2833,7 @@ async function reopenAcceptanceEpub(page, epubBytes) {
     });
 }
 
-/**
- * #196 packaged Chromium stage: LockManager, nonzero bookmark seek, autoplay
- * override, stale revision fencing, Resume restore, and durable Start over.
- */
-async function acceptReaderProgressAndBookmarks(page, {
-    clickTocChapter, waitForChapter, third, priorRevision, epubBytes,
-}) {
-    const savedBlock = 1;
-    const staleBlock = 2;
-    const blockTwoText = READER_ACCEPTANCE_THIRD_BLOCKS[savedBlock];
-    const documentId = 'sha256:' +
-        createHash('sha256').update(epubBytes).digest('hex');
-    const progressKey = 'readerProgress:' + documentId;
-    const bookmarksKey = 'readerBookmarks:' + documentId;
-    const locksAvailable = await page.evaluate(() =>
-        typeof navigator.locks?.request === 'function');
-    assertLockManagerAvailable(locksAvailable ? { request: () => {} } : null);
-
-    if (!Array.isArray(third.pendingContent) || third.pendingContent.length < 3) {
-        throw Error('Third Chapter fixture must expose multiple blocks: ' +
-            JSON.stringify(third.pendingContent));
-    }
-    if (!Number.isSafeInteger(priorRevision) || priorRevision >= third.revision) {
-        throw Error('priorRevision must be a prior chapter reload revision: ' +
-            JSON.stringify({ priorRevision, thirdRevision: third.revision }));
-    }
-
-    await page.waitForFunction(() => {
-        const btn = document.getElementById('addBookmark');
-        return Boolean(btn) && btn.disabled === false;
-    }, null, { timeout: 60000 });
-
-    // Advance to a nonzero block before Add so seek regressions are visible.
+async function seekThirdBlockAndWait(page, progressKey, savedBlock, blockTwoText) {
     await page.frameLocator('#playerFrame').locator('#seekFwd').click();
     await page.waitForFunction((needle) => {
         const frame = document.getElementById('playerFrame')?.contentDocument;
@@ -2875,8 +2843,11 @@ async function acceptReaderProgressAndBookmarks(page, {
     await waitForProgressRecord(page, {
         progressKey, blockIndex: savedBlock, hrefNeedle: 'third.xhtml',
     });
+}
 
-    // Stale prior-revision progress with a *valid* distinct block must not win.
+async function assertStaleProgressFenced(page, {
+    progressKey, bookmarksKey, priorRevision, savedBlock, staleBlock,
+}) {
     const progressBeforeStale = await readDocumentProgressRecord(page, progressKey);
     const bookmarksBeforeStale = await readBookmarkSnapshot(page, bookmarksKey);
     const addEnabledBeforeStale = await readAddBookmarkEnabled(page);
@@ -2907,22 +2878,24 @@ async function acceptReaderProgressAndBookmarks(page, {
                 addEnabledBeforeStale, addEnabledAfterStale,
             }));
     }
+}
 
+async function addBookmarkAtSavedBlock(page, bookmarksKey, savedBlock) {
     await page.locator('#addBookmark').click();
     await page.waitForFunction(() =>
         document.querySelectorAll('#bookmarkList li').length >= 1,
     null, { timeout: 15000 });
-    const bookmarkBeforeLeave = await readBookmarkSnapshot(page, bookmarksKey);
-    if (bookmarkBeforeLeave.blockIndex !== savedBlock) {
+    const snapshot = await readBookmarkSnapshot(page, bookmarksKey);
+    if (snapshot.blockIndex !== savedBlock) {
         throw Error('Bookmark did not capture nonzero block: ' +
-            JSON.stringify(bookmarkBeforeLeave));
+            JSON.stringify(snapshot));
     }
+    return snapshot;
+}
 
-    await clickTocChapter('Second Chapter');
-    const afterLeave = await waitForChapter(
-        'Second Chapter', third.revision, third.audioUrl, third.audioSha256);
-
-    // Enable reader autoplay so suppressAutoplay must win independently.
+async function bookmarkGoSuppressAutoplay(page, {
+    waitForChapter, afterLeave, savedBlock, blockTwoText,
+}) {
     await page.evaluate(async () => {
         await chrome.storage.sync.set({ autoplayReader: true });
     });
@@ -2947,17 +2920,12 @@ async function acceptReaderProgressAndBookmarks(page, {
     await page.evaluate(async () => {
         await chrome.storage.sync.set({ autoplayReader: false });
     });
+    return restored;
+}
 
-    await page.locator('#bookmarkList .bookmark-remove').first().click();
-    await page.waitForFunction(() =>
-        document.querySelectorAll('#bookmarkList li').length === 0,
-    null, { timeout: 15000 });
-
-    // Durable progress must still point at Third Chapter block 1 for Resume.
-    await waitForProgressRecord(page, {
-        progressKey, blockIndex: savedBlock, hrefNeedle: 'third.xhtml',
-    });
-
+async function resumeThenStartOver(page, {
+    waitForChapter, epubBytes, progressKey, afterLeave, savedBlock, blockTwoText,
+}) {
     await reopenAcceptanceEpub(page, epubBytes);
     await page.waitForFunction(() =>
         document.getElementById('resumeBanner')?.hidden === false,
@@ -2988,7 +2956,6 @@ async function acceptReaderProgressAndBookmarks(page, {
         throw Error('Resume must keep playback paused until Play');
     }
 
-    // Re-open again and Start over — durable removal, not only banner hide.
     await reopenAcceptanceEpub(page, epubBytes);
     await page.waitForFunction(() =>
         document.getElementById('resumeBanner')?.hidden === false,
@@ -3005,6 +2972,64 @@ async function acceptReaderProgressAndBookmarks(page, {
     }
     assertProgressClearedOrFirstChapter(
         await waitForProgressClearedOrFirst(page, progressKey), 'first.xhtml');
+    return resumed;
+}
+
+/**
+ * #196 packaged Chromium stage: LockManager, nonzero bookmark seek, autoplay
+ * override, stale revision fencing, Resume restore, and durable Start over.
+ * Nested helpers keep CodeFactor method complexity under the gate.
+ */
+async function acceptReaderProgressAndBookmarks(page, {
+    clickTocChapter, waitForChapter, third, priorRevision, epubBytes,
+}) {
+    const savedBlock = 1;
+    const staleBlock = 2;
+    const blockTwoText = READER_ACCEPTANCE_THIRD_BLOCKS[savedBlock];
+    const documentId = 'sha256:' +
+        createHash('sha256').update(epubBytes).digest('hex');
+    const progressKey = 'readerProgress:' + documentId;
+    const bookmarksKey = 'readerBookmarks:' + documentId;
+    const locksAvailable = await page.evaluate(() =>
+        typeof navigator.locks?.request === 'function');
+    assertLockManagerAvailable(locksAvailable ? { request: () => {} } : null);
+
+    if (!Array.isArray(third.pendingContent) || third.pendingContent.length < 3) {
+        throw Error('Third Chapter fixture must expose multiple blocks: ' +
+            JSON.stringify(third.pendingContent));
+    }
+    if (!Number.isSafeInteger(priorRevision) || priorRevision >= third.revision) {
+        throw Error('priorRevision must be a prior chapter reload revision: ' +
+            JSON.stringify({ priorRevision, thirdRevision: third.revision }));
+    }
+
+    await page.waitForFunction(() => {
+        const btn = document.getElementById('addBookmark');
+        return Boolean(btn) && btn.disabled === false;
+    }, null, { timeout: 60000 });
+    await seekThirdBlockAndWait(page, progressKey, savedBlock, blockTwoText);
+    await assertStaleProgressFenced(page, {
+        progressKey, bookmarksKey, priorRevision, savedBlock, staleBlock,
+    });
+    await addBookmarkAtSavedBlock(page, bookmarksKey, savedBlock);
+
+    await clickTocChapter('Second Chapter');
+    const afterLeave = await waitForChapter(
+        'Second Chapter', third.revision, third.audioUrl, third.audioSha256);
+    await bookmarkGoSuppressAutoplay(page, {
+        waitForChapter, afterLeave, savedBlock, blockTwoText,
+    });
+
+    await page.locator('#bookmarkList .bookmark-remove').first().click();
+    await page.waitForFunction(() =>
+        document.querySelectorAll('#bookmarkList li').length === 0,
+    null, { timeout: 15000 });
+    await waitForProgressRecord(page, {
+        progressKey, blockIndex: savedBlock, hrefNeedle: 'third.xhtml',
+    });
+    await resumeThenStartOver(page, {
+        waitForChapter, epubBytes, progressKey, afterLeave, savedBlock, blockTwoText,
+    });
 
     return buildProgressAcceptanceReport({
         locksAvailable: true,
