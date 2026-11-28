@@ -5,6 +5,7 @@ export const MAX_TEXT_DOCUMENT_BYTES = 4 * 1024 * 1024;
 const extensions = new Map([
     ['epub', 'epub'],
     ['docx', 'docx'],
+    ['pdf', 'pdf'],
     ['txt', 'text'],
     ['text', 'text'],
     ['md', 'markdown'],
@@ -20,10 +21,12 @@ export function detectDocumentFormat(file) {
     const mime = String(file?.type || '').toLowerCase().split(';')[0].trim();
     if (mime === 'application/epub+zip') return 'epub';
     if (mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return 'docx';
+    if (mime === 'application/pdf') return 'pdf';
     if (mime === 'text/plain') return 'text';
     if (mime === 'text/markdown') return 'markdown';
     if (mime === 'text/html' || mime === 'application/xhtml+xml') return 'html';
-    throw new Error('Unsupported format. Choose EPUB, DOCX, TXT, Markdown, or HTML.');
+    throw new Error(
+        'Unsupported format. Choose EPUB, DOCX, PDF, TXT, Markdown, or HTML.');
 }
 
 export function decodeTextDocument(buffer) {

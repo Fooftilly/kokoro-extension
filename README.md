@@ -51,7 +51,7 @@ Verified against the current source (not aspirational):
 - **Text normalization** (toggleable) — contractions, transliteration of non-Latin scripts, dates/numbers, units, URLs, emails, phones, and related pronunciation prep in `text-processor.js`.
 - **Overlay playback** — play/pause, previous/next sentence, speed & volume; in-player **Space** play/pause and **Left/Right** (or `,` / `.`) prev/next when the player is focused; optional auto-scroll on the origin page with a “comfort zone” to reduce jumpiness. Compact mode is **draggable** with a persisted, viewport-clamped position, and **collapsible** (including full→floating) without stopping audio; Close still tears down the player. The player shows which backend is speaking (Server / MediaPipe / ONNX).
 - **Floating mic button** — optional on-page control (can be disabled in settings).
-- **Document reader** — open EPUB, DOCX, TXT, Markdown, or HTML from the popup; optional EPUB autoplay and continuous chapter playback.
+- **Document reader** — open EPUB, DOCX, PDF (text-based), TXT, Markdown, or HTML from the popup; optional EPUB autoplay and continuous chapter playback.
 - **Themes** — light/dark toggle in the popup.
 - **Keyboard shortcuts** — browser commands: Alt+A read article, Alt+, / Alt+. previous/next sentence, Alt+W close overlay; Firefox also suggests Alt+M for Open Document. Chrome does not assign a default Open Document shortcut (manifest limit of four suggested keys) — set one at `chrome://extensions/shortcuts`, or in Firefox via Add-ons → Manage extension shortcuts, or use the popup **Open Document** button. Overlay Space / Left / Right (or `,` / `.`) are in-player keys on both browsers and do not use those extension-command slots.
 - **Connection status icon** — toolbar icon reflects API reachability.
@@ -117,7 +117,7 @@ Other commands:
 2. **Highlighted text:** select text → right-click → **Send to Kokoro TTS**.
 3. **Whole article:** right-click the page → **Read Article with Kokoro TTS** (or use the read-article shortcut).
 4. Choose **Stream** or **Download** in settings; adjust voice mixer, speed, volume, and normalization as needed.
-5. **Open a document:** click **Open Document** in the extension popup. Supported formats include EPUB, DOCX, TXT, Markdown, and HTML.
+5. **Open a document:** click **Open Document** in the extension popup. Supported formats include EPUB, DOCX, PDF (text-based), TXT, Markdown, and HTML.
 6. **Reader autoplay:** enable **Autoplay in EPUB** in the popup if desired. Browsers may block automatic sound; the player then explains that you must click **Play**. When autoplay is off, chapters start paused. **Continue to next EPUB chapter** is a separate, opt-in setting.
 7. **Reader keyboard shortcut:** Firefox suggests **Alt+M**. Chrome does not assign a default shortcut for opening the reader because its extension manifest allows only four suggested shortcut keys. Use **Open Document** in the popup, or assign a shortcut at `chrome://extensions/shortcuts` (Chrome) or **Add-ons → Manage extension shortcuts** (Firefox). Reader sentence navigation uses **Alt+,** and **Alt+.** where assigned.
 
@@ -138,7 +138,7 @@ Before opening a PR: `npm ci`, targeted tests as needed, `npm test`, `npm run li
 - [CMU Pronouncing Dictionary](https://github.com/cmusphinx/cmudict), downloaded separately on user request from pinned commit `74790861f652b15e4ac49015a90074ad62a27690` (SHA-256 and byte-count verified; BSD-style license in `data/CMUDICT_LICENSE`) and cached for experimental offline US-English pronunciation. The 120,000-line dictionary is not shipped in the extension or stored in this repository's final tree.
 - [WebExtension Polyfill](https://github.com/mozilla/webextension-polyfill)
 - [Readability](https://github.com/mozilla/readability) for article extraction
-- [DOMPurify](https://github.com/cure53/DOMPurify), [epub.js](https://github.com/futurepress/epub.js), [JSZip](https://github.com/Stuk/jszip)
+- [DOMPurify](https://github.com/cure53/DOMPurify), [epub.js](https://github.com/futurepress/epub.js), [JSZip](https://github.com/Stuk/jszip), [PDF.js](https://github.com/mozilla/pdf.js)
 
 ## License
 

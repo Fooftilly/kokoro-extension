@@ -83,6 +83,7 @@ export default [
       'reader-progress.js',
       'document-formats.js',
       'docx-reader.js',
+      'pdf-reader.js',
       'audio-manager.js',
       'model-data-store.js',
       'onnx-kokoro-inputs.js',
