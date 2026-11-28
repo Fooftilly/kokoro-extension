@@ -79,6 +79,7 @@ let readerPausedForPicker = false; // Close must suppress pending chapter autopl
 /** @type {{ documentId: string, name: string, size: number, format: string, progressRevision: number, openGeneration: number } | null} */
 let currentDocumentMeta = null;
 let progressSaveTimer = null;
+let progressSaveInFlight = 0;
 /** Validated resume target waiting on explicit Resume (never autoplays). */
 let pendingResumeTarget = null;
 /** Full chapter blocks for fingerprinting (independent of continuous-reader truncation). */
@@ -163,12 +164,17 @@ async function hashDocumentIdentity(file, format, buffer, identityGeneration) {
     };
 }
 
+function clearProgressSaveTimer() {
+    clearTimeout(progressSaveTimer);
+    progressSaveTimer = null;
+    window.__kokoroProgressSaveTimerPending = false;
+}
+
 function commitDocumentIdentity(candidate, priorRevision = 0) {
     if (!candidate || candidate.identityGeneration !== documentIdentityGeneration) {
         return false;
     }
-    clearTimeout(progressSaveTimer);
-    progressSaveTimer = null;
+    clearProgressSaveTimer();
     currentDocumentMeta = {
         documentId: candidate.documentId,
         name: candidate.name,
@@ -187,8 +193,7 @@ function commitOrSkipDocumentIdentity(identity, priorRevision, identityGeneratio
     // Hash unavailable — keep the document usable without a progress identity.
     // Advance openGeneration so a later successful commit cannot reuse the
     // progressRevision/open token an in-flight resume lookup captured earlier.
-    clearTimeout(progressSaveTimer);
-    progressSaveTimer = null;
+    clearProgressSaveTimer();
     currentDocumentMeta = null;
     ++documentOpenGeneration;
     return true;
@@ -208,17 +213,24 @@ function progressWriteStillCurrent(write) {
 }
 
 async function flushProgressSave(write, record) {
-    if (!progressWriteStillCurrent(write)) return;
+    progressSaveInFlight += 1;
+    window.__kokoroProgressSaveInFlight = progressSaveInFlight;
     try {
-        await applyProgressUpsertMutation({
-            record,
-            getStore: () => browser.storage.local.get(null),
-            setStore: (patch) => browser.storage.local.set(patch),
-            removeKeys: (keys) => browser.storage.local.remove(keys),
-            isCurrent: () => progressWriteStillCurrent(write),
-        });
-    } catch (error) {
-        console.warn('Cannot persist reader progress', error);
+        if (!progressWriteStillCurrent(write)) return;
+        try {
+            await applyProgressUpsertMutation({
+                record,
+                getStore: () => browser.storage.local.get(null),
+                setStore: (patch) => browser.storage.local.set(patch),
+                removeKeys: (keys) => browser.storage.local.remove(keys),
+                isCurrent: () => progressWriteStillCurrent(write),
+            });
+        } catch (error) {
+            console.warn('Cannot persist reader progress', error);
+        }
+    } finally {
+        progressSaveInFlight = Math.max(0, progressSaveInFlight - 1);
+        window.__kokoroProgressSaveInFlight = progressSaveInFlight;
     }
 }
 
@@ -268,15 +280,16 @@ function scheduleProgressSave(blockIndex) {
         console.warn('Skipping invalid reader progress record', error);
         return;
     }
-    clearTimeout(progressSaveTimer);
+    clearProgressSaveTimer();
+    window.__kokoroProgressSaveTimerPending = true;
     progressSaveTimer = setTimeout(() => {
+        window.__kokoroProgressSaveTimerPending = false;
         void flushProgressSave(write, record);
     }, 400);
 }
 
 async function clearCurrentDocumentProgress() {
-    clearTimeout(progressSaveTimer);
-    progressSaveTimer = null;
+    clearProgressSaveTimer();
     const id = currentDocumentMeta?.documentId;
     hideResumeBanner();
     if (!id) return;
@@ -1449,15 +1462,20 @@ async function loadEpubChapter(href, title, continuePlaying = false, forcedStart
     }
 
     let playerHref = href;
+    let playerTitle = title || 'Chapter';
     if (options.bookmarkJump) {
         const playback = applyBookmarkJumpPlayback(options.bookmarkJump, mergedBlocks);
         startIndex = playback.startIndex;
         suppressAutoplay = playback.suppressAutoplay;
+        // Remapped heading must update both href and title; initial progress
+        // may lack heading IDs so updateActiveChapter cannot correct the label.
         if (playback.item?.href) playerHref = playback.item.href;
+        if (playback.item?.label) playerTitle = playback.item.label;
+        else if (playback.label) playerTitle = playback.label;
     }
 
     const fullText = mergedBlocks.map(b => b.content).join(' ');
-    await sendToPlayer(mergedBlocks, title || "Chapter", fullText.substring(0, 100), startIndex,
+    await sendToPlayer(mergedBlocks, playerTitle, fullText.substring(0, 100), startIndex,
         requestId, requestedBook, continuePlaying, playerHref, { suppressAutoplay });
 }
 
@@ -1564,6 +1582,10 @@ window.addEventListener('message', (event) => {
         event.data?.type !== 'KOKORO_READING_PROGRESS') {
         return;
     }
+    // Observable for packaged acceptance fencing: bumps even when the
+    // revision guard rejects, so harnesses can wait for delivery.
+    window.__kokoroReadingProgressHandled =
+        (Number(window.__kokoroReadingProgressHandled) || 0) + 1;
     if (!shouldAcceptReadingProgress({
         messageRevision: event.data.revision,
         renderedChapterRevision,

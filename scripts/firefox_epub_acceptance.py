@@ -65,3 +65,127 @@ def assert_distinct_chapter_audio_hashes(
                 "second": second_sha, "third": third_sha, "txt": txt_sha,
             }))
     return True
+
+
+READER_PROGRESS_ACCEPTANCE_STAGE = "offline-reader-progress-bookmarks-fencing"
+
+# Matches scheduleProgressSave debounce in reader.js (+ settle buffer).
+READER_PROGRESS_SAVE_DEBOUNCE_MS = 400
+READER_PROGRESS_SAVE_SETTLE_BUFFER_MS = 150
+
+
+def assert_lock_manager_available(available):
+    """Packaged Firefox reader must expose navigator.locks.request (#196)."""
+    if not available:
+        raise RuntimeError(
+            "Packaged reader requires navigator.locks.request for progress mutations")
+    return True
+
+
+def assert_bookmark_jump_did_not_autoplay(pending_autoplay):
+    """Bookmark go-to must never start audio without explicit Play."""
+    if pending_autoplay is True:
+        raise RuntimeError("Bookmark go-to must keep pendingAutoplay false")
+    return True
+
+
+def assert_resume_banner_visible(hidden):
+    """Resume banner must appear when prior progress exists for the same file."""
+    if hidden:
+        raise RuntimeError("Expected resume banner after reopening the same EPUB")
+    return True
+
+
+def assert_highlighted_block(text, expected_substring):
+    """Fail closed when the restored highlight is not the saved nonzero block."""
+    needle = str(expected_substring or "")
+    if not needle or needle not in str(text or ""):
+        raise RuntimeError(
+            "Expected player highlight for saved block, got: " +
+            json.dumps({"text": text, "expectedSubstring": needle}))
+    return True
+
+
+def bookmark_snapshot_from_store(store, document_id):
+    """Production shape: ``readerBookmarks:<id>`` holds the array itself."""
+    key = "readerBookmarks:" + str(document_id or "")
+    raw = store.get(key) if isinstance(store, dict) else None
+    listing = raw if isinstance(raw, list) else []
+    first = listing[0] if listing else {}
+    return {
+        "count": len(listing),
+        "blockIndex": first.get("blockIndex") if isinstance(first, dict) else None,
+        "chapterHref": first.get("chapterHref") if isinstance(first, dict) else None,
+    }
+
+
+def assert_progress_cleared_or_first_chapter(record, first_href_needle):
+    """Start over must drop the prior position (fresh first/block-0 allowed)."""
+    if not record:
+        return True
+    href = str(record.get("chapterHref") or "")
+    block_index = record.get("blockIndex")
+    first_ok = (
+        first_href_needle and first_href_needle in href and block_index == 0)
+    if first_ok:
+        return True
+    raise RuntimeError(
+        "Expected progress cleared or first-chapter block 0 after start over: " +
+        json.dumps(record))
+
+
+def assert_stale_progress_snapshots_unchanged(
+        *, progress_before, progress_after, bookmarks_before, bookmarks_after,
+        add_before, add_after, saved_block):
+    """Fail when stale progress mutated storage even if bookmark UI stayed put."""
+    if ((progress_after or {}).get("blockIndex") != saved_block or
+            json.dumps(progress_after, sort_keys=True) !=
+            json.dumps(progress_before, sort_keys=True) or
+            json.dumps(bookmarks_after, sort_keys=True) !=
+            json.dumps(bookmarks_before, sort_keys=True) or
+            add_before is not True or add_after is not True):
+        raise RuntimeError(
+            "Stale KOKORO_READING_PROGRESS mutated progress/bookmarks: " +
+            json.dumps({
+                "progressBeforeStale": progress_before,
+                "progressAfterStale": progress_after,
+                "bookmarksBeforeStale": bookmarks_before,
+                "bookmarksAfterStale": bookmarks_after,
+                "addEnabledBeforeStale": add_before,
+                "addEnabledAfterStale": add_after,
+                "savedBlock": saved_block,
+            }))
+    return True
+
+
+def build_progress_acceptance_report(
+        *, locks_available, bookmark_added, bookmark_block_index,
+        bookmark_go_restored_chapter, bookmark_go_restored_block,
+        bookmark_go_suppressed_autoplay, bookmark_removed,
+        stale_progress_fenced, resume_banner_after_reopen,
+        resume_restored_chapter, resume_restored_block, resume_paused,
+        progress_cleared_from_storage, resume_cleared):
+    """Comparable Chromium/Firefox progress-stage report for #196."""
+    return {
+        "stage": READER_PROGRESS_ACCEPTANCE_STAGE,
+        "locksAvailable": bool(locks_available),
+        "bookmarkAdded": bool(bookmark_added),
+        "bookmarkBlockIndex": (
+            bookmark_block_index
+            if isinstance(bookmark_block_index, int) else None),
+        "bookmarkGoRestoredChapter": bookmark_go_restored_chapter or None,
+        "bookmarkGoRestoredBlock": (
+            bookmark_go_restored_block
+            if isinstance(bookmark_go_restored_block, int) else None),
+        "bookmarkGoSuppressedAutoplay": bool(bookmark_go_suppressed_autoplay),
+        "bookmarkRemoved": bool(bookmark_removed),
+        "staleProgressFenced": bool(stale_progress_fenced),
+        "resumeBannerAfterReopen": bool(resume_banner_after_reopen),
+        "resumeRestoredChapter": resume_restored_chapter or None,
+        "resumeRestoredBlock": (
+            resume_restored_block
+            if isinstance(resume_restored_block, int) else None),
+        "resumePaused": bool(resume_paused),
+        "progressClearedFromStorage": bool(progress_cleared_from_storage),
+        "resumeCleared": bool(resume_cleared),
+    }

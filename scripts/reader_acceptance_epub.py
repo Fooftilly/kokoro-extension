@@ -12,9 +12,18 @@ READER_ACCEPTANCE_SPEECH = {
     "First Chapter": "Hello first chapter.",
     "First Section": "Hello first section.",
     "Second Chapter": "Hello second chapter.",
+    # First block text stays the chapter speech key; extra blocks enable
+    # nonzero bookmark/resume seek coverage in the packaged acceptance stage.
     "Third Chapter": "Hello third chapter.",
     "acceptance.txt": "Hello plain text.",
 }
+
+# Multi-block Third Chapter bodies (one <p> per block) for #196 seek tests.
+READER_ACCEPTANCE_THIRD_BLOCKS = (
+    "Hello third chapter.",
+    "Hello third chapter block two.",
+    "Hello third chapter block three.",
+)
 
 
 def build_reader_acceptance_epub(path):
@@ -70,7 +79,6 @@ def build_reader_acceptance_epub(path):
             ("first", first_speech),
             ("first-section", first_section_speech),
             ("second", second_speech),
-            ("third", third_speech),
         ):
             archive.writestr(
                 "OEBPS/" + name + ".xhtml",
@@ -79,3 +87,14 @@ def build_reader_acceptance_epub(path):
                 name + '</title></head><body><p id="' + name +
                 '">' + speech + '</p></body></html>',
             )
+        third_body = "".join(
+            '<p id="' + ("third" if index == 0 else f"third-{index + 1}") +
+            '">' + speech + "</p>"
+            for index, speech in enumerate(READER_ACCEPTANCE_THIRD_BLOCKS)
+        )
+        archive.writestr(
+            "OEBPS/third.xhtml",
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>third'
+            '</title></head><body>' + third_body + '</body></html>',
+        )

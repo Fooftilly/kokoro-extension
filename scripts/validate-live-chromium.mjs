@@ -11,8 +11,21 @@ import { pipeline } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
 import {
     READER_ACCEPTANCE_SPEECH,
+    READER_ACCEPTANCE_THIRD_BLOCKS,
     buildReaderAcceptanceEpub,
 } from './reader-acceptance-epub.mjs';
+import {
+    assertLockManagerAvailable,
+    assertBookmarkJumpDidNotAutoplay,
+    assertHighlightedBlock,
+    assertProgressClearedOrFirstChapter,
+    assertResumeBannerVisible,
+    assertStaleProgressSnapshotsUnchanged,
+    bookmarkSnapshotFromStore,
+    buildProgressAcceptanceReport,
+    READER_PROGRESS_SAVE_DEBOUNCE_MS,
+    READER_PROGRESS_SAVE_SETTLE_BUFFER_MS,
+} from './reader-progress-acceptance.mjs';
 import {
     ARTICLE_SELECTION_SPEECH,
     articleSelectionStorageConfig,
@@ -1902,7 +1915,8 @@ async function acceptFastApiPreferenceHonor(context, extensionId, speechStub) {
 // Nested helpers keep CodeFactor method complexity under the gate while the
 // WAV fetch, revision recheck, and Prev/Next assertions stay atomic.
 async function pollRealEpubChapterReady(
-    { title, previousRevision, previousAudioUrl, previousAudioSha256, backend }) {
+    { title, previousRevision, previousAudioUrl, previousAudioSha256, backend,
+        thirdBlocks }) {
     // Must match READER_ACCEPTANCE_SPEECH in the harness module scope copy.
     const expectedSpeech = {
         'First Chapter': 'Hello first chapter.',
@@ -1944,8 +1958,14 @@ async function pollRealEpubChapterReady(
     };
     const pendingContentMatches = (stored) => {
         const blocks = stored.pendingContent;
-        return Array.isArray(blocks) && blocks.length === 1 &&
-            blocks[0].content === expectedSpeech;
+        if (!Array.isArray(blocks)) return false;
+        if (title === 'Third Chapter') {
+            const expected = Array.isArray(thirdBlocks) ? thirdBlocks : [];
+            return expected.length > 0 &&
+                blocks.length === expected.length &&
+                expected.every((text, i) => blocks[i]?.content === text);
+        }
+        return blocks.length === 1 && blocks[0].content === expectedSpeech;
     };
     const shellReady = (frame, audio, status, stored, revision, audioUrl) => [
         () => Boolean(frame && audio),
@@ -2741,6 +2761,341 @@ async function acceptLongFormMemoryPerformance(page, context, extensionId, backe
 // pendingContent shortcut—create a local offline WAV for all three chapters.
 // Also cover replacing the book with a TXT file through the same UI.
 // backend is 'onnx' or 'mediapipe' (chromium-*-origin scopes).
+async function readDocumentProgressRecord(page, progressKey) {
+    return page.evaluate(async (key) => {
+        const all = await chrome.storage.local.get([key]);
+        return all[key] || null;
+    }, progressKey);
+}
+
+async function readBookmarkSnapshot(page, bookmarksKey) {
+    const store = await page.evaluate(async (key) => {
+        const all = await chrome.storage.local.get([key]);
+        return all;
+    }, bookmarksKey);
+    // documentId is the suffix after readerBookmarks:
+    const documentId = String(bookmarksKey || '').slice('readerBookmarks:'.length);
+    return bookmarkSnapshotFromStore(store, documentId);
+}
+
+async function readHighlightedSentence(page) {
+    return page.evaluate(() => {
+        const frame = document.getElementById('playerFrame')?.contentDocument;
+        return frame?.querySelector('.sentence.highlight')?.textContent || '';
+    });
+}
+
+async function readAddBookmarkEnabled(page) {
+    return page.evaluate(() =>
+        document.getElementById('addBookmark')?.disabled === false);
+}
+
+/** Node-side poll — Playwright 1.65 can treat async waitForFunction false as OK. */
+async function waitForProgressRecord(page, {
+    progressKey, blockIndex, hrefNeedle = null, timeoutMs = 15000,
+}) {
+    const deadline = Date.now() + timeoutMs;
+    let last = null;
+    while (Date.now() < deadline) {
+        last = await readDocumentProgressRecord(page, progressKey);
+        if (last && last.blockIndex === blockIndex &&
+            (!hrefNeedle ||
+                String(last.chapterHref || '').includes(hrefNeedle))) {
+            return last;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw Error('Timed out waiting for durable progress: ' +
+        JSON.stringify({ progressKey, blockIndex, hrefNeedle, last }));
+}
+
+async function waitForProgressClearedOrFirst(page, progressKey, timeoutMs = 15000) {
+    const deadline = Date.now() + timeoutMs;
+    let last = null;
+    while (Date.now() < deadline) {
+        last = await readDocumentProgressRecord(page, progressKey);
+        if (!last) return null;
+        if (last.blockIndex === 0 &&
+            String(last.chapterHref || '').includes('first.xhtml')) {
+            return last;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw Error('Timed out waiting for cleared/first progress: ' +
+        JSON.stringify({ progressKey, last }));
+}
+
+async function reopenAcceptanceEpub(page, epubBytes) {
+    await page.locator('#openAnotherDocument').click();
+    await page.locator('#fileInput').setInputFiles({
+        name: 'offline-reader-acceptance.epub',
+        mimeType: 'application/epub+zip',
+        buffer: epubBytes,
+    });
+}
+
+async function seekThirdBlockAndWait(page, progressKey, savedBlock, blockTwoText) {
+    await page.frameLocator('#playerFrame').locator('#seekFwd').click();
+    await page.waitForFunction((needle) => {
+        const frame = document.getElementById('playerFrame')?.contentDocument;
+        const hi = frame?.querySelector('.sentence.highlight')?.textContent || '';
+        return hi.includes(needle);
+    }, blockTwoText, { timeout: 30000 });
+    await waitForProgressRecord(page, {
+        progressKey, blockIndex: savedBlock, hrefNeedle: 'third.xhtml',
+    });
+}
+
+async function waitForProgressSaveSettle(page, deliveredAtMs) {
+    // Cover scheduleProgressSave debounce + in-flight flush so a wrongly
+    // accepted stale write cannot hide behind an immediate post-delivery read.
+    if (!Number.isFinite(deliveredAtMs)) {
+        throw Error(
+            'waitForProgressSaveSettle requires a finite deliveredAtMs, got: ' +
+            JSON.stringify(deliveredAtMs));
+    }
+    const settleMs = READER_PROGRESS_SAVE_DEBOUNCE_MS +
+        READER_PROGRESS_SAVE_SETTLE_BUFFER_MS;
+    await page.waitForFunction(({ deliveredAt, settleMs: ms }) => {
+        if (!Number.isFinite(deliveredAt)) return false;
+        if (Date.now() - deliveredAt < ms) return false;
+        if (window.__kokoroProgressSaveTimerPending) return false;
+        return (Number(window.__kokoroProgressSaveInFlight) || 0) === 0;
+    }, { deliveredAt: deliveredAtMs, settleMs }, { timeout: 5000 });
+}
+
+async function assertStaleProgressFenced(page, {
+    progressKey, bookmarksKey, priorRevision, savedBlock, staleBlock,
+}) {
+    const progressBeforeStale = await readDocumentProgressRecord(page, progressKey);
+    const bookmarksBeforeStale = await readBookmarkSnapshot(page, bookmarksKey);
+    const addEnabledBeforeStale = await readAddBookmarkEnabled(page);
+    const handledBefore = await page.evaluate(() =>
+        Number(window.__kokoroReadingProgressHandled) || 0);
+    const overlayFrame = page.frames().find((frame) =>
+        (frame.url() || '').includes('overlay.html'));
+    if (!overlayFrame) {
+        throw Error('Missing player overlay frame for stale progress fencing');
+    }
+    await overlayFrame.evaluate(({ staleRevision, blockIndex }) => {
+        window.parent.postMessage({
+            type: 'KOKORO_READING_PROGRESS',
+            blockIndex,
+            revision: staleRevision,
+        }, window.location.origin);
+    }, { staleRevision: priorRevision, blockIndex: staleBlock });
+    // waitForFunction returns a JSHandle — do not read .at off it. Wait for
+    // the counter, then capture a page-side timestamp for the settle window.
+    await page.waitForFunction((before) =>
+        (Number(window.__kokoroReadingProgressHandled) || 0) > before,
+    handledBefore, { timeout: 5000 });
+    const deliveredAt = await page.evaluate(() => Date.now());
+    await waitForProgressSaveSettle(page, deliveredAt);
+    const progressAfterStale = await readDocumentProgressRecord(page, progressKey);
+    const bookmarksAfterStale = await readBookmarkSnapshot(page, bookmarksKey);
+    const addEnabledAfterStale = await readAddBookmarkEnabled(page);
+    assertStaleProgressSnapshotsUnchanged({
+        progressBefore: progressBeforeStale,
+        progressAfter: progressAfterStale,
+        bookmarksBefore: bookmarksBeforeStale,
+        bookmarksAfter: bookmarksAfterStale,
+        addBefore: addEnabledBeforeStale,
+        addAfter: addEnabledAfterStale,
+        savedBlock,
+    });
+}
+
+async function addBookmarkAtSavedBlock(page, bookmarksKey, savedBlock) {
+    await page.locator('#addBookmark').click();
+    await page.waitForFunction(() =>
+        document.querySelectorAll('#bookmarkList li').length >= 1,
+    null, { timeout: 15000 });
+    const snapshot = await readBookmarkSnapshot(page, bookmarksKey);
+    if (snapshot.blockIndex !== savedBlock) {
+        throw Error('Bookmark did not capture nonzero block: ' +
+            JSON.stringify(snapshot));
+    }
+    return snapshot;
+}
+
+async function bookmarkGoSuppressAutoplay(page, {
+    waitForChapter, afterLeave, savedBlock, blockTwoText,
+}) {
+    await page.evaluate(async () => {
+        await chrome.storage.sync.set({ autoplayReader: true });
+    });
+    await page.locator('#bookmarkList .bookmark-go').first().click();
+    const restored = await waitForChapter(
+        'Third Chapter', afterLeave.revision, afterLeave.audioUrl,
+        afterLeave.audioSha256);
+    if (restored.title !== 'Third Chapter') {
+        throw Error('Bookmark go-to did not restore Third Chapter: ' +
+            JSON.stringify(restored));
+    }
+    const pendingAutoplay = await page.evaluate(async () =>
+        (await chrome.storage.local.get(['pendingAutoplay'])).pendingAutoplay);
+    assertBookmarkJumpDidNotAutoplay(pendingAutoplay);
+    assertHighlightedBlock(await readHighlightedSentence(page), blockTwoText);
+    const startIndex = await page.evaluate(async () =>
+        (await chrome.storage.local.get(['pendingStartIndex'])).pendingStartIndex);
+    if (startIndex !== savedBlock) {
+        throw Error('Bookmark go-to did not seek saved block: ' +
+            JSON.stringify({ startIndex, savedBlock }));
+    }
+    await page.evaluate(async () => {
+        await chrome.storage.sync.set({ autoplayReader: false });
+    });
+    return restored;
+}
+
+async function resumeThenStartOver(page, {
+    waitForChapter, epubBytes, progressKey, priorChapter, savedBlock,
+    blockZeroText, blockTwoText,
+}) {
+    await reopenAcceptanceEpub(page, epubBytes);
+    await page.waitForFunction(() =>
+        document.getElementById('resumeBanner')?.hidden === false,
+    null, { timeout: 60000 });
+    assertResumeBannerVisible(
+        await page.evaluate(() => document.getElementById('resumeBanner')?.hidden));
+    const progressAtBanner = await readDocumentProgressRecord(page, progressKey);
+    if (!progressAtBanner || progressAtBanner.blockIndex !== savedBlock) {
+        throw Error('Resume banner without durable Third Chapter block progress: ' +
+            JSON.stringify(progressAtBanner));
+    }
+
+    // Reopen loads the saved chapter at block 0 while the banner is up. Capture
+    // that preview revision so Resume cannot pass on the earlier bookmark jump.
+    const preview = await waitForChapter(
+        'Third Chapter', priorChapter.revision, priorChapter.audioUrl,
+        priorChapter.audioSha256);
+    assertHighlightedBlock(await readHighlightedSentence(page), blockZeroText);
+    const previewStart = await page.evaluate(async () =>
+        (await chrome.storage.local.get(['pendingStartIndex'])).pendingStartIndex);
+    if (previewStart !== 0) {
+        throw Error('Resume preview must start at block 0: ' +
+            JSON.stringify({ previewStart }));
+    }
+
+    await page.locator('#resumeReading').click();
+    const resumed = await waitForChapter(
+        'Third Chapter', preview.revision, preview.audioUrl, preview.audioSha256);
+    if (resumed.title !== 'Third Chapter' ||
+        !(resumed.revision > preview.revision)) {
+        throw Error('Resume did not publish a newer Third Chapter reload: ' +
+            JSON.stringify({ resumed, previewRevision: preview.revision }));
+    }
+    assertHighlightedBlock(await readHighlightedSentence(page), blockTwoText);
+    const resumeStart = await page.evaluate(async () =>
+        (await chrome.storage.local.get(['pendingStartIndex'])).pendingStartIndex);
+    if (resumeStart !== savedBlock) {
+        throw Error('Resume did not seek saved block: ' +
+            JSON.stringify({ resumeStart, savedBlock }));
+    }
+    const resumePaused = await page.evaluate(() => {
+        const audio = document.getElementById('playerFrame')
+            ?.contentDocument?.getElementById('audio');
+        return Boolean(audio?.paused);
+    });
+    if (!resumePaused) {
+        throw Error('Resume must keep playback paused until Play');
+    }
+
+    await reopenAcceptanceEpub(page, epubBytes);
+    await page.waitForFunction(() =>
+        document.getElementById('resumeBanner')?.hidden === false,
+    null, { timeout: 60000 });
+    await page.locator('#startOverReading').click();
+    await page.waitForFunction(() =>
+        document.getElementById('resumeBanner')?.hidden !== false,
+    null, { timeout: 15000 });
+    const firstAfterClear = await waitForChapter(
+        'First Chapter', resumed.revision, resumed.audioUrl, resumed.audioSha256);
+    if (firstAfterClear.title !== 'First Chapter') {
+        throw Error('Start over did not return to First Chapter: ' +
+            JSON.stringify(firstAfterClear));
+    }
+    assertProgressClearedOrFirstChapter(
+        await waitForProgressClearedOrFirst(page, progressKey), 'first.xhtml');
+    return resumed;
+}
+
+/**
+ * #196 packaged Chromium stage: LockManager, nonzero bookmark seek, autoplay
+ * override, stale revision fencing, Resume restore, and durable Start over.
+ * Nested helpers keep CodeFactor method complexity under the gate.
+ */
+async function acceptReaderProgressAndBookmarks(page, {
+    clickTocChapter, waitForChapter, third, priorRevision, epubBytes,
+}) {
+    const savedBlock = 1;
+    const staleBlock = 2;
+    const blockZeroText = READER_ACCEPTANCE_THIRD_BLOCKS[0];
+    const blockTwoText = READER_ACCEPTANCE_THIRD_BLOCKS[savedBlock];
+    const documentId = 'sha256:' +
+        createHash('sha256').update(epubBytes).digest('hex');
+    const progressKey = 'readerProgress:' + documentId;
+    const bookmarksKey = 'readerBookmarks:' + documentId;
+    const locksAvailable = await page.evaluate(() =>
+        typeof navigator.locks?.request === 'function');
+    assertLockManagerAvailable(locksAvailable ? { request: () => {} } : null);
+
+    if (!Array.isArray(third.pendingContent) || third.pendingContent.length < 3) {
+        throw Error('Third Chapter fixture must expose multiple blocks: ' +
+            JSON.stringify(third.pendingContent));
+    }
+    if (!Number.isSafeInteger(priorRevision) || priorRevision >= third.revision) {
+        throw Error('priorRevision must be a prior chapter reload revision: ' +
+            JSON.stringify({ priorRevision, thirdRevision: third.revision }));
+    }
+
+    await page.waitForFunction(() => {
+        const btn = document.getElementById('addBookmark');
+        return Boolean(btn) && btn.disabled === false;
+    }, null, { timeout: 60000 });
+    await seekThirdBlockAndWait(page, progressKey, savedBlock, blockTwoText);
+    await assertStaleProgressFenced(page, {
+        progressKey, bookmarksKey, priorRevision, savedBlock, staleBlock,
+    });
+    await addBookmarkAtSavedBlock(page, bookmarksKey, savedBlock);
+
+    await clickTocChapter('Second Chapter');
+    const afterLeave = await waitForChapter(
+        'Second Chapter', third.revision, third.audioUrl, third.audioSha256);
+    const restored = await bookmarkGoSuppressAutoplay(page, {
+        waitForChapter, afterLeave, savedBlock, blockTwoText,
+    });
+
+    await page.locator('#bookmarkList .bookmark-remove').first().click();
+    await page.waitForFunction(() =>
+        document.querySelectorAll('#bookmarkList li').length === 0,
+    null, { timeout: 15000 });
+    await waitForProgressRecord(page, {
+        progressKey, blockIndex: savedBlock, hrefNeedle: 'third.xhtml',
+    });
+    await resumeThenStartOver(page, {
+        waitForChapter, epubBytes, progressKey, priorChapter: restored,
+        savedBlock, blockZeroText, blockTwoText,
+    });
+
+    return buildProgressAcceptanceReport({
+        locksAvailable: true,
+        bookmarkAdded: true,
+        bookmarkBlockIndex: savedBlock,
+        bookmarkGoRestoredChapter: 'Third Chapter',
+        bookmarkGoRestoredBlock: savedBlock,
+        bookmarkGoSuppressedAutoplay: true,
+        bookmarkRemoved: true,
+        staleProgressFenced: true,
+        resumeBannerAfterReopen: true,
+        resumeRestoredChapter: 'Third Chapter',
+        resumeRestoredBlock: savedBlock,
+        resumePaused: true,
+        progressClearedFromStorage: true,
+        resumeCleared: true,
+    });
+}
+
 async function acceptRealEpubReader(page, extensionId, backend) {
     if (backend !== 'onnx' && backend !== 'mediapipe') {
         throw Error('EPUB reader acceptance requires onnx or mediapipe backend');
@@ -2868,7 +3223,7 @@ async function acceptRealEpubReader(page, extensionId, backend) {
                 const snapshot = await page.evaluate(
                     pollRealEpubChapterReady,
                     { title, previousRevision, previousAudioUrl, previousAudioSha256,
-                        backend },
+                        backend, thirdBlocks: READER_ACCEPTANCE_THIRD_BLOCKS },
                 );
                 if (snapshot && typeof snapshot === 'object' &&
                     snapshot.title === title && snapshot.nav) {
@@ -2966,6 +3321,13 @@ async function acceptRealEpubReader(page, extensionId, backend) {
                 secondAudioSha256: second.audioSha256, thirdAudioSha256: third.audioSha256,
                 live: await readReaderNavDiagnostics() }));
     }
+    const progressAcceptance = await acceptReaderProgressAndBookmarks(page, {
+        clickTocChapter,
+        waitForChapter,
+        third,
+        priorRevision: second.revision,
+        epubBytes: epub,
+    });
     await page.locator('#openAnotherDocument').click();
     await page.locator('#fileInput').setInputFiles({
         name: 'acceptance.txt', mimeType: 'text/plain',
@@ -3016,6 +3378,7 @@ async function acceptRealEpubReader(page, extensionId, backend) {
         local24kHzWav: true, differentAudioPerChapter,
         offline: true, noServerFallback: true, autoplayDisabled: true,
         userBackendUnchanged: true,
+        progressAcceptance,
     };
 }
 
