@@ -20,6 +20,7 @@ import {
     assertHighlightedBlock,
     assertProgressClearedOrFirstChapter,
     assertResumeBannerVisible,
+    bookmarkSnapshotFromStore,
     buildProgressAcceptanceReport,
 } from './reader-progress-acceptance.mjs';
 import {
@@ -2759,28 +2760,21 @@ async function acceptLongFormMemoryPerformance(page, context, extensionId, backe
 // pendingContent shortcut—create a local offline WAV for all three chapters.
 // Also cover replacing the book with a TXT file through the same UI.
 // backend is 'onnx' or 'mediapipe' (chromium-*-origin scopes).
-async function readDocumentProgressRecord(page) {
-    return page.evaluate(async () => {
-        const all = await chrome.storage.local.get(null);
-        const key = Object.keys(all || {}).find((k) =>
-            k.startsWith('readerProgress:'));
-        return key ? all[key] : null;
-    });
+async function readDocumentProgressRecord(page, progressKey) {
+    return page.evaluate(async (key) => {
+        const all = await chrome.storage.local.get([key]);
+        return all[key] || null;
+    }, progressKey);
 }
 
-async function readBookmarkSnapshot(page) {
-    return page.evaluate(async () => {
-        const all = await chrome.storage.local.get(null);
-        const key = Object.keys(all || {}).find((k) =>
-            k.startsWith('readerBookmarks:'));
-        const list = key && Array.isArray(all[key]?.bookmarks)
-            ? all[key].bookmarks : [];
-        return {
-            count: list.length,
-            blockIndex: list[0]?.blockIndex ?? null,
-            chapterHref: list[0]?.chapterHref ?? null,
-        };
-    });
+async function readBookmarkSnapshot(page, bookmarksKey) {
+    const store = await page.evaluate(async (key) => {
+        const all = await chrome.storage.local.get([key]);
+        return all;
+    }, bookmarksKey);
+    // documentId is the suffix after readerBookmarks:
+    const documentId = String(bookmarksKey || '').slice('readerBookmarks:'.length);
+    return bookmarkSnapshotFromStore(store, documentId);
 }
 
 async function readHighlightedSentence(page) {
@@ -2788,6 +2782,46 @@ async function readHighlightedSentence(page) {
         const frame = document.getElementById('playerFrame')?.contentDocument;
         return frame?.querySelector('.sentence.highlight')?.textContent || '';
     });
+}
+
+async function readAddBookmarkEnabled(page) {
+    return page.evaluate(() =>
+        document.getElementById('addBookmark')?.disabled === false);
+}
+
+/** Node-side poll — Playwright 1.65 can treat async waitForFunction false as OK. */
+async function waitForProgressRecord(page, {
+    progressKey, blockIndex, hrefNeedle = null, timeoutMs = 15000,
+}) {
+    const deadline = Date.now() + timeoutMs;
+    let last = null;
+    while (Date.now() < deadline) {
+        last = await readDocumentProgressRecord(page, progressKey);
+        if (last && last.blockIndex === blockIndex &&
+            (!hrefNeedle ||
+                String(last.chapterHref || '').includes(hrefNeedle))) {
+            return last;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw Error('Timed out waiting for durable progress: ' +
+        JSON.stringify({ progressKey, blockIndex, hrefNeedle, last }));
+}
+
+async function waitForProgressClearedOrFirst(page, progressKey, timeoutMs = 15000) {
+    const deadline = Date.now() + timeoutMs;
+    let last = null;
+    while (Date.now() < deadline) {
+        last = await readDocumentProgressRecord(page, progressKey);
+        if (!last) return null;
+        if (last.blockIndex === 0 &&
+            String(last.chapterHref || '').includes('first.xhtml')) {
+            return last;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw Error('Timed out waiting for cleared/first progress: ' +
+        JSON.stringify({ progressKey, last }));
 }
 
 async function reopenAcceptanceEpub(page, epubBytes) {
@@ -2804,10 +2838,15 @@ async function reopenAcceptanceEpub(page, epubBytes) {
  * override, stale revision fencing, Resume restore, and durable Start over.
  */
 async function acceptReaderProgressAndBookmarks(page, {
-    clickTocChapter, waitForChapter, third, epubBytes,
+    clickTocChapter, waitForChapter, third, priorRevision, epubBytes,
 }) {
     const savedBlock = 1;
+    const staleBlock = 2;
     const blockTwoText = READER_ACCEPTANCE_THIRD_BLOCKS[savedBlock];
+    const documentId = 'sha256:' +
+        createHash('sha256').update(epubBytes).digest('hex');
+    const progressKey = 'readerProgress:' + documentId;
+    const bookmarksKey = 'readerBookmarks:' + documentId;
     const locksAvailable = await page.evaluate(() =>
         typeof navigator.locks?.request === 'function');
     assertLockManagerAvailable(locksAvailable ? { request: () => {} } : null);
@@ -2815,6 +2854,10 @@ async function acceptReaderProgressAndBookmarks(page, {
     if (!Array.isArray(third.pendingContent) || third.pendingContent.length < 3) {
         throw Error('Third Chapter fixture must expose multiple blocks: ' +
             JSON.stringify(third.pendingContent));
+    }
+    if (!Number.isSafeInteger(priorRevision) || priorRevision >= third.revision) {
+        throw Error('priorRevision must be a prior chapter reload revision: ' +
+            JSON.stringify({ priorRevision, thirdRevision: third.revision }));
     }
 
     await page.waitForFunction(() => {
@@ -2829,18 +2872,47 @@ async function acceptReaderProgressAndBookmarks(page, {
         const hi = frame?.querySelector('.sentence.highlight')?.textContent || '';
         return hi.includes(needle);
     }, blockTwoText, { timeout: 30000 });
-    await page.waitForFunction(async () => {
-        const all = await chrome.storage.local.get(null);
-        const key = Object.keys(all || {}).find((k) =>
-            k.startsWith('readerProgress:'));
-        return key && all[key]?.blockIndex === 1;
-    }, null, { timeout: 15000 });
+    await waitForProgressRecord(page, {
+        progressKey, blockIndex: savedBlock, hrefNeedle: 'third.xhtml',
+    });
+
+    // Stale prior-revision progress with a *valid* distinct block must not win.
+    const progressBeforeStale = await readDocumentProgressRecord(page, progressKey);
+    const bookmarksBeforeStale = await readBookmarkSnapshot(page, bookmarksKey);
+    const addEnabledBeforeStale = await readAddBookmarkEnabled(page);
+    const overlayFrame = page.frames().find((frame) =>
+        (frame.url() || '').includes('overlay.html'));
+    if (!overlayFrame) {
+        throw Error('Missing player overlay frame for stale progress fencing');
+    }
+    await overlayFrame.evaluate(({ staleRevision, blockIndex }) => {
+        window.parent.postMessage({
+            type: 'KOKORO_READING_PROGRESS',
+            blockIndex,
+            revision: staleRevision,
+        }, window.location.origin);
+    }, { staleRevision: priorRevision, blockIndex: staleBlock });
+    await page.waitForTimeout(600);
+    const progressAfterStale = await readDocumentProgressRecord(page, progressKey);
+    const bookmarksAfterStale = await readBookmarkSnapshot(page, bookmarksKey);
+    const addEnabledAfterStale = await readAddBookmarkEnabled(page);
+    if (progressAfterStale?.blockIndex !== savedBlock ||
+        JSON.stringify(progressAfterStale) !== JSON.stringify(progressBeforeStale) ||
+        JSON.stringify(bookmarksAfterStale) !== JSON.stringify(bookmarksBeforeStale) ||
+        addEnabledBeforeStale !== true || addEnabledAfterStale !== true) {
+        throw Error('Stale KOKORO_READING_PROGRESS mutated progress/bookmarks: ' +
+            JSON.stringify({
+                progressBeforeStale, progressAfterStale,
+                bookmarksBeforeStale, bookmarksAfterStale,
+                addEnabledBeforeStale, addEnabledAfterStale,
+            }));
+    }
 
     await page.locator('#addBookmark').click();
     await page.waitForFunction(() =>
         document.querySelectorAll('#bookmarkList li').length >= 1,
     null, { timeout: 15000 });
-    const bookmarkBeforeLeave = await readBookmarkSnapshot(page);
+    const bookmarkBeforeLeave = await readBookmarkSnapshot(page, bookmarksKey);
     if (bookmarkBeforeLeave.blockIndex !== savedBlock) {
         throw Error('Bookmark did not capture nonzero block: ' +
             JSON.stringify(bookmarkBeforeLeave));
@@ -2849,33 +2921,6 @@ async function acceptReaderProgressAndBookmarks(page, {
     await clickTocChapter('Second Chapter');
     const afterLeave = await waitForChapter(
         'Second Chapter', third.revision, third.audioUrl, third.audioSha256);
-
-    // Stale prior-revision progress from the player iframe must be ignored.
-    const progressBeforeStale = await readDocumentProgressRecord(page);
-    const bookmarksBeforeStale = await readBookmarkSnapshot(page);
-    const overlayFrame = page.frames().find((frame) =>
-        (frame.url() || '').includes('overlay.html'));
-    if (!overlayFrame) {
-        throw Error('Missing player overlay frame for stale progress fencing');
-    }
-    await overlayFrame.evaluate((staleRevision) => {
-        window.parent.postMessage({
-            type: 'KOKORO_READING_PROGRESS',
-            blockIndex: 99,
-            revision: staleRevision,
-        }, window.location.origin);
-    }, third.revision);
-    await page.waitForTimeout(500);
-    const progressAfterStale = await readDocumentProgressRecord(page);
-    const bookmarksAfterStale = await readBookmarkSnapshot(page);
-    if (JSON.stringify(progressAfterStale) !== JSON.stringify(progressBeforeStale) ||
-        JSON.stringify(bookmarksAfterStale) !== JSON.stringify(bookmarksBeforeStale)) {
-        throw Error('Stale KOKORO_READING_PROGRESS mutated progress/bookmarks: ' +
-            JSON.stringify({
-                progressBeforeStale, progressAfterStale,
-                bookmarksBeforeStale, bookmarksAfterStale,
-            }));
-    }
 
     // Enable reader autoplay so suppressAutoplay must win independently.
     await page.evaluate(async () => {
@@ -2909,12 +2954,9 @@ async function acceptReaderProgressAndBookmarks(page, {
     null, { timeout: 15000 });
 
     // Durable progress must still point at Third Chapter block 1 for Resume.
-    await page.waitForFunction(async () => {
-        const all = await chrome.storage.local.get(null);
-        const key = Object.keys(all || {}).find((k) =>
-            k.startsWith('readerProgress:'));
-        return key && all[key]?.blockIndex === 1;
-    }, null, { timeout: 15000 });
+    await waitForProgressRecord(page, {
+        progressKey, blockIndex: savedBlock, hrefNeedle: 'third.xhtml',
+    });
 
     await reopenAcceptanceEpub(page, epubBytes);
     await page.waitForFunction(() =>
@@ -2922,7 +2964,7 @@ async function acceptReaderProgressAndBookmarks(page, {
     null, { timeout: 60000 });
     assertResumeBannerVisible(
         await page.evaluate(() => document.getElementById('resumeBanner')?.hidden));
-    const progressAtBanner = await readDocumentProgressRecord(page);
+    const progressAtBanner = await readDocumentProgressRecord(page, progressKey);
     if (!progressAtBanner || progressAtBanner.blockIndex !== savedBlock) {
         throw Error('Resume banner without durable Third Chapter block progress: ' +
             JSON.stringify(progressAtBanner));
@@ -2961,17 +3003,8 @@ async function acceptReaderProgressAndBookmarks(page, {
         throw Error('Start over did not return to First Chapter: ' +
             JSON.stringify(firstAfterClear));
     }
-    await page.waitForFunction(async () => {
-        const all = await chrome.storage.local.get(null);
-        const key = Object.keys(all || {}).find((k) =>
-            k.startsWith('readerProgress:'));
-        if (!key) return true;
-        const record = all[key];
-        return record?.blockIndex === 0 &&
-            String(record?.chapterHref || '').includes('first.xhtml');
-    }, null, { timeout: 15000 });
     assertProgressClearedOrFirstChapter(
-        await readDocumentProgressRecord(page), 'first.xhtml');
+        await waitForProgressClearedOrFirst(page, progressKey), 'first.xhtml');
 
     return buildProgressAcceptanceReport({
         locksAvailable: true,
@@ -3220,6 +3253,7 @@ async function acceptRealEpubReader(page, extensionId, backend) {
         clickTocChapter,
         waitForChapter,
         third,
+        priorRevision: second.revision,
         epubBytes: epub,
     });
     await page.locator('#openAnotherDocument').click();

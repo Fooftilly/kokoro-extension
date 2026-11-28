@@ -102,6 +102,19 @@ def assert_highlighted_block(text, expected_substring):
     return True
 
 
+def bookmark_snapshot_from_store(store, document_id):
+    """Production shape: ``readerBookmarks:<id>`` holds the array itself."""
+    key = "readerBookmarks:" + str(document_id or "")
+    raw = store.get(key) if isinstance(store, dict) else None
+    listing = raw if isinstance(raw, list) else []
+    first = listing[0] if listing else {}
+    return {
+        "count": len(listing),
+        "blockIndex": first.get("blockIndex") if isinstance(first, dict) else None,
+        "chapterHref": first.get("chapterHref") if isinstance(first, dict) else None,
+    }
+
+
 def assert_progress_cleared_or_first_chapter(record, first_href_needle):
     """Start over must drop the prior position (fresh first/block-0 allowed)."""
     if not record:

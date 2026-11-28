@@ -26,6 +26,7 @@ const {
     assertHighlightedBlock,
     assertProgressClearedOrFirstChapter,
     assertResumeBannerVisible,
+    bookmarkSnapshotFromStore,
     buildProgressAcceptanceReport,
     READER_PROGRESS_ACCEPTANCE_STAGE,
 } = mod;
@@ -65,6 +66,17 @@ try {
     }, 'first.xhtml');
     failures.push('clear-accepted-stale');
 } catch (error) { failures.push(String(error.message || error)); }
+const docId = 'sha256:' + 'a'.repeat(64);
+const plannerShape = {
+    ['readerBookmarks:' + docId]: [{
+        id: 'bm_1', documentId: docId, label: 'Third · 2',
+        chapterHref: 'third.xhtml', blockIndex: 1,
+        chapterFingerprint: 'fp', createdAt: 1,
+    }],
+};
+const nestedWrongShape = {
+    ['readerBookmarks:' + docId]: { bookmarks: plannerShape['readerBookmarks:' + docId] },
+};
 const report = buildProgressAcceptanceReport({
     locksAvailable: true,
     bookmarkAdded: true,
@@ -83,6 +95,8 @@ const report = buildProgressAcceptanceReport({
 });
 process.stdout.write(JSON.stringify({
     ok, failures, report, stage: READER_PROGRESS_ACCEPTANCE_STAGE,
+    bookmarkSnapshot: bookmarkSnapshotFromStore(plannerShape, docId),
+    nestedWrong: bookmarkSnapshotFromStore(nestedWrongShape, docId),
 }));
 `);
         expect(result.status).toBe(0);
@@ -96,6 +110,12 @@ process.stdout.write(JSON.stringify({
             highlight: true,
             cleared: true,
             firstBlock0: true,
+        });
+        expect(payload.bookmarkSnapshot).toEqual({
+            count: 1, blockIndex: 1, chapterHref: 'third.xhtml',
+        });
+        expect(payload.nestedWrong).toEqual({
+            count: 0, blockIndex: null, chapterHref: null,
         });
         expect(payload.failures).toEqual(expect.arrayContaining([
             expect.stringMatching(/locks\.request/),
@@ -132,8 +152,12 @@ process.stdout.write(JSON.stringify({
         expect(source).toMatch(/#startOverReading/);
         expect(source).toMatch(/KOKORO_READING_PROGRESS/);
         expect(source).toMatch(/staleProgressFenced/);
+        expect(source).toMatch(/priorRevision/);
+        expect(source).toMatch(/waitForProgressRecord/);
+        expect(source).toMatch(/bookmarkSnapshotFromStore/);
         expect(source).toMatch(/autoplayReader:\s*true/);
         expect(source).toMatch(/Hello third chapter block two/);
+        expect(source).not.toMatch(/blockIndex:\s*99/);
 
         // Fail closed if acceptRealEpubReader drops the stage invocation.
         const entryStart = source.indexOf('async function acceptRealEpubReader(');
@@ -159,8 +183,12 @@ process.stdout.write(JSON.stringify({
         expect(source).toMatch(/startOverReading/);
         expect(source).toMatch(/KOKORO_READING_PROGRESS/);
         expect(source).toMatch(/stale_progress_fenced/);
+        expect(source).toMatch(/prior_revision/);
+        expect(source).toMatch(/_wait_for_progress_record/);
+        expect(source).toMatch(/bookmark_snapshot_from_store/);
         expect(source).toMatch(/autoplayReader/);
         expect(source).toMatch(/Hello third chapter block two/);
+        expect(source).not.toMatch(/blockIndex:\s*99|blockIndex = 99/);
 
         // Fail closed if accept_real_epub_reader drops the stage invocation.
         const entryStart = source.indexOf('def accept_real_epub_reader(');

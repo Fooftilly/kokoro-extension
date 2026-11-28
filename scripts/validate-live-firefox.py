@@ -39,6 +39,7 @@ from firefox_epub_acceptance import (
     assert_lock_manager_available,
     assert_progress_cleared_or_first_chapter,
     assert_resume_banner_visible,
+    bookmark_snapshot_from_store,
     build_progress_acceptance_report,
     epub_backend_variant,
     origin_epub_stage_enabled,
@@ -3137,32 +3138,19 @@ def _return_to_benchmark_for_model_remove(driver, origin, backend):
     )
 
 
-def _read_document_progress_record(driver):
+def _read_document_progress_record(driver, progress_key):
     return driver.execute_async_script("""
-        const done = arguments[arguments.length - 1];
-        browser.storage.local.get(null).then((all) => {
-            const key = Object.keys(all || {}).find((k) =>
-                k.startsWith('readerProgress:'));
-            done(key ? all[key] : null);
-        });
-    """)
+        const [key, done] = arguments;
+        browser.storage.local.get([key]).then((all) => done(all[key] || null));
+    """, progress_key)
 
 
-def _read_bookmark_snapshot(driver):
-    return driver.execute_async_script("""
-        const done = arguments[arguments.length - 1];
-        browser.storage.local.get(null).then((all) => {
-            const key = Object.keys(all || {}).find((k) =>
-                k.startsWith('readerBookmarks:'));
-            const list = key && Array.isArray(all[key]?.bookmarks)
-                ? all[key].bookmarks : [];
-            done({
-                count: list.length,
-                blockIndex: list[0]?.blockIndex ?? null,
-                chapterHref: list[0]?.chapterHref ?? null,
-            });
-        });
-    """)
+def _read_bookmark_snapshot(driver, bookmarks_key, document_id):
+    store = driver.execute_async_script("""
+        const [key, done] = arguments;
+        browser.storage.local.get([key]).then((all) => done(all));
+    """, bookmarks_key)
+    return bookmark_snapshot_from_store(store, document_id)
 
 
 def _read_highlighted_sentence(driver):
@@ -3172,15 +3160,61 @@ def _read_highlighted_sentence(driver):
     """)
 
 
+def _read_add_bookmark_enabled(driver):
+    return driver.execute_script(
+        "return document.getElementById('addBookmark')?.disabled === false;")
+
+
+def _wait_for_progress_record(
+        driver, progress_key, block_index, href_needle=None, timeout=15):
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        last = _read_document_progress_record(driver, progress_key)
+        if (last and last.get("blockIndex") == block_index and
+                (not href_needle or
+                 href_needle in str(last.get("chapterHref") or ""))):
+            return last
+        time.sleep(0.1)
+    raise RuntimeError(
+        "Timed out waiting for durable progress: " +
+        json.dumps({
+            "progressKey": progress_key, "blockIndex": block_index,
+            "hrefNeedle": href_needle, "last": last,
+        }))
+
+
+def _wait_for_progress_cleared_or_first(driver, progress_key, timeout=15):
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        last = _read_document_progress_record(driver, progress_key)
+        if last is None:
+            return None
+        if (last.get("blockIndex") == 0 and
+                "first.xhtml" in str(last.get("chapterHref") or "")):
+            return last
+        time.sleep(0.1)
+    raise RuntimeError(
+        "Timed out waiting for cleared/first progress: " +
+        json.dumps({"progressKey": progress_key, "last": last}))
+
+
 def _reopen_acceptance_epub(driver, epub_path):
     driver.find_element(By.ID, "openAnotherDocument").click()
     driver.find_element(By.ID, "fileInput").send_keys(str(epub_path))
 
 
-def accept_reader_progress_and_bookmarks(driver, epub_path, third, backend):
+def accept_reader_progress_and_bookmarks(
+        driver, epub_path, third, prior_revision, backend):
     """#196 LockManager, nonzero bookmark seek, fencing, Resume, Start over."""
     saved_block = 1
+    stale_block = 2
     block_two_text = READER_ACCEPTANCE_THIRD_BLOCKS[saved_block]
+    document_id = "sha256:" + hashlib.sha256(
+        Path(epub_path).read_bytes()).hexdigest()
+    progress_key = "readerProgress:" + document_id
+    bookmarks_key = "readerBookmarks:" + document_id
     locks_available = driver.execute_script(
         "return typeof navigator.locks !== 'undefined' && "
         "typeof navigator.locks.request === 'function';")
@@ -3191,6 +3225,14 @@ def accept_reader_progress_and_bookmarks(driver, epub_path, third, backend):
         raise RuntimeError(
             "Third Chapter fixture must expose multiple blocks: " +
             json.dumps(pending))
+    if (not isinstance(prior_revision, int) or
+            prior_revision >= third["revision"]):
+        raise RuntimeError(
+            "prior_revision must be a prior chapter reload revision: " +
+            json.dumps({
+                "priorRevision": prior_revision,
+                "thirdRevision": third.get("revision"),
+            }))
 
     WebDriverWait(driver, 60).until(
         lambda d: d.find_element(By.ID, "addBookmark").is_enabled())
@@ -3200,13 +3242,52 @@ def accept_reader_progress_and_bookmarks(driver, epub_path, third, backend):
     driver.switch_to.default_content()
     WebDriverWait(driver, 30).until(
         lambda d: block_two_text in (_read_highlighted_sentence(d) or ""))
-    WebDriverWait(driver, 15).until(
-        lambda d: ((_read_document_progress_record(d) or {}).get("blockIndex") == 1))
+    _wait_for_progress_record(
+        driver, progress_key, saved_block, href_needle="third.xhtml")
+
+    progress_before_stale = _read_document_progress_record(driver, progress_key)
+    bookmarks_before_stale = _read_bookmark_snapshot(
+        driver, bookmarks_key, document_id)
+    add_enabled_before_stale = _read_add_bookmark_enabled(driver)
+    driver.switch_to.frame(driver.find_element(By.ID, "playerFrame"))
+    driver.execute_script("""
+        const staleRevision = arguments[0];
+        const blockIndex = arguments[1];
+        window.parent.postMessage({
+            type: 'KOKORO_READING_PROGRESS',
+            blockIndex,
+            revision: staleRevision,
+        }, window.location.origin);
+    """, prior_revision, stale_block)
+    driver.switch_to.default_content()
+    time.sleep(0.6)
+    progress_after_stale = _read_document_progress_record(driver, progress_key)
+    bookmarks_after_stale = _read_bookmark_snapshot(
+        driver, bookmarks_key, document_id)
+    add_enabled_after_stale = _read_add_bookmark_enabled(driver)
+    if ((progress_after_stale or {}).get("blockIndex") != saved_block or
+            json.dumps(progress_after_stale, sort_keys=True) !=
+            json.dumps(progress_before_stale, sort_keys=True) or
+            json.dumps(bookmarks_after_stale, sort_keys=True) !=
+            json.dumps(bookmarks_before_stale, sort_keys=True) or
+            add_enabled_before_stale is not True or
+            add_enabled_after_stale is not True):
+        raise RuntimeError(
+            "Stale KOKORO_READING_PROGRESS mutated progress/bookmarks: " +
+            json.dumps({
+                "progressBeforeStale": progress_before_stale,
+                "progressAfterStale": progress_after_stale,
+                "bookmarksBeforeStale": bookmarks_before_stale,
+                "bookmarksAfterStale": bookmarks_after_stale,
+                "addEnabledBeforeStale": add_enabled_before_stale,
+                "addEnabledAfterStale": add_enabled_after_stale,
+            }))
 
     driver.find_element(By.ID, "addBookmark").click()
     WebDriverWait(driver, 15).until(
         lambda d: len(d.find_elements(By.CSS_SELECTOR, "#bookmarkList li")) >= 1)
-    bookmark_before_leave = _read_bookmark_snapshot(driver)
+    bookmark_before_leave = _read_bookmark_snapshot(
+        driver, bookmarks_key, document_id)
     if bookmark_before_leave.get("blockIndex") != saved_block:
         raise RuntimeError(
             "Bookmark did not capture nonzero block: " +
@@ -3216,34 +3297,6 @@ def accept_reader_progress_and_bookmarks(driver, epub_path, third, backend):
     after_leave = _wait_for_epub_chapter(
         driver, "Second Chapter", third["revision"], third["audioUrl"],
         third["audioSha256"], backend=backend)
-
-    progress_before_stale = _read_document_progress_record(driver)
-    bookmarks_before_stale = _read_bookmark_snapshot(driver)
-    driver.switch_to.frame(driver.find_element(By.ID, "playerFrame"))
-    driver.execute_script("""
-        const staleRevision = arguments[0];
-        window.parent.postMessage({
-            type: 'KOKORO_READING_PROGRESS',
-            blockIndex: 99,
-            revision: staleRevision,
-        }, window.location.origin);
-    """, third["revision"])
-    driver.switch_to.default_content()
-    time.sleep(0.5)
-    progress_after_stale = _read_document_progress_record(driver)
-    bookmarks_after_stale = _read_bookmark_snapshot(driver)
-    if (json.dumps(progress_after_stale, sort_keys=True) !=
-            json.dumps(progress_before_stale, sort_keys=True) or
-            json.dumps(bookmarks_after_stale, sort_keys=True) !=
-            json.dumps(bookmarks_before_stale, sort_keys=True)):
-        raise RuntimeError(
-            "Stale KOKORO_READING_PROGRESS mutated progress/bookmarks: " +
-            json.dumps({
-                "progressBeforeStale": progress_before_stale,
-                "progressAfterStale": progress_after_stale,
-                "bookmarksBeforeStale": bookmarks_before_stale,
-                "bookmarksAfterStale": bookmarks_after_stale,
-            }))
 
     driver.execute_async_script("""
         const done = arguments[arguments.length - 1];
@@ -3283,8 +3336,8 @@ def accept_reader_progress_and_bookmarks(driver, epub_path, third, backend):
     WebDriverWait(driver, 15).until(
         lambda d: len(d.find_elements(By.CSS_SELECTOR, "#bookmarkList li")) == 0)
 
-    WebDriverWait(driver, 15).until(
-        lambda d: ((_read_document_progress_record(d) or {}).get("blockIndex") == 1))
+    _wait_for_progress_record(
+        driver, progress_key, saved_block, href_needle="third.xhtml")
 
     _reopen_acceptance_epub(driver, epub_path)
     WebDriverWait(driver, 60).until(
@@ -3293,7 +3346,7 @@ def accept_reader_progress_and_bookmarks(driver, epub_path, third, backend):
     banner_hidden = driver.execute_script(
         "return document.getElementById('resumeBanner')?.hidden === true;")
     assert_resume_banner_visible(banner_hidden)
-    progress_at_banner = _read_document_progress_record(driver)
+    progress_at_banner = _read_document_progress_record(driver, progress_key)
     if not progress_at_banner or progress_at_banner.get("blockIndex") != saved_block:
         raise RuntimeError(
             "Resume banner without durable Third Chapter block progress: " +
@@ -3330,16 +3383,8 @@ def accept_reader_progress_and_bookmarks(driver, epub_path, third, backend):
         raise RuntimeError(
             "Start over did not return to First Chapter: " +
             json.dumps(first_after_clear))
-    WebDriverWait(driver, 15).until(lambda d: (
-        (lambda record: (
-            record is None or (
-                record.get("blockIndex") == 0 and
-                "first.xhtml" in str(record.get("chapterHref") or "")
-            )
-        ))(_read_document_progress_record(d))
-    ))
     assert_progress_cleared_or_first_chapter(
-        _read_document_progress_record(driver), "first.xhtml")
+        _wait_for_progress_cleared_or_first(driver, progress_key), "first.xhtml")
 
     return build_progress_acceptance_report(
         locks_available=True,
@@ -3418,7 +3463,7 @@ def accept_real_epub_reader(driver, origin, backend):
                 }))
 
         progress_acceptance = accept_reader_progress_and_bookmarks(
-            driver, epub_path, third, backend)
+            driver, epub_path, third, second["revision"], backend)
 
         driver.find_element(By.ID, "openAnotherDocument").click()
         driver.find_element(By.ID, "fileInput").send_keys(str(txt_path))

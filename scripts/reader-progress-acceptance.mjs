@@ -61,6 +61,20 @@ export function assertHighlightedBlock(text, expectedSubstring) {
 }
 
 /**
+ * Read the production bookmark storage shape: the key holds the array itself
+ * (`planBookmarkAdd` writes `{ [readerBookmarks:id]: next }`), not `{bookmarks}`.
+ */
+export function bookmarkSnapshotFromStore(store, documentId) {
+    const key = 'readerBookmarks:' + String(documentId || '');
+    const list = Array.isArray(store?.[key]) ? store[key] : [];
+    return {
+        count: list.length,
+        blockIndex: list[0]?.blockIndex ?? null,
+        chapterHref: list[0]?.chapterHref ?? null,
+    };
+}
+
+/**
  * Start over / clear must drop the prior saved position. A fresh block-0
  * save for the first chapter is allowed after the banner is dismissed.
  */
