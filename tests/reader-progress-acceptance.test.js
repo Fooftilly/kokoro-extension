@@ -119,7 +119,6 @@ process.stdout.write(JSON.stringify({
     test('Chromium live harness wires progress/bookmark acceptance stage', () => {
         const source = fs.readFileSync(chromiumLive, 'utf8');
         expect(source).toMatch(/reader-progress-acceptance\.mjs/);
-        expect(source).toMatch(/acceptReaderProgressAndBookmarks/);
         expect(source).toMatch(/assertLockManagerAvailable/);
         expect(source).toMatch(/assertBookmarkJumpDidNotAutoplay/);
         expect(source).toMatch(/assertResumeBannerVisible/);
@@ -134,13 +133,21 @@ process.stdout.write(JSON.stringify({
         expect(source).toMatch(/KOKORO_READING_PROGRESS/);
         expect(source).toMatch(/staleProgressFenced/);
         expect(source).toMatch(/autoplayReader:\s*true/);
-        expect(source).toMatch(/progressAcceptance/);
         expect(source).toMatch(/Hello third chapter block two/);
+
+        // Fail closed if acceptRealEpubReader drops the stage invocation.
+        const entryStart = source.indexOf('async function acceptRealEpubReader(');
+        expect(entryStart).toBeGreaterThanOrEqual(0);
+        const nextFn = source.indexOf('\nasync function ', entryStart + 1);
+        const entryBody = source.slice(
+            entryStart, nextFn === -1 ? undefined : nextFn);
+        expect(entryBody).toMatch(
+            /const progressAcceptance = await acceptReaderProgressAndBookmarks\(/);
+        expect(entryBody).toMatch(/progressAcceptance,/);
     });
 
     test('Firefox live harness wires progress/bookmark acceptance stage', () => {
         const source = fs.readFileSync(firefoxLive, 'utf8');
-        expect(source).toMatch(/accept_reader_progress_and_bookmarks/);
         expect(source).toMatch(/assert_lock_manager_available/);
         expect(source).toMatch(/assert_highlighted_block/);
         expect(source).toMatch(/assert_progress_cleared_or_first_chapter/);
@@ -153,7 +160,16 @@ process.stdout.write(JSON.stringify({
         expect(source).toMatch(/KOKORO_READING_PROGRESS/);
         expect(source).toMatch(/stale_progress_fenced/);
         expect(source).toMatch(/autoplayReader/);
-        expect(source).toMatch(/progressAcceptance/);
         expect(source).toMatch(/Hello third chapter block two/);
+
+        // Fail closed if accept_real_epub_reader drops the stage invocation.
+        const entryStart = source.indexOf('def accept_real_epub_reader(');
+        expect(entryStart).toBeGreaterThanOrEqual(0);
+        const nextDef = source.indexOf('\ndef ', entryStart + 1);
+        const entryBody = source.slice(
+            entryStart, nextDef === -1 ? undefined : nextDef);
+        expect(entryBody).toMatch(
+            /progress_acceptance = accept_reader_progress_and_bookmarks\(/);
+        expect(entryBody).toMatch(/"progressAcceptance": progress_acceptance/);
     });
 });
