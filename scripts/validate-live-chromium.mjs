@@ -20,8 +20,11 @@ import {
     assertHighlightedBlock,
     assertProgressClearedOrFirstChapter,
     assertResumeBannerVisible,
+    assertStaleProgressSnapshotsUnchanged,
     bookmarkSnapshotFromStore,
     buildProgressAcceptanceReport,
+    READER_PROGRESS_SAVE_DEBOUNCE_MS,
+    READER_PROGRESS_SAVE_SETTLE_BUFFER_MS,
 } from './reader-progress-acceptance.mjs';
 import {
     ARTICLE_SELECTION_SPEECH,
@@ -2843,6 +2846,18 @@ async function seekThirdBlockAndWait(page, progressKey, savedBlock, blockTwoText
     });
 }
 
+async function waitForProgressSaveSettle(page, deliveredAtMs) {
+    // Cover scheduleProgressSave debounce + in-flight flush so a wrongly
+    // accepted stale write cannot hide behind an immediate post-delivery read.
+    const settleMs = READER_PROGRESS_SAVE_DEBOUNCE_MS +
+        READER_PROGRESS_SAVE_SETTLE_BUFFER_MS;
+    await page.waitForFunction(({ deliveredAt, settleMs: ms }) => {
+        if (Date.now() - deliveredAt < ms) return false;
+        if (window.__kokoroProgressSaveTimerPending) return false;
+        return (Number(window.__kokoroProgressSaveInFlight) || 0) === 0;
+    }, { deliveredAt: deliveredAtMs, settleMs }, { timeout: 5000 });
+}
+
 async function assertStaleProgressFenced(page, {
     progressKey, bookmarksKey, priorRevision, savedBlock, staleBlock,
 }) {
@@ -2863,23 +2878,24 @@ async function assertStaleProgressFenced(page, {
             revision: staleRevision,
         }, window.location.origin);
     }, { staleRevision: priorRevision, blockIndex: staleBlock });
-    await page.waitForFunction((before) =>
-        (Number(window.__kokoroReadingProgressHandled) || 0) > before,
-    handledBefore, { timeout: 5000 });
+    const delivery = await page.waitForFunction((before) => {
+        const handled = Number(window.__kokoroReadingProgressHandled) || 0;
+        if (!(handled > before)) return false;
+        return { at: Date.now(), handled };
+    }, handledBefore, { timeout: 5000 });
+    await waitForProgressSaveSettle(page, delivery.at);
     const progressAfterStale = await readDocumentProgressRecord(page, progressKey);
     const bookmarksAfterStale = await readBookmarkSnapshot(page, bookmarksKey);
     const addEnabledAfterStale = await readAddBookmarkEnabled(page);
-    if (progressAfterStale?.blockIndex !== savedBlock ||
-        JSON.stringify(progressAfterStale) !== JSON.stringify(progressBeforeStale) ||
-        JSON.stringify(bookmarksAfterStale) !== JSON.stringify(bookmarksBeforeStale) ||
-        addEnabledBeforeStale !== true || addEnabledAfterStale !== true) {
-        throw Error('Stale KOKORO_READING_PROGRESS mutated progress/bookmarks: ' +
-            JSON.stringify({
-                progressBeforeStale, progressAfterStale,
-                bookmarksBeforeStale, bookmarksAfterStale,
-                addEnabledBeforeStale, addEnabledAfterStale,
-            }));
-    }
+    assertStaleProgressSnapshotsUnchanged({
+        progressBefore: progressBeforeStale,
+        progressAfter: progressAfterStale,
+        bookmarksBefore: bookmarksBeforeStale,
+        bookmarksAfter: bookmarksAfterStale,
+        addBefore: addEnabledBeforeStale,
+        addAfter: addEnabledAfterStale,
+        savedBlock,
+    });
 }
 
 async function addBookmarkAtSavedBlock(page, bookmarksKey, savedBlock) {

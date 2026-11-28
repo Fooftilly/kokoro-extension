@@ -7,6 +7,15 @@
 export const READER_PROGRESS_ACCEPTANCE_STAGE =
     'offline-reader-progress-bookmarks-fencing';
 
+/** Matches `scheduleProgressSave` debounce in reader.js. */
+export const READER_PROGRESS_SAVE_DEBOUNCE_MS = 400;
+
+/**
+ * Extra settle buffer after the debounce so storage mutations can land before
+ * fencing snapshots are compared.
+ */
+export const READER_PROGRESS_SAVE_SETTLE_BUFFER_MS = 150;
+
 /** DOM selectors the live harnesses must exercise for #196. */
 export const READER_PROGRESS_ACCEPTANCE_SELECTORS = Object.freeze({
     addBookmark: '#addBookmark',
@@ -88,6 +97,34 @@ export function assertProgressClearedOrFirstChapter(record, firstHrefNeedle) {
     throw new Error(
         'Expected progress cleared or first-chapter block 0 after start over: ' +
         JSON.stringify(record));
+}
+
+/**
+ * Stale-progress fencing must catch storage mutations even when bookmark UI
+ * stays enabled and the bookmark list is unchanged (persistence-only regression).
+ */
+export function assertStaleProgressSnapshotsUnchanged({
+    progressBefore,
+    progressAfter,
+    bookmarksBefore,
+    bookmarksAfter,
+    addBefore,
+    addAfter,
+    savedBlock,
+} = {}) {
+    if (progressAfter?.blockIndex !== savedBlock ||
+        JSON.stringify(progressAfter) !== JSON.stringify(progressBefore) ||
+        JSON.stringify(bookmarksAfter) !== JSON.stringify(bookmarksBefore) ||
+        addBefore !== true || addAfter !== true) {
+        throw new Error(
+            'Stale KOKORO_READING_PROGRESS mutated progress/bookmarks: ' +
+            JSON.stringify({
+                progressBefore, progressAfter,
+                bookmarksBefore, bookmarksAfter,
+                addBefore, addAfter, savedBlock,
+            }));
+    }
+    return true;
 }
 
 /**

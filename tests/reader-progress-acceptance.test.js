@@ -37,9 +37,12 @@ const {
     assertHighlightedBlock,
     assertProgressClearedOrFirstChapter,
     assertResumeBannerVisible,
+    assertStaleProgressSnapshotsUnchanged,
     bookmarkSnapshotFromStore,
     buildProgressAcceptanceReport,
     READER_PROGRESS_ACCEPTANCE_STAGE,
+    READER_PROGRESS_SAVE_DEBOUNCE_MS,
+    READER_PROGRESS_SAVE_SETTLE_BUFFER_MS,
 } = mod;
 ${jsSnippet}
 `], { encoding: 'utf8', cwd: root });
@@ -77,6 +80,24 @@ try {
     }, 'first.xhtml');
     failures.push('clear-accepted-stale');
 } catch (error) { failures.push(String(error.message || error)); }
+// Storage mutated after debounce while bookmark UI stays fenced — must fail.
+try {
+    assertStaleProgressSnapshotsUnchanged({
+        progressBefore: { chapterHref: 'third.xhtml', blockIndex: 1 },
+        progressAfter: { chapterHref: 'third.xhtml', blockIndex: 2 },
+        bookmarksBefore: { count: 0, blockIndex: null, chapterHref: null },
+        bookmarksAfter: { count: 0, blockIndex: null, chapterHref: null },
+        addBefore: true, addAfter: true, savedBlock: 1,
+    });
+    failures.push('stale-storage-accepted');
+} catch (error) { failures.push(String(error.message || error)); }
+const staleOk = assertStaleProgressSnapshotsUnchanged({
+    progressBefore: { chapterHref: 'third.xhtml', blockIndex: 1 },
+    progressAfter: { chapterHref: 'third.xhtml', blockIndex: 1 },
+    bookmarksBefore: { count: 0, blockIndex: null, chapterHref: null },
+    bookmarksAfter: { count: 0, blockIndex: null, chapterHref: null },
+    addBefore: true, addAfter: true, savedBlock: 1,
+});
 const docId = 'sha256:' + 'a'.repeat(64);
 const plannerShape = {
     ['readerBookmarks:' + docId]: [{
@@ -105,7 +126,10 @@ const report = buildProgressAcceptanceReport({
     resumeCleared: true,
 });
 process.stdout.write(JSON.stringify({
-    ok, failures, report, stage: READER_PROGRESS_ACCEPTANCE_STAGE,
+    ok: { ...ok, staleOk },
+    failures, report, stage: READER_PROGRESS_ACCEPTANCE_STAGE,
+    debounceMs: READER_PROGRESS_SAVE_DEBOUNCE_MS,
+    settleBufferMs: READER_PROGRESS_SAVE_SETTLE_BUFFER_MS,
     bookmarkSnapshot: bookmarkSnapshotFromStore(plannerShape, docId),
     nestedWrong: bookmarkSnapshotFromStore(nestedWrongShape, docId),
 }));
@@ -121,7 +145,10 @@ process.stdout.write(JSON.stringify({
             highlight: true,
             cleared: true,
             firstBlock0: true,
+            staleOk: true,
         });
+        expect(payload.debounceMs).toBe(400);
+        expect(payload.settleBufferMs).toBe(150);
         expect(payload.bookmarkSnapshot).toEqual({
             count: 1, blockIndex: 1, chapterHref: 'third.xhtml',
         });
@@ -134,8 +161,9 @@ process.stdout.write(JSON.stringify({
             expect.stringMatching(/resume banner/),
             expect.stringMatching(/highlight/),
             expect.stringMatching(/first-chapter block 0/),
+            expect.stringMatching(/mutated progress\/bookmarks/),
         ]));
-        expect(payload.failures).toHaveLength(5);
+        expect(payload.failures).toHaveLength(6);
         expect(payload.report).toEqual(expect.objectContaining({
             stage: payload.stage,
             locksAvailable: true,
@@ -172,7 +200,24 @@ process.stdout.write(JSON.stringify({
         expect(source).toMatch(/autoplayReader:\s*true/);
         expect(source).toMatch(/READER_ACCEPTANCE_THIRD_BLOCKS/);
         expect(source).toMatch(/__kokoroReadingProgressHandled/);
+        expect(source).toMatch(/waitForProgressSaveSettle/);
+        expect(source).toMatch(/READER_PROGRESS_SAVE_DEBOUNCE_MS/);
+        expect(source).toMatch(/__kokoroProgressSaveTimerPending/);
+        expect(source).toMatch(/__kokoroProgressSaveInFlight/);
+        expect(source).toMatch(/assertStaleProgressSnapshotsUnchanged/);
         expect(source).not.toMatch(/blockIndex:\s*99/);
+
+        // Fencing must wait for debounce settle after delivery acknowledgement.
+        const fenceStart = source.indexOf('async function assertStaleProgressFenced(');
+        expect(fenceStart).toBeGreaterThanOrEqual(0);
+        const fenceNext = source.indexOf('\nasync function ', fenceStart + 1);
+        const fenceBody = stripJsComments(source.slice(
+            fenceStart, fenceNext === -1 ? undefined : fenceNext));
+        expect(fenceBody).toMatch(/__kokoroReadingProgressHandled/);
+        expect(fenceBody).toMatch(/await waitForProgressSaveSettle\(/);
+        const fenceSabotaged = fenceBody.replace(
+            /await waitForProgressSaveSettle\([\s\S]*?\);/, '');
+        expect(fenceSabotaged).not.toMatch(/waitForProgressSaveSettle/);
 
         // Fail closed if acceptRealEpubReader drops the stage invocation.
         const entryStart = source.indexOf('async function acceptRealEpubReader(');
@@ -217,7 +262,24 @@ process.stdout.write(JSON.stringify({
         expect(source).toMatch(/autoplayReader/);
         expect(source).toMatch(/READER_ACCEPTANCE_THIRD_BLOCKS/);
         expect(source).toMatch(/__kokoroReadingProgressHandled/);
+        expect(source).toMatch(/_wait_for_progress_save_settle/);
+        expect(source).toMatch(/READER_PROGRESS_SAVE_DEBOUNCE_MS/);
+        expect(source).toMatch(/__kokoroProgressSaveTimerPending/);
+        expect(source).toMatch(/__kokoroProgressSaveInFlight/);
+        expect(source).toMatch(/assert_stale_progress_snapshots_unchanged/);
         expect(source).not.toMatch(/blockIndex:\s*99|blockIndex = 99/);
+
+        // Fencing must wait for debounce settle after delivery acknowledgement.
+        const fenceStart = source.indexOf('def _assert_stale_progress_fenced(');
+        expect(fenceStart).toBeGreaterThanOrEqual(0);
+        const fenceNext = source.indexOf('\ndef ', fenceStart + 1);
+        const fenceBody = stripPythonComments(source.slice(
+            fenceStart, fenceNext === -1 ? undefined : fenceNext));
+        expect(fenceBody).toMatch(/__kokoroReadingProgressHandled/);
+        expect(fenceBody).toMatch(/_wait_for_progress_save_settle\(/);
+        const fenceSabotaged = fenceBody.replace(
+            /_wait_for_progress_save_settle\([\s\S]*?\)/, '');
+        expect(fenceSabotaged).not.toMatch(/_wait_for_progress_save_settle/);
 
         // Fail closed if accept_real_epub_reader drops the stage invocation.
         const entryStart = source.indexOf('def accept_real_epub_reader(');
@@ -244,5 +306,7 @@ process.stdout.write(JSON.stringify({
         const source = fs.readFileSync(readerSource, 'utf8');
         expect(source).toMatch(/__kokoroReadingProgressHandled/);
         expect(source).toMatch(/KOKORO_READING_PROGRESS/);
+        expect(source).toMatch(/__kokoroProgressSaveTimerPending/);
+        expect(source).toMatch(/__kokoroProgressSaveInFlight/);
     });
 });

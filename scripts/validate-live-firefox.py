@@ -39,12 +39,15 @@ from firefox_epub_acceptance import (
     assert_lock_manager_available,
     assert_progress_cleared_or_first_chapter,
     assert_resume_banner_visible,
+    assert_stale_progress_snapshots_unchanged,
     bookmark_snapshot_from_store,
     build_progress_acceptance_report,
     epub_backend_variant,
     origin_epub_stage_enabled,
     reader_storage_config,
     require_epub_backend,
+    READER_PROGRESS_SAVE_DEBOUNCE_MS,
+    READER_PROGRESS_SAVE_SETTLE_BUFFER_MS,
 )
 from firefox_long_form_memory_acceptance import (
     LONG_FORM_SENTENCE_COUNT,
@@ -3220,6 +3223,21 @@ def _seek_third_block_and_wait(driver, progress_key, saved_block, block_two_text
         driver, progress_key, saved_block, href_needle="third.xhtml")
 
 
+def _wait_for_progress_save_settle(driver, delivered_at_ms):
+    # Cover scheduleProgressSave debounce + in-flight flush so a wrongly
+    # accepted stale write cannot hide behind an immediate post-delivery read.
+    settle_ms = (
+        READER_PROGRESS_SAVE_DEBOUNCE_MS + READER_PROGRESS_SAVE_SETTLE_BUFFER_MS)
+    WebDriverWait(driver, 5).until(
+        lambda d: d.execute_script("""
+            const deliveredAt = arguments[0];
+            const settleMs = arguments[1];
+            if (Date.now() - deliveredAt < settleMs) return false;
+            if (window.__kokoroProgressSaveTimerPending) return false;
+            return (Number(window.__kokoroProgressSaveInFlight) || 0) === 0;
+        """, delivered_at_ms, settle_ms))
+
+
 def _assert_stale_progress_fenced(
         driver, progress_key, bookmarks_key, document_id, prior_revision,
         saved_block, stale_block):
@@ -3240,29 +3258,31 @@ def _assert_stale_progress_fenced(
         }, window.location.origin);
     """, prior_revision, stale_block)
     driver.switch_to.default_content()
-    WebDriverWait(driver, 5).until(
-        lambda d: (d.execute_script(
-            "return Number(window.__kokoroReadingProgressHandled) || 0;")
-            > handled_before))
+
+    def _delivery(d):
+        return d.execute_script("""
+            const before = arguments[0];
+            const handled = Number(window.__kokoroReadingProgressHandled) || 0;
+            if (!(handled > before)) return null;
+            return { at: Date.now(), handled };
+        """, handled_before)
+
+    WebDriverWait(driver, 5).until(lambda d: _delivery(d) is not None)
+    delivery = _delivery(driver)
+    _wait_for_progress_save_settle(driver, delivery["at"])
     after = _read_document_progress_record(driver, progress_key)
     bookmarks_after = _read_bookmark_snapshot(
         driver, bookmarks_key, document_id)
     add_after = _read_add_bookmark_enabled(driver)
-    if ((after or {}).get("blockIndex") != saved_block or
-            json.dumps(after, sort_keys=True) !=
-            json.dumps(before, sort_keys=True) or
-            json.dumps(bookmarks_after, sort_keys=True) !=
-            json.dumps(bookmarks_before, sort_keys=True) or
-            add_before is not True or add_after is not True):
-        raise RuntimeError(
-            "Stale KOKORO_READING_PROGRESS mutated progress/bookmarks: " +
-            json.dumps({
-                "progressBeforeStale": before, "progressAfterStale": after,
-                "bookmarksBeforeStale": bookmarks_before,
-                "bookmarksAfterStale": bookmarks_after,
-                "addEnabledBeforeStale": add_before,
-                "addEnabledAfterStale": add_after,
-            }))
+    assert_stale_progress_snapshots_unchanged(
+        progress_before=before,
+        progress_after=after,
+        bookmarks_before=bookmarks_before,
+        bookmarks_after=bookmarks_after,
+        add_before=add_before,
+        add_after=add_after,
+        saved_block=saved_block,
+    )
 
 
 def _add_bookmark_at_saved_block(

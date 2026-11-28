@@ -69,6 +69,10 @@ def assert_distinct_chapter_audio_hashes(
 
 READER_PROGRESS_ACCEPTANCE_STAGE = "offline-reader-progress-bookmarks-fencing"
 
+# Matches scheduleProgressSave debounce in reader.js (+ settle buffer).
+READER_PROGRESS_SAVE_DEBOUNCE_MS = 400
+READER_PROGRESS_SAVE_SETTLE_BUFFER_MS = 150
+
 
 def assert_lock_manager_available(available):
     """Packaged Firefox reader must expose navigator.locks.request (#196)."""
@@ -128,6 +132,30 @@ def assert_progress_cleared_or_first_chapter(record, first_href_needle):
     raise RuntimeError(
         "Expected progress cleared or first-chapter block 0 after start over: " +
         json.dumps(record))
+
+
+def assert_stale_progress_snapshots_unchanged(
+        *, progress_before, progress_after, bookmarks_before, bookmarks_after,
+        add_before, add_after, saved_block):
+    """Fail when stale progress mutated storage even if bookmark UI stayed put."""
+    if ((progress_after or {}).get("blockIndex") != saved_block or
+            json.dumps(progress_after, sort_keys=True) !=
+            json.dumps(progress_before, sort_keys=True) or
+            json.dumps(bookmarks_after, sort_keys=True) !=
+            json.dumps(bookmarks_before, sort_keys=True) or
+            add_before is not True or add_after is not True):
+        raise RuntimeError(
+            "Stale KOKORO_READING_PROGRESS mutated progress/bookmarks: " +
+            json.dumps({
+                "progressBeforeStale": progress_before,
+                "progressAfterStale": progress_after,
+                "bookmarksBeforeStale": bookmarks_before,
+                "bookmarksAfterStale": bookmarks_after,
+                "addEnabledBeforeStale": add_before,
+                "addEnabledAfterStale": add_after,
+                "savedBlock": saved_block,
+            }))
+    return True
 
 
 def build_progress_acceptance_report(
