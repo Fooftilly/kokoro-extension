@@ -2924,7 +2924,8 @@ async function bookmarkGoSuppressAutoplay(page, {
 }
 
 async function resumeThenStartOver(page, {
-    waitForChapter, epubBytes, progressKey, afterLeave, savedBlock, blockTwoText,
+    waitForChapter, epubBytes, progressKey, priorChapter, savedBlock,
+    blockZeroText, blockTwoText,
 }) {
     await reopenAcceptanceEpub(page, epubBytes);
     await page.waitForFunction(() =>
@@ -2938,15 +2939,34 @@ async function resumeThenStartOver(page, {
             JSON.stringify(progressAtBanner));
     }
 
+    // Reopen loads the saved chapter at block 0 while the banner is up. Capture
+    // that preview revision so Resume cannot pass on the earlier bookmark jump.
+    const preview = await waitForChapter(
+        'Third Chapter', priorChapter.revision, priorChapter.audioUrl,
+        priorChapter.audioSha256);
+    assertHighlightedBlock(await readHighlightedSentence(page), blockZeroText);
+    const previewStart = await page.evaluate(async () =>
+        (await chrome.storage.local.get(['pendingStartIndex'])).pendingStartIndex);
+    if (previewStart !== 0) {
+        throw Error('Resume preview must start at block 0: ' +
+            JSON.stringify({ previewStart }));
+    }
+
     await page.locator('#resumeReading').click();
     const resumed = await waitForChapter(
-        'Third Chapter', afterLeave.revision, afterLeave.audioUrl,
-        afterLeave.audioSha256);
-    if (resumed.title !== 'Third Chapter') {
-        throw Error('Resume did not restore Third Chapter: ' +
-            JSON.stringify(resumed));
+        'Third Chapter', preview.revision, preview.audioUrl, preview.audioSha256);
+    if (resumed.title !== 'Third Chapter' ||
+        !(resumed.revision > preview.revision)) {
+        throw Error('Resume did not publish a newer Third Chapter reload: ' +
+            JSON.stringify({ resumed, previewRevision: preview.revision }));
     }
     assertHighlightedBlock(await readHighlightedSentence(page), blockTwoText);
+    const resumeStart = await page.evaluate(async () =>
+        (await chrome.storage.local.get(['pendingStartIndex'])).pendingStartIndex);
+    if (resumeStart !== savedBlock) {
+        throw Error('Resume did not seek saved block: ' +
+            JSON.stringify({ resumeStart, savedBlock }));
+    }
     const resumePaused = await page.evaluate(() => {
         const audio = document.getElementById('playerFrame')
             ?.contentDocument?.getElementById('audio');
@@ -2985,6 +3005,7 @@ async function acceptReaderProgressAndBookmarks(page, {
 }) {
     const savedBlock = 1;
     const staleBlock = 2;
+    const blockZeroText = READER_ACCEPTANCE_THIRD_BLOCKS[0];
     const blockTwoText = READER_ACCEPTANCE_THIRD_BLOCKS[savedBlock];
     const documentId = 'sha256:' +
         createHash('sha256').update(epubBytes).digest('hex');
@@ -3016,7 +3037,7 @@ async function acceptReaderProgressAndBookmarks(page, {
     await clickTocChapter('Second Chapter');
     const afterLeave = await waitForChapter(
         'Second Chapter', third.revision, third.audioUrl, third.audioSha256);
-    await bookmarkGoSuppressAutoplay(page, {
+    const restored = await bookmarkGoSuppressAutoplay(page, {
         waitForChapter, afterLeave, savedBlock, blockTwoText,
     });
 
@@ -3028,7 +3049,8 @@ async function acceptReaderProgressAndBookmarks(page, {
         progressKey, blockIndex: savedBlock, hrefNeedle: 'third.xhtml',
     });
     await resumeThenStartOver(page, {
-        waitForChapter, epubBytes, progressKey, afterLeave, savedBlock, blockTwoText,
+        waitForChapter, epubBytes, progressKey, priorChapter: restored,
+        savedBlock, blockZeroText, blockTwoText,
     });
 
     return buildProgressAcceptanceReport({

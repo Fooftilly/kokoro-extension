@@ -155,6 +155,9 @@ process.stdout.write(JSON.stringify({
         expect(source).toMatch(/priorRevision/);
         expect(source).toMatch(/waitForProgressRecord/);
         expect(source).toMatch(/bookmarkSnapshotFromStore/);
+        expect(source).toMatch(/resumeThenStartOver/);
+        expect(source).toMatch(/preview\.revision/);
+        expect(source).toMatch(/pendingStartIndex/);
         expect(source).toMatch(/autoplayReader:\s*true/);
         expect(source).toMatch(/Hello third chapter block two/);
         expect(source).not.toMatch(/blockIndex:\s*99/);
@@ -186,6 +189,9 @@ process.stdout.write(JSON.stringify({
         expect(source).toMatch(/prior_revision/);
         expect(source).toMatch(/_wait_for_progress_record/);
         expect(source).toMatch(/bookmark_snapshot_from_store/);
+        expect(source).toMatch(/_resume_then_start_over/);
+        expect(source).toMatch(/preview\["revision"\]|preview\.get\("revision"\)/);
+        expect(source).toMatch(/pendingStartIndex/);
         expect(source).toMatch(/autoplayReader/);
         expect(source).toMatch(/Hello third chapter block two/);
         expect(source).not.toMatch(/blockIndex:\s*99|blockIndex = 99/);

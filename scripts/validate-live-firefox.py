@@ -3308,8 +3308,8 @@ def _bookmark_go_suppress_autoplay(
 
 
 def _resume_then_start_over(
-        driver, epub_path, progress_key, after_leave, backend, saved_block,
-        block_two_text):
+        driver, epub_path, progress_key, prior_chapter, backend, saved_block,
+        block_zero_text, block_two_text):
     _reopen_acceptance_epub(driver, epub_path)
     WebDriverWait(driver, 60).until(
         lambda d: d.execute_script(
@@ -3322,14 +3322,45 @@ def _resume_then_start_over(
             "Resume banner without durable Third Chapter block progress: " +
             json.dumps(progress_at_banner))
 
+    # Reopen loads the saved chapter at block 0 while the banner is up. Capture
+    # that preview revision so Resume cannot pass on the earlier bookmark jump.
+    preview = _wait_for_epub_chapter(
+        driver, "Third Chapter", prior_chapter["revision"],
+        prior_chapter["audioUrl"], prior_chapter["audioSha256"], backend=backend)
+    assert_highlighted_block(_read_highlighted_sentence(driver), block_zero_text)
+    preview_start = driver.execute_async_script("""
+        const done = arguments[arguments.length - 1];
+        browser.storage.local.get(['pendingStartIndex']).then((data) => {
+            done(data.pendingStartIndex);
+        });
+    """)
+    if preview_start != 0:
+        raise RuntimeError(
+            "Resume preview must start at block 0: " +
+            json.dumps({"previewStart": preview_start}))
+
     driver.find_element(By.ID, "resumeReading").click()
     resumed = _wait_for_epub_chapter(
-        driver, "Third Chapter", after_leave["revision"], after_leave["audioUrl"],
-        after_leave["audioSha256"], backend=backend)
-    if resumed.get("title") != "Third Chapter":
+        driver, "Third Chapter", preview["revision"], preview["audioUrl"],
+        preview["audioSha256"], backend=backend)
+    if (resumed.get("title") != "Third Chapter" or
+            not (resumed.get("revision") > preview["revision"])):
         raise RuntimeError(
-            "Resume did not restore Third Chapter: " + json.dumps(resumed))
+            "Resume did not publish a newer Third Chapter reload: " +
+            json.dumps({
+                "resumed": resumed, "previewRevision": preview.get("revision"),
+            }))
     assert_highlighted_block(_read_highlighted_sentence(driver), block_two_text)
+    resume_start = driver.execute_async_script("""
+        const done = arguments[arguments.length - 1];
+        browser.storage.local.get(['pendingStartIndex']).then((data) => {
+            done(data.pendingStartIndex);
+        });
+    """)
+    if resume_start != saved_block:
+        raise RuntimeError(
+            "Resume did not seek saved block: " +
+            json.dumps({"resumeStart": resume_start, "savedBlock": saved_block}))
     if not driver.execute_script("""
         const audio = document.getElementById('playerFrame')
             ?.contentDocument?.getElementById('audio');
@@ -3363,6 +3394,7 @@ def accept_reader_progress_and_bookmarks(
     # Nested helpers keep CodeFactor method complexity under the gate.
     saved_block = 1
     stale_block = 2
+    block_zero_text = READER_ACCEPTANCE_THIRD_BLOCKS[0]
     block_two_text = READER_ACCEPTANCE_THIRD_BLOCKS[saved_block]
     document_id = "sha256:" + hashlib.sha256(
         Path(epub_path).read_bytes()).hexdigest()
@@ -3401,7 +3433,7 @@ def accept_reader_progress_and_bookmarks(
     after_leave = _wait_for_epub_chapter(
         driver, "Second Chapter", third["revision"], third["audioUrl"],
         third["audioSha256"], backend=backend)
-    _bookmark_go_suppress_autoplay(
+    restored = _bookmark_go_suppress_autoplay(
         driver, after_leave, backend, saved_block, block_two_text)
 
     driver.find_element(By.CSS_SELECTOR, "#bookmarkList .bookmark-remove").click()
@@ -3410,8 +3442,8 @@ def accept_reader_progress_and_bookmarks(
     _wait_for_progress_record(
         driver, progress_key, saved_block, href_needle="third.xhtml")
     _resume_then_start_over(
-        driver, epub_path, progress_key, after_leave, backend, saved_block,
-        block_two_text)
+        driver, epub_path, progress_key, restored, backend, saved_block,
+        block_zero_text, block_two_text)
 
     return build_progress_acceptance_report(
         locks_available=True,
