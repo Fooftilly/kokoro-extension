@@ -17,6 +17,7 @@ Guidance for humans and coding agents working in this repository.
 | `reader.html` / `reader.js` / `reader.css` | EPUB reader page |
 | `text-processor.js` | Text normalization / pronunciation prep before TTS |
 | `audio-manager.js` | Playback / streaming audio handling |
+| `audio-export.js` | Scoped audio export (#197): sentence/chapter/article, WAV merge, no MP3 concat |
 | `dom-utils.js`, `theme-init.js`, `transliteration-lite.js` | Shared helpers |
 | `build.js` | Builds Chrome + Firefox packages under `dist/`, generates manifests |
 | `tests/` | Jest unit tests (jsdom); Kokoro API is mocked |

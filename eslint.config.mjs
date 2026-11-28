@@ -84,6 +84,7 @@ export default [
       'document-formats.js',
       'docx-reader.js',
       'audio-manager.js',
+      'audio-export.js',
       'model-data-store.js',
       'onnx-kokoro-inputs.js',
       'model-catalog.js',

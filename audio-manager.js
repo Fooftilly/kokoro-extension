@@ -4,6 +4,27 @@ import { OnnxKokoroProvider } from './onnx-provider.js';
 import { withModelDataLock } from './model-data-lock.js';
 import { pcmToWavBlob } from './pcm-wav.js';
 
+/** Storage keys that select provider / voice / endpoint for a synthesis. */
+export const AUDIO_SETTINGS_KEYS = Object.freeze([
+    'pendingVoice',
+    'pendingApiUrl',
+    'pendingNormalizationOptions',
+    'pendingTtsBackend',
+    'pendingMediaPipeVariant',
+    'pendingLocalVoice',
+    'pendingOnnxVoiceAsset',
+]);
+
+/** Stable fingerprint so cache/export can refuse cross-tab settings drift. */
+export function fingerprintAudioSettings(data) {
+    return AUDIO_SETTINGS_KEYS.map((key) => {
+        const value = data?.[key];
+        if (value == null) return '';
+        if (typeof value === 'object') return JSON.stringify(value);
+        return String(value);
+    }).join('\0');
+}
+
 export class AudioManager {
     constructor({ localProviderIdleMs = 5 * 60 * 1000 } = {}) {
         if (!Number.isInteger(localProviderIdleMs) || localProviderIdleMs < 1 ||
@@ -28,11 +49,22 @@ export class AudioManager {
         this.localActivityRevision = 0;
         this.objectUrls = new Set();
         this.generation = 0;
+        // Provider/voice/endpoint snapshot for this loaded player document.
+        // Export and playback share it so cross-tab pending* writes cannot
+        // redirect synthesis until the next initialize()/clear().
+        this.defaultSettings = null;
+    }
+
+    setDefaultSettings(settings) {
+        this.defaultSettings = settings && typeof settings === 'object'
+            ? { ...settings }
+            : null;
     }
 
     clear() {
         const activity = this.beginLocalActivity();
         this.generation++;
+        this.defaultSettings = null;
         for (const entry of this.audioCache.values()) entry.evicted = true;
         this.cacheWindow = null;
         // A browser download may still be reading a blob URL after its page
@@ -140,10 +172,33 @@ export class AudioManager {
 
     // Save/download leases outlive a reading-session reset. They are independent
     // of the bounded cache, and cannot accidentally pin a reused sentence index.
-    pinAudio(index) {
+    // When `settings` is provided, only bind a cache URL that matches that
+    // fingerprint so an export lease cannot pin a cross-tab / wrong-voice blob.
+    // Call before awaiting getAudio so prioritizeNavigation cannot drop the
+    // export's in-flight synthesis.
+    pinAudio(index, { settings = null } = {}) {
+        const wantKey = settings ? fingerprintAudioSettings(settings) : null;
+        const cached = this.audioCache.get(index);
+        let url = null;
+        if (cached) {
+            const matched = wantKey === null || cached.settingsKey === wantKey;
+            if (matched) {
+                url = cached.url || null;
+            } else if (!this.isPinned(index)) {
+                // Drop mismatched unpinned audio so this lease does not bind
+                // the wrong blob and getAudio can synthesize under `settings`.
+                this.evictAudio(index, cached);
+            } else {
+                // Another pin still owns the mismatched URL — free the slot
+                // without revoking that download's blob.
+                this.audioCache.delete(index);
+                cached.evicted = true;
+                cached.pending = false;
+            }
+        }
         const pin = {
             index, generation: this.generation,
-            url: this.audioCache.get(index)?.url || null,
+            url,
         };
         this.audioPins.add(pin);
         let released = false;
@@ -182,8 +237,31 @@ export class AudioManager {
         }
     }
 
-    async getAudio(index, { speculative = false } = {}) {
+    async getAudio(index, { speculative = false, settings = null } = {}) {
         if (!Number.isInteger(index) || index < 0 || index >= this.sentences.length) return null;
+
+        const effectiveSettings = settings || this.defaultSettings;
+        const wantKey = effectiveSettings
+            ? fingerprintAudioSettings(effectiveSettings)
+            : null;
+        if (this.audioCache.has(index)) {
+            const cached = this.audioCache.get(index);
+            // Reuse only when no snapshot was requested, or the cached entry
+            // was produced under that same snapshot.
+            if (wantKey === null || cached.settingsKey === wantKey) {
+                return cached.promise;
+            }
+            if (!this.isPinned(index)) {
+                this.evictAudio(index, cached);
+            } else if (this.audioCache.get(index) === cached) {
+                // Detach the cache slot without revoking — download pins still
+                // own the previous Blob URL. Fall through to synthesize under
+                // the requested settings into a new cache entry.
+                this.audioCache.delete(index);
+                cached.evicted = true;
+                cached.pending = false;
+            }
+        }
 
         if (this.audioCache.has(index)) {
             return this.audioCache.get(index).promise;
@@ -193,15 +271,22 @@ export class AudioManager {
         const entry = {
             promise: null, evicted: false, url: null,
             pending: true, speculative, executing: false,
+            settingsKey: wantKey,
         };
-        const promise = this.fetchAudio(this.sentences[index].text, generation, entry);
+        const promise = this.fetchAudio(
+            this.sentences[index].text, generation, entry, effectiveSettings);
         entry.promise = promise;
         this.audioCache.set(index, entry);
         void promise.then(url => {
             entry.pending = false;
             entry.url = url;
+            // Only fill pins that are still waiting for their first URL.
+            // Never retarget an in-flight download pin that already owns a blob.
             for (const pin of this.audioPins) {
-                if (pin.index === index && pin.generation === generation) pin.url = url;
+                if (pin.index === index && pin.generation === generation &&
+                    pin.url === null) {
+                    pin.url = url;
+                }
             }
         }, () => {});
         // A missing model or transient server error must not poison retries.
@@ -340,13 +425,16 @@ export class AudioManager {
         }
     }
 
-    async fetchAudio(text, generation = this.generation, entry = null) {
+    async fetchAudio(text, generation = this.generation, entry = null, settingsOverride = null) {
         const isStale = () => generation !== this.generation || entry?.evicted === true;
-        const data = await browser.storage.local.get([
-            'pendingVoice', 'pendingApiUrl', 'pendingNormalizationOptions',
-            'pendingTtsBackend', 'pendingMediaPipeVariant', 'pendingLocalVoice',
-            'pendingOnnxVoiceAsset',
+        // Export (and any caller) may pass an immutable snapshot so cross-tab
+        // writes to pendingTtsBackend / API URL / voice cannot redirect synthesis.
+        const data = settingsOverride || await browser.storage.local.get([
+            ...AUDIO_SETTINGS_KEYS,
         ]);
+        if (entry && settingsOverride && entry.settingsKey == null) {
+            entry.settingsKey = fingerprintAudioSettings(data);
+        }
         if (isStale()) {
             throw new DOMException('Audio request cancelled', 'AbortError');
         }

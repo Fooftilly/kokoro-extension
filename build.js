@@ -42,6 +42,7 @@ const SRC_FILES = [
     'longer-shared-english-sample.js',
     'text-processor.js',
     'audio-manager.js',
+    'audio-export.js',
     'model-data-store.js',
     'sha256-stream.js',
     'model-data-lock.js',
@@ -173,7 +174,7 @@ function createManifest(browser) {
         ],
         web_accessible_resources: [
             {
-                resources: ["overlay.html", "overlay.css", "overlay.js", "overlay-position.js", "floating-mic-position.js", "text-processor.js", "audio-manager.js", "model-data-lock.js", "dom-utils.js", "browser-polyfill.min.js",
+                resources: ["overlay.html", "overlay.css", "overlay.js", "overlay-position.js", "floating-mic-position.js", "text-processor.js", "audio-manager.js", "audio-export.js", "model-data-lock.js", "dom-utils.js", "browser-polyfill.min.js",
                     "compromise.js", "compromise-dates.min.js", "compromise-numbers.min.js",
                     "transliteration-lite.js", "purify.js", "theme-init.js",
                     "reader.html", "reader.js", "reader-progress.js", "reader.css", "document-formats.js", "docx-reader.js",

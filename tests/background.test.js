@@ -309,7 +309,7 @@ describe('background.js logic', () => {
         expect(browser.tabs.sendMessage).toHaveBeenCalledWith(18,
             expect.objectContaining({ action: 'SHOW_PLAYER' }));
         expect(browser.notifications.create).toHaveBeenCalledWith(expect.objectContaining({
-            message: expect.stringContaining('Save audio'),
+            message: expect.stringMatching(/Save.*WAV/i),
         }));
         expect(fetch).not.toHaveBeenCalled();
         expect(browser.downloads).toBeUndefined();
