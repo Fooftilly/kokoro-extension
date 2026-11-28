@@ -178,58 +178,67 @@ function collectPdfTextRows(textContent, limits = {}) {
     return rows;
 }
 
+function streamChunkItems(chunk) {
+    if (Array.isArray(chunk?.items)) return chunk.items;
+    if (Array.isArray(chunk)) return chunk;
+    return chunk == null ? [] : [chunk];
+}
+
+function appendPdfTextRows(items, state, limits) {
+    const maxChars = limits.maxChars;
+    const maxItems = limits.maxItems;
+    for (const item of items) {
+        const row = rowFromTextItem(item);
+        if (!row) continue;
+        state.chars += row.str.length;
+        if (state.rows.length >= maxItems || state.chars > maxChars) {
+            throw new Error(
+                'This PDF page exceeds the safe text extraction limit ' +
+                '(' + maxChars + ' characters).');
+        }
+        state.rows.push(row);
+    }
+}
+
+async function collectRowsFromReadableStream(reader, limits) {
+    const state = { rows: [], chars: 0 };
+    while (true) {
+        throwIfCancelled(limits.isCurrent);
+        const { done, value } = await reader.read();
+        if (done) break;
+        try {
+            appendPdfTextRows(streamChunkItems(value), state, limits);
+        } catch (error) {
+            try { await reader.cancel(); } catch { /* ignore */ }
+            throw error;
+        }
+    }
+    return state.rows;
+}
+
+async function collectRowsFromAsyncIterable(stream, limits) {
+    const state = { rows: [], chars: 0 };
+    for await (const chunk of stream) {
+        throwIfCancelled(limits.isCurrent);
+        appendPdfTextRows(streamChunkItems(chunk), state, limits);
+    }
+    return state.rows;
+}
+
 async function collectRowsFromPageStream(page, limits = {}) {
-    const maxChars = Number.isInteger(limits.maxChars)
-        ? limits.maxChars : MAX_PDF_PAGE_TEXT_CHARS;
-    const maxItems = Number.isInteger(limits.maxItems)
-        ? limits.maxItems : MAX_PDF_PAGE_TEXT_ITEMS;
-    const isCurrent = limits.isCurrent;
-    const rows = [];
-    let chars = 0;
+    const streamLimits = {
+        maxChars: Number.isInteger(limits.maxChars)
+            ? limits.maxChars : MAX_PDF_PAGE_TEXT_CHARS,
+        maxItems: Number.isInteger(limits.maxItems)
+            ? limits.maxItems : MAX_PDF_PAGE_TEXT_ITEMS,
+        isCurrent: limits.isCurrent,
+    };
     const stream = page.streamTextContent({ includeMarkedContent: false });
     // PDF.js may return a ReadableStream or an async iterable of chunks.
-    const reader = typeof stream?.getReader === 'function'
-        ? stream.getReader()
-        : null;
-    if (reader) {
-        while (true) {
-            throwIfCancelled(isCurrent);
-            const { done, value } = await reader.read();
-            if (done) break;
-            const items = Array.isArray(value?.items) ? value.items
-                : (Array.isArray(value) ? value : [value]);
-            for (const item of items) {
-                const row = rowFromTextItem(item);
-                if (!row) continue;
-                chars += row.str.length;
-                if (rows.length >= maxItems || chars > maxChars) {
-                    try { await reader.cancel(); } catch { /* ignore */ }
-                    throw new Error(
-                        'This PDF page exceeds the safe text extraction limit ' +
-                        '(' + maxChars + ' characters).');
-                }
-                rows.push(row);
-            }
-        }
-        return rows;
+    if (typeof stream?.getReader === 'function') {
+        return collectRowsFromReadableStream(stream.getReader(), streamLimits);
     }
-    for await (const chunk of stream) {
-        throwIfCancelled(isCurrent);
-        const items = Array.isArray(chunk?.items) ? chunk.items
-            : (Array.isArray(chunk) ? chunk : [chunk]);
-        for (const item of items) {
-            const row = rowFromTextItem(item);
-            if (!row) continue;
-            chars += row.str.length;
-            if (rows.length >= maxItems || chars > maxChars) {
-                throw new Error(
-                    'This PDF page exceeds the safe text extraction limit ' +
-                    '(' + maxChars + ' characters).');
-            }
-            rows.push(row);
-        }
-    }
-    return rows;
+    return collectRowsFromAsyncIterable(stream, streamLimits);
 }
 
 function blocksFromParagraphs(paragraphs) {
