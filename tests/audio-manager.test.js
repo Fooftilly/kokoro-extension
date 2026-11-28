@@ -2,11 +2,16 @@
  * @jest-environment jsdom
  */
 
-import { AudioManager } from '../audio-manager.js';
+import {
+    AudioManager,
+    fingerprintAudioSettings,
+} from '../audio-manager.js';
 import { OnnxKokoroProvider } from '../onnx-provider.js';
+import { MediaPipeKokoroProvider } from '../mediapipe-provider.js';
 import { installImmediateModelLocks } from './helpers/model-locks.js';
 
 jest.mock('../onnx-provider.js', () => ({ OnnxKokoroProvider: jest.fn() }));
+jest.mock('../mediapipe-provider.js', () => ({ MediaPipeKokoroProvider: jest.fn() }));
 
 // Mock browser API
 global.browser = {
@@ -211,5 +216,74 @@ describe('AudioManager', () => {
         await expect(audioManager.getAudio(0)).rejects.toThrow('API Error: 500 Internal Server Error');
 
         consoleSpy.mockRestore();
+    });
+
+    test('export settings snapshot keeps local synthesis when storage flips to FastAPI', async () => {
+        const synthesize = jest.fn(async () => ({
+            samples: new Float32Array([0.2, -0.1, 0.3]), sampleRateHz: 24000,
+        }));
+        MediaPipeKokoroProvider.mockImplementation(() => ({
+            synthesize, cancel: jest.fn(async () => {}), close: jest.fn(async () => {}),
+        }));
+        URL.createObjectURL = jest.fn(() => 'blob:export-local');
+
+        const snapshot = {
+            pendingTtsBackend: 'mediapipe',
+            pendingMediaPipeVariant: 'cpu',
+            pendingLocalVoice: 'af_heart',
+            pendingApiUrl: 'http://private-server.example/v1/',
+            pendingVoice: 'af_sarah',
+        };
+        // Shared pending* now claims FastAPI (other tab / popup), but export
+        // must keep using the immutable local snapshot.
+        browser.storage.local.get.mockResolvedValue({
+            pendingTtsBackend: 'fastapi',
+            pendingApiUrl: 'http://private-server.example/v1/',
+            pendingVoice: 'af_sarah',
+        });
+        audioManager.setSentences([{ text: 'Keep local' }, { text: 'Still local' }]);
+
+        await expect(audioManager.getAudio(0, { settings: snapshot }))
+            .resolves.toBe('blob:export-local');
+        await expect(audioManager.getAudio(1, { settings: snapshot }))
+            .resolves.toBe('blob:export-local');
+
+        expect(synthesize).toHaveBeenCalledTimes(2);
+        expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
+        expect(browser.storage.local.get).not.toHaveBeenCalled();
+        expect(fingerprintAudioSettings(snapshot)).toContain('mediapipe');
+    });
+
+    test('mismatched settings snapshot does not reuse a FastAPI cache entry', async () => {
+        browser.runtime.sendMessage.mockResolvedValue({
+            success: true,
+            dataUrl: 'data:audio/mpeg;base64,remote',
+        });
+        browser.storage.local.get.mockResolvedValue({
+            pendingTtsBackend: 'fastapi',
+            pendingApiUrl: 'http://localhost:8880/v1/',
+            pendingVoice: 'af_sarah',
+        });
+        const synthesize = jest.fn(async () => ({
+            samples: new Float32Array([0.2, -0.1, 0.3]), sampleRateHz: 24000,
+        }));
+        MediaPipeKokoroProvider.mockImplementation(() => ({
+            synthesize, cancel: jest.fn(async () => {}), close: jest.fn(async () => {}),
+        }));
+        URL.createObjectURL = jest.fn(() => 'blob:local-after-flip');
+
+        audioManager.setSentences([{ text: 'One sentence' }]);
+        await expect(audioManager.getAudio(0)).resolves.toBe('data:audio/mpeg;base64,remote');
+        expect(browser.runtime.sendMessage).toHaveBeenCalledTimes(1);
+
+        const localSnapshot = {
+            pendingTtsBackend: 'mediapipe',
+            pendingMediaPipeVariant: 'cpu',
+            pendingLocalVoice: 'af_heart',
+        };
+        await expect(audioManager.getAudio(0, { settings: localSnapshot }))
+            .resolves.toBe('blob:local-after-flip');
+        expect(synthesize).toHaveBeenCalledTimes(1);
+        expect(browser.runtime.sendMessage).toHaveBeenCalledTimes(1);
     });
 });

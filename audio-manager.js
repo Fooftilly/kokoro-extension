@@ -4,6 +4,27 @@ import { OnnxKokoroProvider } from './onnx-provider.js';
 import { withModelDataLock } from './model-data-lock.js';
 import { pcmToWavBlob } from './pcm-wav.js';
 
+/** Storage keys that select provider / voice / endpoint for a synthesis. */
+export const AUDIO_SETTINGS_KEYS = Object.freeze([
+    'pendingVoice',
+    'pendingApiUrl',
+    'pendingNormalizationOptions',
+    'pendingTtsBackend',
+    'pendingMediaPipeVariant',
+    'pendingLocalVoice',
+    'pendingOnnxVoiceAsset',
+]);
+
+/** Stable fingerprint so cache/export can refuse cross-tab settings drift. */
+export function fingerprintAudioSettings(data) {
+    return AUDIO_SETTINGS_KEYS.map((key) => {
+        const value = data?.[key];
+        if (value == null) return '';
+        if (typeof value === 'object') return JSON.stringify(value);
+        return String(value);
+    }).join('\0');
+}
+
 export class AudioManager {
     constructor({ localProviderIdleMs = 5 * 60 * 1000 } = {}) {
         if (!Number.isInteger(localProviderIdleMs) || localProviderIdleMs < 1 ||
@@ -182,19 +203,37 @@ export class AudioManager {
         }
     }
 
-    async getAudio(index, { speculative = false } = {}) {
+    async getAudio(index, { speculative = false, settings = null } = {}) {
         if (!Number.isInteger(index) || index < 0 || index >= this.sentences.length) return null;
 
+        const wantKey = settings ? fingerprintAudioSettings(settings) : null;
         if (this.audioCache.has(index)) {
-            return this.audioCache.get(index).promise;
+            const cached = this.audioCache.get(index);
+            // Reuse only when the caller did not pin a provider snapshot, or the
+            // cached entry was produced under that same snapshot.
+            if (wantKey === null || cached.settingsKey === wantKey) {
+                return cached.promise;
+            }
+            // Another tab may have flipped shared pending* settings. Do not
+            // reuse the wrong backend/voice; drop unpinned mismatched entries.
+            if (!this.isPinned(index)) {
+                this.evictAudio(index, cached);
+            } else {
+                // Keep the pin's URL for an in-flight download, but synthesize
+                // this request with the caller's immutable snapshot.
+                return this.fetchAudio(
+                    this.sentences[index].text, this.generation, null, settings);
+            }
         }
 
         const generation = this.generation;
         const entry = {
             promise: null, evicted: false, url: null,
             pending: true, speculative, executing: false,
+            settingsKey: wantKey,
         };
-        const promise = this.fetchAudio(this.sentences[index].text, generation, entry);
+        const promise = this.fetchAudio(
+            this.sentences[index].text, generation, entry, settings);
         entry.promise = promise;
         this.audioCache.set(index, entry);
         void promise.then(url => {
@@ -340,13 +379,16 @@ export class AudioManager {
         }
     }
 
-    async fetchAudio(text, generation = this.generation, entry = null) {
+    async fetchAudio(text, generation = this.generation, entry = null, settingsOverride = null) {
         const isStale = () => generation !== this.generation || entry?.evicted === true;
-        const data = await browser.storage.local.get([
-            'pendingVoice', 'pendingApiUrl', 'pendingNormalizationOptions',
-            'pendingTtsBackend', 'pendingMediaPipeVariant', 'pendingLocalVoice',
-            'pendingOnnxVoiceAsset',
+        // Export (and any caller) may pass an immutable snapshot so cross-tab
+        // writes to pendingTtsBackend / API URL / voice cannot redirect synthesis.
+        const data = settingsOverride || await browser.storage.local.get([
+            ...AUDIO_SETTINGS_KEYS,
         ]);
+        if (entry && settingsOverride && entry.settingsKey == null) {
+            entry.settingsKey = fingerprintAudioSettings(data);
+        }
         if (isStale()) {
             throw new DOMException('Audio request cancelled', 'AbortError');
         }

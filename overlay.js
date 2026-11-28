@@ -1,5 +1,5 @@
 import { processContent } from './text-processor.js';
-import { AudioManager } from './audio-manager.js';
+import { AudioManager, AUDIO_SETTINGS_KEYS } from './audio-manager.js';
 import {
     EXPORT_SCOPE,
     listAvailableScopes,
@@ -422,13 +422,18 @@ if (saveAudioBtn) {
         });
 
         try {
-            const settings = await browser.storage.local.get(['pendingTtsBackend']);
+            // Immutable provider/voice/endpoint snapshot for this export. Later
+            // cross-tab writes to pending* must not redirect uncached sentences
+            // (e.g. local → FastAPI) mid-file.
+            const settingsSnapshot = await browser.storage.local.get([
+                ...AUDIO_SETTINGS_KEYS,
+            ]);
             if (audioManager.generation !== exportGeneration || controller.signal.aborted) {
                 throw new DOMException('Audio export cancelled', 'AbortError');
             }
             const backend = ['mediapipe', 'onnx', 'fastapi'].includes(
-                settings.pendingTtsBackend)
-                ? settings.pendingTtsBackend
+                settingsSnapshot.pendingTtsBackend)
+                ? settingsSnapshot.pendingTtsBackend
                 : 'fastapi';
             const title = titleEl?.textContent || 'kokoro';
 
@@ -452,7 +457,9 @@ if (saveAudioBtn) {
                     exportActiveIndex = index;
                     try {
                         release = audioManager.pinAudio(index);
-                        const audioUrl = await audioManager.getAudio(index);
+                        const audioUrl = await audioManager.getAudio(index, {
+                            settings: settingsSnapshot,
+                        });
                         if (controller.signal.aborted ||
                             audioManager.generation !== exportGeneration) {
                             cancelInFlightExportSynthesis(index);

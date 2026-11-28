@@ -48,6 +48,16 @@ window.HTMLMediaElement.prototype.load = jest.fn();
 
 // Mock AudioManager and processContent
 jest.mock('../audio-manager.js', () => ({
+    AUDIO_SETTINGS_KEYS: [
+        'pendingVoice',
+        'pendingApiUrl',
+        'pendingNormalizationOptions',
+        'pendingTtsBackend',
+        'pendingMediaPipeVariant',
+        'pendingLocalVoice',
+        'pendingOnnxVoiceAsset',
+    ],
+    fingerprintAudioSettings: jest.fn(() => 'mock-settings-key'),
     AudioManager: jest.fn().mockImplementation(() => ({
         play: jest.fn().mockResolvedValue(),
         pause: jest.fn(),
@@ -63,7 +73,8 @@ jest.mock('../audio-manager.js', () => ({
         retainWindow: jest.fn(),
         prioritizeNavigation: jest.fn(),
         prefetch: jest.fn(),
-        on: jest.fn()
+        on: jest.fn(),
+        generation: 0,
     }))
 }));
 
