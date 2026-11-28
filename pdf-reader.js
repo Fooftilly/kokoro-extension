@@ -7,6 +7,7 @@ export const MAX_PDF_DOCUMENT_BYTES = 32 * 1024 * 1024;
 export const MAX_PDF_PAGES = 200;
 export const MAX_PDF_PAGE_TEXT_CHARS = 100_000;
 export const MAX_PDF_DOCUMENT_TEXT_CHARS = 2_000_000;
+export const MAX_PDF_PAGE_TEXT_ITEMS = 20_000;
 
 const PDF_PAGE_HREF_PREFIX = 'pdf:page:';
 
@@ -21,6 +22,12 @@ function speechBlock(type, text) {
     return content
         ? { type, content, html: escapeSpeechText(content), ids: [] }
         : null;
+}
+
+function throwIfCancelled(isCurrent) {
+    if (typeof isCurrent === 'function' && !isCurrent()) {
+        throw new DOMException('PDF work cancelled', 'AbortError');
+    }
 }
 
 /** Stable chapter href for page N (1-based). */
@@ -59,6 +66,7 @@ export function buildPdfPageToc(pageCount, title = 'PDF') {
 }
 
 export function mapPdfJsOpenError(error) {
+    if (error?.name === 'AbortError') return error;
     const name = String(error?.name || '');
     const message = String(error?.message || error || '');
     if (name === 'PasswordException' || /password/i.test(message)) {
@@ -77,9 +85,22 @@ export function mapPdfJsOpenError(error) {
     return error instanceof Error ? error : new Error(message || 'Unable to open this PDF.');
 }
 
+export async function destroyPdfSession(session) {
+    if (!session) return;
+    const task = session.loadingTask;
+    const pdf = session.pdf;
+    if (task && typeof task.destroy === 'function') {
+        try { await task.destroy(); } catch { /* ignore */ }
+        return;
+    }
+    if (pdf && typeof pdf.cleanup === 'function') {
+        try { await pdf.cleanup(); } catch { /* ignore */ }
+    }
+}
+
 /**
  * Open a local PDF with the injected PDF.js getDocument API.
- * Caller must dispose via pdfDocument.cleanup() when replacing files.
+ * Returns `{ pdf, loadingTask }` — always dispose with destroyPdfSession().
  */
 export async function openPdfDocument(buffer, pdfjs, options = {}) {
     if (Object.prototype.toString.call(buffer) !== '[object ArrayBuffer]') {
@@ -108,100 +129,164 @@ export async function openPdfDocument(buffer, pdfjs, options = {}) {
         });
         const pdf = await loadingTask.promise;
         if (!Number.isInteger(pdf?.numPages) || pdf.numPages < 1) {
-            await safeCleanup(pdf);
+            await destroyPdfSession({ pdf, loadingTask });
             throw new Error('PDF contains no pages');
         }
         if (pdf.numPages > MAX_PDF_PAGES) {
-            await safeCleanup(pdf);
+            await destroyPdfSession({ pdf, loadingTask });
             throw new Error(
                 'PDF has too many pages (maximum ' + MAX_PDF_PAGES + ')');
         }
-        return pdf;
+        return { pdf, loadingTask };
     } catch (error) {
-        if (loadingTask && typeof loadingTask.destroy === 'function') {
-            try { loadingTask.destroy(); } catch { /* ignore */ }
-        }
+        if (loadingTask) await destroyPdfSession({ loadingTask });
         throw mapPdfJsOpenError(error);
     }
 }
 
-async function safeCleanup(pdf) {
-    if (pdf && typeof pdf.cleanup === 'function') {
-        try { await pdf.cleanup(); } catch { /* ignore */ }
-    }
+function rowFromTextItem(item) {
+    const str = String(item?.str || '');
+    if (!str.trim()) return null;
+    const transform = Array.isArray(item.transform) ? item.transform : null;
+    return {
+        str,
+        x: transform ? Number(transform[4]) || 0 : 0,
+        y: transform ? Number(transform[5]) || 0 : 0,
+        width: Number(item.width) || 0,
+    };
 }
 
-function collectPdfTextRows(textContent) {
+function collectPdfTextRows(textContent, limits = {}) {
+    const maxChars = Number.isInteger(limits.maxChars)
+        ? limits.maxChars : MAX_PDF_PAGE_TEXT_CHARS;
+    const maxItems = Number.isInteger(limits.maxItems)
+        ? limits.maxItems : MAX_PDF_PAGE_TEXT_ITEMS;
     const items = Array.isArray(textContent?.items) ? textContent.items : [];
     const rows = [];
+    let chars = 0;
     for (const item of items) {
-        const str = String(item?.str || '');
-        if (!str.trim()) continue;
-        const transform = Array.isArray(item.transform) ? item.transform : null;
-        rows.push({
-            str,
-            x: transform ? Number(transform[4]) || 0 : 0,
-            y: transform ? Number(transform[5]) || 0 : 0,
-            width: Number(item.width) || 0,
-        });
+        const row = rowFromTextItem(item);
+        if (!row) continue;
+        chars += row.str.length;
+        if (rows.length >= maxItems || chars > maxChars) {
+            throw new Error(
+                'This PDF page exceeds the safe text extraction limit ' +
+                '(' + maxChars + ' characters).');
+        }
+        rows.push(row);
     }
     return rows;
 }
 
-function blocksFromParagraphs(paragraphs, maxChars) {
+async function collectRowsFromPageStream(page, limits = {}) {
+    const maxChars = Number.isInteger(limits.maxChars)
+        ? limits.maxChars : MAX_PDF_PAGE_TEXT_CHARS;
+    const maxItems = Number.isInteger(limits.maxItems)
+        ? limits.maxItems : MAX_PDF_PAGE_TEXT_ITEMS;
+    const isCurrent = limits.isCurrent;
+    const rows = [];
+    let chars = 0;
+    const stream = page.streamTextContent({ includeMarkedContent: false });
+    // PDF.js may return a ReadableStream or an async iterable of chunks.
+    const reader = typeof stream?.getReader === 'function'
+        ? stream.getReader()
+        : null;
+    if (reader) {
+        while (true) {
+            throwIfCancelled(isCurrent);
+            const { done, value } = await reader.read();
+            if (done) break;
+            const items = Array.isArray(value?.items) ? value.items
+                : (Array.isArray(value) ? value : [value]);
+            for (const item of items) {
+                const row = rowFromTextItem(item);
+                if (!row) continue;
+                chars += row.str.length;
+                if (rows.length >= maxItems || chars > maxChars) {
+                    try { await reader.cancel(); } catch { /* ignore */ }
+                    throw new Error(
+                        'This PDF page exceeds the safe text extraction limit ' +
+                        '(' + maxChars + ' characters).');
+                }
+                rows.push(row);
+            }
+        }
+        return rows;
+    }
+    for await (const chunk of stream) {
+        throwIfCancelled(isCurrent);
+        const items = Array.isArray(chunk?.items) ? chunk.items
+            : (Array.isArray(chunk) ? chunk : [chunk]);
+        for (const item of items) {
+            const row = rowFromTextItem(item);
+            if (!row) continue;
+            chars += row.str.length;
+            if (rows.length >= maxItems || chars > maxChars) {
+                throw new Error(
+                    'This PDF page exceeds the safe text extraction limit ' +
+                    '(' + maxChars + ' characters).');
+            }
+            rows.push(row);
+        }
+    }
+    return rows;
+}
+
+function blocksFromParagraphs(paragraphs) {
     const blocks = [];
-    let used = 0;
     for (const paragraph of paragraphs) {
-        const remaining = maxChars - used;
-        if (remaining <= 0) break;
-        const clipped = paragraph.length > remaining
-            ? paragraph.slice(0, remaining)
-            : paragraph;
-        const entry = speechBlock('text', clipped);
-        if (!entry) continue;
-        used += entry.content.length;
-        blocks.push(entry);
-        if (paragraph.length > remaining) break;
+        const entry = speechBlock('text', paragraph);
+        if (entry) blocks.push(entry);
     }
     return blocks;
 }
 
 /**
  * Convert PDF.js text items into speech blocks with basic reading order:
- * top-to-bottom, left-to-right, with a coarse two-column split when widths
- * clearly separate into left/right clusters.
+ * top-to-bottom, left-to-right, with a coarse two-column split only when the
+ * partition accounts for every item (no silent drops).
  */
 export function blocksFromPdfTextContent(textContent, options = {}) {
-    const maxChars = Number.isInteger(options.maxChars)
-        ? options.maxChars
-        : MAX_PDF_PAGE_TEXT_CHARS;
-    const rows = collectPdfTextRows(textContent);
+    const rows = Array.isArray(textContent?.items)
+        ? collectPdfTextRows(textContent, options)
+        : (Array.isArray(textContent) ? textContent : []);
     if (!rows.length) return [];
-    return blocksFromParagraphs(
-        groupPdfParagraphs(orderPdfTextItems(rows)), maxChars);
+    return blocksFromParagraphs(groupPdfParagraphs(orderPdfTextItems(rows)));
+}
+
+function byReadingOrder(a, b) {
+    return (b.y - a.y) || (a.x - b.x);
 }
 
 function orderPdfTextItems(rows) {
     if (rows.length < 4) {
-        return [...rows].sort((a, b) => (b.y - a.y) || (a.x - b.x));
+        return [...rows].sort(byReadingOrder);
     }
     const xs = rows.map((row) => row.x).sort((a, b) => a - b);
     const minX = xs[0];
     const maxX = xs[xs.length - 1];
     const span = maxX - minX;
     if (!(span > 120)) {
-        return [...rows].sort((a, b) => (b.y - a.y) || (a.x - b.x));
+        return [...rows].sort(byReadingOrder);
     }
     const mid = minX + span / 2;
-    const left = rows.filter((row) => row.x < mid - span * 0.08);
-    const right = rows.filter((row) => row.x > mid + span * 0.08);
-    // Require a meaningful split into both columns before using column order.
-    if (left.length < 2 || right.length < 2 ||
-        left.length + right.length < rows.length * 0.7) {
-        return [...rows].sort((a, b) => (b.y - a.y) || (a.x - b.x));
+    const gap = span * 0.08;
+    const left = [];
+    const right = [];
+    for (const row of rows) {
+        if (row.x < mid - gap) left.push(row);
+        else if (row.x > mid + gap) right.push(row);
+        else {
+            // Middle/spanning items break a clean two-column partition.
+            return [...rows].sort(byReadingOrder);
+        }
     }
-    const byReading = (a, b) => (b.y - a.y) || (a.x - b.x);
-    return [...left].sort(byReading).concat([...right].sort(byReading));
+    // Only column-order when every item is assigned exactly once.
+    if (left.length < 2 || right.length < 2 ||
+        left.length + right.length !== rows.length) {
+        return [...rows].sort(byReadingOrder);
+    }
+    return left.sort(byReadingOrder).concat(right.sort(byReadingOrder));
 }
 
 function groupPdfParagraphs(orderedItems) {
@@ -238,19 +323,26 @@ export async function extractPdfPageBlocks(pdf, pageNumber, options = {}) {
     if (!Number.isInteger(n) || n < 1 || n > pdf.numPages) {
         throw new Error('PDF page is out of range');
     }
+    throwIfCancelled(options.isCurrent);
     const page = await pdf.getPage(n);
-    let textContent;
+    let rows;
     try {
-        textContent = await page.getTextContent({
-            // Avoid marked-content noise; keep natural reading strings.
-            includeMarkedContent: false,
-        });
+        throwIfCancelled(options.isCurrent);
+        if (typeof page.streamTextContent === 'function') {
+            rows = await collectRowsFromPageStream(page, options);
+        } else {
+            const textContent = await page.getTextContent({
+                includeMarkedContent: false,
+            });
+            throwIfCancelled(options.isCurrent);
+            rows = collectPdfTextRows(textContent, options);
+        }
     } finally {
         if (typeof page.cleanup === 'function') {
             try { page.cleanup(); } catch { /* ignore */ }
         }
     }
-    const blocks = blocksFromPdfTextContent(textContent, options);
+    const blocks = blocksFromParagraphs(groupPdfParagraphs(orderPdfTextItems(rows)));
     if (!blocks.length) {
         throw new Error(
             'This PDF page has no extractable text. Scanned or image-only ' +
@@ -260,23 +352,38 @@ export async function extractPdfPageBlocks(pdf, pageNumber, options = {}) {
 }
 
 /**
- * Probe the first pages for any extractable text so image-only PDFs fail
- * closed at open time rather than on every page click.
+ * Probe pages (up to the document page count / MAX_PDF_PAGES) for extractable
+ * text so image-only PDFs fail closed at open. Cancel via isCurrent().
  */
 export async function assertPdfHasExtractableText(pdf, options = {}) {
     const probePages = Math.min(
         pdf.numPages,
-        Number.isInteger(options.probePages) ? options.probePages : 3,
+        MAX_PDF_PAGES,
+        Number.isInteger(options.probePages) ? options.probePages : pdf.numPages,
     );
     let sawText = false;
+    let documentChars = 0;
     for (let pageNumber = 1; pageNumber <= probePages; pageNumber++) {
+        throwIfCancelled(options.isCurrent);
         try {
-            await extractPdfPageBlocks(pdf, pageNumber, {
+            const blocks = await extractPdfPageBlocks(pdf, pageNumber, {
                 maxChars: MAX_PDF_PAGE_TEXT_CHARS,
+                isCurrent: options.isCurrent,
             });
+            documentChars += blocks.reduce(
+                (sum, block) => sum + block.content.length, 0);
+            if (documentChars > MAX_PDF_DOCUMENT_TEXT_CHARS) {
+                throw new Error(
+                    'This PDF exceeds the safe document text extraction limit.');
+            }
             sawText = true;
             break;
         } catch (error) {
+            if (error?.name === 'AbortError') throw error;
+            if (/exceeds the safe .*extraction limit/i.test(
+                String(error?.message || error))) {
+                throw error;
+            }
             if (!/no extractable text/i.test(String(error?.message || error))) {
                 throw error;
             }

@@ -9,6 +9,7 @@ import {
     MAX_PDF_DOCUMENT_BYTES,
     assertPdfHasExtractableText,
     buildPdfPageToc,
+    destroyPdfSession,
     extractPdfPageBlocks,
     openPdfDocument,
     parsePdfPageHref,
@@ -169,11 +170,9 @@ async function ensurePdfjs() {
 }
 
 async function disposePdfDocument(source) {
-    if (!source?.pdf) return;
+    if (!source) return;
     try {
-        if (typeof source.pdf.cleanup === 'function') {
-            await source.pdf.cleanup();
-        }
+        await destroyPdfSession(source);
     } catch (error) {
         console.warn('PDF cleanup failed', error);
     }
@@ -1002,13 +1001,15 @@ async function loadPdfDocument(file, requestId) {
     });
     const pdfjs = await ensurePdfjs();
     if (requestId !== fileRequestId) return;
-    const pdf = await openPdfDocument(bytes, pdfjs);
+    const session = await openPdfDocument(bytes, pdfjs);
     let committed = false;
     try {
         if (requestId !== fileRequestId) return;
-        await assertPdfHasExtractableText(pdf);
+        await assertPdfHasExtractableText(session.pdf, {
+            isCurrent: () => requestId === fileRequestId,
+        });
         if (requestId !== fileRequestId) return;
-        const toc = buildPdfPageToc(pdf.numPages, file.name);
+        const toc = buildPdfPageToc(session.pdf.numPages, file.name);
         const identity = await identityPromise;
         if (requestId !== fileRequestId) return;
         if (!commitOrSkipDocumentIdentity(
@@ -1019,7 +1020,12 @@ async function loadPdfDocument(file, requestId) {
         chapterRequestId++;
         book = null;
         textDocument = null;
-        pdfDocument = { pdf, title: file.name, pageCount: pdf.numPages };
+        pdfDocument = {
+            pdf: session.pdf,
+            loadingTask: session.loadingTask,
+            title: file.name,
+            pageCount: session.pdf.numPages,
+        };
         deferredChapterEndRevision = null;
         if (oldBook) retiringBooks.add(oldBook);
         if (oldPdf) void disposePdfDocument(oldPdf);
@@ -1034,7 +1040,7 @@ async function loadPdfDocument(file, requestId) {
         await offerResumeOrStart();
         await refreshBookmarksPanel();
     } finally {
-        if (!committed) await disposePdfDocument({ pdf });
+        if (!committed) await disposePdfDocument(session);
     }
 }
 
@@ -1121,7 +1127,9 @@ async function startPdfPageLoad(href, title, forcedStartIndex = null, resumeCand
         throw new Error('Invalid PDF page reference');
     }
     try {
-        const blocks = await extractPdfPageBlocks(source.pdf, pageNumber);
+        const blocks = await extractPdfPageBlocks(source.pdf, pageNumber, {
+            isCurrent: () => source === pdfDocument && requestId === chapterRequestId,
+        });
         if (source !== pdfDocument || requestId !== chapterRequestId) return;
         currentChapterBlocks = blocks;
         currentChapterCanonicalBlocks = blocks;
