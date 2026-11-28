@@ -25,6 +25,25 @@ global.browser = {
     }
 };
 
+const localVoiceSettings = (voice) => ({
+    pendingTtsBackend: 'mediapipe',
+    pendingMediaPipeVariant: 'cpu',
+    pendingLocalVoice: voice,
+});
+
+function installMediaPipeBlobUrls(...urls) {
+    const synthesize = jest.fn(async () => ({
+        samples: new Float32Array([0.2, -0.1, 0.3]), sampleRateHz: 24000,
+    }));
+    MediaPipeKokoroProvider.mockImplementation(() => ({
+        synthesize, cancel: jest.fn(async () => {}), close: jest.fn(async () => {}),
+    }));
+    let i = 0;
+    URL.createObjectURL = jest.fn(() => urls[Math.min(i++, urls.length - 1)]);
+    URL.revokeObjectURL = jest.fn();
+    return synthesize;
+}
+
 describe('AudioManager', () => {
     let audioManager;
 
@@ -288,27 +307,9 @@ describe('AudioManager', () => {
     });
 
     test('pinned mismatched cache detaches without leaking the new Blob URL', async () => {
-        const synthesize = jest.fn(async () => ({
-            samples: new Float32Array([0.2, -0.1, 0.3]), sampleRateHz: 24000,
-        }));
-        MediaPipeKokoroProvider.mockImplementation(() => ({
-            synthesize, cancel: jest.fn(async () => {}), close: jest.fn(async () => {}),
-        }));
-        URL.createObjectURL = jest.fn()
-            .mockReturnValueOnce('blob:first')
-            .mockReturnValueOnce('blob:second');
-        URL.revokeObjectURL = jest.fn();
-
-        const localA = {
-            pendingTtsBackend: 'mediapipe',
-            pendingMediaPipeVariant: 'cpu',
-            pendingLocalVoice: 'af_heart',
-        };
-        const localB = {
-            pendingTtsBackend: 'mediapipe',
-            pendingMediaPipeVariant: 'cpu',
-            pendingLocalVoice: 'af_bella',
-        };
+        installMediaPipeBlobUrls('blob:first', 'blob:second');
+        const localA = localVoiceSettings('af_heart');
+        const localB = localVoiceSettings('af_bella');
         audioManager.setSentences([{ text: 'Cached then exported' }]);
         await expect(audioManager.getAudio(0, { settings: localA }))
             .resolves.toBe('blob:first');
@@ -328,27 +329,9 @@ describe('AudioManager', () => {
     });
 
     test('settings-matched pin before getAudio does not bind a mismatched Blob URL', async () => {
-        const synthesize = jest.fn(async () => ({
-            samples: new Float32Array([0.2, -0.1, 0.3]), sampleRateHz: 24000,
-        }));
-        MediaPipeKokoroProvider.mockImplementation(() => ({
-            synthesize, cancel: jest.fn(async () => {}), close: jest.fn(async () => {}),
-        }));
-        URL.createObjectURL = jest.fn()
-            .mockReturnValueOnce('blob:voice-a')
-            .mockReturnValueOnce('blob:voice-b');
-        URL.revokeObjectURL = jest.fn();
-
-        const localA = {
-            pendingTtsBackend: 'mediapipe',
-            pendingMediaPipeVariant: 'cpu',
-            pendingLocalVoice: 'af_heart',
-        };
-        const localB = {
-            pendingTtsBackend: 'mediapipe',
-            pendingMediaPipeVariant: 'cpu',
-            pendingLocalVoice: 'af_bella',
-        };
+        installMediaPipeBlobUrls('blob:voice-a', 'blob:voice-b');
+        const localA = localVoiceSettings('af_heart');
+        const localB = localVoiceSettings('af_bella');
         audioManager.setSentences([{ text: 'Export under new voice' }]);
         await expect(audioManager.getAudio(0, { settings: localA }))
             .resolves.toBe('blob:voice-a');
@@ -364,18 +347,8 @@ describe('AudioManager', () => {
     });
 
     test('defaultSettings from document load are used without re-reading storage', async () => {
-        const synthesize = jest.fn(async () => ({
-            samples: new Float32Array([0.2, -0.1, 0.3]), sampleRateHz: 24000,
-        }));
-        MediaPipeKokoroProvider.mockImplementation(() => ({
-            synthesize, cancel: jest.fn(async () => {}), close: jest.fn(async () => {}),
-        }));
-        URL.createObjectURL = jest.fn(() => 'blob:session');
-        audioManager.setDefaultSettings({
-            pendingTtsBackend: 'mediapipe',
-            pendingMediaPipeVariant: 'cpu',
-            pendingLocalVoice: 'af_heart',
-        });
+        installMediaPipeBlobUrls('blob:session');
+        audioManager.setDefaultSettings(localVoiceSettings('af_heart'));
         // Storage now claims FastAPI (other tab), but session defaults win.
         browser.storage.local.get.mockResolvedValue({
             pendingTtsBackend: 'fastapi',

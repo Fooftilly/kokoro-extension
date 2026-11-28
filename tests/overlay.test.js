@@ -134,6 +134,25 @@ function installExportAudioFetchMock() {
     }
 }
 
+/** Mock getAudio that fills audioCache so export can pin by entry identity. */
+function mockCachedGetAudio(manager, url = 'data:audio/mpeg;base64,SUQz') {
+    manager.audioCache = new Map();
+    manager.getAudio.mockImplementation((index) => {
+        const entry = { pending: false, url, promise: Promise.resolve(url) };
+        manager.audioCache.set(index, entry);
+        return entry.promise;
+    });
+}
+
+function installDownloadChangeListeners() {
+    const listeners = new Set();
+    browser.downloads.onChanged = {
+        addListener: jest.fn(fn => listeners.add(fn)),
+        removeListener: jest.fn(fn => listeners.delete(fn)),
+    };
+    return listeners;
+}
+
 function setupDOM() {
     document.body.className = '';
     document.body.innerHTML = `
@@ -624,19 +643,9 @@ describe('overlay.js logic', () => {
         const { AudioManager } = require('../audio-manager.js');
         const manager = AudioManager.mock.results[0].value;
         const release = jest.fn();
-        manager.audioCache = new Map();
         manager.pinAudio.mockReturnValue(release);
-        manager.getAudio.mockImplementation((index) => {
-            const url = 'data:audio/mpeg;base64,SUQz';
-            const entry = { pending: false, url, promise: Promise.resolve(url) };
-            manager.audioCache.set(index, entry);
-            return entry.promise;
-        });
-        const listeners = new Set();
-        browser.downloads.onChanged = {
-            addListener: jest.fn(fn => listeners.add(fn)),
-            removeListener: jest.fn(fn => listeners.delete(fn)),
-        };
+        mockCachedGetAudio(manager);
+        const listeners = installDownloadChangeListeners();
         browser.downloads.download.mockResolvedValue(17);
 
         document.getElementById('saveAudio').click();
@@ -658,19 +667,9 @@ describe('overlay.js logic', () => {
         const { AudioManager } = require('../audio-manager.js');
         const manager = AudioManager.mock.results[0].value;
         const release = jest.fn();
-        manager.audioCache = new Map();
         manager.pinAudio.mockReturnValue(release);
-        manager.getAudio.mockImplementation((index) => {
-            const url = 'data:audio/mpeg;base64,SUQz';
-            const entry = { pending: false, url, promise: Promise.resolve(url) };
-            manager.audioCache.set(index, entry);
-            return entry.promise;
-        });
-        const listeners = new Set();
-        browser.downloads.onChanged = {
-            addListener: jest.fn(fn => listeners.add(fn)),
-            removeListener: jest.fn(fn => listeners.delete(fn)),
-        };
+        mockCachedGetAudio(manager);
+        const listeners = installDownloadChangeListeners();
         browser.downloads.download.mockRejectedValueOnce(new Error('Download rejected'));
         document.getElementById('saveAudio').click();
         await new Promise(resolve => setTimeout(resolve, 0));
@@ -684,13 +683,7 @@ describe('overlay.js logic', () => {
         await new Promise(resolve => setTimeout(resolve, 100));
         const { AudioManager } = require('../audio-manager.js');
         const manager = AudioManager.mock.results[0].value;
-        manager.audioCache = new Map();
-        manager.getAudio.mockImplementation((index) => {
-            const url = 'blob:local-wav';
-            const entry = { pending: false, url, promise: Promise.resolve(url) };
-            manager.audioCache.set(index, entry);
-            return entry.promise;
-        });
+        mockCachedGetAudio(manager, 'blob:local-wav');
         // Document-load snapshot (not Save-time storage) selects the backend.
         browser.storage.local.get.mockResolvedValue({
             pendingText: 'Hello world',
