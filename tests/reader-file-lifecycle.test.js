@@ -789,7 +789,7 @@ describe('EPUB file read/parse lifecycle', () => {
     });
 
     test('rejects unknown document extensions before reading bytes', async () => {
-        selectFile('notes.pdf', 'application/pdf');
+        selectFile('notes.rtf', 'application/rtf');
         await tick();
         expect(document.getElementById('filePickerOverlay').style.display).toBe('block');
         expect(document.getElementById('errorMsg').textContent).toContain('Unsupported format');

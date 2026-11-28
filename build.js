@@ -60,6 +60,7 @@ const SRC_FILES = [
     'reader-progress.js',
     'document-formats.js',
     'docx-reader.js',
+    'pdf-reader.js',
     'reader.css'
 ];
 
@@ -89,6 +90,12 @@ const EPUBJS_DEST = 'epub.min.js';
 
 const JSZIP_SRC = 'node_modules/jszip/dist/jszip.min.js';
 const JSZIP_DEST = 'jszip.min.js';
+
+// Packaged PDF.js (Apache-2.0) for local text PDF reading — never load from CDN.
+const PDFJS_SRC = 'node_modules/pdfjs-dist/build/pdf.min.mjs';
+const PDFJS_DEST = 'pdf.min.mjs';
+const PDFJS_WORKER_SRC = 'node_modules/pdfjs-dist/build/pdf.worker.min.mjs';
+const PDFJS_WORKER_DEST = 'pdf.worker.min.mjs';
 
 // Executable TTS SDKs and WASM ship inside the signed extension package.
 // Model weights/data are downloaded separately, only with user consent.
@@ -177,6 +184,7 @@ function createManifest(browser) {
                     "compromise.js", "compromise-dates.min.js", "compromise-numbers.min.js",
                     "transliteration-lite.js", "purify.js", "theme-init.js",
                     "reader.html", "reader.js", "reader-progress.js", "reader.css", "document-formats.js", "docx-reader.js",
+                    "pdf-reader.js", "pdf.min.mjs", "pdf.worker.min.mjs",
                     "epub.min.js", "jszip.min.js"],
                 matches: ["<all_urls>"]
             }
@@ -379,6 +387,11 @@ function build() {
         // Copy epubjs & jszip
         copyFile(path.join(__dirname, EPUBJS_SRC), path.join(browserDist, EPUBJS_DEST));
         copyFile(path.join(__dirname, JSZIP_SRC), path.join(browserDist, JSZIP_DEST));
+
+        // Copy PDF.js + worker next to reader modules (same-origin import.meta.url).
+        copyFile(path.join(__dirname, PDFJS_SRC), path.join(browserDist, PDFJS_DEST));
+        copyFile(path.join(__dirname, PDFJS_WORKER_SRC),
+            path.join(browserDist, PDFJS_WORKER_DEST));
 
 
         // Always copy official SDK executables locally; never load executable CDN assets.

@@ -18,7 +18,9 @@ describe('document formats accepted by reader (#13)', () => {
     test.each([
         ['book.epub', '', 'epub'],
         ['report.DOCX', '', 'docx'],
+        ['paper.PDF', '', 'pdf'],
         ['no-extension', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'docx'],
+        ['no-extension', 'application/pdf', 'pdf'],
         ['notes.txt', '', 'text'],
         ['notes.text', '', 'text'],
         ['README.MD', '', 'markdown'],
@@ -34,10 +36,10 @@ describe('document formats accepted by reader (#13)', () => {
         expect(detectDocumentFormat({ name, type })).toBe(expected);
     });
 
-    test('rejects PDF, legacy DOC, and misleading unknown extensions explicitly', () => {
-        expect(() => detectDocumentFormat({ name: 'book.pdf', type: 'application/pdf' }))
-            .toThrow(/Unsupported format/);
+    test('rejects legacy DOC and misleading unknown extensions explicitly', () => {
         expect(() => detectDocumentFormat({ name: 'archive.doc', type: '' }))
+            .toThrow(/Unsupported format/);
+        expect(() => detectDocumentFormat({ name: 'notes.rtf', type: '' }))
             .toThrow(/Unsupported format/);
     });
 });

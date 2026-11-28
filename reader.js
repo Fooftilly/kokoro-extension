@@ -6,6 +6,14 @@ import {
 } from './document-formats.js';
 import { MAX_DOCX_ARCHIVE_BYTES, parseDocxDocument } from './docx-reader.js';
 import {
+    MAX_PDF_DOCUMENT_BYTES,
+    assertPdfHasExtractableText,
+    buildPdfPageToc,
+    extractPdfPageBlocks,
+    openPdfDocument,
+    parsePdfPageHref,
+} from './pdf-reader.js';
+import {
     documentIdFromDigest,
     hexDigestFromBuffer,
     fingerprintChapterBlocks,
@@ -54,7 +62,9 @@ const addBookmarkButton = document.getElementById('addBookmark');
 const clearBookmarksButton = document.getElementById('clearBookmarks');
 
 let book = null; // EPUB object
-let textDocument = null; // parsed TXT/Markdown/HTML document, not an EPUB archive
+let textDocument = null; // parsed TXT/Markdown/HTML/DOCX document, not an EPUB archive
+let pdfDocument = null; // open PDF.js document + metadata (#198)
+let pdfjsApi = null; // packaged pdf.min.mjs module
 let activeTextChapterWrite = Promise.resolve();
 let currentChapterBlocks = []; // For tracking progress
 let currentToc = []; // For resolving chapter titles
@@ -131,7 +141,42 @@ const fileNameDisplay = document.getElementById('file-name-display');
 // --- Event Listeners ---
 
 function hasOpenDocument() {
-    return Boolean(book || textDocument);
+    return Boolean(book || textDocument || pdfDocument);
+}
+
+async function ensurePdfjs() {
+    if (pdfjsApi) return pdfjsApi;
+    // Extension-packaged modules only (never CDN). Prefer runtime.getURL so
+    // Jest can require(reader.js) without import.meta.
+    const pdfUrl = typeof browser?.runtime?.getURL === 'function'
+        ? browser.runtime.getURL('pdf.min.mjs')
+        : 'pdf.min.mjs';
+    const workerUrl = typeof browser?.runtime?.getURL === 'function'
+        ? browser.runtime.getURL('pdf.worker.min.mjs')
+        : 'pdf.worker.min.mjs';
+    const mod = await import(pdfUrl);
+    const api = mod?.default && typeof mod.default.getDocument === 'function'
+        ? mod.default
+        : mod;
+    if (!api || typeof api.getDocument !== 'function') {
+        throw new Error('Packaged PDF.js reader is unavailable');
+    }
+    if (api.GlobalWorkerOptions) {
+        api.GlobalWorkerOptions.workerSrc = workerUrl;
+    }
+    pdfjsApi = api;
+    return pdfjsApi;
+}
+
+async function disposePdfDocument(source) {
+    if (!source?.pdf) return;
+    try {
+        if (typeof source.pdf.cleanup === 'function') {
+            await source.pdf.cleanup();
+        }
+    } catch (error) {
+        console.warn('PDF cleanup failed', error);
+    }
 }
 
 function hideResumeBanner() {
@@ -682,6 +727,7 @@ async function handleFile(file) {
     try {
         const format = detectDocumentFormat(file);
         if (format === 'epub') await loadEpub(file, requestId);
+        else if (format === 'pdf') await loadPdfDocument(file, requestId);
         else await loadTextDocument(file, format, requestId);
         // Only a successfully parsed and current document may hide the picker.
         if (requestId === fileRequestId) {
@@ -822,11 +868,14 @@ async function resolveEpubToc(candidate, requestId) {
 
 function commitOpenedEpub(candidate, toc) {
     const oldBook = book;
+    const oldPdf = pdfDocument;
     chapterRequestId++;
     book = candidate;
     textDocument = null;
+    pdfDocument = null;
     deferredChapterEndRevision = null;
     if (oldBook) retiringBooks.add(oldBook);
+    if (oldPdf) void disposePdfDocument(oldPdf);
     currentChapterBlocks = [];
     currentChapterCanonicalBlocks = [];
     currentActiveHref = null;
@@ -914,11 +963,14 @@ async function loadTextDocument(file, format, requestId) {
     // Preserve the existing EPUB if reading/parsing fails, and hand its image
     // URLs over only after the text chapter has rendered in the iframe.
     const oldBook = book;
+    const oldPdf = pdfDocument;
     chapterRequestId++;
     book = null;
     textDocument = { blocks, title: file.name };
+    pdfDocument = null;
     deferredChapterEndRevision = null;
     if (oldBook) retiringBooks.add(oldBook);
+    if (oldPdf) void disposePdfDocument(oldPdf);
     currentChapterBlocks = blocks;
     currentChapterCanonicalBlocks = blocks;
     currentActiveHref = null;
@@ -932,6 +984,58 @@ async function loadTextDocument(file, format, requestId) {
     // async player write must *not* keep Cancel visible after this point.
     // Subsequent storage failures are reported by startTextChapterLoad() in
     // the reader's visible alert, without rolling back a committed document.
+}
+
+async function loadPdfDocument(file, requestId) {
+    if (Number.isFinite(file.size) && file.size > MAX_PDF_DOCUMENT_BYTES) {
+        throw new Error('PDF files larger than 32 MiB are not supported');
+    }
+    loadingStatus.textContent = 'Loading PDF...';
+    const bytes = await readDocumentBuffer(file);
+    if (requestId !== fileRequestId) return;
+    const identityGeneration = ++documentIdentityGeneration;
+    const priorProgressRevision = currentDocumentMeta?.progressRevision || 0;
+    const identityPromise = hashDocumentIdentity(
+        file, 'pdf', bytes, identityGeneration).catch((error) => {
+        console.warn('Cannot hash document for reader progress', error);
+        return null;
+    });
+    const pdfjs = await ensurePdfjs();
+    if (requestId !== fileRequestId) return;
+    const pdf = await openPdfDocument(bytes, pdfjs);
+    let committed = false;
+    try {
+        if (requestId !== fileRequestId) return;
+        await assertPdfHasExtractableText(pdf);
+        if (requestId !== fileRequestId) return;
+        const toc = buildPdfPageToc(pdf.numPages, file.name);
+        const identity = await identityPromise;
+        if (requestId !== fileRequestId) return;
+        if (!commitOrSkipDocumentIdentity(
+            identity, priorProgressRevision, identityGeneration)) return;
+
+        const oldBook = book;
+        const oldPdf = pdfDocument;
+        chapterRequestId++;
+        book = null;
+        textDocument = null;
+        pdfDocument = { pdf, title: file.name, pageCount: pdf.numPages };
+        deferredChapterEndRevision = null;
+        if (oldBook) retiringBooks.add(oldBook);
+        if (oldPdf) void disposePdfDocument(oldPdf);
+        currentChapterBlocks = [];
+        currentChapterCanonicalBlocks = [];
+        currentActiveHref = null;
+        currentToc = toc;
+        resumeAutoplayForNewDocument();
+        renderChapterList(toc, { autoActivate: false });
+        committed = true;
+        resetBookmarkProgressFence();
+        await offerResumeOrStart();
+        await refreshBookmarksPanel();
+    } finally {
+        if (!committed) await disposePdfDocument({ pdf });
+    }
 }
 
 async function startTextChapterLoad(title, forcedStartIndex = null, resumeCandidate = null,
@@ -972,6 +1076,58 @@ async function startTextChapterLoad(title, forcedStartIndex = null, resumeCandid
     } catch (error) {
         if (source !== textDocument || requestId !== chapterRequestId) return;
         chapterErrorMsg.textContent = 'Failed to load document: ' + String(error.message || error);
+        chapterErrorMsg.hidden = false;
+        throw error;
+    }
+}
+
+async function startPdfPageLoad(href, title, forcedStartIndex = null, resumeCandidate = null,
+    bookmarkJump = null) {
+    const source = pdfDocument;
+    const requestId = ++chapterRequestId;
+    resetBookmarkProgressFence();
+    chapterErrorMsg.hidden = true;
+    chapterErrorMsg.textContent = '';
+    if (!source?.pdf) return;
+    const pageNumber = parsePdfPageHref(href);
+    if (!pageNumber) {
+        throw new Error('Invalid PDF page reference');
+    }
+    try {
+        const blocks = await extractPdfPageBlocks(source.pdf, pageNumber);
+        if (source !== pdfDocument || requestId !== chapterRequestId) return;
+        currentChapterBlocks = blocks;
+        currentChapterCanonicalBlocks = blocks;
+        let startIndex = Number.isInteger(forcedStartIndex) ? forcedStartIndex : 0;
+        let suppressAutoplay = Boolean(resumeCandidate) ||
+            Number.isInteger(forcedStartIndex) || Boolean(bookmarkJump);
+        if (resumeCandidate && forcedStartIndex === 0 && !bookmarkJump) {
+            const target = resolveResumeTarget({
+                record: resumeCandidate,
+                flatToc,
+                chapterFingerprint: fingerprintChapterBlocks(blocks),
+                chapterBlockCount: blocks.length,
+            });
+            if (shouldOfferResumeChoice(target, flatToc[0]?.href)) {
+                showResumeBanner(target);
+                startIndex = 0;
+            } else if (!target.ok) {
+                void clearCurrentDocumentProgress();
+            }
+        }
+        if (bookmarkJump) {
+            const playback = applyBookmarkJumpPlayback(bookmarkJump, blocks);
+            startIndex = playback.startIndex;
+            suppressAutoplay = playback.suppressAutoplay;
+        }
+        await sendToPlayer(blocks, title || source.title,
+            blocks.map((entry) => entry.content).join(' ').slice(0, 100),
+            startIndex, requestId, null, false, href,
+            { suppressAutoplay });
+    } catch (error) {
+        if (source !== pdfDocument || requestId !== chapterRequestId) return;
+        chapterErrorMsg.textContent = 'Failed to load PDF page: ' +
+            String(error.message || error);
         chapterErrorMsg.hidden = false;
         throw error;
     }
@@ -1223,6 +1379,11 @@ function activateChapter(item, itemEl, continuePlaying = false, forcedStartIndex
     updateNavButtons();
     if (book) {
         startChapterLoad(item.href, item.label, continuePlaying, forcedStartIndex, options);
+    } else if (pdfDocument) {
+        activeTextChapterWrite = startPdfPageLoad(
+            item.href, item.label, forcedStartIndex,
+            options.resumeCandidate || null, options.bookmarkJump || null);
+        void activeTextChapterWrite.catch(() => {});
     } else if (textDocument) {
         activeTextChapterWrite = startTextChapterLoad(
             item.label, forcedStartIndex, options.resumeCandidate || null,
