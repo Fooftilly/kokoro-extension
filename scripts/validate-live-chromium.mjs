@@ -1912,7 +1912,8 @@ async function acceptFastApiPreferenceHonor(context, extensionId, speechStub) {
 // Nested helpers keep CodeFactor method complexity under the gate while the
 // WAV fetch, revision recheck, and Prev/Next assertions stay atomic.
 async function pollRealEpubChapterReady(
-    { title, previousRevision, previousAudioUrl, previousAudioSha256, backend }) {
+    { title, previousRevision, previousAudioUrl, previousAudioSha256, backend,
+        thirdBlocks }) {
     // Must match READER_ACCEPTANCE_SPEECH in the harness module scope copy.
     const expectedSpeech = {
         'First Chapter': 'Hello first chapter.',
@@ -1956,12 +1957,9 @@ async function pollRealEpubChapterReady(
         const blocks = stored.pendingContent;
         if (!Array.isArray(blocks)) return false;
         if (title === 'Third Chapter') {
-            const expected = [
-                'Hello third chapter.',
-                'Hello third chapter block two.',
-                'Hello third chapter block three.',
-            ];
-            return blocks.length === expected.length &&
+            const expected = Array.isArray(thirdBlocks) ? thirdBlocks : [];
+            return expected.length > 0 &&
+                blocks.length === expected.length &&
                 expected.every((text, i) => blocks[i]?.content === text);
         }
         return blocks.length === 1 && blocks[0].content === expectedSpeech;
@@ -2851,6 +2849,8 @@ async function assertStaleProgressFenced(page, {
     const progressBeforeStale = await readDocumentProgressRecord(page, progressKey);
     const bookmarksBeforeStale = await readBookmarkSnapshot(page, bookmarksKey);
     const addEnabledBeforeStale = await readAddBookmarkEnabled(page);
+    const handledBefore = await page.evaluate(() =>
+        Number(window.__kokoroReadingProgressHandled) || 0);
     const overlayFrame = page.frames().find((frame) =>
         (frame.url() || '').includes('overlay.html'));
     if (!overlayFrame) {
@@ -2863,7 +2863,9 @@ async function assertStaleProgressFenced(page, {
             revision: staleRevision,
         }, window.location.origin);
     }, { staleRevision: priorRevision, blockIndex: staleBlock });
-    await page.waitForTimeout(600);
+    await page.waitForFunction((before) =>
+        (Number(window.__kokoroReadingProgressHandled) || 0) > before,
+    handledBefore, { timeout: 5000 });
     const progressAfterStale = await readDocumentProgressRecord(page, progressKey);
     const bookmarksAfterStale = await readBookmarkSnapshot(page, bookmarksKey);
     const addEnabledAfterStale = await readAddBookmarkEnabled(page);
@@ -3198,7 +3200,7 @@ async function acceptRealEpubReader(page, extensionId, backend) {
                 const snapshot = await page.evaluate(
                     pollRealEpubChapterReady,
                     { title, previousRevision, previousAudioUrl, previousAudioSha256,
-                        backend },
+                        backend, thirdBlocks: READER_ACCEPTANCE_THIRD_BLOCKS },
                 );
                 if (snapshot && typeof snapshot === 'object' &&
                     snapshot.title === title && snapshot.nav) {

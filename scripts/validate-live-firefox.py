@@ -2716,7 +2716,8 @@ def accept_fastapi_preference_honor(driver, origin, api_url, speech_hits):
 # Browser-side readiness poll kept as one string so CodeFactor scores the
 # Python orchestration helpers, not the embedded Chromium-parity JS.
 _EPUB_CHAPTER_READY_SCRIPT = """
-const [title, previousRevision, previousAudioUrl, previousAudioSha256, backend, done] = arguments;
+const [title, previousRevision, previousAudioUrl, previousAudioSha256, backend,
+    thirdBlocks, done] = arguments;
 (async () => {
     // Keep in sync with reader_acceptance_epub.READER_ACCEPTANCE_SPEECH.
     const expectedSpeech = {
@@ -2761,12 +2762,9 @@ const [title, previousRevision, previousAudioUrl, previousAudioSha256, backend, 
         const blocks = stored.pendingContent;
         if (!Array.isArray(blocks)) return false;
         if (title === 'Third Chapter') {
-            const expected = [
-                'Hello third chapter.',
-                'Hello third chapter block two.',
-                'Hello third chapter block three.',
-            ];
-            return blocks.length === expected.length &&
+            const expected = Array.isArray(thirdBlocks) ? thirdBlocks : [];
+            return expected.length > 0 &&
+                blocks.length === expected.length &&
                 expected.every((text, i) => blocks[i]?.content === text);
         }
         return blocks.length === 1 && blocks[0].content === expectedSpeech;
@@ -2878,7 +2876,7 @@ def _poll_real_epub_chapter_ready(driver, title, previous_revision, previous_aud
     """Atomic reader+iframe WAV readiness poll (Firefox port of Chromium helper)."""
     return driver.execute_async_script(
         _EPUB_CHAPTER_READY_SCRIPT, title, previous_revision, previous_audio_url,
-        previous_audio_sha256, backend)
+        previous_audio_sha256, backend, list(READER_ACCEPTANCE_THIRD_BLOCKS))
 
 
 def _read_reader_nav_diagnostics(driver):
@@ -3229,6 +3227,8 @@ def _assert_stale_progress_fenced(
     bookmarks_before = _read_bookmark_snapshot(
         driver, bookmarks_key, document_id)
     add_before = _read_add_bookmark_enabled(driver)
+    handled_before = driver.execute_script(
+        "return Number(window.__kokoroReadingProgressHandled) || 0;")
     driver.switch_to.frame(driver.find_element(By.ID, "playerFrame"))
     driver.execute_script("""
         const staleRevision = arguments[0];
@@ -3240,7 +3240,10 @@ def _assert_stale_progress_fenced(
         }, window.location.origin);
     """, prior_revision, stale_block)
     driver.switch_to.default_content()
-    time.sleep(0.6)
+    WebDriverWait(driver, 5).until(
+        lambda d: (d.execute_script(
+            "return Number(window.__kokoroReadingProgressHandled) || 0;")
+            > handled_before))
     after = _read_document_progress_record(driver, progress_key)
     bookmarks_after = _read_bookmark_snapshot(
         driver, bookmarks_key, document_id)

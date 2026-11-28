@@ -15,6 +15,17 @@ const scriptsDir = path.join(root, 'scripts');
 const helperModule = path.join(scriptsDir, 'reader-progress-acceptance.mjs');
 const chromiumLive = path.join(scriptsDir, 'validate-live-chromium.mjs');
 const firefoxLive = path.join(scriptsDir, 'validate-live-firefox.py');
+const readerSource = path.join(root, 'reader.js');
+
+function stripJsComments(source) {
+    return String(source || '')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
+function stripPythonComments(source) {
+    return String(source || '').replace(/(^|[^'"])#.*$/gm, '$1');
+}
 
 function runHelperProbe(jsSnippet) {
     return spawnSync(process.execPath, ['--input-type=module', '-e', `
@@ -159,7 +170,8 @@ process.stdout.write(JSON.stringify({
         expect(source).toMatch(/preview\.revision/);
         expect(source).toMatch(/pendingStartIndex/);
         expect(source).toMatch(/autoplayReader:\s*true/);
-        expect(source).toMatch(/Hello third chapter block two/);
+        expect(source).toMatch(/READER_ACCEPTANCE_THIRD_BLOCKS/);
+        expect(source).toMatch(/__kokoroReadingProgressHandled/);
         expect(source).not.toMatch(/blockIndex:\s*99/);
 
         // Fail closed if acceptRealEpubReader drops the stage invocation.
@@ -168,9 +180,19 @@ process.stdout.write(JSON.stringify({
         const nextFn = source.indexOf('\nasync function ', entryStart + 1);
         const entryBody = source.slice(
             entryStart, nextFn === -1 ? undefined : nextFn);
-        expect(entryBody).toMatch(
+        const liveBody = stripJsComments(entryBody);
+        expect(liveBody).toMatch(
             /const progressAcceptance = await acceptReaderProgressAndBookmarks\(/);
-        expect(entryBody).toMatch(/progressAcceptance,/);
+        expect(liveBody).toMatch(/progressAcceptance,/);
+
+        const sabotaged = entryBody.replace(
+            /const progressAcceptance = await acceptReaderProgressAndBookmarks\([\s\S]*?\);/,
+            '// const progressAcceptance = await acceptReaderProgressAndBookmarks(...);\n' +
+            '    const progressAcceptance = null;');
+        const sabotagedLive = stripJsComments(sabotaged);
+        expect(sabotagedLive).not.toMatch(
+            /const progressAcceptance = await acceptReaderProgressAndBookmarks\(/);
+        expect(sabotagedLive).toMatch(/progressAcceptance\s*=\s*null/);
     });
 
     test('Firefox live harness wires progress/bookmark acceptance stage', () => {
@@ -193,7 +215,8 @@ process.stdout.write(JSON.stringify({
         expect(source).toMatch(/preview\["revision"\]|preview\.get\("revision"\)/);
         expect(source).toMatch(/pendingStartIndex/);
         expect(source).toMatch(/autoplayReader/);
-        expect(source).toMatch(/Hello third chapter block two/);
+        expect(source).toMatch(/READER_ACCEPTANCE_THIRD_BLOCKS/);
+        expect(source).toMatch(/__kokoroReadingProgressHandled/);
         expect(source).not.toMatch(/blockIndex:\s*99|blockIndex = 99/);
 
         // Fail closed if accept_real_epub_reader drops the stage invocation.
@@ -202,8 +225,24 @@ process.stdout.write(JSON.stringify({
         const nextDef = source.indexOf('\ndef ', entryStart + 1);
         const entryBody = source.slice(
             entryStart, nextDef === -1 ? undefined : nextDef);
-        expect(entryBody).toMatch(
+        const liveBody = stripPythonComments(entryBody);
+        expect(liveBody).toMatch(
             /progress_acceptance = accept_reader_progress_and_bookmarks\(/);
-        expect(entryBody).toMatch(/"progressAcceptance": progress_acceptance/);
+        expect(liveBody).toMatch(/"progressAcceptance": progress_acceptance/);
+
+        const sabotaged = entryBody.replace(
+            /progress_acceptance = accept_reader_progress_and_bookmarks\([\s\S]*?\)/,
+            '# progress_acceptance = accept_reader_progress_and_bookmarks(...)\n' +
+            '        progress_acceptance = None');
+        const sabotagedLive = stripPythonComments(sabotaged);
+        expect(sabotagedLive).not.toMatch(
+            /progress_acceptance = accept_reader_progress_and_bookmarks\(/);
+        expect(sabotagedLive).toMatch(/progress_acceptance = None/);
+    });
+
+    test('reader.js exposes progress-handled counter for fencing waits', () => {
+        const source = fs.readFileSync(readerSource, 'utf8');
+        expect(source).toMatch(/__kokoroReadingProgressHandled/);
+        expect(source).toMatch(/KOKORO_READING_PROGRESS/);
     });
 });

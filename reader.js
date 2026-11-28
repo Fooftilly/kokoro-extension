@@ -1569,6 +1569,10 @@ window.addEventListener('message', (event) => {
         event.data?.type !== 'KOKORO_READING_PROGRESS') {
         return;
     }
+    // Observable for packaged acceptance fencing: bumps even when the
+    // revision guard rejects, so harnesses can wait for delivery.
+    window.__kokoroReadingProgressHandled =
+        (Number(window.__kokoroReadingProgressHandled) || 0) + 1;
     if (!shouldAcceptReadingProgress({
         messageRevision: event.data.revision,
         renderedChapterRevision,
