@@ -191,7 +191,7 @@ function createManifest(browser) {
                 "suggested_key": {
                     "default": "Alt+M"
                 },
-                "description": "Open Document (EPUB)"
+                "description": "Open Document"
             },
             "read-article": {
                 "suggested_key": {

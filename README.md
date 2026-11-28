@@ -1,6 +1,6 @@
 # Kokoro TTS Extension
 
-Browser extension (**Chrome** & **Firefox**) that sends selected text or full articles to a [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) endpoint for high-quality text-to-speech. Supports streaming playback in the page overlay or downloading the generated audio file, plus an EPUB reader mode.
+Browser extension (**Chrome** & **Firefox**) that sends selected text or full articles to a [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) endpoint for high-quality text-to-speech. Supports streaming playback in the page overlay or downloading the generated audio file, plus a Document reader.
 
 <p align="center">
   <a href="https://chromewebstore.google.com/detail/kokoro-tts-sender/befhghjhbjpjnbamdginljoiaafoclmf">
@@ -118,7 +118,7 @@ Other commands:
 3. **Whole article:** right-click the page → **Read Article with Kokoro TTS** (or use the read-article shortcut).
 4. Choose **Stream** or **Download** in settings; adjust voice mixer, speed, volume, and normalization as needed.
 5. **Open a document:** click **Open Document** in the extension popup. Supported formats include EPUB, DOCX, TXT, Markdown, and HTML.
-6. **Reader autoplay:** enable **Autoplay in EPUB** in the popup if desired. Browsers may block automatic sound; the player then explains that you must click **Play**. When autoplay is off, chapters start paused. **Continue to next EPUB chapter** is a separate, opt-in setting.
+6. **Reader autoplay:** enable **Autoplay in Document reader** in the popup if desired. Browsers may block automatic sound; the player then explains that you must click **Play**. When autoplay is off, chapters start paused. **Continue to next chapter** is a separate, opt-in setting.
 7. **Reader keyboard shortcut:** Firefox suggests **Alt+M**. Chrome does not assign a default shortcut for opening the reader because its extension manifest allows only four suggested shortcut keys. Use **Open Document** in the popup, or assign a shortcut at `chrome://extensions/shortcuts` (Chrome) or **Add-ons → Manage extension shortcuts** (Firefox). Reader sentence navigation uses **Alt+,** and **Alt+.** where assigned.
 
 ## Development
