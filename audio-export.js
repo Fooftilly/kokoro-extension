@@ -32,6 +32,15 @@ function ensureNotAborted(signal) {
     if (signal?.aborted) throwAbort();
 }
 
+function asUint8(bytes) {
+    return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+}
+
+function arrayBufferView(bytes) {
+    const view = asUint8(bytes);
+    return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+}
+
 /**
  * @param {{ sourceKind: 'article' | 'reader-chapter' | 'selection' }} opts
  * @returns {Array<{ id: string, available: boolean, reason?: string }>}
@@ -183,6 +192,41 @@ function readFourCC(view, offset) {
     );
 }
 
+function parseFmtChunk(view, dataStart) {
+    const audioFormat = view.getUint16(dataStart, true);
+    if (audioFormat !== 1) {
+        throw new TypeError('Expected PCM WAV (format 1)');
+    }
+    return {
+        channels: view.getUint16(dataStart + 2, true),
+        sampleRateHz: view.getUint32(dataStart + 4, true),
+        bitsPerSample: view.getUint16(dataStart + 14, true),
+    };
+}
+
+function parseDataChunk(arrayBuffer, dataStart, size) {
+    if (size % 2 !== 0) {
+        throw new TypeError('WAV data chunk must be 16-bit aligned');
+    }
+    return new Int16Array(arrayBuffer, dataStart, size / 2);
+}
+
+function assertMonoPcm16({ sampleRateHz, channels, bitsPerSample, pcmInt16 }) {
+    if (!Number.isInteger(sampleRateHz) || sampleRateHz < 8000 ||
+        sampleRateHz > 192000) {
+        throw new TypeError('WAV missing a valid sample rate');
+    }
+    if (channels !== 1) {
+        throw new TypeError('Expected mono WAV for export merge');
+    }
+    if (bitsPerSample !== 16) {
+        throw new TypeError('Expected 16-bit PCM WAV for export merge');
+    }
+    if (!pcmInt16 || pcmInt16.length === 0) {
+        throw new TypeError('WAV missing PCM data');
+    }
+}
+
 /**
  * Parse a PCM WAV buffer into mono int16 samples. Rejects non-PCM / non-mono.
  * @param {ArrayBuffer} arrayBuffer
@@ -211,36 +255,17 @@ export function readWavPcm16Mono(arrayBuffer) {
             throw new TypeError('Truncated WAV chunk');
         }
         if (id === 'fmt ') {
-            const audioFormat = view.getUint16(dataStart, true);
-            channels = view.getUint16(dataStart + 2, true);
-            sampleRateHz = view.getUint32(dataStart + 4, true);
-            bitsPerSample = view.getUint16(dataStart + 14, true);
-            if (audioFormat !== 1) {
-                throw new TypeError('Expected PCM WAV (format 1)');
-            }
+            ({ channels, sampleRateHz, bitsPerSample } =
+                parseFmtChunk(view, dataStart));
         } else if (id === 'data') {
-            if (size % 2 !== 0) {
-                throw new TypeError('WAV data chunk must be 16-bit aligned');
-            }
-            pcmInt16 = new Int16Array(arrayBuffer, dataStart, size / 2);
+            pcmInt16 = parseDataChunk(arrayBuffer, dataStart, size);
         }
         offset = dataStart + size + (size % 2); // word-align
     }
 
-    if (!Number.isInteger(sampleRateHz) || sampleRateHz < 8000 ||
-        sampleRateHz > 192000) {
-        throw new TypeError('WAV missing a valid sample rate');
-    }
-    if (channels !== 1) {
-        throw new TypeError('Expected mono WAV for export merge');
-    }
-    if (bitsPerSample !== 16) {
-        throw new TypeError('Expected 16-bit PCM WAV for export merge');
-    }
-    if (!pcmInt16 || pcmInt16.length === 0) {
-        throw new TypeError('WAV missing PCM data');
-    }
-    return { sampleRateHz, channels, bitsPerSample, pcmInt16 };
+    const parsed = { sampleRateHz, channels, bitsPerSample, pcmInt16 };
+    assertMonoPcm16(parsed);
+    return parsed;
 }
 
 function encodePcm16WavFromInt16(pcmInt16, sampleRateHz) {
@@ -315,6 +340,175 @@ function releaseAll(releases) {
     releases.length = 0;
 }
 
+function partProgressMessage(verb, index, total) {
+    if (total === 1) {
+        return verb === 'Generating' ? 'Generating audio' :
+            verb === 'Downloading' ? 'Downloading export' :
+                'Download started';
+    }
+    const ordinal = index + 1;
+    if (verb === 'Downloaded') {
+        return 'Downloaded part ' + ordinal + '/' + total;
+    }
+    return verb + ' part ' + ordinal + '/' + total;
+}
+
+function assertMp3ContentType(format, contentType) {
+    if (format !== 'mp3' || !contentType) return;
+    if (/mpeg|mp3|audio\/mpeg/i.test(contentType)) return;
+    if (/octet-stream/i.test(contentType)) return;
+    throw new TypeError(
+        'Refusing to label non-MP3 bytes as MP3 (got ' + contentType + ')');
+}
+
+async function downloadCompressedParts({
+    indices,
+    scope,
+    title,
+    format,
+    signal,
+    fetchAudioBytes,
+    downloadFile,
+    onProgress,
+    releases,
+}) {
+    const total = indices.length;
+    for (let i = 0; i < total; i++) {
+        ensureNotAborted(signal);
+        const index = indices[i];
+        onProgress({
+            phase: 'synthesize',
+            completed: i,
+            total,
+            message: partProgressMessage('Generating', i, total),
+        });
+        const chunk = await fetchAudioBytes(index);
+        releases.push(chunk.release || (() => {}));
+        ensureNotAborted(signal);
+        assertMp3ContentType(format, chunk.contentType);
+        const filename = buildExportFilename({
+            title,
+            scope,
+            extension: format,
+            partIndex: total > 1 ? i + 1 : undefined,
+            partCount: total > 1 ? total : undefined,
+            sentenceNumber: index + 1,
+        });
+        onProgress({
+            phase: 'download',
+            completed: i,
+            total,
+            message: partProgressMessage('Downloading', i, total),
+        });
+        const bytes = asUint8(chunk.bytes);
+        const blob = new Blob([bytes], {
+            type: chunk.contentType || 'audio/mpeg',
+        });
+        const release = chunk.release || (() => {});
+        await downloadFile({ blob, bytes, filename, release });
+        const at = releases.indexOf(release);
+        if (at >= 0) releases.splice(at, 1);
+        onProgress({
+            phase: 'download',
+            completed: i + 1,
+            total,
+            message: partProgressMessage('Downloaded', i, total),
+        });
+    }
+    return total;
+}
+
+async function collectWavParts({
+    indices,
+    format,
+    signal,
+    fetchAudioBytes,
+    onProgress,
+    releases,
+}) {
+    const total = indices.length;
+    const wavParts = [];
+    for (let i = 0; i < total; i++) {
+        ensureNotAborted(signal);
+        onProgress({
+            phase: 'synthesize',
+            completed: i,
+            total,
+            message: 'Generating ' + (i + 1) + '/' + total,
+        });
+        const chunk = await fetchAudioBytes(indices[i]);
+        releases.push(chunk.release || (() => {}));
+        ensureNotAborted(signal);
+        if (format !== 'wav') {
+            throw new TypeError(
+                'Merged export requires WAV from a local backend');
+        }
+        wavParts.push(chunk.bytes);
+        onProgress({
+            phase: 'synthesize',
+            completed: i + 1,
+            total,
+            message: 'Generated ' + (i + 1) + '/' + total,
+        });
+    }
+    return wavParts;
+}
+
+function buildMergedWavBytes(wavParts, packaging) {
+    if (packaging === 'single' || wavParts.length === 1) {
+        const outBytes = asUint8(wavParts[0]);
+        readWavPcm16Mono(arrayBufferView(outBytes));
+        return outBytes;
+    }
+    return mergeMonoPcm16Wavs(wavParts);
+}
+
+async function downloadMergedWavExport({
+    indices,
+    scope,
+    title,
+    format,
+    packaging,
+    signal,
+    fetchAudioBytes,
+    downloadFile,
+    onProgress,
+    releases,
+}) {
+    const wavParts = await collectWavParts({
+        indices,
+        format,
+        signal,
+        fetchAudioBytes,
+        onProgress,
+        releases,
+    });
+    ensureNotAborted(signal);
+    const outBytes = buildMergedWavBytes(wavParts, packaging);
+    ensureNotAborted(signal);
+    const filename = buildExportFilename({
+        title,
+        scope,
+        extension: format,
+        sentenceNumber: indices[0] + 1,
+    });
+    onProgress({
+        phase: 'download',
+        completed: indices.length,
+        total: indices.length,
+        message: 'Downloading export',
+    });
+    const blob = new Blob([outBytes], { type: 'audio/wav' });
+    const releasePins = () => releaseAll(releases);
+    await downloadFile({
+        blob,
+        bytes: outBytes,
+        filename,
+        release: releasePins,
+    });
+    return 1;
+}
+
 /**
  * Orchestrate a scoped export. Callers supply synthesis + download hooks so
  * Jest can mock backends; production wires AudioManager + downloads API.
@@ -346,143 +540,41 @@ export async function runScopedAudioExport({
     const format = exportAudioFormat(backend);
     const packaging = exportPackaging(backend, scope);
     const releases = [];
+    const useCompressedParts = packaging === 'separate-files' ||
+        (packaging === 'single' && format === 'mp3');
 
     try {
         ensureNotAborted(signal);
-
-        if (packaging === 'separate-files' ||
-            (packaging === 'single' && format === 'mp3')) {
+        if (useCompressedParts) {
             // FastAPI (or any compressed stream): one verified file per chunk.
             // Never concatenate MP3 byte streams into a fake single file.
-            const total = indices.length;
-            for (let i = 0; i < total; i++) {
-                ensureNotAborted(signal);
-                const index = indices[i];
-                onProgress({
-                    phase: 'synthesize',
-                    completed: i,
-                    total,
-                    message: total === 1
-                        ? 'Generating audio'
-                        : ('Generating part ' + (i + 1) + '/' + total),
-                });
-                const chunk = await fetchAudioBytes(index);
-                releases.push(chunk.release || (() => {}));
-                ensureNotAborted(signal);
-                if (format === 'mp3' && chunk.contentType &&
-                    !/mpeg|mp3|audio\/mpeg/i.test(chunk.contentType) &&
-                    !/octet-stream/i.test(chunk.contentType)) {
-                    throw new TypeError(
-                        'Refusing to label non-MP3 bytes as MP3 (got ' +
-                        chunk.contentType + ')');
-                }
-                const filename = buildExportFilename({
-                    title,
-                    scope,
-                    extension: format,
-                    partIndex: total > 1 ? i + 1 : undefined,
-                    partCount: total > 1 ? total : undefined,
-                    sentenceNumber: index + 1,
-                });
-                onProgress({
-                    phase: 'download',
-                    completed: i,
-                    total,
-                    message: total === 1
-                        ? 'Downloading export'
-                        : ('Downloading part ' + (i + 1) + '/' + total),
-                });
-                const bytes = chunk.bytes instanceof ArrayBuffer
-                    ? new Uint8Array(chunk.bytes)
-                    : new Uint8Array(chunk.bytes);
-                const blob = new Blob([bytes], {
-                    type: chunk.contentType || 'audio/mpeg',
-                });
-                const release = chunk.release || (() => {});
-                await downloadFile({ blob, bytes, filename, release });
-                // downloadFile owns the lease after handoff
-                const at = releases.indexOf(release);
-                if (at >= 0) releases.splice(at, 1);
-                onProgress({
-                    phase: 'download',
-                    completed: i + 1,
-                    total,
-                    message: total === 1
-                        ? 'Download started'
-                        : ('Downloaded part ' + (i + 1) + '/' + total),
-                });
-            }
-            return { packaging, format, files: indices.length };
-        }
-
-        // single WAV or merged-wav: collect WAV bytes, optionally merge, one download.
-        const total = indices.length;
-        const wavParts = [];
-        for (let i = 0; i < total; i++) {
-            ensureNotAborted(signal);
-            const index = indices[i];
-            onProgress({
-                phase: 'synthesize',
-                completed: i,
-                total,
-                message: 'Generating ' + (i + 1) + '/' + total,
+            const files = await downloadCompressedParts({
+                indices,
+                scope,
+                title,
+                format,
+                signal,
+                fetchAudioBytes,
+                downloadFile,
+                onProgress,
+                releases,
             });
-            const chunk = await fetchAudioBytes(index);
-            releases.push(chunk.release || (() => {}));
-            ensureNotAborted(signal);
-            if (format !== 'wav') {
-                throw new TypeError(
-                    'Merged export requires WAV from a local backend');
-            }
-            wavParts.push(chunk.bytes);
-            onProgress({
-                phase: 'synthesize',
-                completed: i + 1,
-                total,
-                message: 'Generated ' + (i + 1) + '/' + total,
-            });
+            return { packaging, format, files };
         }
 
-        ensureNotAborted(signal);
-        let outBytes;
-        if (packaging === 'single' || wavParts.length === 1) {
-            outBytes = wavParts[0] instanceof ArrayBuffer
-                ? new Uint8Array(wavParts[0])
-                : new Uint8Array(wavParts[0]);
-            // Validate even a single local WAV so corrupt bytes are not saved.
-            readWavPcm16Mono(outBytes.buffer.slice(
-                outBytes.byteOffset,
-                outBytes.byteOffset + outBytes.byteLength,
-            ));
-        } else {
-            outBytes = mergeMonoPcm16Wavs(wavParts);
-        }
-
-        ensureNotAborted(signal);
-        const filename = buildExportFilename({
-            title,
+        const files = await downloadMergedWavExport({
+            indices,
             scope,
-            extension: format,
-            sentenceNumber: indices[0] + 1,
+            title,
+            format,
+            packaging,
+            signal,
+            fetchAudioBytes,
+            downloadFile,
+            onProgress,
+            releases,
         });
-        onProgress({
-            phase: 'download',
-            completed: total,
-            total,
-            message: 'Downloading export',
-        });
-
-        const blob = new Blob([outBytes], { type: 'audio/wav' });
-        // Release synthesis pins after the download helper takes the blob
-        // (blob is a copy — pins only protect live object URLs during fetch).
-        const releasePins = () => releaseAll(releases);
-        await downloadFile({
-            blob,
-            bytes: outBytes,
-            filename,
-            release: releasePins,
-        });
-        return { packaging, format, files: 1 };
+        return { packaging, format, files };
     } catch (error) {
         releaseAll(releases);
         if (signal?.aborted || error?.name === 'AbortError') throwAbort();
