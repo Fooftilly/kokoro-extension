@@ -3226,12 +3226,17 @@ def _seek_third_block_and_wait(driver, progress_key, saved_block, block_two_text
 def _wait_for_progress_save_settle(driver, delivered_at_ms):
     # Cover scheduleProgressSave debounce + in-flight flush so a wrongly
     # accepted stale write cannot hide behind an immediate post-delivery read.
+    if not isinstance(delivered_at_ms, (int, float)) or delivered_at_ms != delivered_at_ms:
+        raise RuntimeError(
+            "_wait_for_progress_save_settle requires a finite delivered_at_ms, got: " +
+            json.dumps(delivered_at_ms))
     settle_ms = (
         READER_PROGRESS_SAVE_DEBOUNCE_MS + READER_PROGRESS_SAVE_SETTLE_BUFFER_MS)
     WebDriverWait(driver, 5).until(
         lambda d: d.execute_script("""
             const deliveredAt = arguments[0];
             const settleMs = arguments[1];
+            if (!Number.isFinite(deliveredAt)) return false;
             if (Date.now() - deliveredAt < settleMs) return false;
             if (window.__kokoroProgressSaveTimerPending) return false;
             return (Number(window.__kokoroProgressSaveInFlight) || 0) === 0;

@@ -208,16 +208,32 @@ process.stdout.write(JSON.stringify({
         expect(source).not.toMatch(/blockIndex:\s*99/);
 
         // Fencing must wait for debounce settle after delivery acknowledgement.
+        // Capture deliveredAt via page.evaluate (waitForFunction yields a JSHandle).
         const fenceStart = source.indexOf('async function assertStaleProgressFenced(');
         expect(fenceStart).toBeGreaterThanOrEqual(0);
         const fenceNext = source.indexOf('\nasync function ', fenceStart + 1);
         const fenceBody = stripJsComments(source.slice(
             fenceStart, fenceNext === -1 ? undefined : fenceNext));
         expect(fenceBody).toMatch(/__kokoroReadingProgressHandled/);
-        expect(fenceBody).toMatch(/await waitForProgressSaveSettle\(/);
-        const fenceSabotaged = fenceBody.replace(
-            /await waitForProgressSaveSettle\([\s\S]*?\);/, '');
+        expect(fenceBody).toMatch(
+            /const deliveredAt = await page\.evaluate\(\(\) => Date\.now\(\)\)/);
+        expect(fenceBody).toMatch(
+            /await waitForProgressSaveSettle\(page, deliveredAt\)/);
+        expect(fenceBody).not.toMatch(/delivery\.at/);
+        const fenceSabotaged = fenceBody
+            .replace(/const deliveredAt = await page\.evaluate\(\(\) => Date\.now\(\)\);/,
+                'const deliveredAt = delivery.at;')
+            .replace(/await waitForProgressSaveSettle\([\s\S]*?\);/, '');
+        expect(fenceSabotaged).toMatch(/delivery\.at/);
         expect(fenceSabotaged).not.toMatch(/waitForProgressSaveSettle/);
+
+        const settleStart = source.indexOf('async function waitForProgressSaveSettle(');
+        expect(settleStart).toBeGreaterThanOrEqual(0);
+        const settleNext = source.indexOf('\nasync function ', settleStart + 1);
+        const settleBody = stripJsComments(source.slice(
+            settleStart, settleNext === -1 ? undefined : settleNext));
+        expect(settleBody).toMatch(/Number\.isFinite\(deliveredAtMs\)/);
+        expect(settleBody).toMatch(/Number\.isFinite\(deliveredAt\)/);
 
         // Fail closed if acceptRealEpubReader drops the stage invocation.
         const entryStart = source.indexOf('async function acceptRealEpubReader(');
