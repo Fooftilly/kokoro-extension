@@ -172,10 +172,33 @@ export class AudioManager {
 
     // Save/download leases outlive a reading-session reset. They are independent
     // of the bounded cache, and cannot accidentally pin a reused sentence index.
-    pinAudio(index) {
+    // When `settings` is provided, only bind a cache URL that matches that
+    // fingerprint so an export lease cannot pin a cross-tab / wrong-voice blob.
+    // Call before awaiting getAudio so prioritizeNavigation cannot drop the
+    // export's in-flight synthesis.
+    pinAudio(index, { settings = null } = {}) {
+        const wantKey = settings ? fingerprintAudioSettings(settings) : null;
+        const cached = this.audioCache.get(index);
+        let url = null;
+        if (cached) {
+            const matched = wantKey === null || cached.settingsKey === wantKey;
+            if (matched) {
+                url = cached.url || null;
+            } else if (!this.isPinned(index)) {
+                // Drop mismatched unpinned audio so this lease does not bind
+                // the wrong blob and getAudio can synthesize under `settings`.
+                this.evictAudio(index, cached);
+            } else {
+                // Another pin still owns the mismatched URL — free the slot
+                // without revoking that download's blob.
+                this.audioCache.delete(index);
+                cached.evicted = true;
+                cached.pending = false;
+            }
+        }
         const pin = {
             index, generation: this.generation,
-            url: this.audioCache.get(index)?.url || null,
+            url,
         };
         this.audioPins.add(pin);
         let released = false;

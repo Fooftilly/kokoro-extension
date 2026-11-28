@@ -234,6 +234,39 @@ describe('navigation priority over speculative local synthesis (#57)', () => {
         release();
     });
 
+    test('export pin-before-await survives navigation to a different sentence', async () => {
+        const settings = {
+            pendingTtsBackend: 'mediapipe',
+            pendingMediaPipeVariant: 'cpu',
+            pendingLocalVoice: 'af_heart',
+        };
+        manager.setDefaultSettings(settings);
+        const exportStarted = deferred();
+        const exportSlow = deferred();
+        provider.synthesize
+            .mockImplementationOnce(() => {
+                exportStarted.resolve();
+                return exportSlow.promise;
+            })
+            .mockResolvedValue(pcm());
+
+        // Overlay export pattern: settings-matched pin, then await getAudio.
+        const release = manager.pinAudio(5, { settings });
+        const exported = manager.getAudio(5, { settings });
+        await exportStarted.promise;
+
+        // Navigation must not evict the pinned export; playback queues behind
+        // the in-flight local synthesis lane.
+        manager.prioritizeNavigation(2);
+        const playback = manager.getAudio(2, { settings });
+        exportSlow.resolve(pcm());
+        await expect(exported).resolves.toBe('blob:nav-1');
+        await expect(playback).resolves.toBe('blob:nav-2');
+        expect(provider.synthesize.mock.calls.map(([text]) => text))
+            .toEqual(['Sentence 5', 'Sentence 2']);
+        release();
+    });
+
     test('already-generated current audio stays valid until the replacement is installed', async () => {
         const original = await manager.getAudio(0);
         manager.retainWindow(0);

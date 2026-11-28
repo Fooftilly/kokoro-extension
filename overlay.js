@@ -47,6 +47,9 @@ let exportAbortController = null;
 let exportInFlight = false;
 /** Index currently awaited by an in-flight export fetch (not playback). */
 let exportActiveIndex = null;
+/** Generation + exact cache entry owned by the active export fetch. */
+let exportFenceGeneration = null;
+let exportOwnedEntry = null;
 /** Provider/voice/endpoint snapshot captured with the loaded document. */
 let sessionAudioSettings = null;
 
@@ -377,15 +380,20 @@ async function downloadExportBlob(blob, filename, release) {
 }
 
 /**
- * Cancel only the export's pending synthesis index. Never evict the sentence
- * playback currently owns — that would interrupt ordinary Prev/Next/Play.
+ * Cancel only the export's pending synthesis. Never evict playback's sentence,
+ * a newer document generation, or a different request at the same index.
  */
-function cancelInFlightExportSynthesis(index) {
+function cancelInFlightExportSynthesis(index, {
+    generation = exportFenceGeneration,
+    entry = exportOwnedEntry,
+} = {}) {
     if (!Number.isInteger(index) || index === currentIndex) return;
-    const entry = audioManager.audioCache.get(index);
-    if (entry?.pending) {
-        audioManager.evictAudio(index, entry);
-    }
+    // Obsolete cleanup must not mutate a replacement document's cache.
+    if (generation != null && audioManager.generation !== generation) return;
+    const current = audioManager.audioCache.get(index);
+    if (!current?.pending) return;
+    if (entry != null && current !== entry) return;
+    audioManager.evictAudio(index, current);
 }
 
 function abortActiveExport(reason = 'session') {
@@ -413,6 +421,7 @@ if (saveAudioBtn) {
         exportAbortController = controller;
         // Fence chapter/document reloads: initialize() bumps generation via clear().
         const exportGeneration = audioManager.generation;
+        exportFenceGeneration = exportGeneration;
         const exportSentences = sentences.slice();
         const exportCurrentIndex = currentIndex;
         setExportUiBusy(true);
@@ -459,21 +468,29 @@ if (saveAudioBtn) {
                     }
                     let release = null;
                     exportActiveIndex = index;
+                    exportOwnedEntry = null;
                     try {
-                        // Resolve audio first so a settings-matched cache entry
-                        // exists, then pin that URL (avoids the pin-before-get
-                        // mismatch path that leaked unowned Blob URLs).
-                        const audioUrl = await audioManager.getAudio(index, {
+                        // Pin a settings-matched lease before awaiting synthesis
+                        // so prioritizeNavigation cannot evict this export index.
+                        release = audioManager.pinAudio(index, {
                             settings: settingsSnapshot,
                         });
+                        const audioPromise = audioManager.getAudio(index, {
+                            settings: settingsSnapshot,
+                        });
+                        // Capture the exact request identity before any await.
+                        exportOwnedEntry = audioManager.audioCache?.get?.(index) ?? null;
+                        const audioUrl = await audioPromise;
                         if (controller.signal.aborted ||
                             audioManager.generation !== exportGeneration ||
                             sessionAudioSettings !== settingsSnapshot) {
-                            cancelInFlightExportSynthesis(index);
+                            cancelInFlightExportSynthesis(index, {
+                                generation: exportGeneration,
+                                entry: exportOwnedEntry,
+                            });
                             throw new DOMException('Audio export cancelled', 'AbortError');
                         }
                         if (!audioUrl) throw new Error('No generated audio to save');
-                        release = audioManager.pinAudio(index);
                         // Preserve the real MIME from the URL/response. Orchestrator
                         // verifies MP3 magic / WAV headers — do not overwrite.
                         const fetched = await bytesFromAudioUrl(audioUrl);
@@ -492,12 +509,18 @@ if (saveAudioBtn) {
                         if (controller.signal.aborted ||
                             audioManager.generation !== exportGeneration ||
                             sessionAudioSettings !== settingsSnapshot) {
-                            cancelInFlightExportSynthesis(index);
+                            cancelInFlightExportSynthesis(index, {
+                                generation: exportGeneration,
+                                entry: exportOwnedEntry,
+                            });
                             throw new DOMException('Audio export cancelled', 'AbortError');
                         }
                         throw error;
                     } finally {
-                        if (exportActiveIndex === index) exportActiveIndex = null;
+                        if (exportActiveIndex === index) {
+                            exportActiveIndex = null;
+                            exportOwnedEntry = null;
+                        }
                     }
                 },
                 downloadFile: async ({ blob, filename, release }) => {
@@ -520,6 +543,8 @@ if (saveAudioBtn) {
         } finally {
             if (exportAbortController === controller) exportAbortController = null;
             exportActiveIndex = null;
+            exportOwnedEntry = null;
+            exportFenceGeneration = null;
             setExportUiBusy(false);
         }
     });

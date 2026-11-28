@@ -327,6 +327,42 @@ describe('AudioManager', () => {
         expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:second');
     });
 
+    test('settings-matched pin before getAudio does not bind a mismatched Blob URL', async () => {
+        const synthesize = jest.fn(async () => ({
+            samples: new Float32Array([0.2, -0.1, 0.3]), sampleRateHz: 24000,
+        }));
+        MediaPipeKokoroProvider.mockImplementation(() => ({
+            synthesize, cancel: jest.fn(async () => {}), close: jest.fn(async () => {}),
+        }));
+        URL.createObjectURL = jest.fn()
+            .mockReturnValueOnce('blob:voice-a')
+            .mockReturnValueOnce('blob:voice-b');
+        URL.revokeObjectURL = jest.fn();
+
+        const localA = {
+            pendingTtsBackend: 'mediapipe',
+            pendingMediaPipeVariant: 'cpu',
+            pendingLocalVoice: 'af_heart',
+        };
+        const localB = {
+            pendingTtsBackend: 'mediapipe',
+            pendingMediaPipeVariant: 'cpu',
+            pendingLocalVoice: 'af_bella',
+        };
+        audioManager.setSentences([{ text: 'Export under new voice' }]);
+        await expect(audioManager.getAudio(0, { settings: localA }))
+            .resolves.toBe('blob:voice-a');
+        // Export lease for voice B must not pin voice A's blob.
+        const release = audioManager.pinAudio(0, { settings: localB });
+        await expect(audioManager.getAudio(0, { settings: localB }))
+            .resolves.toBe('blob:voice-b');
+        expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:voice-a');
+        expect(audioManager.objectUrls.has('blob:voice-b')).toBe(true);
+        expect(audioManager.audioCache.get(0).settingsKey)
+            .toBe(fingerprintAudioSettings(localB));
+        release();
+    });
+
     test('defaultSettings from document load are used without re-reading storage', async () => {
         const synthesize = jest.fn(async () => ({
             samples: new Float32Array([0.2, -0.1, 0.3]), sampleRateHz: 24000,

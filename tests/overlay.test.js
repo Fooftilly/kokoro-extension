@@ -76,6 +76,8 @@ jest.mock('../audio-manager.js', () => ({
         on: jest.fn(),
         setDefaultSettings: jest.fn(),
         generation: 0,
+        audioCache: new Map(),
+        evictAudio: jest.fn(),
     }))
 }));
 
@@ -481,12 +483,21 @@ describe('overlay.js logic', () => {
         const { AudioManager } = require('../audio-manager.js');
         const manager = AudioManager.mock.results[0].value;
         let resolveAudio;
-        manager.getAudio.mockReturnValueOnce(new Promise(resolve => { resolveAudio = resolve; }));
+        manager.audioCache = new Map();
+        manager.getAudio.mockImplementationOnce((index) => {
+            const entry = { pending: true, promise: null };
+            entry.promise = new Promise(resolve => { resolveAudio = resolve; });
+            manager.audioCache.set(index, entry);
+            return entry.promise;
+        });
 
         document.getElementById('saveAudio').click();
         await Promise.resolve();
-        expect(manager.getAudio).toHaveBeenCalledWith(0);
+        expect(manager.getAudio).toHaveBeenCalledWith(
+            0, expect.objectContaining({ settings: expect.any(Object) }));
         document.getElementById('seekFwd').click();
+        const entry = manager.audioCache.get(0);
+        if (entry) entry.pending = false;
         resolveAudio('data:audio/mpeg;base64,SUQzBAAAAAA=');
         await new Promise(resolve => setTimeout(resolve, 0));
         // Export copies bytes into a fresh blob URL for downloads.download;
@@ -613,7 +624,14 @@ describe('overlay.js logic', () => {
         const { AudioManager } = require('../audio-manager.js');
         const manager = AudioManager.mock.results[0].value;
         const release = jest.fn();
+        manager.audioCache = new Map();
         manager.pinAudio.mockReturnValue(release);
+        manager.getAudio.mockImplementation((index) => {
+            const url = 'data:audio/mpeg;base64,SUQz';
+            const entry = { pending: false, url, promise: Promise.resolve(url) };
+            manager.audioCache.set(index, entry);
+            return entry.promise;
+        });
         const listeners = new Set();
         browser.downloads.onChanged = {
             addListener: jest.fn(fn => listeners.add(fn)),
@@ -623,7 +641,8 @@ describe('overlay.js logic', () => {
 
         document.getElementById('saveAudio').click();
         await new Promise(resolve => setTimeout(resolve, 0));
-        expect(manager.pinAudio).toHaveBeenCalledWith(0);
+        expect(manager.pinAudio).toHaveBeenCalledWith(
+            0, expect.objectContaining({ settings: expect.any(Object) }));
         expect(release).not.toHaveBeenCalled();
         expect(listeners.size).toBe(1);
         for (const fn of [...listeners]) fn({ id: 18, state: { current: 'complete' } });
@@ -639,7 +658,14 @@ describe('overlay.js logic', () => {
         const { AudioManager } = require('../audio-manager.js');
         const manager = AudioManager.mock.results[0].value;
         const release = jest.fn();
+        manager.audioCache = new Map();
         manager.pinAudio.mockReturnValue(release);
+        manager.getAudio.mockImplementation((index) => {
+            const url = 'data:audio/mpeg;base64,SUQz';
+            const entry = { pending: false, url, promise: Promise.resolve(url) };
+            manager.audioCache.set(index, entry);
+            return entry.promise;
+        });
         const listeners = new Set();
         browser.downloads.onChanged = {
             addListener: jest.fn(fn => listeners.add(fn)),
@@ -658,7 +684,13 @@ describe('overlay.js logic', () => {
         await new Promise(resolve => setTimeout(resolve, 100));
         const { AudioManager } = require('../audio-manager.js');
         const manager = AudioManager.mock.results[0].value;
-        manager.getAudio.mockResolvedValue('blob:local-wav');
+        manager.audioCache = new Map();
+        manager.getAudio.mockImplementation((index) => {
+            const url = 'blob:local-wav';
+            const entry = { pending: false, url, promise: Promise.resolve(url) };
+            manager.audioCache.set(index, entry);
+            return entry.promise;
+        });
         // Document-load snapshot (not Save-time storage) selects the backend.
         browser.storage.local.get.mockResolvedValue({
             pendingText: 'Hello world',
@@ -717,8 +749,12 @@ describe('overlay.js logic', () => {
         let resolveAudio;
         manager.generation = 1;
         manager.getAudio.mockReset();
-        manager.getAudio.mockImplementation(
-            () => new Promise(resolve => { resolveAudio = resolve; }));
+        manager.getAudio.mockImplementation((index) => {
+            const entry = { pending: true, promise: null };
+            entry.promise = new Promise(resolve => { resolveAudio = resolve; });
+            manager.audioCache.set(index, entry);
+            return entry.promise;
+        });
         document.getElementById('exportScope').value = 'article';
         document.getElementById('saveAudio').click();
         await Promise.resolve();
@@ -733,6 +769,54 @@ describe('overlay.js logic', () => {
         // Cancel must target the export index (0), not leave playback eviction
         // when the export index differs — evictAudio is only for non-current.
         expect(manager.evictAudio).not.toHaveBeenCalled();
+    });
+
+    test('obsolete export cleanup does not evict a newer generation entry', async () => {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const { AudioManager } = require('../audio-manager.js');
+        const manager = AudioManager.mock.results[0].value;
+        manager.audioCache = new Map();
+        manager.evictAudio = jest.fn((index, entry) => {
+            if (manager.audioCache.get(index) === entry) {
+                manager.audioCache.delete(index);
+            }
+        });
+        // Play sentence 1 so export index 0 is non-current (cancel allowed).
+        document.querySelectorAll('.sentence')[1].click();
+        await Promise.resolve();
+
+        let rejectOld;
+        const oldEntry = { pending: true, promise: null };
+        oldEntry.promise = new Promise((_, reject) => { rejectOld = reject; });
+        manager.generation = 1;
+        manager.getAudio.mockReset();
+        manager.getAudio.mockImplementation((index) => {
+            if (!manager.audioCache.has(index)) {
+                manager.audioCache.set(index, oldEntry);
+            }
+            return manager.audioCache.get(index).promise;
+        });
+
+        document.getElementById('exportScope').value = 'article';
+        document.getElementById('saveAudio').click();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(manager.audioCache.get(0)).toBe(oldEntry);
+
+        // Replacement document: bump generation and prefetch the same index.
+        manager.generation = 2;
+        const newEntry = {
+            pending: true,
+            promise: Promise.resolve('blob:new-prefetch'),
+        };
+        manager.audioCache.set(0, newEntry);
+        rejectOld(new DOMException('stale export', 'AbortError'));
+        await new Promise(resolve => setTimeout(resolve, 20));
+
+        expect(manager.audioCache.get(0)).toBe(newEntry);
+        expect(manager.evictAudio).not.toHaveBeenCalledWith(0, newEntry);
+        expect(document.getElementById('status').textContent)
+            .toMatch(/cancel/i);
     });
 
     test('Handles navigation calls correctly', async () => {
