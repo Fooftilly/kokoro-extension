@@ -131,29 +131,24 @@ async function safeCleanup(pdf) {
     }
 }
 
-/**
- * Convert PDF.js text items into speech blocks with basic reading order:
- * top-to-bottom, left-to-right, with a coarse two-column split when widths
- * clearly separate into left/right clusters.
- */
-export function blocksFromPdfTextContent(textContent, options = {}) {
-    const maxChars = Number.isInteger(options.maxChars)
-        ? options.maxChars
-        : MAX_PDF_PAGE_TEXT_CHARS;
+function collectPdfTextRows(textContent) {
     const items = Array.isArray(textContent?.items) ? textContent.items : [];
     const rows = [];
     for (const item of items) {
         const str = String(item?.str || '');
         if (!str.trim()) continue;
         const transform = Array.isArray(item.transform) ? item.transform : null;
-        const x = transform ? Number(transform[4]) || 0 : 0;
-        const y = transform ? Number(transform[5]) || 0 : 0;
-        rows.push({ str, x, y, width: Number(item.width) || 0 });
+        rows.push({
+            str,
+            x: transform ? Number(transform[4]) || 0 : 0,
+            y: transform ? Number(transform[5]) || 0 : 0,
+            width: Number(item.width) || 0,
+        });
     }
-    if (!rows.length) return [];
+    return rows;
+}
 
-    const ordered = orderPdfTextItems(rows);
-    const paragraphs = groupPdfParagraphs(ordered);
+function blocksFromParagraphs(paragraphs, maxChars) {
     const blocks = [];
     let used = 0;
     for (const paragraph of paragraphs) {
@@ -169,6 +164,21 @@ export function blocksFromPdfTextContent(textContent, options = {}) {
         if (paragraph.length > remaining) break;
     }
     return blocks;
+}
+
+/**
+ * Convert PDF.js text items into speech blocks with basic reading order:
+ * top-to-bottom, left-to-right, with a coarse two-column split when widths
+ * clearly separate into left/right clusters.
+ */
+export function blocksFromPdfTextContent(textContent, options = {}) {
+    const maxChars = Number.isInteger(options.maxChars)
+        ? options.maxChars
+        : MAX_PDF_PAGE_TEXT_CHARS;
+    const rows = collectPdfTextRows(textContent);
+    if (!rows.length) return [];
+    return blocksFromParagraphs(
+        groupPdfParagraphs(orderPdfTextItems(rows)), maxChars);
 }
 
 function orderPdfTextItems(rows) {

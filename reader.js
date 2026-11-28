@@ -1081,6 +1081,33 @@ async function startTextChapterLoad(title, forcedStartIndex = null, resumeCandid
     }
 }
 
+function resolvePdfPagePlaybackStart(blocks, forcedStartIndex, resumeCandidate,
+    bookmarkJump) {
+    let startIndex = Number.isInteger(forcedStartIndex) ? forcedStartIndex : 0;
+    let suppressAutoplay = Boolean(resumeCandidate) ||
+        Number.isInteger(forcedStartIndex) || Boolean(bookmarkJump);
+    if (resumeCandidate && forcedStartIndex === 0 && !bookmarkJump) {
+        const target = resolveResumeTarget({
+            record: resumeCandidate,
+            flatToc,
+            chapterFingerprint: fingerprintChapterBlocks(blocks),
+            chapterBlockCount: blocks.length,
+        });
+        if (shouldOfferResumeChoice(target, flatToc[0]?.href)) {
+            showResumeBanner(target);
+            startIndex = 0;
+        } else if (!target.ok) {
+            void clearCurrentDocumentProgress();
+        }
+    }
+    if (bookmarkJump) {
+        const playback = applyBookmarkJumpPlayback(bookmarkJump, blocks);
+        startIndex = playback.startIndex;
+        suppressAutoplay = playback.suppressAutoplay;
+    }
+    return { startIndex, suppressAutoplay };
+}
+
 async function startPdfPageLoad(href, title, forcedStartIndex = null, resumeCandidate = null,
     bookmarkJump = null) {
     const source = pdfDocument;
@@ -1098,32 +1125,12 @@ async function startPdfPageLoad(href, title, forcedStartIndex = null, resumeCand
         if (source !== pdfDocument || requestId !== chapterRequestId) return;
         currentChapterBlocks = blocks;
         currentChapterCanonicalBlocks = blocks;
-        let startIndex = Number.isInteger(forcedStartIndex) ? forcedStartIndex : 0;
-        let suppressAutoplay = Boolean(resumeCandidate) ||
-            Number.isInteger(forcedStartIndex) || Boolean(bookmarkJump);
-        if (resumeCandidate && forcedStartIndex === 0 && !bookmarkJump) {
-            const target = resolveResumeTarget({
-                record: resumeCandidate,
-                flatToc,
-                chapterFingerprint: fingerprintChapterBlocks(blocks),
-                chapterBlockCount: blocks.length,
-            });
-            if (shouldOfferResumeChoice(target, flatToc[0]?.href)) {
-                showResumeBanner(target);
-                startIndex = 0;
-            } else if (!target.ok) {
-                void clearCurrentDocumentProgress();
-            }
-        }
-        if (bookmarkJump) {
-            const playback = applyBookmarkJumpPlayback(bookmarkJump, blocks);
-            startIndex = playback.startIndex;
-            suppressAutoplay = playback.suppressAutoplay;
-        }
+        const playback = resolvePdfPagePlaybackStart(
+            blocks, forcedStartIndex, resumeCandidate, bookmarkJump);
         await sendToPlayer(blocks, title || source.title,
             blocks.map((entry) => entry.content).join(' ').slice(0, 100),
-            startIndex, requestId, null, false, href,
-            { suppressAutoplay });
+            playback.startIndex, requestId, null, false, href,
+            { suppressAutoplay: playback.suppressAutoplay });
     } catch (error) {
         if (source !== pdfDocument || requestId !== chapterRequestId) return;
         chapterErrorMsg.textContent = 'Failed to load PDF page: ' +
