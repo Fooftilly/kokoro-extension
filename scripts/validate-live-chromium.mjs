@@ -11,11 +11,14 @@ import { pipeline } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
 import {
     READER_ACCEPTANCE_SPEECH,
+    READER_ACCEPTANCE_THIRD_BLOCKS,
     buildReaderAcceptanceEpub,
 } from './reader-acceptance-epub.mjs';
 import {
     assertLockManagerAvailable,
     assertBookmarkJumpDidNotAutoplay,
+    assertHighlightedBlock,
+    assertProgressClearedOrFirstChapter,
     assertResumeBannerVisible,
     buildProgressAcceptanceReport,
 } from './reader-progress-acceptance.mjs';
@@ -1950,8 +1953,17 @@ async function pollRealEpubChapterReady(
     };
     const pendingContentMatches = (stored) => {
         const blocks = stored.pendingContent;
-        return Array.isArray(blocks) && blocks.length === 1 &&
-            blocks[0].content === expectedSpeech;
+        if (!Array.isArray(blocks)) return false;
+        if (title === 'Third Chapter') {
+            const expected = [
+                'Hello third chapter.',
+                'Hello third chapter block two.',
+                'Hello third chapter block three.',
+            ];
+            return blocks.length === expected.length &&
+                expected.every((text, i) => blocks[i]?.content === text);
+        }
+        return blocks.length === 1 && blocks[0].content === expectedSpeech;
     };
     const shellReady = (frame, audio, status, stored, revision, audioUrl) => [
         () => Boolean(frame && audio),
@@ -2747,30 +2759,128 @@ async function acceptLongFormMemoryPerformance(page, context, extensionId, backe
 // pendingContent shortcut—create a local offline WAV for all three chapters.
 // Also cover replacing the book with a TXT file through the same UI.
 // backend is 'onnx' or 'mediapipe' (chromium-*-origin scopes).
+async function readDocumentProgressRecord(page) {
+    return page.evaluate(async () => {
+        const all = await chrome.storage.local.get(null);
+        const key = Object.keys(all || {}).find((k) =>
+            k.startsWith('readerProgress:'));
+        return key ? all[key] : null;
+    });
+}
+
+async function readBookmarkSnapshot(page) {
+    return page.evaluate(async () => {
+        const all = await chrome.storage.local.get(null);
+        const key = Object.keys(all || {}).find((k) =>
+            k.startsWith('readerBookmarks:'));
+        const list = key && Array.isArray(all[key]?.bookmarks)
+            ? all[key].bookmarks : [];
+        return {
+            count: list.length,
+            blockIndex: list[0]?.blockIndex ?? null,
+            chapterHref: list[0]?.chapterHref ?? null,
+        };
+    });
+}
+
+async function readHighlightedSentence(page) {
+    return page.evaluate(() => {
+        const frame = document.getElementById('playerFrame')?.contentDocument;
+        return frame?.querySelector('.sentence.highlight')?.textContent || '';
+    });
+}
+
+async function reopenAcceptanceEpub(page, epubBytes) {
+    await page.locator('#openAnotherDocument').click();
+    await page.locator('#fileInput').setInputFiles({
+        name: 'offline-reader-acceptance.epub',
+        mimeType: 'application/epub+zip',
+        buffer: epubBytes,
+    });
+}
+
 /**
- * #196 packaged Chromium stage: LockManager presence, bookmark add/go/remove,
- * no-autoplay jump, and resume banner after reopening the same EPUB bytes.
+ * #196 packaged Chromium stage: LockManager, nonzero bookmark seek, autoplay
+ * override, stale revision fencing, Resume restore, and durable Start over.
  */
 async function acceptReaderProgressAndBookmarks(page, {
     clickTocChapter, waitForChapter, third, epubBytes,
 }) {
+    const savedBlock = 1;
+    const blockTwoText = READER_ACCEPTANCE_THIRD_BLOCKS[savedBlock];
     const locksAvailable = await page.evaluate(() =>
         typeof navigator.locks?.request === 'function');
     assertLockManagerAvailable(locksAvailable ? { request: () => {} } : null);
+
+    if (!Array.isArray(third.pendingContent) || third.pendingContent.length < 3) {
+        throw Error('Third Chapter fixture must expose multiple blocks: ' +
+            JSON.stringify(third.pendingContent));
+    }
 
     await page.waitForFunction(() => {
         const btn = document.getElementById('addBookmark');
         return Boolean(btn) && btn.disabled === false;
     }, null, { timeout: 60000 });
+
+    // Advance to a nonzero block before Add so seek regressions are visible.
+    await page.frameLocator('#playerFrame').locator('#seekFwd').click();
+    await page.waitForFunction((needle) => {
+        const frame = document.getElementById('playerFrame')?.contentDocument;
+        const hi = frame?.querySelector('.sentence.highlight')?.textContent || '';
+        return hi.includes(needle);
+    }, blockTwoText, { timeout: 30000 });
+    await page.waitForFunction(async () => {
+        const all = await chrome.storage.local.get(null);
+        const key = Object.keys(all || {}).find((k) =>
+            k.startsWith('readerProgress:'));
+        return key && all[key]?.blockIndex === 1;
+    }, null, { timeout: 15000 });
+
     await page.locator('#addBookmark').click();
     await page.waitForFunction(() =>
         document.querySelectorAll('#bookmarkList li').length >= 1,
     null, { timeout: 15000 });
+    const bookmarkBeforeLeave = await readBookmarkSnapshot(page);
+    if (bookmarkBeforeLeave.blockIndex !== savedBlock) {
+        throw Error('Bookmark did not capture nonzero block: ' +
+            JSON.stringify(bookmarkBeforeLeave));
+    }
 
     await clickTocChapter('Second Chapter');
     const afterLeave = await waitForChapter(
         'Second Chapter', third.revision, third.audioUrl, third.audioSha256);
 
+    // Stale prior-revision progress from the player iframe must be ignored.
+    const progressBeforeStale = await readDocumentProgressRecord(page);
+    const bookmarksBeforeStale = await readBookmarkSnapshot(page);
+    const overlayFrame = page.frames().find((frame) =>
+        (frame.url() || '').includes('overlay.html'));
+    if (!overlayFrame) {
+        throw Error('Missing player overlay frame for stale progress fencing');
+    }
+    await overlayFrame.evaluate((staleRevision) => {
+        window.parent.postMessage({
+            type: 'KOKORO_READING_PROGRESS',
+            blockIndex: 99,
+            revision: staleRevision,
+        }, window.location.origin);
+    }, third.revision);
+    await page.waitForTimeout(500);
+    const progressAfterStale = await readDocumentProgressRecord(page);
+    const bookmarksAfterStale = await readBookmarkSnapshot(page);
+    if (JSON.stringify(progressAfterStale) !== JSON.stringify(progressBeforeStale) ||
+        JSON.stringify(bookmarksAfterStale) !== JSON.stringify(bookmarksBeforeStale)) {
+        throw Error('Stale KOKORO_READING_PROGRESS mutated progress/bookmarks: ' +
+            JSON.stringify({
+                progressBeforeStale, progressAfterStale,
+                bookmarksBeforeStale, bookmarksAfterStale,
+            }));
+    }
+
+    // Enable reader autoplay so suppressAutoplay must win independently.
+    await page.evaluate(async () => {
+        await chrome.storage.sync.set({ autoplayReader: true });
+    });
     await page.locator('#bookmarkList .bookmark-go').first().click();
     const restored = await waitForChapter(
         'Third Chapter', afterLeave.revision, afterLeave.audioUrl,
@@ -2782,36 +2892,101 @@ async function acceptReaderProgressAndBookmarks(page, {
     const pendingAutoplay = await page.evaluate(async () =>
         (await chrome.storage.local.get(['pendingAutoplay'])).pendingAutoplay);
     assertBookmarkJumpDidNotAutoplay(pendingAutoplay);
+    assertHighlightedBlock(await readHighlightedSentence(page), blockTwoText);
+    const startIndex = await page.evaluate(async () =>
+        (await chrome.storage.local.get(['pendingStartIndex'])).pendingStartIndex);
+    if (startIndex !== savedBlock) {
+        throw Error('Bookmark go-to did not seek saved block: ' +
+            JSON.stringify({ startIndex, savedBlock }));
+    }
+    await page.evaluate(async () => {
+        await chrome.storage.sync.set({ autoplayReader: false });
+    });
 
     await page.locator('#bookmarkList .bookmark-remove').first().click();
     await page.waitForFunction(() =>
         document.querySelectorAll('#bookmarkList li').length === 0,
     null, { timeout: 15000 });
 
-    // Re-open the same EPUB bytes so resume can match document identity.
-    await page.locator('#openAnotherDocument').click();
-    await page.locator('#fileInput').setInputFiles({
-        name: 'offline-reader-acceptance.epub',
-        mimeType: 'application/epub+zip',
-        buffer: epubBytes,
-    });
+    // Durable progress must still point at Third Chapter block 1 for Resume.
+    await page.waitForFunction(async () => {
+        const all = await chrome.storage.local.get(null);
+        const key = Object.keys(all || {}).find((k) =>
+            k.startsWith('readerProgress:'));
+        return key && all[key]?.blockIndex === 1;
+    }, null, { timeout: 15000 });
+
+    await reopenAcceptanceEpub(page, epubBytes);
     await page.waitForFunction(() =>
         document.getElementById('resumeBanner')?.hidden === false,
     null, { timeout: 60000 });
     assertResumeBannerVisible(
         await page.evaluate(() => document.getElementById('resumeBanner')?.hidden));
+    const progressAtBanner = await readDocumentProgressRecord(page);
+    if (!progressAtBanner || progressAtBanner.blockIndex !== savedBlock) {
+        throw Error('Resume banner without durable Third Chapter block progress: ' +
+            JSON.stringify(progressAtBanner));
+    }
+
+    await page.locator('#resumeReading').click();
+    const resumed = await waitForChapter(
+        'Third Chapter', afterLeave.revision, afterLeave.audioUrl,
+        afterLeave.audioSha256);
+    if (resumed.title !== 'Third Chapter') {
+        throw Error('Resume did not restore Third Chapter: ' +
+            JSON.stringify(resumed));
+    }
+    assertHighlightedBlock(await readHighlightedSentence(page), blockTwoText);
+    const resumePaused = await page.evaluate(() => {
+        const audio = document.getElementById('playerFrame')
+            ?.contentDocument?.getElementById('audio');
+        return Boolean(audio?.paused);
+    });
+    if (!resumePaused) {
+        throw Error('Resume must keep playback paused until Play');
+    }
+
+    // Re-open again and Start over — durable removal, not only banner hide.
+    await reopenAcceptanceEpub(page, epubBytes);
+    await page.waitForFunction(() =>
+        document.getElementById('resumeBanner')?.hidden === false,
+    null, { timeout: 60000 });
     await page.locator('#startOverReading').click();
     await page.waitForFunction(() =>
         document.getElementById('resumeBanner')?.hidden !== false,
     null, { timeout: 15000 });
+    const firstAfterClear = await waitForChapter(
+        'First Chapter', resumed.revision, resumed.audioUrl, resumed.audioSha256);
+    if (firstAfterClear.title !== 'First Chapter') {
+        throw Error('Start over did not return to First Chapter: ' +
+            JSON.stringify(firstAfterClear));
+    }
+    await page.waitForFunction(async () => {
+        const all = await chrome.storage.local.get(null);
+        const key = Object.keys(all || {}).find((k) =>
+            k.startsWith('readerProgress:'));
+        if (!key) return true;
+        const record = all[key];
+        return record?.blockIndex === 0 &&
+            String(record?.chapterHref || '').includes('first.xhtml');
+    }, null, { timeout: 15000 });
+    assertProgressClearedOrFirstChapter(
+        await readDocumentProgressRecord(page), 'first.xhtml');
 
     return buildProgressAcceptanceReport({
         locksAvailable: true,
         bookmarkAdded: true,
+        bookmarkBlockIndex: savedBlock,
         bookmarkGoRestoredChapter: 'Third Chapter',
+        bookmarkGoRestoredBlock: savedBlock,
         bookmarkGoSuppressedAutoplay: true,
         bookmarkRemoved: true,
+        staleProgressFenced: true,
         resumeBannerAfterReopen: true,
+        resumeRestoredChapter: 'Third Chapter',
+        resumeRestoredBlock: savedBlock,
+        resumePaused: true,
+        progressClearedFromStorage: true,
         resumeCleared: true,
     });
 }

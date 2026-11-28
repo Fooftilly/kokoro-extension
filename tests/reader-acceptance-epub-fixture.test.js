@@ -75,6 +75,9 @@ console.log(JSON.stringify({
         expect(report.firstSection).toContain(report.speech['First Section']);
         expect(report.second).toContain(report.speech['Second Chapter']);
         expect(report.third).toContain(report.speech['Third Chapter']);
+        expect(report.third).toContain('Hello third chapter block two.');
+        expect(report.third).toContain('Hello third chapter block three.');
+        expect(report.third.match(/<p /g)).toHaveLength(3);
         expect(report.speech['First Chapter']).not.toBe(report.speech['First Section']);
         expect(report.speech['First Section']).not.toBe(report.speech['Second Chapter']);
         expect(report.speech['Second Chapter']).not.toBe(report.speech['Third Chapter']);
@@ -124,6 +127,9 @@ with zipfile.ZipFile(${JSON.stringify(epubPath)}) as z:
         expect(report.firstSection).toContain(report.speech['First Section']);
         expect(report.second).toContain(report.speech['Second Chapter']);
         expect(report.third).toContain(report.speech['Third Chapter']);
+        expect(report.third).toContain('Hello third chapter block two.');
+        expect(report.third).toContain('Hello third chapter block three.');
+        expect(report.third.match(/<p /g)).toHaveLength(3);
         expect(report.names).toEqual(expectedNames());
     });
 });

@@ -18,6 +18,7 @@ export const READER_PROGRESS_ACCEPTANCE_SELECTORS = Object.freeze({
     resumeReading: '#resumeReading',
     startOverReading: '#startOverReading',
     clearReadingProgress: '#clearReadingProgress',
+    playerSeekFwd: '#seekFwd',
 });
 
 /**
@@ -48,6 +49,33 @@ export function assertResumeBannerVisible(hidden) {
     return true;
 }
 
+/** Fail closed when the restored highlight is not the saved nonzero block. */
+export function assertHighlightedBlock(text, expectedSubstring) {
+    const needle = String(expectedSubstring || '');
+    if (!needle || !String(text || '').includes(needle)) {
+        throw new Error(
+            'Expected player highlight for saved block, got: ' +
+            JSON.stringify({ text, expectedSubstring: needle }));
+    }
+    return true;
+}
+
+/**
+ * Start over / clear must drop the prior saved position. A fresh block-0
+ * save for the first chapter is allowed after the banner is dismissed.
+ */
+export function assertProgressClearedOrFirstChapter(record, firstHrefNeedle) {
+    if (!record) return true;
+    const href = String(record.chapterHref || '');
+    const blockIndex = Number(record.blockIndex);
+    const firstOk = firstHrefNeedle && href.includes(firstHrefNeedle) &&
+        blockIndex === 0;
+    if (firstOk) return true;
+    throw new Error(
+        'Expected progress cleared or first-chapter block 0 after start over: ' +
+        JSON.stringify(record));
+}
+
 /**
  * Shape returned by live Chromium/Firefox progress stages so CI reports stay
  * comparable across browsers.
@@ -55,20 +83,37 @@ export function assertResumeBannerVisible(hidden) {
 export function buildProgressAcceptanceReport({
     locksAvailable,
     bookmarkAdded,
+    bookmarkBlockIndex,
     bookmarkGoRestoredChapter,
+    bookmarkGoRestoredBlock,
     bookmarkGoSuppressedAutoplay,
     bookmarkRemoved,
+    staleProgressFenced,
     resumeBannerAfterReopen,
+    resumeRestoredChapter,
+    resumeRestoredBlock,
+    resumePaused,
+    progressClearedFromStorage,
     resumeCleared,
 } = {}) {
     return {
         stage: READER_PROGRESS_ACCEPTANCE_STAGE,
         locksAvailable: Boolean(locksAvailable),
         bookmarkAdded: Boolean(bookmarkAdded),
+        bookmarkBlockIndex: Number.isInteger(bookmarkBlockIndex)
+            ? bookmarkBlockIndex : null,
         bookmarkGoRestoredChapter: bookmarkGoRestoredChapter || null,
+        bookmarkGoRestoredBlock: Number.isInteger(bookmarkGoRestoredBlock)
+            ? bookmarkGoRestoredBlock : null,
         bookmarkGoSuppressedAutoplay: Boolean(bookmarkGoSuppressedAutoplay),
         bookmarkRemoved: Boolean(bookmarkRemoved),
+        staleProgressFenced: Boolean(staleProgressFenced),
         resumeBannerAfterReopen: Boolean(resumeBannerAfterReopen),
+        resumeRestoredChapter: resumeRestoredChapter || null,
+        resumeRestoredBlock: Number.isInteger(resumeRestoredBlock)
+            ? resumeRestoredBlock : null,
+        resumePaused: Boolean(resumePaused),
+        progressClearedFromStorage: Boolean(progressClearedFromStorage),
         resumeCleared: Boolean(resumeCleared),
     };
 }

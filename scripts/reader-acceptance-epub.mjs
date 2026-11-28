@@ -8,9 +8,18 @@ export const READER_ACCEPTANCE_SPEECH = {
     'First Chapter': 'Hello first chapter.',
     'First Section': 'Hello first section.',
     'Second Chapter': 'Hello second chapter.',
+    // First block text stays the chapter speech key; extra blocks enable
+    // nonzero bookmark/resume seek coverage in the packaged acceptance stage.
     'Third Chapter': 'Hello third chapter.',
     'acceptance.txt': 'Hello plain text.',
 };
+
+/** Multi-block Third Chapter bodies (one <p> per block) for #196 seek tests. */
+export const READER_ACCEPTANCE_THIRD_BLOCKS = Object.freeze([
+    'Hello third chapter.',
+    'Hello third chapter block two.',
+    'Hello third chapter block three.',
+]);
 
 export async function buildReaderAcceptanceEpub() {
     const zip = new JSZip();
@@ -54,12 +63,20 @@ export async function buildReaderAcceptanceEpub() {
         ['second', 'Second Chapter'],
         ['third', 'Third Chapter'],
     ]) {
-        const speech = READER_ACCEPTANCE_SPEECH[title];
+        let body;
+        if (title === 'Third Chapter') {
+            body = READER_ACCEPTANCE_THIRD_BLOCKS.map((speech, index) => {
+                const id = index === 0 ? name : (name + '-' + (index + 1));
+                return '<p id="' + id + '">' + speech + '</p>';
+            }).join('');
+        } else {
+            body = '<p id="' + name + '">' + READER_ACCEPTANCE_SPEECH[title] +
+                '</p>';
+        }
         zip.file('OEBPS/' + name + '.xhtml',
             '<?xml version="1.0" encoding="UTF-8"?>' +
             '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>' +
-            name + '</title></head><body><p id="' + name +
-            '">' + speech + '</p></body></html>');
+            name + '</title></head><body>' + body + '</body></html>');
     }
     return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
