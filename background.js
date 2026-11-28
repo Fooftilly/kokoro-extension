@@ -416,11 +416,11 @@ async function handleTtsAction(tab, actionType, selectionText = "") {
     // text stays local; do not probe FastAPI or request server audio.
 
     // The shared resolver strips the server URL for both local providers.
-    // Preserve the existing overlay behavior in download mode until local
-    // full-selection export is implemented; saving in the player exports WAV.
+    // Local engines synthesize in the player; scoped Save (sentence / chapter /
+    // article) exports WAV there (#197). FastAPI still downloads MP3 here.
     if (backend !== TtsProviders.FASTAPI && settings.mode === 'download' && !isArticleMode) {
         notify('Kokoro TTS',
-            'Local download opens the player. Use Save audio there to download a WAV sentence.');
+            'Local download opens the player. Use Save there to export WAV (sentence, chapter, or article).');
     }
 
     // Network connectivity matters only for the explicitly selected server backend.

@@ -1,5 +1,10 @@
 import { processContent } from './text-processor.js';
 import { AudioManager } from './audio-manager.js';
+import {
+    EXPORT_SCOPE,
+    listAvailableScopes,
+    runScopedAudioExport,
+} from './audio-export.js';
 
 const statusEl = document.getElementById('status');
 const audioEl = document.getElementById('audio');
@@ -15,6 +20,11 @@ const collapseBtn = document.getElementById('collapse');
 const dragHandle = document.getElementById('dragHandle');
 const spinnerEl = document.getElementById('loadingSpinner');
 const saveAudioBtn = document.getElementById('saveAudio');
+const exportScopeSelect = document.getElementById('exportScope');
+const cancelExportBtn = document.getElementById('cancelExport');
+const exportProgressEl = document.getElementById('exportProgress');
+const exportProgressFill = document.getElementById('exportProgressFill');
+const exportProgressLabel = document.getElementById('exportProgressLabel');
 
 let sentences = [];
 let currentIndex = 0;
@@ -33,6 +43,8 @@ let overlayHostSupportsChrome = false;
 let activeDragPointerId = null;
 let lastDragScreenX = 0;
 let lastDragScreenY = 0;
+let exportAbortController = null;
+let exportInFlight = false;
 
 const audioManager = new AudioManager();
 const playPauseBtn = document.getElementById('playPause');
@@ -263,35 +275,212 @@ async function downloadPinnedSentence(url, filename, release) {
     }
 }
 
-// Save exactly the current sentence. Local model data never leaves this browser.
+function exportSourceKind() {
+    // Reader iframe publishes chapter revisions; webpage overlays load one article.
+    if (continuousReaderEnabled || activeReaderRevision !== null) {
+        return 'reader-chapter';
+    }
+    return 'article';
+}
+
+function refreshExportScopeOptions() {
+    if (!exportScopeSelect) return;
+    const previous = exportScopeSelect.value || EXPORT_SCOPE.SENTENCE;
+    const scopes = listAvailableScopes({ sourceKind: exportSourceKind() });
+    exportScopeSelect.textContent = '';
+    for (const scope of scopes) {
+        const option = document.createElement('option');
+        option.value = scope.id;
+        option.disabled = scope.available !== true;
+        if (scope.id === EXPORT_SCOPE.SENTENCE) {
+            option.textContent = 'Current sentence';
+        } else if (scope.id === EXPORT_SCOPE.CHAPTER) {
+            option.textContent = 'Current chapter';
+        } else if (scope.id === EXPORT_SCOPE.ARTICLE) {
+            option.textContent = 'Full article';
+        } else if (scope.id === EXPORT_SCOPE.DOCUMENT) {
+            option.textContent = 'Entire document (later)';
+            option.title = scope.reason || '';
+        } else {
+            option.textContent = scope.id;
+        }
+        exportScopeSelect.appendChild(option);
+    }
+    const availableIds = scopes.filter(s => s.available).map(s => s.id);
+    exportScopeSelect.value = availableIds.includes(previous)
+        ? previous
+        : (availableIds[0] || EXPORT_SCOPE.SENTENCE);
+}
+
+function setExportUiBusy(busy) {
+    exportInFlight = busy;
+    if (saveAudioBtn) saveAudioBtn.disabled = busy;
+    if (exportScopeSelect) exportScopeSelect.disabled = busy;
+    if (cancelExportBtn) cancelExportBtn.hidden = !busy;
+    if (exportProgressEl) exportProgressEl.hidden = !busy;
+    if (!busy && exportProgressFill) exportProgressFill.style.width = '0%';
+}
+
+function updateExportProgress(progress) {
+    if (!progress) return;
+    const total = Math.max(1, progress.total || 1);
+    const completed = Math.max(0, progress.completed || 0);
+    const pct = Math.min(100, Math.round((completed / total) * 100));
+    if (exportProgressFill) exportProgressFill.style.width = pct + '%';
+    if (exportProgressLabel) {
+        exportProgressLabel.textContent = progress.message ||
+            ('Export ' + completed + '/' + total);
+    }
+    if (progress.message) statusEl.textContent = progress.message;
+}
+
+async function bytesFromAudioUrl(url) {
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error('Could not read generated audio for export');
+    }
+    const bytes = await response.arrayBuffer();
+    let contentType = response.headers?.get?.('Content-Type') || '';
+    if (!contentType && typeof url === 'string') {
+        if (url.startsWith('data:audio/mpeg') || url.startsWith('data:audio/mp3')) {
+            contentType = 'audio/mpeg';
+        } else if (url.startsWith('data:audio/wav') || url.startsWith('blob:')) {
+            contentType = 'audio/wav';
+        }
+    }
+    return { bytes, contentType: contentType || 'application/octet-stream' };
+}
+
+async function downloadExportBlob(blob, filename, release) {
+    const url = URL.createObjectURL(blob);
+    let released = false;
+    const releaseBoth = () => {
+        if (released) return;
+        released = true;
+        try {
+            URL.revokeObjectURL(url);
+        } catch {
+            // ignore
+        }
+        release?.();
+    };
+    try {
+        await downloadPinnedSentence(url, filename, releaseBoth);
+    } catch (error) {
+        releaseBoth();
+        throw error;
+    }
+}
+
+function cancelInFlightExportSynthesis(index) {
+    const entry = audioManager.audioCache.get(index);
+    if (entry?.pending) {
+        audioManager.evictAudio(index, entry);
+    }
+}
+
+// Scoped export (#197): sentence / chapter / article from the loaded player
+// content. Local backends merge WAV; FastAPI downloads separate MP3 parts.
 if (saveAudioBtn) {
     saveAudioBtn.addEventListener('click', async () => {
-        saveAudioBtn.disabled = true;
-        let release = null;
-        let handedOff = false;
+        if (exportInFlight) return;
+        if (!sentences.length) {
+            statusEl.textContent = 'Could not save audio: No selected sentence';
+            return;
+        }
+        const scope = exportScopeSelect?.value || EXPORT_SCOPE.SENTENCE;
+        const controller = new AbortController();
+        exportAbortController = controller;
+        setExportUiBusy(true);
+        updateExportProgress({
+            phase: 'synthesize',
+            completed: 0,
+            total: 1,
+            message: 'Starting export…',
+        });
+
         try {
-            const sentenceIndex = currentIndex;
-            if (!sentences[sentenceIndex]) throw new Error('No selected sentence');
-            release = audioManager.pinAudio(sentenceIndex);
-            const audioUrl = await audioManager.getAudio(sentenceIndex);
-            if (!audioUrl) throw new Error('No generated audio to save');
             const settings = await browser.storage.local.get(['pendingTtsBackend']);
-            const extension = ['mediapipe', 'onnx'].includes(settings.pendingTtsBackend) ? 'wav' : 'mp3';
-            const safeTitle = (titleEl.textContent || 'kokoro')
-                .replace(/[^a-zA-Z0-9 _-]/g, '_').trim().slice(0, 90) || 'kokoro';
-            // The download helper now owns the lease, including error cleanup.
-            // Do not release it again in this handler's finally block.
-            handedOff = true;
-            await downloadPinnedSentence(audioUrl,
-                safeTitle + '-sentence-' + (sentenceIndex + 1) + '.' + extension,
-                release);
+            const backend = ['mediapipe', 'onnx', 'fastapi'].includes(
+                settings.pendingTtsBackend)
+                ? settings.pendingTtsBackend
+                : 'fastapi';
+            const title = titleEl?.textContent || 'kokoro';
+
+            await runScopedAudioExport({
+                scope,
+                currentIndex,
+                sentences,
+                backend,
+                title,
+                signal: controller.signal,
+                onProgress: updateExportProgress,
+                fetchAudioBytes: async (index) => {
+                    if (controller.signal.aborted) {
+                        throw new DOMException('Audio export cancelled', 'AbortError');
+                    }
+                    let release = null;
+                    try {
+                        release = audioManager.pinAudio(index);
+                        const audioUrl = await audioManager.getAudio(index);
+                        if (controller.signal.aborted) {
+                            cancelInFlightExportSynthesis(index);
+                            throw new DOMException('Audio export cancelled', 'AbortError');
+                        }
+                        if (!audioUrl) throw new Error('No generated audio to save');
+                        const fetched = await bytesFromAudioUrl(audioUrl);
+                        // Prefer the backend's known format over opaque blob: URLs
+                        // so FastAPI MP3 is never mislabeled as WAV (and vice versa).
+                        const contentType = backend === 'fastapi'
+                            ? 'audio/mpeg'
+                            : 'audio/wav';
+                        return {
+                            bytes: fetched.bytes,
+                            contentType,
+                            release,
+                        };
+                    } catch (error) {
+                        release?.();
+                        if (controller.signal.aborted) {
+                            cancelInFlightExportSynthesis(index);
+                            throw new DOMException('Audio export cancelled', 'AbortError');
+                        }
+                        throw error;
+                    }
+                },
+                downloadFile: async ({ blob, filename, release }) => {
+                    if (controller.signal.aborted) {
+                        release?.();
+                        throw new DOMException('Audio export cancelled', 'AbortError');
+                    }
+                    await downloadExportBlob(blob, filename, release);
+                },
+            });
             statusEl.textContent = 'Download started';
         } catch (error) {
-            statusEl.textContent = 'Could not save audio: ' + String(error.message || error);
+            if (error?.name === 'AbortError' || controller.signal.aborted) {
+                statusEl.textContent = 'Export cancelled';
+            } else {
+                statusEl.textContent = 'Could not save audio: ' +
+                    String(error.message || error);
+            }
         } finally {
-            if (!handedOff) release?.();
-            saveAudioBtn.disabled = false;
+            if (exportAbortController === controller) exportAbortController = null;
+            setExportUiBusy(false);
         }
+    });
+}
+
+if (cancelExportBtn) {
+    cancelExportBtn.addEventListener('click', () => {
+        exportAbortController?.abort();
+        // Best-effort: stale any pending synthesis for the active sentence so
+        // local inference joins cancel without clearing the whole player.
+        cancelInFlightExportSynthesis(currentIndex);
+        if (exportProgressLabel) {
+            exportProgressLabel.textContent = 'Cancelling…';
+        }
+        statusEl.textContent = 'Cancelling export…';
     });
 }
 
@@ -528,6 +717,7 @@ async function initialize() {
     window.renderData = result.renderData; // Legacy global or just pass? renderText depends on it.
 
     audioManager.setSentences(sentences);
+    refreshExportScopeOptions();
 
     renderText();
 

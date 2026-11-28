@@ -346,6 +346,57 @@ audio {
     color: var(--text-color);
 }
 
+.export-controls {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+#exportScope {
+    max-width: 9.5rem;
+    padding: 4px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-color);
+    color: var(--text-color);
+    font-size: 12px;
+}
+
+.export-cancel-btn {
+    background: #ffebee;
+    color: #c62828;
+}
+
+.export-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 8px;
+}
+
+.export-progress[hidden] {
+    display: none;
+}
+
+.export-progress-track {
+    height: 4px;
+    background: var(--progress-bg);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.export-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--progress-bar-bg);
+    transition: width 0.2s ease;
+}
+
+#exportProgressLabel {
+    font-size: 11px;
+    color: var(--status-text);
+}
+
 .highlight {
     background-color: var(--highlight-bg);
     color: var(--highlight-text);

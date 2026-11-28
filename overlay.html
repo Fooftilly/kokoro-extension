@@ -48,7 +48,14 @@
             </div>
 
             <button class="control-btn" id="retry" type="button" aria-label="Retry playback">Retry</button>
-            <button class="control-btn" id="saveAudio" type="button" aria-label="Save this sentence as audio" title="Save this sentence as MP3 or WAV">Save</button>
+            <div class="export-controls">
+                <label class="visually-hidden" for="exportScope">Export scope</label>
+                <select id="exportScope" aria-label="Export scope" title="What to save as audio">
+                    <option value="sentence" selected>Current sentence</option>
+                </select>
+                <button class="control-btn" id="saveAudio" type="button" aria-label="Save audio export" title="Save audio (WAV locally, MP3 via FastAPI)">Save</button>
+                <button class="control-btn export-cancel-btn" id="cancelExport" type="button" aria-label="Cancel audio export" hidden>Cancel</button>
+            </div>
             <label class="visually-hidden" for="speed">Playback speed</label>
             <select id="speed" aria-label="Playback speed">
                 <option value="0.5">0.5x</option>
@@ -64,6 +71,12 @@
                 <option value="2.8">2.8x</option>
                 <option value="3.0">3.0x</option>
             </select>
+        </div>
+        <div id="exportProgress" class="export-progress" hidden>
+            <div class="export-progress-track" aria-hidden="true">
+                <div class="export-progress-fill" id="exportProgressFill"></div>
+            </div>
+            <span id="exportProgressLabel" role="status" aria-live="polite"></span>
         </div>
     </div>
     <script src="compromise.js"></script>

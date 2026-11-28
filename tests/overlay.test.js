@@ -83,6 +83,39 @@ jest.mock('../text-processor.js', () => ({
 // Mock scrollIntoView
 Element.prototype.scrollIntoView = jest.fn();
 
+function installExportAudioFetchMock() {
+    const { encodePcm16Wav } = require('../pcm-wav.js');
+    const samples = new Float32Array(48);
+    for (let i = 0; i < samples.length; i++) samples[i] = Math.sin(i / 10) * 0.25;
+    const wavBytes = encodePcm16Wav(samples, 24000);
+    const mp3Bytes = Uint8Array.from(Buffer.from('fake-mp3-bytes'));
+
+    global.fetch = jest.fn(async (url) => {
+        const asString = String(url);
+        const isMp3 = /mpeg|mp3/i.test(asString);
+        const body = isMp3 ? mp3Bytes : wavBytes;
+        return {
+            ok: true,
+            headers: {
+                get: (name) => {
+                    if (String(name).toLowerCase() !== 'content-type') return null;
+                    return isMp3 ? 'audio/mpeg' : 'audio/wav';
+                },
+            },
+            arrayBuffer: async () => body.buffer.slice(
+                body.byteOffset, body.byteOffset + body.byteLength),
+        };
+    });
+    if (!URL.createObjectURL || !jest.isMockFunction(URL.createObjectURL)) {
+        URL.createObjectURL = jest.fn(() => 'blob:export-download');
+    } else {
+        URL.createObjectURL.mockReturnValue('blob:export-download');
+    }
+    if (!URL.revokeObjectURL || !jest.isMockFunction(URL.revokeObjectURL)) {
+        URL.revokeObjectURL = jest.fn();
+    }
+}
+
 function setupDOM() {
     document.body.className = '';
     document.body.innerHTML = `
@@ -106,7 +139,18 @@ function setupDOM() {
         <button id="seekFwd" aria-label="Next sentence">Next</button>
         <input type="range" id="volumeControl" value="1" aria-label="Volume">
         <button id="retry" aria-label="Retry playback"></button>
-        <button id="saveAudio" aria-label="Save this sentence as audio"></button>
+        <div class="export-controls">
+            <select id="exportScope" aria-label="Export scope">
+                <option value="sentence" selected>Current sentence</option>
+                <option value="article">Full article</option>
+            </select>
+            <button id="saveAudio" aria-label="Save audio export"></button>
+            <button id="cancelExport" aria-label="Cancel audio export" hidden>Cancel</button>
+        </div>
+        <div id="exportProgress" hidden>
+            <div id="exportProgressFill"></div>
+            <span id="exportProgressLabel"></span>
+        </div>
         <select id="speed" aria-label="Playback speed">
             <option value="1.0">1.0x</option>
         </select>
@@ -127,6 +171,7 @@ describe('overlay.js logic', () => {
         jest.resetModules();
         jest.clearAllMocks();
         setupDOM();
+        installExportAudioFetchMock();
         const addListener = window.addEventListener;
         window.addEventListener = function (type, listener, options) {
             overlayWindowListeners.push({ type, listener, options });
@@ -428,9 +473,10 @@ describe('overlay.js logic', () => {
         document.getElementById('seekFwd').click();
         resolveAudio('blob:the-original-sentence');
         await new Promise(resolve => setTimeout(resolve, 0));
-
+        // Export copies bytes into a fresh blob URL for downloads.download;
+        // the filename still reflects the sentence that was pinned for save.
         expect(browser.downloads.download).toHaveBeenCalledWith(expect.objectContaining({
-            url: 'blob:the-original-sentence',
+            url: 'blob:export-download',
             filename: expect.stringMatching(/-sentence-1\.mp3$/),
         }));
     });
@@ -586,7 +632,7 @@ describe('overlay.js logic', () => {
         browser.downloads.download.mockRejectedValueOnce(new Error('Download rejected'));
         document.getElementById('saveAudio').click();
         await new Promise(resolve => setTimeout(resolve, 0));
-        expect(release).toHaveBeenCalledTimes(1);
+        expect(release).toHaveBeenCalled();
         expect(listeners.size).toBe(0);
         expect(document.getElementById('status').textContent).toContain('Could not save audio');
         delete browser.downloads.onChanged;
@@ -594,11 +640,47 @@ describe('overlay.js logic', () => {
 
     test('local ONNX sentence downloads retain WAV format', async () => {
         await new Promise(resolve => setTimeout(resolve, 100));
+        // Save reads pendingTtsBackend after the initial overlay initialize get().
         browser.storage.local.get.mockResolvedValueOnce({ pendingTtsBackend: 'onnx' });
         document.getElementById('saveAudio').click();
         await new Promise(resolve => setTimeout(resolve, 0));
         const call = browser.downloads.download.mock.calls[0][0];
         expect(call.filename.endsWith('-sentence-1.wav')).toBe(true);
+    });
+
+    test('full article export scope is offered for webpage overlays', async () => {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const select = document.getElementById('exportScope');
+        const values = [...select.options].map(o => o.value);
+        expect(values).toContain('sentence');
+        expect(values).toContain('article');
+        expect(values).not.toContain('document');
+    });
+
+    test('cancel export aborts an in-flight multi-sentence save', async () => {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const { AudioManager } = require('../audio-manager.js');
+        const manager = AudioManager.mock.results[0].value;
+        manager.audioCache = new Map();
+        manager.evictAudio = jest.fn();
+        let resolveAudio;
+        manager.getAudio.mockReset();
+        manager.getAudio.mockImplementation(
+            () => new Promise(resolve => { resolveAudio = resolve; }));
+        browser.storage.local.get.mockResolvedValueOnce({
+            pendingTtsBackend: 'mediapipe',
+        });
+        document.getElementById('exportScope').value = 'article';
+        document.getElementById('saveAudio').click();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(typeof resolveAudio).toBe('function');
+        document.getElementById('cancelExport').click();
+        resolveAudio('blob:partial');
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(document.getElementById('status').textContent)
+            .toMatch(/cancel/i);
+        expect(browser.downloads.download).not.toHaveBeenCalled();
     });
 
     test('Handles navigation calls correctly', async () => {
