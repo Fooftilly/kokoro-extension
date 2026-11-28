@@ -86,7 +86,13 @@ export function mapPdfJsOpenError(error) {
 }
 
 export async function destroyPdfSession(session) {
-    if (!session) return;
+    if (!session || session._destroyed) return;
+    session._destroyed = true;
+    const reader = session.streamReader;
+    session.streamReader = null;
+    if (reader && typeof reader.cancel === 'function') {
+        try { await reader.cancel(); } catch { /* ignore */ }
+    }
     const task = session.loadingTask;
     const pdf = session.pdf;
     if (task && typeof task.destroy === 'function') {
@@ -98,11 +104,31 @@ export async function destroyPdfSession(session) {
     }
 }
 
+function buildPdfDocumentParams(buffer, options = {}) {
+    const documentParams = {
+        data: new Uint8Array(buffer),
+        // Local package only — never fetch fonts or cmaps from the network.
+        disableFontFace: true,
+        useSystemFonts: true,
+        isEvalSupported: false,
+        useWorkerFetch: false,
+        verbosity: 0,
+        ...options.documentParams,
+    };
+    // Packaged Adobe CMaps (binary .bcmap) so named predefined CMaps decode.
+    if (typeof options.cMapUrl === 'string' && options.cMapUrl) {
+        documentParams.cMapUrl = options.cMapUrl;
+        documentParams.cMapPacked = options.cMapPacked !== false;
+    }
+    return documentParams;
+}
+
 /**
- * Open a local PDF with the injected PDF.js getDocument API.
- * Returns `{ pdf, loadingTask }` — always dispose with destroyPdfSession().
+ * Create a cancellable PDF loading session immediately (before the worker
+ * finishes). Callers must hold the returned handle and destroyPdfSession() it
+ * on replacement / picker cancel — even while open() is still pending.
  */
-export async function openPdfDocument(buffer, pdfjs, options = {}) {
+export function createPdfLoadingSession(buffer, pdfjs, options = {}) {
     if (Object.prototype.toString.call(buffer) !== '[object ArrayBuffer]') {
         throw new Error('The selected PDF has no readable binary data');
     }
@@ -114,42 +140,52 @@ export async function openPdfDocument(buffer, pdfjs, options = {}) {
         throw new Error('Packaged PDF.js reader is unavailable');
     }
 
-    const data = new Uint8Array(buffer);
-    let loadingTask;
-    try {
-        const documentParams = {
-            data,
-            // Local package only — never fetch fonts or cmaps from the network.
-            disableFontFace: true,
-            useSystemFonts: true,
-            isEvalSupported: false,
-            useWorkerFetch: false,
-            verbosity: 0,
-            ...options.documentParams,
-        };
-        // Packaged Adobe CMaps (binary .bcmap) so named predefined CMaps decode.
-        if (typeof options.cMapUrl === 'string' && options.cMapUrl) {
-            documentParams.cMapUrl = options.cMapUrl;
-            documentParams.cMapPacked = options.cMapPacked !== false;
+    const loadingTask = pdfjs.getDocument(buildPdfDocumentParams(buffer, options));
+    const session = {
+        loadingTask,
+        pdf: null,
+        streamReader: null,
+        _destroyed: false,
+        attachStreamReader(reader) {
+            session.streamReader = reader || null;
+        },
+    };
+
+    session.open = async function openPdfLoadingSession() {
+        try {
+            const pdf = await loadingTask.promise;
+            if (session._destroyed) {
+                throw new DOMException('PDF work cancelled', 'AbortError');
+            }
+            if (!Number.isInteger(pdf?.numPages) || pdf.numPages < 1) {
+                await destroyPdfSession(session);
+                throw new Error('PDF contains no pages');
+            }
+            if (pdf.numPages > MAX_PDF_PAGES) {
+                await destroyPdfSession(session);
+                throw new Error(
+                    'PDF has too many pages (maximum ' + MAX_PDF_PAGES + ')');
+            }
+            session.pdf = pdf;
+            return session;
+        } catch (error) {
+            if (!session._destroyed) await destroyPdfSession(session);
+            throw mapPdfJsOpenError(error);
         }
-        loadingTask = pdfjs.getDocument(documentParams);
-        const pdf = await loadingTask.promise;
-        if (!Number.isInteger(pdf?.numPages) || pdf.numPages < 1) {
-            await destroyPdfSession({ pdf, loadingTask });
-            throw new Error('PDF contains no pages');
-        }
-        if (pdf.numPages > MAX_PDF_PAGES) {
-            await destroyPdfSession({ pdf, loadingTask });
-            throw new Error(
-                'PDF has too many pages (maximum ' + MAX_PDF_PAGES + ')');
-        }
-        return { pdf, loadingTask };
-    } catch (error) {
-        if (loadingTask) await destroyPdfSession({ loadingTask });
-        throw mapPdfJsOpenError(error);
-    }
+    };
+
+    return session;
 }
 
+/**
+ * Open a local PDF with the injected PDF.js getDocument API.
+ * Returns `{ pdf, loadingTask }` — always dispose with destroyPdfSession().
+ * Prefer createPdfLoadingSession when the caller must cancel mid-open.
+ */
+export async function openPdfDocument(buffer, pdfjs, options = {}) {
+    const session = createPdfLoadingSession(buffer, pdfjs, options);
+    return session.open();
+}
 function rowFromTextItem(item) {
     const str = String(item?.str || '');
     if (!str.trim()) return null;
@@ -206,18 +242,55 @@ function appendPdfTextRows(items, state, limits) {
     }
 }
 
+async function raceStreamRead(reader, isCurrent) {
+    const readPromise = reader.read();
+    if (typeof isCurrent !== 'function') return readPromise;
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const timer = setInterval(() => {
+            if (settled || isCurrent()) return;
+            settled = true;
+            clearInterval(timer);
+            Promise.resolve(reader.cancel()).catch(() => {});
+            reject(new DOMException('PDF work cancelled', 'AbortError'));
+        }, 25);
+        readPromise.then(
+            (value) => {
+                if (settled) return;
+                settled = true;
+                clearInterval(timer);
+                resolve(value);
+            },
+            (error) => {
+                if (settled) return;
+                settled = true;
+                clearInterval(timer);
+                reject(error);
+            },
+        );
+    });
+}
+
 async function collectRowsFromReadableStream(reader, limits) {
     const state = { rows: [], chars: 0 };
+    if (typeof limits.attachStreamReader === 'function') {
+        limits.attachStreamReader(reader);
+    }
     try {
         while (true) {
             throwIfCancelled(limits.isCurrent);
-            const { done, value } = await reader.read();
+            const { done, value } = await raceStreamRead(reader, limits.isCurrent);
+            throwIfCancelled(limits.isCurrent);
             if (done) break;
             appendPdfTextRows(streamChunkItems(value), state, limits);
         }
     } catch (error) {
         try { await reader.cancel(); } catch { /* ignore */ }
         throw error;
+    } finally {
+        if (typeof limits.attachStreamReader === 'function') {
+            limits.attachStreamReader(null);
+        }
     }
     return state.rows;
 }
@@ -238,6 +311,7 @@ async function collectRowsFromPageStream(page, limits = {}) {
         maxItems: Number.isInteger(limits.maxItems)
             ? limits.maxItems : MAX_PDF_PAGE_TEXT_ITEMS,
         isCurrent: limits.isCurrent,
+        attachStreamReader: limits.attachStreamReader,
     };
     const stream = page.streamTextContent({ includeMarkedContent: false });
     // PDF.js may return a ReadableStream or an async iterable of chunks.
@@ -258,8 +332,9 @@ function blocksFromParagraphs(paragraphs) {
 
 /**
  * Convert PDF.js text items into speech blocks with basic reading order:
- * top-to-bottom, left-to-right, with a coarse two-column split only when the
- * partition accounts for every item (no silent drops).
+ * top-to-bottom, left-to-right, with a coarse two-column split on body bands
+ * when the partition accounts for every body item (no silent drops). Spanning
+ * titles/footers and short centered headings are separate horizontal bands.
  */
 export function blocksFromPdfTextContent(textContent, options = {}) {
     const rows = Array.isArray(textContent?.items)
@@ -271,6 +346,38 @@ export function blocksFromPdfTextContent(textContent, options = {}) {
 
 function byReadingOrder(a, b) {
     return (b.y - a.y) || (a.x - b.x);
+}
+
+function classifyPdfColumnRow(row, mid, gap) {
+    const rightEdge = row.x + (Number(row.width) || 0);
+    if (row.x < mid - gap && rightEdge > mid + gap) return 'span';
+    if (row.x < mid - gap && rightEdge <= mid + gap) return 'left';
+    if (row.x > mid + gap) return 'right';
+    return 'mid';
+}
+
+function tryColumnPartition(bodyRows) {
+    if (bodyRows.length < 4) return null;
+    const xs = bodyRows.map((row) => row.x).sort((a, b) => a - b);
+    const minX = xs[0];
+    const maxX = xs[xs.length - 1];
+    const span = maxX - minX;
+    if (!(span > 120)) return null;
+    const mid = minX + span / 2;
+    const gap = span * 0.08;
+    const left = [];
+    const right = [];
+    for (const row of bodyRows) {
+        const kind = classifyPdfColumnRow(row, mid, gap);
+        if (kind === 'left') left.push(row);
+        else if (kind === 'right') right.push(row);
+        else return null;
+    }
+    if (left.length < 2 || right.length < 2 ||
+        left.length + right.length !== bodyRows.length) {
+        return null;
+    }
+    return left.sort(byReadingOrder).concat(right.sort(byReadingOrder));
 }
 
 function orderPdfTextItems(rows) {
@@ -286,29 +393,34 @@ function orderPdfTextItems(rows) {
     }
     const mid = minX + span / 2;
     const gap = span * 0.08;
-    const left = [];
-    const right = [];
+
+    const bands = [];
+    const body = [];
     for (const row of rows) {
-        const rightEdge = row.x + (Number(row.width) || 0);
-        // Full-width / gutter-spanning items (footers, titles) break the split.
-        if (row.x < mid - gap && rightEdge > mid + gap) {
-            return [...rows].sort(byReadingOrder);
-        }
-        if (row.x < mid - gap && rightEdge <= mid + gap) left.push(row);
-        else if (row.x > mid + gap) right.push(row);
-        else {
-            // Middle-band or ambiguous items break a clean two-column partition.
-            return [...rows].sort(byReadingOrder);
-        }
+        const kind = classifyPdfColumnRow(row, mid, gap);
+        if (kind === 'left' || kind === 'right') body.push(row);
+        else bands.push(row);
     }
-    // Only column-order when every item is assigned exactly once.
-    if (left.length < 2 || right.length < 2 ||
-        left.length + right.length !== rows.length) {
+
+    const orderedBody = tryColumnPartition(body);
+    if (!orderedBody) {
         return [...rows].sort(byReadingOrder);
     }
-    return left.sort(byReadingOrder).concat(right.sort(byReadingOrder));
-}
 
+    // Spanning / centered items that overlap the body vertically are ambiguous.
+    const bodyMaxY = Math.max(...body.map((row) => row.y));
+    const bodyMinY = Math.min(...body.map((row) => row.y));
+    const above = [];
+    const below = [];
+    for (const row of bands) {
+        if (row.y > bodyMaxY + 4) above.push(row);
+        else if (row.y < bodyMinY - 4) below.push(row);
+        else return [...rows].sort(byReadingOrder);
+    }
+    return above.sort(byReadingOrder)
+        .concat(orderedBody)
+        .concat(below.sort(byReadingOrder));
+}
 function groupPdfParagraphs(orderedItems) {
     if (!orderedItems.length) return [];
     const paragraphs = [];
@@ -410,6 +522,7 @@ export async function assertPdfHasExtractableText(pdf, options = {}) {
             const blocks = await extractPdfPageBlocks(pdf, pageNumber, {
                 maxChars: MAX_PDF_PAGE_TEXT_CHARS,
                 isCurrent: options.isCurrent,
+                attachStreamReader: options.attachStreamReader,
             });
             if (options.charBudget) {
                 accountPdfPageChars(options.charBudget, pageNumber, blocks);

@@ -14,6 +14,7 @@ import {
     blocksFromPdfTextContent,
     buildPdfPageToc,
     createPdfDocumentCharBudget,
+    createPdfLoadingSession,
     destroyPdfSession,
     extractPdfPageBlocks,
     mapPdfJsOpenError,
@@ -71,10 +72,10 @@ describe('text item ordering and paragraph grouping', () => {
                 { str: 'R2', transform: [1, 0, 0, 1, 320, 660], width: 20 },
             ],
         });
-        expect(blocks.map((b) => b.content).join(' ')).toBe('L1 L2 R1 R2');
+        expect(blocks.map((b) => b.content)).toEqual(['L1', 'L2', 'R1', 'R2']);
     });
 
-    test('keeps centered headings when a two-column split would drop middle text', () => {
+    test('keeps centered headings above a lossless two-column body', () => {
         const blocks = blocksFromPdfTextContent({
             items: [
                 { str: 'Centered heading', transform: [1, 0, 0, 1, 180, 740], width: 80 },
@@ -84,18 +85,12 @@ describe('text item ordering and paragraph grouping', () => {
                 { str: 'R2', transform: [1, 0, 0, 1, 320, 660], width: 20 },
             ],
         });
-        const joined = blocks.map((b) => b.content).join(' ');
-        expect(joined).toContain('Centered heading');
-        expect(joined).toContain('L1');
-        expect(joined).toContain('L2');
-        expect(joined).toContain('R1');
-        expect(joined).toContain('R2');
-        // No duplicates from a partial column partition.
-        expect(joined.match(/Centered heading/g)).toHaveLength(1);
-        expect(joined.match(/\bL1\b/g)).toHaveLength(1);
+        expect(blocks.map((b) => b.content)).toEqual([
+            'Centered heading', 'L1', 'L2', 'R1', 'R2',
+        ]);
     });
 
-    test('rejects two-column split when a full-width footer spans the gutter', () => {
+    test('keeps a full-width footer below a lossless two-column body', () => {
         const blocks = blocksFromPdfTextContent({
             items: [
                 { str: 'L1', transform: [1, 0, 0, 1, 40, 700], width: 20 },
@@ -106,12 +101,9 @@ describe('text item ordering and paragraph grouping', () => {
                 { str: 'Footer across', transform: [1, 0, 0, 1, 40, 620], width: 360 },
             ],
         });
-        const joined = blocks.map((b) => b.content).join(' ');
-        expect(joined).toContain('Footer across');
-        // Single-column reading order: footer stays after both columns by y,
-        // never spoken between left and right.
-        expect(joined.indexOf('L2')).toBeLessThan(joined.indexOf('Footer across'));
-        expect(joined.indexOf('R2')).toBeLessThan(joined.indexOf('Footer across'));
+        expect(blocks.map((b) => b.content)).toEqual([
+            'L1', 'L2', 'R1', 'R2', 'Footer across',
+        ]);
     });
 
     test('rejects pages that exceed the extraction character limit', () => {
@@ -127,20 +119,27 @@ function fakePdfjs({
     textByPage = {},
     openError = null,
     streamByPage = null,
+    hangOpen = false,
 } = {}) {
     const destroyed = { count: 0 };
     const lastParams = { value: null };
+    const lastLoadingTask = { value: null };
     return {
         destroyed,
         lastParams,
+        lastLoadingTask,
         getDocument(params) {
             lastParams.value = params;
-            if (openError) {
-                return {
-                    promise: Promise.reject(openError),
-                    async destroy() { destroyed.count += 1; },
-                };
-            }
+            let resolveOpen;
+            let rejectOpen;
+            const promise = hangOpen
+                ? new Promise((resolve, reject) => {
+                    resolveOpen = resolve;
+                    rejectOpen = reject;
+                })
+                : (openError
+                    ? Promise.reject(openError)
+                    : null);
             const pdf = {
                 numPages,
                 async getPage(pageNumber) {
@@ -158,9 +157,19 @@ function fakePdfjs({
                 async cleanup() {},
             };
             const loadingTask = {
-                promise: Promise.resolve(pdf),
-                async destroy() { destroyed.count += 1; },
+                promise: promise || Promise.resolve(pdf),
+                resolveOpen,
+                rejectOpen,
+                async destroy() {
+                    destroyed.count += 1;
+                    if (rejectOpen) {
+                        rejectOpen(new DOMException('PDF work cancelled', 'AbortError'));
+                        rejectOpen = null;
+                        resolveOpen = null;
+                    }
+                },
             };
+            lastLoadingTask.value = loadingTask;
             return loadingTask;
         },
     };
@@ -315,6 +324,58 @@ describe('openPdfDocument and page extraction with injectable PDF.js', () => {
         })).rejects.toMatchObject({ name: 'AbortError' });
         await destroyPdfSession(session);
     });
+
+    test('destroying a pending loading session rejects open after destroy', async () => {
+        const pdfjs = fakePdfjs({ hangOpen: true });
+        const session = createPdfLoadingSession(new ArrayBuffer(8), pdfjs);
+        const openPromise = session.open();
+        // Hang until destroy; the loading task must be torn down to unblock open().
+        await destroyPdfSession(session);
+        expect(pdfjs.destroyed.count).toBe(1);
+        await expect(openPromise).rejects.toMatchObject({ name: 'AbortError' });
+    });
+
+    test('destroy cancels a pending stream reader before read settles', async () => {
+        let cancelCount = 0;
+        let releaseRead;
+        const pdfjs = fakePdfjs({
+            numPages: 1,
+            textByPage: {},
+            streamByPage() {
+                return {
+                    getReader() {
+                        return {
+                            async read() {
+                                return new Promise((resolve) => {
+                                    releaseRead = resolve;
+                                });
+                            },
+                            async cancel() {
+                                cancelCount += 1;
+                                if (releaseRead) {
+                                    releaseRead({ done: true, value: undefined });
+                                    releaseRead = null;
+                                }
+                            },
+                        };
+                    },
+                };
+            },
+        });
+        const session = await openPdfDocument(new ArrayBuffer(8), pdfjs);
+        const extractPromise = extractPdfPageBlocks(session.pdf, 1, {
+            attachStreamReader: (reader) => session.attachStreamReader(reader),
+            isCurrent: () => !session._destroyed,
+        });
+        // Wait until the stream reader is attached, then destroy mid-read.
+        for (let i = 0; i < 40 && !session.streamReader; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        expect(session.streamReader).toBeTruthy();
+        await destroyPdfSession(session);
+        expect(cancelCount).toBeGreaterThanOrEqual(1);
+        await expect(extractPromise).rejects.toMatchObject({ name: 'AbortError' });
+    });
 });
 
 describe('reader wiring keeps PDF paths out of overlay/audio-export', () => {
@@ -323,8 +384,11 @@ describe('reader wiring keeps PDF paths out of overlay/audio-export', () => {
         const path = require('path');
         const source = fs.readFileSync(path.join(__dirname, '..', 'reader.js'), 'utf8');
         expect(source).toContain("from './pdf-reader.js'");
+        expect(source).toContain('createPdfLoadingSession');
+        expect(source).toContain('cancelPendingPdfSession');
         expect(source).toContain('destroyPdfSession');
-        expect(source).toContain('loadingTask');
+        expect(source).toContain('pendingPdfSession');
+        expect(source).toContain('attachStreamReader');
         expect(source).toContain('isCurrent');
         expect(source).toContain('cmaps/');
         expect(source).toContain('firstTextHref');

@@ -11,9 +11,9 @@ import {
     assertPdfHasExtractableText,
     buildPdfPageToc,
     createPdfDocumentCharBudget,
+    createPdfLoadingSession,
     destroyPdfSession,
     extractPdfPageBlocks,
-    openPdfDocument,
     parsePdfPageHref,
     pdfPageHref,
 } from './pdf-reader.js';
@@ -68,6 +68,7 @@ const clearBookmarksButton = document.getElementById('clearBookmarks');
 let book = null; // EPUB object
 let textDocument = null; // parsed TXT/Markdown/HTML/DOCX document, not an EPUB archive
 let pdfDocument = null; // open PDF.js document + metadata (#198)
+let pendingPdfSession = null; // in-flight createPdfLoadingSession handle (#198)
 let pdfjsApi = null; // packaged pdf.min.mjs module
 let activeTextChapterWrite = Promise.resolve();
 let currentChapterBlocks = []; // For tracking progress
@@ -179,6 +180,12 @@ async function disposePdfDocument(source) {
     } catch (error) {
         console.warn('PDF cleanup failed', error);
     }
+}
+
+function cancelPendingPdfSession() {
+    const pending = pendingPdfSession;
+    pendingPdfSession = null;
+    if (pending) void disposePdfDocument(pending);
 }
 
 function hideResumeBanner() {
@@ -655,6 +662,7 @@ function cancelDocumentPicker() {
     // the already committed chapter/player, even if old promises settle later.
     ++fileRequestId;
     ++documentIdentityGeneration;
+    cancelPendingPdfSession();
     if (activeFileReader && activeFileReader.readyState === FileReader.LOADING &&
         typeof activeFileReader.abort === 'function') {
         activeFileReader.abort();
@@ -724,6 +732,7 @@ async function handleFile(file) {
     const requestId = ++fileRequestId;
     // Aborting abandoned reads prevents large EPUB buffers from accumulating
     // when a second file is selected before the first read completes.
+    cancelPendingPdfSession();
     if (activeFileReader && activeFileReader.readyState === FileReader.LOADING &&
         typeof activeFileReader.abort === 'function') {
         activeFileReader.abort();
@@ -1015,17 +1024,22 @@ async function loadPdfDocument(file, requestId) {
     const cMapUrl = typeof browser?.runtime?.getURL === 'function'
         ? browser.runtime.getURL('cmaps/')
         : 'cmaps/';
-    const session = await openPdfDocument(bytes, pdfjs, {
+    // Own the loading task immediately so Cancel / replacement can destroy the
+    // worker before open() settles.
+    const session = createPdfLoadingSession(bytes, pdfjs, {
         cMapUrl,
         cMapPacked: true,
     });
+    pendingPdfSession = session;
     let committed = false;
     try {
+        await session.open();
         if (requestId !== fileRequestId) return;
         const charBudget = createPdfDocumentCharBudget();
         const probe = await assertPdfHasExtractableText(session.pdf, {
-            isCurrent: () => requestId === fileRequestId,
+            isCurrent: () => requestId === fileRequestId && !session._destroyed,
             charBudget,
+            attachStreamReader: (reader) => session.attachStreamReader(reader),
         });
         if (requestId !== fileRequestId) return;
         const toc = buildPdfPageToc(session.pdf.numPages, file.name);
@@ -1039,14 +1053,11 @@ async function loadPdfDocument(file, requestId) {
         chapterRequestId++;
         book = null;
         textDocument = null;
-        pdfDocument = {
-            pdf: session.pdf,
-            loadingTask: session.loadingTask,
-            title: file.name,
-            pageCount: session.pdf.numPages,
-            firstTextHref: pdfPageHref(probe.firstTextPage),
-            charBudget,
-        };
+        pdfDocument = session;
+        pdfDocument.title = file.name;
+        pdfDocument.pageCount = session.pdf.numPages;
+        pdfDocument.firstTextHref = pdfPageHref(probe.firstTextPage);
+        pdfDocument.charBudget = charBudget;
         deferredChapterEndRevision = null;
         if (oldBook) retiringBooks.add(oldBook);
         if (oldPdf) void disposePdfDocument(oldPdf);
@@ -1057,10 +1068,12 @@ async function loadPdfDocument(file, requestId) {
         resumeAutoplayForNewDocument();
         renderChapterList(toc, { autoActivate: false });
         committed = true;
+        if (pendingPdfSession === session) pendingPdfSession = null;
         resetBookmarkProgressFence();
         await offerResumeOrStart();
         await refreshBookmarksPanel();
     } finally {
+        if (pendingPdfSession === session) pendingPdfSession = null;
         if (!committed) await disposePdfDocument(session);
     }
 }
@@ -1149,7 +1162,15 @@ async function startPdfPageLoad(href, title, forcedStartIndex = null, resumeCand
     }
     try {
         const blocks = await extractPdfPageBlocks(source.pdf, pageNumber, {
-            isCurrent: () => source === pdfDocument && requestId === chapterRequestId,
+            isCurrent: () => source === pdfDocument && requestId === chapterRequestId
+                && !source._destroyed,
+            attachStreamReader: (reader) => {
+                if (typeof source.attachStreamReader === 'function') {
+                    source.attachStreamReader(reader);
+                } else {
+                    source.streamReader = reader || null;
+                }
+            },
         });
         if (source !== pdfDocument || requestId !== chapterRequestId) return;
         accountPdfPageChars(source.charBudget, pageNumber, blocks);
